@@ -539,7 +539,14 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
     try {
       const r = await fetch(`${API_URL}?list=true`);
       const d = await r.json();
-      setCampaigns(d.campaigns || []);
+      const raw = d.campaigns || [];
+      const seen = new Set();
+      const deduped = raw.filter(c => {
+        if (seen.has(c.short_token)) return false;
+        seen.add(c.short_token);
+        return true;
+      });
+      setCampaigns(deduped);
     } catch { setCampaigns([]); }
     finally { setLoading(false); }
   };
@@ -1621,7 +1628,7 @@ const DetailTable = ({ detail, campaignName }) => {
   const filtered = filter === "ALL" ? detail : detail.filter(r => r.media_type === filter);
 
   const downloadCSV = () => {
-    const cols = ["date","campaign_name","line_name","creative_name","creative_size","media_type","impressions","viewable_impressions","clicks","video_starts","video_view_25","video_view_50","video_view_75","video_view_100","effective_total_cost"];
+    const cols = ["date","campaign_name","line_name","creative_name","creative_size","media_type","impressions","viewable_impressions","clicks","video_starts","video_view_25","video_view_50","video_view_75","video_view_100","effective_total_cost","effective_cost_with_over"];
     const header = cols.join(",");
     const rows = filtered.map(r => cols.map(c => `"${r[c] ?? ""}"`).join(","));
     const csv = [header, ...rows].join("\n");
@@ -1632,8 +1639,8 @@ const DetailTable = ({ detail, campaignName }) => {
     URL.revokeObjectURL(url);
   };
 
-  const cols = ["Data","Campanha","Line","Criativo","Tamanho","Tipo","Impressões","Imp. Visíveis","Cliques","Video Starts","25%","50%","75%","100%","effective_total_cost"];
-  const keys = ["date","campaign_name","line_name","creative_name","creative_size","media_type","impressions","viewable_impressions","clicks","video_starts","video_view_25","video_view_50","video_view_75","video_view_100","effective_total_cost"];
+  const cols = ["Data","Campanha","Line","Criativo","Tamanho","Tipo","Impressões","Imp. Visíveis","Cliques","Video Starts","25%","50%","75%","100%","Custo Efetivo","Custo Ef. + Over"];
+  const keys = ["date","campaign_name","line_name","creative_name","creative_size","media_type","impressions","viewable_impressions","clicks","video_starts","video_view_25","video_view_50","video_view_75","video_view_100","effective_total_cost","effective_cost_with_over"];
 
   return (
     <div style={{background:C.dark2,border:`1px solid ${C.dark3}`,borderRadius:12,padding:20}}>
@@ -2086,6 +2093,39 @@ const TabChat = ({ token, tabName, author, theme }) => {
     </div>
   );
 };
+const enrichDetailCosts = (detailRows, totalsRows) => {
+  const totalsMap = {};
+  totalsRows.forEach(t => {
+    const key = `${t.media_type}|${t.tactic_type}`;
+    totalsMap[key] = t;
+  });
+  const groupSums = {};
+  detailRows.forEach(r => {
+    const key = `${r.media_type}|${r.tactic_type}`;
+    if (!groupSums[key]) groupSums[key] = { vi: 0, v100: 0 };
+    groupSums[key].vi  += r.viewable_impressions || 0;
+    groupSums[key].v100 += r.video_view_100 || 0;
+  });
+  return detailRows.map(r => {
+    const key = `${r.media_type}|${r.tactic_type}`;
+    const tot = totalsMap[key];
+    const grp = groupSums[key];
+    if (!tot || !grp) return { ...r, effective_total_cost: 0, effective_cost_with_over: 0 };
+    const isVideo = r.media_type === "VIDEO";
+    const delivered = isVideo ? (r.video_view_100 || 0) : (r.viewable_impressions || 0);
+    const totalDelivered = isVideo ? grp.v100 : grp.vi;
+    const proportion = totalDelivered > 0 ? delivered / totalDelivered : 0;
+    return {
+      ...r,
+      effective_total_cost:      Math.round(proportion * (tot.effective_total_cost || 0) * 100) / 100,
+      effective_cost_with_over:  Math.round(proportion * (tot.effective_cost_with_over || 0) * 100) / 100,
+      deal_cpm_amount:           tot.deal_cpm_amount || 0,
+      deal_cpcv_amount:          tot.deal_cpcv_amount || 0,
+      effective_cpm_amount:      tot.effective_cpm_amount || 0,
+      effective_cpcv_amount:     tot.effective_cpcv_amount || 0,
+    };
+  });
+};
 const ClientDashboard = ({ token, isAdmin }) => {
   const [data,setData]=useState(null);
   const [loading,setLoading]=useState(true);
@@ -2149,7 +2189,7 @@ const ClientDashboard = ({ token, isAdmin }) => {
   const daily0  = (data.daily||[]).filter(noSurvey);
   const detail0 = (data.detail||[]).filter(noSurvey);
   const daily  = daily0;
-  const detail = detail0;
+  const detail = enrichDetailCosts(detail0, totals);
   const chartDisplay = daily.filter(r=>r.media_type==="DISPLAY").map(r=>({...r,ctr:r.viewable_impressions>0?(r.clicks||0)/r.viewable_impressions*100:0}));
   const chartVideo   = daily.filter(r=>r.media_type==="VIDEO").map(r=>{
     const v100 = r.video_view_100||r.completions||r.viewable_video_view_100_complete||0;
