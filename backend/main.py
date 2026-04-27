@@ -41,7 +41,6 @@ TACTIC_EXPR = (
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:5173",
-    "https://seu-projeto.vercel.app",
     "http://localhost:5175",
     "https://report.hypr.mobi",
     "https://www.report.hypr.mobi",
@@ -113,8 +112,9 @@ def report_data(request):
         form_id = request.args.get("form_id", "").strip()
         if not form_id:
             return (jsonify({"error": "form_id required"}), 400, headers)
-        import os
-TYPEFORM_TOKEN = os.environ.get("TYPEFORM_TOKEN", "")
+        TYPEFORM_TOKEN = os.environ.get("TYPEFORM_TOKEN", "")
+        if not TYPEFORM_TOKEN:
+            return (jsonify({"error": "TYPEFORM_TOKEN não configurado"}), 500, headers)
         all_answers = []
         before_token = None
         try:
@@ -123,7 +123,7 @@ TYPEFORM_TOKEN = os.environ.get("TYPEFORM_TOKEN", "")
                 if before_token:
                     url += f"&before={before_token}"
                 req = urllib.request.Request(url, headers={"Authorization": f"Bearer {TYPEFORM_TOKEN}"})
-                with urllib.request.urlopen(req) as resp:
+                with urllib.request.urlopen(req, timeout=10) as resp:
                     data = json.loads(resp.read().decode())
                 items = data.get("items", [])
                 for item in items:
@@ -140,7 +140,7 @@ TYPEFORM_TOKEN = os.environ.get("TYPEFORM_TOKEN", "")
             print(f"[ERROR typeform_proxy] {e}")
             return (jsonify({"error": str(e)}), 502, headers)
 
-# ── Endpoint: salvar comentário ──────────────────────────────────────────
+    # ── Endpoint: salvar comentário ──────────────────────────────────────────
     if request.method == "POST" and request.args.get("action") == "save_comment":
         try:
             body = request.get_json(silent=True) or {}
@@ -232,28 +232,25 @@ def table_ref():
 # Logo — salvar e buscar
 # ─────────────────────────────────────────────────────────────────────────────
 def save_logo(short_token: str, logo_base64: str):
-    """Faz UPSERT do logo na tabela client_logos."""
+    """Faz UPSERT do logo na tabela client_logos (atômico via MERGE)."""
     table_id = f"{PROJECT_ID}.{DATASET_ASSETS}.client_logos"
-    now = datetime.utcnow().isoformat()
-
-    delete_sql = f"DELETE FROM `{table_id}` WHERE short_token = @token"
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[bigquery.ScalarQueryParameter("token", "STRING", short_token)]
-    )
-    bq.query(delete_sql, job_config=job_config).result()
-
-    insert_sql = f"""
-        INSERT INTO `{table_id}` (short_token, logo_base64, updated_at)
-        VALUES (@token, @logo, @updated_at)
+    sql = f"""
+        MERGE `{table_id}` T
+        USING (SELECT @token AS short_token) S
+        ON T.short_token = S.short_token
+        WHEN MATCHED THEN
+            UPDATE SET logo_base64 = @logo, updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+            INSERT (short_token, logo_base64, updated_at)
+            VALUES (@token, @logo, CURRENT_TIMESTAMP())
     """
-    job_config2 = bigquery.QueryJobConfig(
+    job_config = bigquery.QueryJobConfig(
         query_parameters=[
-            bigquery.ScalarQueryParameter("token",      "STRING",    short_token),
-            bigquery.ScalarQueryParameter("logo",       "STRING",    logo_base64),
-            bigquery.ScalarQueryParameter("updated_at", "TIMESTAMP", now),
+            bigquery.ScalarQueryParameter("token", "STRING", short_token),
+            bigquery.ScalarQueryParameter("logo",  "STRING", logo_base64),
         ]
     )
-    bq.query(insert_sql, job_config=job_config2).result()
+    bq.query(sql, job_config=job_config).result()
 
 
 def query_logo(short_token: str):
@@ -280,28 +277,25 @@ def query_logo(short_token: str):
 # Loom — salvar e buscar
 # ─────────────────────────────────────────────────────────────────────────────
 def save_loom(short_token: str, loom_url: str):
-    """Faz UPSERT do link Loom na tabela campaign_looms."""
+    """Faz UPSERT do link Loom na tabela campaign_looms (atômico via MERGE)."""
     table_id = f"{PROJECT_ID}.{DATASET_ASSETS}.campaign_looms"
-    now = datetime.utcnow().isoformat()
-
-    delete_sql = f"DELETE FROM `{table_id}` WHERE short_token = @token"
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[bigquery.ScalarQueryParameter("token", "STRING", short_token)]
-    )
-    bq.query(delete_sql, job_config=job_config).result()
-
-    insert_sql = f"""
-        INSERT INTO `{table_id}` (short_token, loom_url, updated_at)
-        VALUES (@token, @loom_url, @updated_at)
+    sql = f"""
+        MERGE `{table_id}` T
+        USING (SELECT @token AS short_token) S
+        ON T.short_token = S.short_token
+        WHEN MATCHED THEN
+            UPDATE SET loom_url = @loom_url, updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+            INSERT (short_token, loom_url, updated_at)
+            VALUES (@token, @loom_url, CURRENT_TIMESTAMP())
     """
-    job_config2 = bigquery.QueryJobConfig(
+    job_config = bigquery.QueryJobConfig(
         query_parameters=[
-            bigquery.ScalarQueryParameter("token",      "STRING",    short_token),
-            bigquery.ScalarQueryParameter("loom_url",   "STRING",    loom_url),
-            bigquery.ScalarQueryParameter("updated_at", "TIMESTAMP", now),
+            bigquery.ScalarQueryParameter("token",    "STRING", short_token),
+            bigquery.ScalarQueryParameter("loom_url", "STRING", loom_url),
         ]
     )
-    bq.query(insert_sql, job_config=job_config2).result()
+    bq.query(sql, job_config=job_config).result()
 
 
 def query_loom(short_token: str):
@@ -328,28 +322,25 @@ def query_loom(short_token: str):
 # Survey — salvar e buscar
 # ─────────────────────────────────────────────────────────────────────────────
 def save_survey(short_token: str, survey_data: str):
-    """Faz UPSERT dos dados do survey na tabela campaign_surveys."""
+    """Faz UPSERT dos dados do survey na tabela campaign_surveys (atômico via MERGE)."""
     table_id = f"{PROJECT_ID}.{DATASET_ASSETS}.campaign_surveys"
-    now = datetime.utcnow().isoformat()
-
-    delete_sql = f"DELETE FROM `{table_id}` WHERE short_token = @token"
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[bigquery.ScalarQueryParameter("token", "STRING", short_token)]
-    )
-    bq.query(delete_sql, job_config=job_config).result()
-
-    insert_sql = f"""
-        INSERT INTO `{table_id}` (short_token, survey_data, updated_at)
-        VALUES (@token, @survey_data, @updated_at)
+    sql = f"""
+        MERGE `{table_id}` T
+        USING (SELECT @token AS short_token) S
+        ON T.short_token = S.short_token
+        WHEN MATCHED THEN
+            UPDATE SET survey_data = @survey_data, updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+            INSERT (short_token, survey_data, updated_at)
+            VALUES (@token, @survey_data, CURRENT_TIMESTAMP())
     """
-    job_config2 = bigquery.QueryJobConfig(
+    job_config = bigquery.QueryJobConfig(
         query_parameters=[
-            bigquery.ScalarQueryParameter("token",       "STRING",    short_token),
-            bigquery.ScalarQueryParameter("survey_data", "STRING",    survey_data),
-            bigquery.ScalarQueryParameter("updated_at",  "TIMESTAMP", now),
+            bigquery.ScalarQueryParameter("token",       "STRING", short_token),
+            bigquery.ScalarQueryParameter("survey_data", "STRING", survey_data),
         ]
     )
-    bq.query(insert_sql, job_config=job_config2).result()
+    bq.query(sql, job_config=job_config).result()
 
 
 def query_survey(short_token: str):
@@ -545,15 +536,13 @@ def query_totals(token, campaign_info):
         WHERE short_token = @token
     """
 
-    # Usar client US para unified_daily (região US)
-    from google.cloud import bigquery as bq2
-    bq_us = bq2.Client(client_options={"api_endpoint": "https://bigquery.googleapis.com"})
-    job_config = bq2.QueryJobConfig(query_parameters=[
-        bq2.ScalarQueryParameter("token", "STRING", token)
+    # unified_daily_performance_metrics está na região US — passar location explícito
+    job_config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("token", "STRING", token)
     ])
 
-    perf_rows = list(bq_us.query(sql_perf, job_config=job_config, location="US").result())
-    check_rows = list(bq_us.query(sql_checklist, job_config=job_config, location="US").result())
+    perf_rows  = list(bq.query(sql_perf,      job_config=job_config, location="US").result())
+    check_rows = list(bq.query(sql_checklist, job_config=job_config, location="US").result())
 
     if not check_rows:
         return []
