@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { API_URL } from "../shared/config";
 import { C } from "../shared/theme";
 import Spinner from "../components/Spinner";
 import TabChat from "../components/TabChat";
@@ -9,12 +10,21 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState(null);
 
-  const parseCSVText=(text)=>{
-    const lines=text.trim().split("\n").map(l=>l.trim()).filter(l=>l);
-    // Coluna A = respostas (ignora demais colunas)
-    return lines.slice(1).map(line=>line.split(",")[0].replace(/"/g,"").trim()).filter(Boolean);
+  // Busca respostas agregadas de um form do Typeform via proxy do backend.
+  // O backend valida a URL, chama a API oficial do Typeform com o token
+  // privado e devolve { counts: {label: count}, total: N }.
+  // CSV legado (Google Sheets publicado) não é mais suportado — todos os
+  // surveys hoje vêm do Typeform.
+  const fetchTypeformCounts = async (url) => {
+    const proxy = `${API_URL}?action=typeform_proxy&form_url=${encodeURIComponent(url)}`;
+    const r = await fetch(proxy);
+    const data = await r.json().catch(()=>({}));
+    if (!r.ok) {
+      // Backend devolve {error: "..."} com mensagem útil (token, 404, etc)
+      throw new Error(data?.error || `HTTP ${r.status}`);
+    }
+    return { counts: data.counts || {}, total: data.total || 0 };
   };
-  const countValues=(vals)=>vals.reduce((acc,v)=>{acc[v]=(acc[v]||0)+1;return acc;},{});
 
   useEffect(()=>{
     let cancelled=false;
@@ -22,22 +32,26 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
       setLoading(true);setError(null);
       try{
         const parsed=JSON.parse(surveyJson);
-        // Novo modelo: array de {nome, ctrlUrl, expUrl}
+        // Modelo atual: array de {nome, ctrlUrl, expUrl} onde ctrl/exp são
+        // URLs públicas de forms do Typeform.
         if(Array.isArray(parsed)&&parsed[0]?.ctrlUrl){
           const results=await Promise.all(parsed.map(async(q)=>{
-            const [ctrlRes,expRes]=await Promise.all([
-              fetch(q.ctrlUrl).then(r=>r.text()),
-              fetch(q.expUrl).then(r=>r.text()),
+            const [ctrlData, expData] = await Promise.all([
+              fetchTypeformCounts(q.ctrlUrl),
+              fetchTypeformCounts(q.expUrl),
             ]);
-            const ctrlVals=parseCSVText(ctrlRes);
-            const expVals=parseCSVText(expRes);
-            const ctrl=countValues(ctrlVals);
-            const exp=countValues(expVals);
-            return{nome:q.nome,control_total:ctrlVals.length,exposed_total:expVals.length,ctrl,exp};
+            return {
+              nome: q.nome,
+              control_total: ctrlData.total,
+              exposed_total: expData.total,
+              ctrl: ctrlData.counts,
+              exp: expData.counts,
+            };
           }));
           if(!cancelled)setQuestions(results);
         } else {
-          // Modelo antigo (CSV já processado): retrocompatível
+          // Modelo antigo (CSV já processado pré-Typeform): retrocompatível
+          // com surveys cadastrados antes da migração pra API.
           const surveys=Array.isArray(parsed)?parsed:[parsed];
           const results=surveys.map(s=>({
             nome:s.nome||"Survey",
@@ -48,7 +62,14 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
           }));
           if(!cancelled)setQuestions(results);
         }
-      }catch(e){if(!cancelled)setError("Erro ao carregar dados do survey.");}
+      }catch(e){
+        if(!cancelled){
+          // Mensagem mais informativa: prefixa com a fonte do erro pra
+          // admin debugar (URL inválida vs Typeform fora vs token expirado).
+          const msg = e?.message ? `Erro ao carregar survey: ${e.message}` : "Erro ao carregar dados do survey.";
+          setError(msg);
+        }
+      }
       finally{if(!cancelled)setLoading(false);}
     };
     load();

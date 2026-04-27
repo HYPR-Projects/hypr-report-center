@@ -11,9 +11,11 @@ import functions_framework
 from flask import jsonify, request
 from google.cloud import bigquery
 import os
+import re
 import json
 import urllib.request
 import urllib.parse
+from collections import Counter
 from datetime import date, datetime
 
 from auth import (
@@ -140,14 +142,22 @@ def report_data(request):
             return (jsonify({"error": "Erro ao salvar survey"}), 500, headers)
 
     # ── Endpoint: proxy Typeform API (evita CORS) ────────────────────────────
+    # Aceita `form_url` (URL pública do form, modo preferido) ou `form_id`
+    # (legado). Devolve as respostas já agregadas como contagem por label,
+    # economizando payload e CPU no front. O front só precisa renderizar.
     if request.args.get("action") == "typeform_proxy":
-        form_id = request.args.get("form_id", "").strip()
+        form_url = request.args.get("form_url", "").strip()
+        form_id_param = request.args.get("form_id", "").strip()
+        form_id = _extract_typeform_form_id(form_url) if form_url else _extract_typeform_form_id(form_id_param)
         if not form_id:
-            return (jsonify({"error": "form_id required"}), 400, headers)
+            return (jsonify({"error": "URL do Typeform inválida ou form_id ausente"}), 400, headers)
+
         TYPEFORM_TOKEN = os.environ.get("TYPEFORM_TOKEN", "")
         if not TYPEFORM_TOKEN:
             return (jsonify({"error": "TYPEFORM_TOKEN não configurado"}), 500, headers)
-        all_answers = []
+
+        counts = Counter()
+        total = 0
         before_token = None
         try:
             while True:
@@ -159,15 +169,31 @@ def report_data(request):
                     data = json.loads(resp.read().decode())
                 items = data.get("items", [])
                 for item in items:
+                    total += 1
                     for ans in item.get("answers", []):
-                        if ans.get("type") == "choice" and ans.get("choice", {}).get("label"):
-                            all_answers.append(ans["choice"]["label"])
-                        elif ans.get("type") == "choices" and ans.get("choices", {}).get("labels"):
-                            all_answers.extend(ans["choices"]["labels"])
+                        # Choice única
+                        if ans.get("type") == "choice":
+                            label = (ans.get("choice") or {}).get("label")
+                            if label:
+                                counts[label] += 1
+                        # Múltipla escolha
+                        elif ans.get("type") == "choices":
+                            for label in (ans.get("choices") or {}).get("labels", []) or []:
+                                if label:
+                                    counts[label] += 1
                 if len(items) < 1000:
                     break
                 before_token = items[-1].get("token")
-            return (jsonify({"answers": all_answers, "total": len(all_answers)}), 200, headers)
+            return (jsonify({"counts": dict(counts), "total": total, "form_id": form_id}), 200, headers)
+        except urllib.error.HTTPError as e:
+            # Erros típicos: 401 token inválido, 404 form não encontrado, 403 sem acesso
+            print(f"[ERROR typeform_proxy] HTTP {e.code} for form {form_id}: {e.reason}")
+            msg = {
+                401: "TYPEFORM_TOKEN inválido ou expirado",
+                403: "Sem permissão para acessar este form",
+                404: "Form não encontrado no Typeform",
+            }.get(e.code, f"Erro Typeform: HTTP {e.code}")
+            return (jsonify({"error": msg, "form_id": form_id}), 502, headers)
         except Exception as e:
             print(f"[ERROR typeform_proxy] {e}")
             return (jsonify({"error": str(e)}), 502, headers)
@@ -1125,3 +1151,31 @@ def save_upload(short_token, upload_type, data_json):
         bq2.ScalarQueryParameter("data_json",   "STRING", data_json),
     ])
     client.query(sql, job_config=jc).result()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Typeform helpers
+# ─────────────────────────────────────────────────────────────────────────────
+# Match para URLs públicas do Typeform — cobre subdomínios de workspace
+# (ex: hypr-mobi.typeform.com/to/ABC123) e o formato canônico (form.typeform.com).
+# O ID em si é alfanumérico, normalmente 6-12 chars, mas o Typeform não promete
+# tamanho fixo, então aceitamos qualquer alfanumérico depois de "/to/".
+_TYPEFORM_URL_RE = re.compile(r"typeform\.com/to/([A-Za-z0-9]+)", re.IGNORECASE)
+_TYPEFORM_BARE_ID_RE = re.compile(r"^[A-Za-z0-9]{4,32}$")
+
+
+def _extract_typeform_form_id(value: str) -> str:
+    """Aceita URL pública do Typeform OU form_id puro e devolve o form_id.
+
+    Vazio se o input não for nada reconhecível como Typeform — chamador
+    deve tratar como erro de validação.
+    """
+    if not value:
+        return ""
+    s = value.strip()
+    m = _TYPEFORM_URL_RE.search(s)
+    if m:
+        return m.group(1)
+    if _TYPEFORM_BARE_ID_RE.match(s):
+        return s
+    return ""

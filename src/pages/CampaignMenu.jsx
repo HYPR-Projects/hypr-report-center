@@ -516,10 +516,10 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
           onClick={e => { if (e.target === e.currentTarget) { setSurveyModal(null); setSurveyBlocks([{ nome: "", ctrlUrl: "", expUrl: "" }]); } }}>
           <div className="fade-in" style={{ background: modalBg, border: `1px solid ${modalBdr}`, borderRadius: 16, padding: 32, width: "100%", maxWidth: 540, maxHeight: "90vh", overflowY: "auto" }}>
             <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 4, color: text }}>📋 Configurar Survey</h2>
-            <p style={{ color: muted, fontSize: 14, marginBottom: 6 }}>Links do Google Sheets para <strong>{surveyModal}</strong>.</p>
+            <p style={{ color: muted, fontSize: 14, marginBottom: 6 }}>Links públicos do Typeform para <strong>{surveyModal}</strong>.</p>
             <p style={{ color: muted, fontSize: 12, marginBottom: 20, lineHeight: 1.6 }}>
-              Cada link deve ser um Sheets publicado como CSV.<br/>
-              No Sheets: <span style={{ color: C.blue }}>Arquivo → Compartilhar → Publicar na web → CSV</span>
+              Cole a URL pública de cada form do Typeform (uma para o grupo controle, outra para o exposto).<br/>
+              No Typeform: <span style={{ color: C.blue }}>Share → Copiar link público</span>. As respostas atualizam automaticamente.
             </p>
             {surveyBlocks.map((block, idx) => (
               <div key={idx} style={{ border: `1px solid ${modalBdr}`, borderRadius: 10, padding: 16, marginBottom: 12 }}>
@@ -540,20 +540,20 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
                   />
                 </div>
                 <div style={{ marginBottom: 10 }}>
-                  <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>Link Sheets — Grupo Controle</div>
+                  <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>Link Typeform — Grupo Controle</div>
                   <input
                     value={block.ctrlUrl}
                     onChange={e => setSurveyBlocks(b => b.map((bl, i) => i === idx ? { ...bl, ctrlUrl: e.target.value } : bl))}
-                    placeholder="https://docs.google.com/spreadsheets/d/.../export?format=csv&gid=..."
+                    placeholder="https://hypr-mobi.typeform.com/to/..."
                     style={{ width: "100%", background: inputBg, border: `1px solid ${block.ctrlUrl ? C.blue+"60" : modalBdr}`, borderRadius: 7, padding: "9px 12px", color: text, fontSize: 12, outline: "none", fontFamily: "monospace" }}
                   />
                 </div>
                 <div>
-                  <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>Link Sheets — Grupo Exposto</div>
+                  <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>Link Typeform — Grupo Exposto</div>
                   <input
                     value={block.expUrl}
                     onChange={e => setSurveyBlocks(b => b.map((bl, i) => i === idx ? { ...bl, expUrl: e.target.value } : bl))}
-                    placeholder="https://docs.google.com/spreadsheets/d/.../export?format=csv&gid=..."
+                    placeholder="https://hypr-mobi.typeform.com/to/..."
                     style={{ width: "100%", background: inputBg, border: `1px solid ${block.expUrl ? C.blue+"60" : modalBdr}`, borderRadius: 7, padding: "9px 12px", color: text, fontSize: 12, outline: "none", fontFamily: "monospace" }}
                   />
                 </div>
