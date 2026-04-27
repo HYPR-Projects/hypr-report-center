@@ -170,6 +170,11 @@ def report_data(request):
         total = 0
         before_token = None
         try:
+            # Busca definição do form uma vez pra mapear field_id → row_label
+            # quando há perguntas matrix. Sem isso, respostas de matrix vêm
+            # como choices independentes sem indicação da marca.
+            field_to_row = _fetch_typeform_form_def(form_id, TYPEFORM_TOKEN)
+
             while True:
                 url = f"https://api.typeform.com/forms/{urllib.parse.quote(form_id)}/responses?page_size=1000&completed=true"
                 if before_token:
@@ -180,7 +185,7 @@ def report_data(request):
                 items = data.get("items", [])
                 total += len(items)
 
-                page_flat, page_matrix, page_has_matrix, _ = _process_typeform_items(items)
+                page_flat, page_matrix, page_has_matrix, _ = _process_typeform_items(items, field_to_row)
                 # Acumula
                 flat_counts.update(page_flat)
                 if page_has_matrix:
@@ -1210,22 +1215,58 @@ def _extract_typeform_form_id(value: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # Processamento de respostas Typeform — detecta tipo (choice / matrix)
 # ─────────────────────────────────────────────────────────────────────────────
-def _process_typeform_items(items):
+def _fetch_typeform_form_def(form_id, token):
+    """Busca definição do form e devolve mapping field_id → row_label
+    para fields que são children de um matrix.
+
+    No Typeform, uma pergunta matrix vem assim na definição:
+      { type: "matrix", properties: { fields: [
+          {id: "abc", type: "multiple_choice", title: "Heineken"},
+          {id: "def", type: "multiple_choice", title: "Corona"},
+          ...
+      ]}}
+
+    E nas respostas, cada child vira uma answer separada do tipo "choice"
+    referenciando apenas field.id — sem indicação de que é matrix. Esse
+    mapping é a única forma de reconstruir qual answer é qual marca.
+    """
+    url = f"https://api.typeform.com/forms/{urllib.parse.quote(form_id)}"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read().decode())
+
+    field_to_row = {}
+
+    def walk(fields):
+        for f in fields:
+            ftype = f.get("type")
+            children = (f.get("properties") or {}).get("fields") or []
+            if ftype == "matrix":
+                for child in children:
+                    cid = child.get("id")
+                    label = child.get("title")
+                    if cid and label:
+                        field_to_row[cid] = label
+            else:
+                # Recursão pra outros tipos com children (groups, statements)
+                if children:
+                    walk(children)
+
+    walk(data.get("fields") or [])
+    return field_to_row
+
+
+def _process_typeform_items(items, field_to_row=None):
     """Agrega respostas de uma página de items do Typeform num formato unificado.
 
-    Suporta três tipos de pergunta:
-      - 'choice'   → resposta única em múltipla escolha
-      - 'choices'  → várias selecionadas em múltipla escolha
-      - 'matrix'   → matriz N linhas × M colunas (ex: avalie marca X em escala 1-3)
+    field_to_row é o mapping {field_id: row_label} para fields que pertencem
+    a uma pergunta matrix (vide _fetch_typeform_form_def). Se vazio, todas
+    as respostas são tratadas como choice/choices simples.
 
-    Se o form contém matrix em qualquer item, prevalece o formato 'matrix' no
-    output (forms costumam ser homogêneos por pergunta — estamos pegando
-    response-level aqui, então em prática só tem um tipo predominante).
-
-    Retorna duas estruturas; o caller escolhe qual usar baseado em has_matrix:
-      flat_counts: Counter de labels (modo choice/choices)
-      matrix_rows: dict[row_label] → Counter[col_label]
+    Devolve quatro valores: (flat_counts, matrix_rows, has_matrix, has_flat)
+    O caller usa has_matrix pra decidir o formato final de output.
     """
+    field_to_row = field_to_row or {}
     flat_counts = Counter()
     matrix_rows = {}  # row_label → Counter[col_label]
     has_matrix = False
@@ -1234,23 +1275,31 @@ def _process_typeform_items(items):
     for item in items:
         for ans in item.get("answers", []) or []:
             atype = ans.get("type")
+            field_id = (ans.get("field") or {}).get("id", "")
 
-            # Choice única
-            if atype == "choice":
-                label = (ans.get("choice") or {}).get("label")
-                if label:
-                    flat_counts[label] += 1
-                    has_flat = True
-
-            # Múltipla escolha
-            elif atype == "choices":
-                for label in ((ans.get("choices") or {}).get("labels") or []):
+            # Caso 1: answer é child de um matrix (mapping bate)
+            if field_id and field_id in field_to_row:
+                row_label = field_to_row[field_id]
+                if atype == "choice":
+                    label = (ans.get("choice") or {}).get("label")
                     if label:
-                        flat_counts[label] += 1
-                        has_flat = True
+                        if row_label not in matrix_rows:
+                            matrix_rows[row_label] = Counter()
+                        matrix_rows[row_label][label] += 1
+                        has_matrix = True
+                elif atype == "choices":
+                    # Matrix com múltipla seleção por linha
+                    for label in ((ans.get("choices") or {}).get("labels") or []):
+                        if label:
+                            if row_label not in matrix_rows:
+                                matrix_rows[row_label] = Counter()
+                            matrix_rows[row_label][label] += 1
+                            has_matrix = True
+                continue
 
-            # Matrix (estrutura: ans["matrix"]["rows"] = lista de {row:{label}, choice:{label}})
-            elif atype == "matrix" or ans.get("matrix"):
+            # Caso 2: payload de matrix nativo (formato alternativo, fallback
+            # defensivo caso o Typeform mude a API um dia)
+            if atype == "matrix" or ans.get("matrix"):
                 has_matrix = True
                 matrix = ans.get("matrix") or {}
                 for row in (matrix.get("rows") or []):
@@ -1261,11 +1310,23 @@ def _process_typeform_items(items):
                         if row_label not in matrix_rows:
                             matrix_rows[row_label] = Counter()
                         matrix_rows[row_label][choice_label] += 1
-                    # Suporte a matrix com múltipla seleção por linha (raro)
                     for c_label in ((row.get("choices") or {}).get("labels") or []):
                         if row_label and c_label:
                             if row_label not in matrix_rows:
                                 matrix_rows[row_label] = Counter()
                             matrix_rows[row_label][c_label] += 1
+                continue
+
+            # Caso 3: choice/choices simples (não-matrix)
+            if atype == "choice":
+                label = (ans.get("choice") or {}).get("label")
+                if label:
+                    flat_counts[label] += 1
+                    has_flat = True
+            elif atype == "choices":
+                for label in ((ans.get("choices") or {}).get("labels") or []):
+                    if label:
+                        flat_counts[label] += 1
+                        has_flat = True
 
     return flat_counts, matrix_rows, has_matrix, has_flat
