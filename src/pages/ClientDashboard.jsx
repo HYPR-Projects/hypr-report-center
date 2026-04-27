@@ -5,6 +5,7 @@ import { C } from "../shared/theme";
 import { fmt, fmtP, fmtP2, fmtR } from "../shared/format";
 import { gaEvent, gaPageView } from "../shared/analytics";
 import { enrichDetailCosts } from "../shared/enrichDetail";
+import { adminAuthHeaders } from "../shared/auth";
 import GlobalStyle from "../components/GlobalStyle";
 import Spinner from "../components/Spinner";
 import HyprLogo from "../components/HyprLogo";
@@ -21,7 +22,7 @@ import TabChat from "../components/TabChat";
 import UploadTab from "../dashboards/UploadTab";
 import SurveyTab from "../dashboards/SurveyTab";
 
-const ClientDashboard = ({ token, isAdmin }) => {
+const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
   const [data,setData]=useState(null);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState(null);
@@ -49,7 +50,7 @@ const ClientDashboard = ({ token, isAdmin }) => {
     try {
       await fetch(`${API_URL}?action=save_af`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...adminAuthHeaders(adminJwt) },
         body: JSON.stringify({ short_token: token, alcance: alcance.trim(), frequencia: frequencia.trim() }),
       });
       setEditingAfReach(false);
@@ -277,7 +278,7 @@ const ClientDashboard = ({ token, isAdmin }) => {
               )}
             </div>
 
-            <TabChat token={token} tabName="Visão Geral" author={isAdmin?"HYPR":"Cliente"} theme={cTheme}/>
+            <TabChat token={token} tabName="Visão Geral" author={isAdmin?"HYPR":"Cliente"} adminJwt={adminJwt} theme={cTheme}/>
 
           </div>
         )}
@@ -423,7 +424,7 @@ const ClientDashboard = ({ token, isAdmin }) => {
             </div>
             <PerfTable rows={detail} type="DISPLAY"/>
           </CollapsibleTable>
-          <TabChat token={token} tabName="Display" author={isAdmin?"HYPR":"Cliente"} theme={cTheme}/>
+          <TabChat token={token} tabName="Display" author={isAdmin?"HYPR":"Cliente"} adminJwt={adminJwt} theme={cTheme}/>
         </div>
       );
     })()}
@@ -566,15 +567,15 @@ const ClientDashboard = ({ token, isAdmin }) => {
             </div>
             <PerfTable rows={detail} type="VIDEO"/>
           </CollapsibleTable>
-          <TabChat token={token} tabName="Video" author={isAdmin?"HYPR":"Cliente"} theme={cTheme}/>
+          <TabChat token={token} tabName="Video" author={isAdmin?"HYPR":"Cliente"} adminJwt={adminJwt} theme={cTheme}/>
         </div>
       );
     })()}
   </div>
 )}
 
-        {mainTab==="RMND"&&<div><UploadTab type="RMND" token={token} serverData={data.rmnd} readOnly={!isAdmin}/><TabChat token={token} tabName="RMND" author={isAdmin?"HYPR":"Cliente"} theme={cTheme}/></div>}
-        {mainTab==="PDOOH"&&<div><UploadTab type="PDOOH" token={token} serverData={data.pdooh} readOnly={!isAdmin}/><TabChat token={token} tabName="PDOOH" author={isAdmin?"HYPR":"Cliente"} theme={cTheme}/></div>}
+        {mainTab==="RMND"&&<div><UploadTab type="RMND" token={token} serverData={data.rmnd} readOnly={!isAdmin} adminJwt={adminJwt}/><TabChat token={token} tabName="RMND" author={isAdmin?"HYPR":"Cliente"} adminJwt={adminJwt} theme={cTheme}/></div>}
+        {mainTab==="PDOOH"&&<div><UploadTab type="PDOOH" token={token} serverData={data.pdooh} readOnly={!isAdmin} adminJwt={adminJwt}/><TabChat token={token} tabName="PDOOH" author={isAdmin?"HYPR":"Cliente"} adminJwt={adminJwt} theme={cTheme}/></div>}
         {mainTab==="VIDEO LOOM"&&(
           <div style={{padding:"24px 0"}}>
             {data.loom?(
@@ -598,7 +599,7 @@ const ClientDashboard = ({ token, isAdmin }) => {
 )}
 {mainTab==="SURVEY"&&(
   <div style={{padding:"24px 0"}}>
-    {data.survey?<SurveyTab surveyJson={data.survey} token={token} isAdmin={isAdmin} theme={cTheme}/>
+    {data.survey?<SurveyTab surveyJson={data.survey} token={token} isAdmin={isAdmin} adminJwt={adminJwt} theme={cTheme}/>
     :<div style={{color:C.muted,textAlign:"center",padding:40}}>Nenhum survey cadastrado para esta campanha.</div>}
   </div>
 )}

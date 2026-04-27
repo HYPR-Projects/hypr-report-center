@@ -4,7 +4,7 @@ import Spinner from "../components/Spinner";
 import TabChat from "../components/TabChat";
 import SurveyChart from "./SurveyChart";
 
-const SurveyTab=({surveyJson,token,isAdmin,theme})=>{
+const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
   const [questions,setQuestions]=useState(null);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState(null);
@@ -145,7 +145,7 @@ const SurveyTab=({surveyJson,token,isAdmin,theme})=>{
           }
         </div>
       ))}
-      <TabChat token={token} tabName="SURVEY" author={isAdmin?"HYPR":"Cliente"} theme={theme}/>
+      <TabChat token={token} tabName="SURVEY" author={isAdmin?"HYPR":"Cliente"} adminJwt={adminJwt} theme={theme}/>
     </div>
   );
 };

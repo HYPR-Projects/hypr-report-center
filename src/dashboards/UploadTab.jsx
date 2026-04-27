@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 import { API_URL } from "../shared/config";
 import { C } from "../shared/theme";
+import { adminAuthHeaders } from "../shared/auth";
 import { useXlsx } from "../shared/useXlsx";
 import RmndDashboard from "./RmndDashboard";
 import PdoohDashboard from "./PdoohDashboard";
 
-const UploadTab = ({ type, token, serverData, readOnly }) => {
+const UploadTab = ({ type, token, serverData, readOnly, adminJwt }) => {
   const XLSX       = useXlsx();
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(false);
@@ -44,7 +45,7 @@ const UploadTab = ({ type, token, serverData, readOnly }) => {
       try{localStorage.setItem(storageKey,JSON.stringify(parsed));}catch{}
       fetch(`${API_URL}?action=save_upload`,{
         method:"POST",
-        headers:{"Content-Type":"application/json"},
+        headers:{"Content-Type":"application/json", ...adminAuthHeaders(adminJwt)},
         body:JSON.stringify({short_token:token,type,data_json:JSON.stringify(parsed)})
       }).catch(e=>console.warn("Erro ao salvar upload",e));
     } catch(err){alert("Erro ao ler arquivo: "+err.message);}

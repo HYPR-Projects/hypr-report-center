@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { API_URL } from "../shared/config";
 import { C, CL } from "../shared/theme";
+import { getOrIssueAdminJwt, adminAuthHeaders } from "../shared/auth";
 import GlobalStyle from "../components/GlobalStyle";
 import Spinner from "../components/Spinner";
 import HyprLogo from "../components/HyprLogo";
@@ -39,7 +40,10 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
   const fetchList = async () => {
     setLoading(true);
     try {
-      const r = await fetch(`${API_URL}?list=true`);
+      const jwt = await getOrIssueAdminJwt();
+      const r = await fetch(`${API_URL}?list=true`, {
+        headers: { ...adminAuthHeaders(jwt) },
+      });
       const d = await r.json();
       const raw = d.campaigns || [];
       const seen = new Set();
@@ -66,8 +70,10 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
     if (!tokenData) return;
     if (logoPreview) {
       try {
-        await fetch(`https://southamerica-east1-site-hypr.cloudfunctions.net/report_data?action=save_logo`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
+        const jwt = await getOrIssueAdminJwt();
+        await fetch(`${API_URL}?action=save_logo`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...adminAuthHeaders(jwt) },
           body: JSON.stringify({ short_token: tokenData.short_token, logo_base64: logoPreview }),
         });
       } catch (e) { console.warn("Erro ao salvar logo", e); }
@@ -87,8 +93,10 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
     if (!loomUrl.trim()) return;
     setSavingLoom(true);
     try {
-      await fetch(`https://southamerica-east1-site-hypr.cloudfunctions.net/report_data?action=save_loom`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+      const jwt = await getOrIssueAdminJwt();
+      await fetch(`${API_URL}?action=save_loom`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...adminAuthHeaders(jwt) },
         body: JSON.stringify({ short_token: loomModal, loom_url: loomUrl.trim() }),
       });
       alert("Loom salvo com sucesso!"); setLoomModal(null); setLoomUrl("");
@@ -103,8 +111,10 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
         if (!b.nome.trim()) { alert("Preencha o nome de todas as perguntas."); setSavingSurvey(false); return; }
       }
       const payload = surveyBlocks.map(b => ({ nome: b.nome.trim(), ctrlUrl: b.ctrlUrl.trim(), expUrl: b.expUrl.trim() }));
+      const jwt = await getOrIssueAdminJwt();
       await fetch(`${API_URL}?action=save_survey`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...adminAuthHeaders(jwt) },
         body: JSON.stringify({ short_token: surveyModal, survey_data: JSON.stringify(payload) }),
       });
       alert("Survey salvo com sucesso!"); setSurveyModal(null); setSurveyBlocks([{ nome: "", ctrlUrl: "", expUrl: "" }]);
@@ -117,8 +127,10 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
     if (!logoModalPreview) return;
     setSavingLogoModal(true);
     try {
-      await fetch(`https://southamerica-east1-site-hypr.cloudfunctions.net/report_data?action=save_logo`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+      const jwt = await getOrIssueAdminJwt();
+      await fetch(`${API_URL}?action=save_logo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...adminAuthHeaders(jwt) },
         body: JSON.stringify({ short_token: logoModal, logo_base64: logoModalPreview }),
       });
       alert("Logo salvo com sucesso!"); setLogoModal(null); setLogoModalFile(null); setLogoModalPreview(null);

@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { API_URL } from "../shared/config";
 import { C } from "../shared/theme";
+import { adminAuthHeaders } from "../shared/auth";
 
-const TabChat = ({ token, tabName, author, theme }) => {
+const TabChat = ({ token, tabName, author, adminJwt, theme }) => {
   const [messages, setMessages] = useState([]);
   const [newMsg, setNewMsg] = useState("");
   const [sending, setSending] = useState(false);
@@ -35,9 +36,12 @@ const TabChat = ({ token, tabName, author, theme }) => {
     if(!newMsg.trim()) return;
     setSending(true);
     try{
+      // Quando o admin HYPR comenta, o backend exige JWT — sem ele
+      // alguém poderia se passar pela HYPR no chat. Cliente comenta sem auth.
+      const authHeaders = author === "HYPR" ? adminAuthHeaders(adminJwt) : {};
       await fetch(`${API_URL}?action=save_comment`,{
         method:"POST",
-        headers:{"Content-Type":"application/json"},
+        headers:{"Content-Type":"application/json", ...authHeaders},
         body:JSON.stringify({short_token:token, metric_name:tabName, author, comment:newMsg.trim()})
       });
       setMessages(prev=>[...prev,{metric_name:tabName, author, comment:newMsg.trim(), created_at:new Date().toISOString()}]);

@@ -16,6 +16,12 @@ import urllib.request
 import urllib.parse
 from datetime import date, datetime
 
+from auth import (
+    authenticate_admin,
+    issue_admin_jwt,
+    verify_google_id_token,
+)
+
 bq = bigquery.Client()
 
 PROJECT_ID      = os.environ.get("GCP_PROJECT",        "site-hypr")
@@ -52,7 +58,7 @@ def cors_headers(origin, methods="GET, OPTIONS"):
         return {
             "Access-Control-Allow-Origin":  origin,
             "Access-Control-Allow-Methods": methods,
-            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
         }
     return {}
 
@@ -65,8 +71,30 @@ def report_data(request):
     if request.method == "OPTIONS":
         return ("", 204, headers)
 
+    # ── Endpoint: emitir JWT admin a partir de um Google id_token ─────────────
+    # Front envia `Authorization: Bearer <google_id_token>`. Backend valida
+    # via tokeninfo do Google (email verified + domínio @hypr.mobi) e devolve
+    # um JWT custom assinado, com TTL de 5 min, que será usado em chamadas
+    # admin subsequentes.
+    if request.method == "POST" and request.args.get("action") == "issue_admin_token":
+        try:
+            auth_header = request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer "):
+                return (jsonify({"error": "Authorization header ausente"}), 401, headers)
+            google_id_token = auth_header[len("Bearer "):].strip()
+            info = verify_google_id_token(google_id_token)
+            if not info:
+                return (jsonify({"error": "id_token inválido ou domínio não autorizado"}), 401, headers)
+            jwt = issue_admin_jwt(info["email"])
+            return (jsonify({"token": jwt, "email": info["email"], "ttl": 300}), 200, headers)
+        except Exception as e:
+            print(f"[ERROR issue_admin_token] {e}")
+            return (jsonify({"error": "Erro ao emitir token"}), 500, headers)
+
     # ── Endpoint: salvar logo ─────────────────────────────────────────────────
     if request.method == "POST" and request.args.get("action") == "save_logo":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
             body = request.get_json(silent=True) or {}
             short_token = body.get("short_token", "").strip()
@@ -81,6 +109,8 @@ def report_data(request):
 
     # ── Endpoint: salvar link Loom ───────────────────────────────────────────
     if request.method == "POST" and request.args.get("action") == "save_loom":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
             body = request.get_json(silent=True) or {}
             short_token = body.get("short_token", "").strip()
@@ -95,6 +125,8 @@ def report_data(request):
 
     # ── Endpoint: salvar survey ──────────────────────────────────────────────
     if request.method == "POST" and request.args.get("action") == "save_survey":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
             body = request.get_json(silent=True) or {}
             short_token = body.get("short_token", "").strip()
@@ -141,6 +173,11 @@ def report_data(request):
             return (jsonify({"error": str(e)}), 502, headers)
 
     # ── Endpoint: salvar comentário ──────────────────────────────────────────
+    # Comportamento misto:
+    #   - Comentário do cliente (author != "HYPR"): aberto, qualquer um pode
+    #     postar. Se um dia isso virar abuso, restringe via short_token+rate-limit.
+    #   - Comentário do admin (author == "HYPR"): exige JWT admin. Sem isso,
+    #     qualquer pessoa podia se passar pela HYPR no chat do report.
     if request.method == "POST" and request.args.get("action") == "save_comment":
         try:
             body = request.get_json(silent=True) or {}
@@ -150,6 +187,8 @@ def report_data(request):
             comment     = body.get("comment", "").strip()
             if not short_token or not metric_name or not author or not comment:
                 return (jsonify({"error": "Campos obrigatórios faltando"}), 400, headers)
+            if author == "HYPR" and not authenticate_admin(request):
+                return (jsonify({"error": "Não autorizado a comentar como HYPR"}), 401, headers)
             save_comment(short_token, metric_name, author, comment)
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
@@ -170,6 +209,8 @@ def report_data(request):
 
     # ── Endpoint: salvar upload RMND/PDOOH ───────────────────────────────────
     if request.method == "POST" and request.args.get("action") == "save_upload":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
             body = request.get_json(silent=True) or {}
             short_token = body.get("short_token", "").strip()
@@ -186,6 +227,8 @@ def report_data(request):
             return (jsonify({"error": "Erro ao salvar upload"}), 500, headers)
 
     if request.args.get("list") == "true":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
             campaigns = query_campaigns_list()
             return (jsonify({"campaigns": campaigns}), 200, headers)
