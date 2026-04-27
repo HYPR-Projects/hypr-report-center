@@ -73,13 +73,21 @@ const RmndDashboard = ({ data, onClear, isDark = true }) => {
     return [value,name];
   };
 
+  // Tokens de tema derivados de isDark
+  const bg2    = isDark ? C.dark2 : "#FFFFFF";
+  const bg3    = isDark ? C.dark3 : "#EEF1F7";
+  const bdr    = isDark ? C.dark3 : "#DDE2EC";
+  const text   = isDark ? C.white : "#1C262F";
+  const muted  = isDark ? C.muted : "#6B7A8D";
+  const theme  = { bg2, bg3, bdr, text, muted };
+
   return (
     <div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:12}}>
-        <div style={{fontSize:11,color:C.muted}}>Atualizado em: {new Date(data.uploadedAt).toLocaleString("pt-BR")}</div>
+        <div style={{fontSize:11,color:muted}}>Atualizado em: {new Date(data.uploadedAt).toLocaleString("pt-BR")}</div>
         <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
           {range && (
-            <span style={{fontSize:12,color:C.muted}}>
+            <span style={{fontSize:12,color:muted}}>
               {rows.length} de {allRows.length} linhas · {daysInRange(range)}d
             </span>
           )}
@@ -92,33 +100,33 @@ const RmndDashboard = ({ data, onClear, isDark = true }) => {
             isDark={isDark}
           />
           {onClear && (
-            <button onClick={onClear} style={{background:C.dark3,color:C.muted,border:"none",padding:"6px 14px",borderRadius:8,cursor:"pointer",fontSize:12}}>🔄 Trocar arquivo</button>
+            <button onClick={onClear} style={{background:bg3,color:muted,border:`1px solid ${bdr}`,padding:"6px 14px",borderRadius:8,cursor:"pointer",fontSize:12}}>🔄 Trocar arquivo</button>
           )}
         </div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(100px,1fr))",gap:12,marginBottom:24}}>
-        <KpiCard label="Impressões"   value={fmt(totalImpressions)}/>
-        <KpiCard label="Cliques"      value={fmt(totalClicks)}/>
-        <KpiCard label="CTR"          value={fmtP2(avgCTR)} color={C.blue}/>
-        <KpiCard label="ROAS"         value={roas.toFixed(2)+"x"} color={C.blue}/>
-        <KpiCard label="Vendas 14d" value={fmtR(totalSales)} color={C.green} fontSize={16}/>
-        <KpiCard label="Pedidos"      value={fmt(totalOrders)}/>
-        <KpiCard label="Unidades"     value={fmt(totalUnits)}/>
-        <KpiCard label="Ticket Médio" value={fmtR(avgTicket)}/>
+        <KpiCard label="Impressões"   value={fmt(totalImpressions)} theme={theme}/>
+        <KpiCard label="Cliques"      value={fmt(totalClicks)} theme={theme}/>
+        <KpiCard label="CTR"          value={fmtP2(avgCTR)} color={C.blue} theme={theme}/>
+        <KpiCard label="ROAS"         value={roas.toFixed(2)+"x"} color={C.blue} theme={theme}/>
+        <KpiCard label="Vendas 14d"   value={fmtR(totalSales)} color={C.green} fontSize={16} theme={theme}/>
+        <KpiCard label="Pedidos"      value={fmt(totalOrders)} theme={theme}/>
+        <KpiCard label="Unidades"     value={fmt(totalUnits)} theme={theme}/>
+        <KpiCard label="Ticket Médio" value={fmtR(avgTicket)} theme={theme}/>
       </div>
       {rows.length === 0 ? (
-        <div style={{textAlign:"center",padding:48,color:C.muted,background:C.dark2,border:`1px solid ${C.dark3}`,borderRadius:12}}>
+        <div style={{textAlign:"center",padding:48,color:muted,background:bg2,border:`1px solid ${bdr}`,borderRadius:12}}>
           Nenhuma linha encontrada no período selecionado.
         </div>
       ) : (
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
-        <div style={{background:C.dark2,border:`1px solid ${C.dark3}`,borderRadius:12,padding:20}}>
+        <div style={{background:bg2,border:`1px solid ${bdr}`,borderRadius:12,padding:20}}>
           <div style={{fontSize:13,fontWeight:700,color:C.blue,marginBottom:12,textTransform:"uppercase",letterSpacing:1}}>Spend Diário</div>
-          <BarChart data={chartData} xKey="date" yKey="spend" color={C.blue} formatter={fmtTooltip}/>
+          <BarChart data={chartData} xKey="date" yKey="spend" color={C.blue} formatter={fmtTooltip} theme={theme}/>
         </div>
-        <div style={{background:C.dark2,border:`1px solid ${C.dark3}`,borderRadius:12,padding:20}}>
+        <div style={{background:bg2,border:`1px solid ${bdr}`,borderRadius:12,padding:20}}>
           <div style={{fontSize:13,fontWeight:700,color:C.green,marginBottom:12,textTransform:"uppercase",letterSpacing:1}}>Vendas Diárias (14d)</div>
-          <BarChart data={chartData} xKey="date" yKey="sales" color={C.green} formatter={fmtTooltip}/>
+          <BarChart data={chartData} xKey="date" yKey="sales" color={C.green} formatter={fmtTooltip} theme={theme}/>
         </div>
       </div>
       )}

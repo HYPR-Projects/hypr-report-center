@@ -54,11 +54,15 @@ const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true 
 
   const clear=()=>{setData(null);try{localStorage.removeItem(storageKey);}catch{} if(fileRef.current)fileRef.current.value="";};
 
-  if(!data) return (
+  if(!data) {
+    const muted = isDark ? C.muted : "#6B7A8D";
+    const text  = isDark ? C.white : "#1C262F";
+    const bg3   = isDark ? C.dark3 : "#EEF1F7";
+    return (
     <div style={{padding:"40px 0",textAlign:"center"}}>
       <div style={{fontSize:48,marginBottom:16}}>📂</div>
-      <h3 style={{fontSize:18,fontWeight:700,marginBottom:8}}>{type}</h3>
-      <p style={{color:C.muted,fontSize:14,marginBottom:32,maxWidth:400,margin:"0 auto 32px"}}>
+      <h3 style={{fontSize:18,fontWeight:700,marginBottom:8,color:text}}>{type}</h3>
+      <p style={{color:muted,fontSize:14,marginBottom:32,maxWidth:400,margin:"0 auto 32px"}}>
         {readOnly
           ? "Nenhum dado disponível para esta campanha ainda."
           : type==="RMND"
@@ -68,14 +72,15 @@ const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true 
       {!readOnly&&(
         <>
           <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} style={{display:"none"}} id={`upload-${type}-${token}`}/>
-          <label htmlFor={`upload-${type}-${token}`} style={{background:!XLSX?C.dark3:C.blue,color:C.white,padding:"14px 32px",borderRadius:10,cursor:!XLSX?"not-allowed":"pointer",fontSize:15,fontWeight:700,display:"inline-block",opacity:!XLSX?0.6:1}}>
+          <label htmlFor={`upload-${type}-${token}`} style={{background:!XLSX?bg3:C.blue,color:"#fff",padding:"14px 32px",borderRadius:10,cursor:!XLSX?"not-allowed":"pointer",fontSize:15,fontWeight:700,display:"inline-block",opacity:!XLSX?0.6:1}}>
             {loading?"Carregando...":!XLSX?"Carregando biblioteca...":"Selecionar Arquivo"}
           </label>
-          <p style={{marginTop:16,fontSize:12,color:`${C.muted}80`}}>Formatos aceitos: .xlsx, .xls</p>
+          <p style={{marginTop:16,fontSize:12,color:`${muted}80`}}>Formatos aceitos: .xlsx, .xls</p>
         </>
       )}
     </div>
-  );
+    );
+  }
   if(type==="RMND") return <RmndDashboard data={data} onClear={readOnly?null:clear} isDark={isDark}/>;
   return <PdoohDashboard data={data} onClear={readOnly?null:clear} isDark={isDark}/>;
 };
