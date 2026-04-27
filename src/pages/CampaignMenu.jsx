@@ -35,7 +35,75 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
   const [sortAsc,      setSortAsc]      = useState(false);
   const [activeMonth,  setActiveMonth]  = useState(null);      // quick-access filter
 
+  // Owners — admin only
+  const [teamMembers, setTeamMembers] = useState({ cps: [], css: [] });
+  const [ownerFilter, setOwnerFilter] = useState("");          // email selecionado, "" = todos
+  const [ownerModal,  setOwnerModal]  = useState(null);        // { short_token, client_name, cp_email, cs_email }
+  const [savingOwner, setSavingOwner] = useState(false);
+
+  // teamMap: email → display name (usado pelo CampaignCard pra mostrar nome curto nos chips)
+  const teamMap = {};
+  teamMembers.cps.forEach(p => { teamMap[p.email] = p.name; });
+  teamMembers.css.forEach(p => { teamMap[p.email] = p.name; });
+
   useEffect(() => { fetchList(); }, []);
+
+  // Carrega lista de CPs/CSs (lê external table → planilha de De-Para).
+  // Roda em paralelo com fetchList — sem bloquear render do menu.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const jwt = await getOrIssueAdminJwt();
+        if (!jwt) return; // backend pode não estar deployado ainda; falha silenciosa
+        const r = await fetch(`${API_URL}?action=list_team_members`, {
+          headers: { ...adminAuthHeaders(jwt) },
+        });
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!cancelled) setTeamMembers({ cps: d.cps || [], css: d.css || [] });
+      } catch { /* falha silenciosa */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const openOwnerModal = (campaign) => {
+    setOwnerModal({
+      short_token: campaign.short_token,
+      client_name: campaign.client_name,
+      cp_email:    campaign.cp_email || "",
+      cs_email:    campaign.cs_email || "",
+    });
+  };
+
+  const saveOwner = async () => {
+    if (!ownerModal) return;
+    setSavingOwner(true);
+    try {
+      const jwt = await getOrIssueAdminJwt();
+      const r = await fetch(`${API_URL}?action=save_report_owner`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...adminAuthHeaders(jwt) },
+        body: JSON.stringify({
+          short_token: ownerModal.short_token,
+          cp_email:    ownerModal.cp_email,
+          cs_email:    ownerModal.cs_email,
+        }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      // Atualiza a campanha localmente — evita re-fetch da lista inteira
+      setCampaigns(prev => prev.map(c =>
+        c.short_token === ownerModal.short_token
+          ? { ...c, cp_email: ownerModal.cp_email || null, cs_email: ownerModal.cs_email || null }
+          : c
+      ));
+      setOwnerModal(null);
+    } catch (e) {
+      alert("Erro ao salvar owner: " + e.message);
+    } finally {
+      setSavingOwner(false);
+    }
+  };
 
   const fetchList = async () => {
     setLoading(true);
@@ -161,7 +229,11 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
       (isTokenQuery && c.short_token?.toLowerCase().includes(ql));
     const matchMonth = !activeMonth ||
       (c.start_date && c.start_date.slice(0, 7) === activeMonth);
-    return matchSearch && matchMonth;
+    // Owner filter: email selecionado precisa bater com cp OU cs do report
+    const matchOwner = !ownerFilter ||
+      c.cp_email === ownerFilter ||
+      c.cs_email === ownerFilter;
+    return matchSearch && matchMonth && matchOwner;
   });
 
   const sorted = [...filtered].sort((a, b) => {
@@ -196,8 +268,10 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
     onSurvey:   (t) => setSurveyModal(t),
     onLogo:     openLogoModal,
     onCopyLink: copyLink,
+    onOwner:    openOwnerModal,
     copied,
     isDark,
+    teamMap,
   };
 
   // Modal style helper
@@ -364,6 +438,46 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
               onBlur={e => e.target.style.borderColor = border}
             />
           </div>
+
+          {/* Owner filter — agrupado por CP / CS no select */}
+          <select
+            value={ownerFilter}
+            onChange={e => setOwnerFilter(e.target.value)}
+            title="Filtrar por owner HYPR"
+            style={{
+              background: ownerFilter ? `${C.blue}18` : bg2,
+              color:      ownerFilter ? C.blue : text,
+              border:     `1px solid ${ownerFilter ? C.blue + "40" : border}`,
+              padding:    "10px 14px",
+              borderRadius: 10,
+              cursor:     "pointer",
+              fontSize:   13,
+              fontWeight: 600,
+              minWidth:   170,
+              outline:    "none",
+              appearance: "none",
+              backgroundImage: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='${encodeURIComponent(ownerFilter ? C.blue : muted)}' d='M0 0l5 6 5-6z'/></svg>")`,
+              backgroundRepeat: "no-repeat",
+              backgroundPosition: "right 12px center",
+              paddingRight: 32,
+            }}
+          >
+            <option value="">👤 Todos os owners</option>
+            {teamMembers.cps.length > 0 && (
+              <optgroup label="CPs (Comercial)">
+                {teamMembers.cps.map(p => (
+                  <option key={`cp-${p.email}`} value={p.email}>{p.name}</option>
+                ))}
+              </optgroup>
+            )}
+            {teamMembers.css.length > 0 && (
+              <optgroup label="CSs (Customer Success)">
+                {teamMembers.css.map(p => (
+                  <option key={`cs-${p.email}`} value={p.email}>{p.name}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
 
           {/* Sort buttons */}
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -619,11 +733,75 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
           </div>
         </div>
       )}
+      {/* Owner modal — admin define quem é dono do report */}
+      {ownerModal && (
+        <div style={{ position: "fixed", inset: 0, background: "#00000080", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 24 }}
+          onClick={e => { if (e.target === e.currentTarget) setOwnerModal(null); }}>
+          <div className="fade-in" style={{ background: modalBg, border: `1px solid ${modalBdr}`, borderRadius: 16, padding: 40, width: "100%", maxWidth: 520 }}>
+            <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 4, color: text }}>👤 Gerenciar Owner</h2>
+            <p style={{ color: muted, fontSize: 13, marginBottom: 22 }}>
+              <strong>{ownerModal.client_name}</strong>
+              <span style={{ marginLeft: 8, fontFamily: "monospace", fontSize: 11, color: C.blue }}>{ownerModal.short_token}</span>
+            </p>
+
+            <p style={{ fontSize: 12, color: muted, marginBottom: 20, lineHeight: 1.5 }}>
+              Por padrão, o owner vem do <strong>De-Para Comercial</strong> (planilha). Esta tela permite sobrescrever manualmente. Deixe ambos em branco para voltar ao padrão automático.
+            </p>
+
+            {/* CP select */}
+            <label style={{ display: "block", fontSize: 11, color: muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
+              CP — Comercial
+            </label>
+            <select
+              value={ownerModal.cp_email}
+              onChange={e => setOwnerModal({ ...ownerModal, cp_email: e.target.value })}
+              style={{
+                width: "100%", background: inputBg, border: `1px solid ${modalBdr}`,
+                borderRadius: 8, padding: "10px 12px", color: text, fontSize: 14,
+                outline: "none", marginBottom: 16, appearance: "auto",
+              }}
+            >
+              <option value="">— sem CP atribuído —</option>
+              {teamMembers.cps.map(p => (
+                <option key={p.email} value={p.email}>{p.name} ({p.email})</option>
+              ))}
+            </select>
+
+            {/* CS select */}
+            <label style={{ display: "block", fontSize: 11, color: muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
+              CS — Customer Success
+            </label>
+            <select
+              value={ownerModal.cs_email}
+              onChange={e => setOwnerModal({ ...ownerModal, cs_email: e.target.value })}
+              style={{
+                width: "100%", background: inputBg, border: `1px solid ${modalBdr}`,
+                borderRadius: 8, padding: "10px 12px", color: text, fontSize: 14,
+                outline: "none", marginBottom: 24, appearance: "auto",
+              }}
+            >
+              <option value="">— sem CS atribuído —</option>
+              {teamMembers.css.map(p => (
+                <option key={p.email} value={p.email}>{p.name} ({p.email})</option>
+              ))}
+            </select>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setOwnerModal(null)}
+                style={{ flex: 1, background: inputBg, color: muted, border: `1px solid ${modalBdr}`, padding: 12, borderRadius: 8, cursor: "pointer", fontSize: 14 }}>
+                Cancelar
+              </button>
+              <button onClick={saveOwner} disabled={savingOwner}
+                style={{ flex: 2, background: C.blue, color: C.white, border: "none", padding: 12, borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 700, opacity: savingOwner ? 0.6 : 1 }}>
+                {savingOwner ? "Salvando..." : "✓ Salvar Owner"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
-// ══════════════════════════════════════════════════════════════════════════════
-// CLIENT PASSWORD
 // ══════════════════════════════════════════════════════════════════════════════
 
 export default CampaignMenu;

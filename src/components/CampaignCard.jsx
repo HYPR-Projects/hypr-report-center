@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { C, CL } from "../shared/theme";
 
-const CampaignCard = ({ c, onOpenReport, onLoom, onSurvey, onLogo, onCopyLink, copied, isDark }) => {
+const CampaignCard = ({ c, onOpenReport, onLoom, onSurvey, onLogo, onCopyLink, onOwner, copied, isDark, teamMap }) => {
   const [expanded, setExpanded] = useState(false);
   const bg    = isDark ? C.dark2 : CL.bg2;
   const bg3   = isDark ? C.dark3 : CL.bg3;
@@ -47,6 +47,39 @@ const CampaignCard = ({ c, onOpenReport, onLoom, onSurvey, onLogo, onCopyLink, c
           {c.start_date && (
             <div style={{ fontSize: 11, color: muted, marginTop: 3, opacity: 0.7 }}>
               {c.start_date} → {c.end_date || "—"}
+            </div>
+          )}
+          {/* Owners — só admin recebe esses campos do backend */}
+          {(c.cp_email || c.cs_email) && (
+            <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+              {c.cp_email && (
+                <span title={`CP — ${c.cp_email}`} style={{
+                  display: "inline-flex", alignItems: "center", gap: 4,
+                  background: isDark ? "rgba(195,225,196,0.08)" : "rgba(46,204,113,0.10)",
+                  border: `1px solid ${isDark ? "rgba(195,225,196,0.20)" : "rgba(46,204,113,0.30)"}`,
+                  borderRadius: 5, padding: "2px 7px",
+                  fontSize: 10, fontWeight: 600,
+                  color: isDark ? "#b9d4ba" : "#1f7a44",
+                  letterSpacing: 0.3,
+                }}>
+                  <span style={{ opacity: 0.7, fontSize: 9 }}>CP</span>
+                  {(teamMap?.[c.cp_email] || c.cp_email.split("@")[0]).split(" ")[0]}
+                </span>
+              )}
+              {c.cs_email && (
+                <span title={`CS — ${c.cs_email}`} style={{
+                  display: "inline-flex", alignItems: "center", gap: 4,
+                  background: `${C.blue}14`,
+                  border: `1px solid ${C.blue}30`,
+                  borderRadius: 5, padding: "2px 7px",
+                  fontSize: 10, fontWeight: 600,
+                  color: C.blue,
+                  letterSpacing: 0.3,
+                }}>
+                  <span style={{ opacity: 0.7, fontSize: 9 }}>CS</span>
+                  {(teamMap?.[c.cs_email] || c.cs_email.split("@")[0]).split(" ")[0]}
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -179,6 +212,7 @@ const CampaignCard = ({ c, onOpenReport, onLoom, onSurvey, onLogo, onCopyLink, c
             { label: "🎥 Loom",       onClick: () => onLoom(c.short_token) },
             { label: "📋 Survey",     onClick: () => onSurvey(c.short_token) },
             { label: "🖼️ Logo",       onClick: () => onLogo(c.short_token) },
+            { label: "👤 Owner",      onClick: () => onOwner(c) },
             {
               label: copied === c.short_token ? "✓ Copiado!" : "🔗 Link Cliente",
               onClick: () => onCopyLink(c.short_token),

@@ -23,6 +23,7 @@ from auth import (
     issue_admin_jwt,
     verify_google_id_token,
 )
+import owners
 
 bq = bigquery.Client()
 
@@ -282,6 +283,59 @@ def report_data(request):
         except Exception as e:
             print(f"[ERROR save_upload] {e}")
             return (jsonify({"error": "Erro ao salvar upload"}), 500, headers)
+
+    # ── Endpoint: setup das tabelas de owners (admin, idempotente) ────────────
+    # Cria as 2 external tables (lookup + team) apontando para a planilha
+    # de De-Para Comercial e a tabela física de overrides. Roda uma vez
+    # após o deploy inicial; pode ser re-executado se o schema da planilha
+    # mudar (overrides são preservados — CREATE IF NOT EXISTS).
+    if request.method == "POST" and request.args.get("action") == "setup_owners_schema":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            res = owners.setup_schema()
+            return (jsonify({"ok": True, "tables": res}), 200, headers)
+        except Exception as e:
+            print(f"[ERROR setup_owners_schema] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    # ── Endpoint: lista de membros HYPR (admin) ───────────────────────────────
+    # Lê a aba Sheet2 da planilha (external table) e devolve os CPs e CSs
+    # disponíveis para popular os dropdowns do modal "Gerenciar Owner".
+    if request.method == "GET" and request.args.get("action") == "list_team_members":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            data = owners.list_team_members()
+            return (jsonify(data), 200, headers)
+        except Exception as e:
+            print(f"[ERROR list_team_members] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    # ── Endpoint: salvar override de owner para um report (admin) ─────────────
+    # Body: {short_token, cp_email, cs_email}
+    # cp_email/cs_email vazios em ambos = limpar override (volta a usar lookup)
+    if request.method == "POST" and request.args.get("action") == "save_report_owner":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = body.get("short_token", "").strip()
+            cp_email    = body.get("cp_email", "").strip()
+            cs_email    = body.get("cs_email", "").strip()
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            owners.save_owner_override(
+                short_token=short_token,
+                cp_email=cp_email,
+                cs_email=cs_email,
+                updated_by=admin.get("email", "unknown"),
+            )
+            return (jsonify({"ok": True}), 200, headers)
+        except Exception as e:
+            print(f"[ERROR save_report_owner] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
 
     if request.args.get("list") == "true":
         if not authenticate_admin(request):
@@ -1040,13 +1094,15 @@ def query_campaigns_list():
             c.bonus_o2o_display,      c.bonus_ooh_display,
             c.bonus_o2o_video,        c.bonus_ooh_video,
             vu.v_actual_start_date,   vu.v_days_with_delivery,  vu.v_viewable_completions,
-            du.d_days_with_delivery,  du.d_viewable_impressions
+            du.d_days_with_delivery,  du.d_viewable_impressions,
+            ow.cp_email,              ow.cs_email
         FROM base b
         LEFT JOIN display         d  USING (short_token)
         LEFT JOIN video           v  USING (short_token)
         LEFT JOIN checklist       c  USING (short_token)
         LEFT JOIN video_unified   vu USING (short_token)
         LEFT JOIN display_unified du USING (short_token)
+        LEFT JOIN ({owners.resolved_owners_subquery()}) ow USING (short_token)
         ORDER BY b.start_date DESC
     """
     job_config = bigquery.QueryJobConfig()
@@ -1142,6 +1198,8 @@ def query_campaigns_list():
             "start_date":    str(start_date),
             "end_date":      str(end_date),
             "updated_at":    str(r["updated_at"]),
+            "cp_email":      r["cp_email"],
+            "cs_email":      r["cs_email"],
         }
         if display_pacing is not None: entry["display_pacing"] = display_pacing
         if video_pacing   is not None: entry["video_pacing"]   = video_pacing
