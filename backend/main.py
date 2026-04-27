@@ -286,14 +286,21 @@ def report_data(request):
 
     # ── Endpoint: setup das tabelas de owners (admin, idempotente) ────────────
     # Cria as 2 external tables (lookup + team) apontando para a planilha
-    # de De-Para Comercial e a tabela física de overrides. Roda uma vez
-    # após o deploy inicial; pode ser re-executado se o schema da planilha
-    # mudar (overrides são preservados — CREATE IF NOT EXISTS).
+    # de De-Para Comercial e a tabela física de overrides.
+    #
+    # Por padrão usa "Sheet1!A:F" e "Sheet2!A:D". Se as abas tiverem nomes
+    # diferentes (ex: "Página1" em planilhas PT-BR), passe via query string:
+    #   ?action=setup_owners_schema&lookup_range=Página1!A:F&team_range=Página2!A:D
     if request.method == "POST" and request.args.get("action") == "setup_owners_schema":
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
-            res = owners.setup_schema()
+            lookup_range = request.args.get("lookup_range", "").strip()
+            team_range   = request.args.get("team_range",   "").strip()
+            if lookup_range and team_range:
+                res = owners.setup_schema_with_range(lookup_range, team_range)
+            else:
+                res = owners.setup_schema()
             return (jsonify({"ok": True, "tables": res}), 200, headers)
         except Exception as e:
             print(f"[ERROR setup_owners_schema] {e}")
@@ -309,8 +316,11 @@ def report_data(request):
             data = owners.list_team_members()
             return (jsonify(data), 200, headers)
         except Exception as e:
-            print(f"[ERROR list_team_members] {e}")
-            return (jsonify({"error": str(e)}), 500, headers)
+            # Não é erro fatal — se a external table ainda não existe ou o
+            # acesso à planilha falhou, devolvemos listas vazias e logamos.
+            # O frontend continua funcionando (chips/filtro/modal vazios).
+            print(f"[WARN list_team_members] {e}")
+            return (jsonify({"cps": [], "css": [], "_warning": str(e)}), 200, headers)
 
     # ── Endpoint: salvar override de owner para um report (admin) ─────────────
     # Body: {short_token, cp_email, cs_email}

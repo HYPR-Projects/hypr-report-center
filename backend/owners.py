@@ -61,13 +61,14 @@ def setup_schema() -> dict:
     A tabela física de overrides é CREATE IF NOT EXISTS para preservar
     dados existentes entre setups.
 
-    Retorna o status de cada operação.
+    Erros em uma tabela não derrubam as outras — cada step retorna
+    "ok" ou a string do erro. Isso ajuda a diagnosticar problemas de
+    nome de aba/permissão/range sem precisar adivinhar qual falhou.
     """
     sheets_uri = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}"
     results = {}
 
     # 1) Sheet1 → report_owners_lookup
-    #    Header (linha 1): Agência | Cliente | CP ATUAL | Email CP | CS Atual | Email CS
     sql_lookup = f"""
         CREATE OR REPLACE EXTERNAL TABLE {_full(TABLE_LOOKUP)} (
             agency      STRING,
@@ -84,12 +85,13 @@ def setup_schema() -> dict:
             skip_leading_rows = 1
         )
     """
-    bq.query(sql_lookup).result()
-    results["lookup"] = "ok"
+    try:
+        bq.query(sql_lookup).result()
+        results["lookup"] = "ok"
+    except Exception as e:
+        results["lookup"] = f"erro: {e}"
 
     # 2) Sheet2 → team_members_lookup
-    #    Header: CP | Email | CS | Email | (vazio) | (vazio) | Cliente | ...
-    #    Pegamos só as 4 primeiras colunas — CP/Email CP e CS/Email CS.
     sql_team = f"""
         CREATE OR REPLACE EXTERNAL TABLE {_full(TABLE_TEAM)} (
             cp_name   STRING,
@@ -104,8 +106,11 @@ def setup_schema() -> dict:
             skip_leading_rows = 1
         )
     """
-    bq.query(sql_team).result()
-    results["team"] = "ok"
+    try:
+        bq.query(sql_team).result()
+        results["team"] = "ok"
+    except Exception as e:
+        results["team"] = f"erro: {e}"
 
     # 3) Tabela física de overrides — preserva dados existentes
     sql_overrides = f"""
@@ -117,8 +122,81 @@ def setup_schema() -> dict:
             updated_at   TIMESTAMP
         )
     """
-    bq.query(sql_overrides).result()
-    results["overrides"] = "ok"
+    try:
+        bq.query(sql_overrides).result()
+        results["overrides"] = "ok"
+    except Exception as e:
+        results["overrides"] = f"erro: {e}"
+
+    return results
+
+
+def setup_schema_with_range(lookup_range: str, team_range: str) -> dict:
+    """Variante de setup_schema que recebe os ranges de aba customizados.
+
+    Útil quando as abas não se chamam "Sheet1"/"Sheet2" (planilhas em PT-BR
+    usam "Página1", planilhas existentes podem ter nomes custom).
+    Exemplo: setup_schema_with_range("Página1!A:F", "Página2!A:D")
+    """
+    sheets_uri = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}"
+    results = {}
+
+    sql_lookup = f"""
+        CREATE OR REPLACE EXTERNAL TABLE {_full(TABLE_LOOKUP)} (
+            agency      STRING,
+            client      STRING,
+            cp_name     STRING,
+            cp_email    STRING,
+            cs_name     STRING,
+            cs_email    STRING
+        )
+        OPTIONS (
+            format = 'GOOGLE_SHEETS',
+            uris   = ['{sheets_uri}'],
+            sheet_range = '{lookup_range}',
+            skip_leading_rows = 1
+        )
+    """
+    try:
+        bq.query(sql_lookup).result()
+        results["lookup"] = f"ok ({lookup_range})"
+    except Exception as e:
+        results["lookup"] = f"erro: {e}"
+
+    sql_team = f"""
+        CREATE OR REPLACE EXTERNAL TABLE {_full(TABLE_TEAM)} (
+            cp_name   STRING,
+            cp_email  STRING,
+            cs_name   STRING,
+            cs_email  STRING
+        )
+        OPTIONS (
+            format = 'GOOGLE_SHEETS',
+            uris   = ['{sheets_uri}'],
+            sheet_range = '{team_range}',
+            skip_leading_rows = 1
+        )
+    """
+    try:
+        bq.query(sql_team).result()
+        results["team"] = f"ok ({team_range})"
+    except Exception as e:
+        results["team"] = f"erro: {e}"
+
+    sql_overrides = f"""
+        CREATE TABLE IF NOT EXISTS {_full(TABLE_OVERRIDES)} (
+            short_token  STRING NOT NULL,
+            cp_email     STRING,
+            cs_email     STRING,
+            updated_by   STRING,
+            updated_at   TIMESTAMP
+        )
+    """
+    try:
+        bq.query(sql_overrides).result()
+        results["overrides"] = "ok"
+    except Exception as e:
+        results["overrides"] = f"erro: {e}"
 
     return results
 
