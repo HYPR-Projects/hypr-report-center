@@ -439,50 +439,61 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
             />
           </div>
 
-          {/* Owner filter — agrupado por CP / CS no select */}
-          <select
-            value={ownerFilter}
-            onChange={e => setOwnerFilter(e.target.value)}
-            title="Filtrar por owner HYPR"
-            style={{
-              backgroundColor: ownerFilter ? `${C.blue}18` : bg2,
-              color:      ownerFilter ? C.blue : text,
-              border:     `1px solid ${ownerFilter ? C.blue + "40" : border}`,
-              padding:    "10px 32px 10px 14px",
-              borderRadius: 10,
-              cursor:     "pointer",
-              fontSize:   13,
-              fontWeight: 600,
-              minWidth:   170,
-              outline:    "none",
-              appearance: "none",
-              WebkitAppearance: "none",
-              MozAppearance: "none",
-              // Setinha SVG. Usamos longhand backgroundImage/Repeat/Position/Size
-              // pra evitar conflito com o shorthand `background` que resetaria
-              // tudo e faria o SVG repetir como pattern (triângulos preenchendo).
-              backgroundImage: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='${encodeURIComponent(ownerFilter ? C.blue : muted)}' d='M0 0l5 6 5-6z'/></svg>")`,
-              backgroundRepeat: "no-repeat",
-              backgroundPosition: "right 12px center",
-              backgroundSize: "10px 6px",
-            }}
-          >
-            <option value="">👤 Todos os owners</option>
-            {teamMembers.cps.length > 0 && (
-              <optgroup label="CPs (Comercial)">
-                {teamMembers.cps.map(p => (
-                  <option key={`cp-${p.email}`} value={p.email}>{p.name}</option>
-                ))}
-              </optgroup>
-            )}
-            {teamMembers.css.length > 0 && (
-              <optgroup label="CSs (Customer Success)">
-                {teamMembers.css.map(p => (
-                  <option key={`cs-${p.email}`} value={p.email}>{p.name}</option>
-                ))}
-              </optgroup>
-            )}
-          </select>
+          {/* Owner filter — agrupado por CP / CS no select.
+              Wrapper div com SVG ao lado em vez de background-image inline,
+              que tava tendo glitch de pattern repetido em alguns browsers. */}
+          <div style={{ position: "relative", display: "inline-block" }}>
+            <select
+              value={ownerFilter}
+              onChange={e => setOwnerFilter(e.target.value)}
+              title="Filtrar por owner HYPR"
+              style={{
+                backgroundColor: ownerFilter ? `${C.blue}18` : bg2,
+                color:      ownerFilter ? C.blue : text,
+                border:     `1px solid ${ownerFilter ? C.blue + "40" : border}`,
+                padding:    "10px 32px 10px 14px",
+                borderRadius: 10,
+                cursor:     "pointer",
+                fontSize:   13,
+                fontWeight: 600,
+                minWidth:   170,
+                outline:    "none",
+                appearance: "none",
+                WebkitAppearance: "none",
+                MozAppearance: "none",
+                fontFamily: "inherit",
+              }}
+            >
+              <option value="">👤 Todos os owners</option>
+              {teamMembers.cps.length > 0 && (
+                <optgroup label="CPs (Comercial)">
+                  {teamMembers.cps.map(p => (
+                    <option key={`cp-${p.email}`} value={p.email}>{p.name}</option>
+                  ))}
+                </optgroup>
+              )}
+              {teamMembers.css.length > 0 && (
+                <optgroup label="CSs (Customer Success)">
+                  {teamMembers.css.map(p => (
+                    <option key={`cs-${p.email}`} value={p.email}>{p.name}</option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+            {/* Setinha — pointer-events:none pra não bloquear cliques no select */}
+            <svg
+              width="10" height="6" viewBox="0 0 10 6"
+              style={{
+                position: "absolute",
+                right: 12,
+                top: "50%",
+                transform: "translateY(-50%)",
+                pointerEvents: "none",
+              }}
+            >
+              <path d="M0 0l5 6 5-6z" fill={ownerFilter ? C.blue : muted} />
+            </svg>
+          </div>
 
           {/* Sort buttons */}
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
