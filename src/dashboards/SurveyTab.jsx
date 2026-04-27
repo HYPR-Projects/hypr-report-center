@@ -143,87 +143,165 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
     );
   };
 
-  // Uma linha de matrix (ex: "Heineken" dentro de um form com 5 marcas).
-  // Mini-versão de renderQuestion. Ganha borda azul e badge MARCA-FOCO
-  // quando isFocus; outras linhas ficam atenuadas (opacity 0.65).
-  const renderMatrixRow = (rowLabel, ctrlCounts, expCounts, ctrlTotal, expTotal, qIdx, rowIdx, isFocus) => {
-    const allKeys=[...new Set([...Object.keys(ctrlCounts),...Object.keys(expCounts)])].sort();
-    const ctrlPct=allKeys.map(k=>ctrlTotal>0?Math.round((ctrlCounts[k]||0)/ctrlTotal*100):0);
-    const expPct=allKeys.map(k=>expTotal>0?Math.round((expCounts[k]||0)/expTotal*100):0);
-    const lifts=allKeys.map((k,i)=>{
-      const abs=Math.round((expPct[i]-ctrlPct[i])*10)/10;
-      const rel=ctrlPct[i]>0?Math.round((abs/ctrlPct[i])*1000)/10:0;
-      return{key:k,abs,rel};
-    });
-
-    const borderColor=isFocus?C.blue:bdr;
-    const borderWidth=isFocus?2:1;
-    const cardOpacity=isFocus?1:0.65;
-    const labelColor=isFocus?txt:mt;
-
-    return(
-      <div style={{border:`${borderWidth}px solid ${borderColor}`,borderRadius:12,padding:16,marginBottom:12,background:bgCard,opacity:cardOpacity,transition:"opacity 0.2s"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-          <div style={{fontSize:15,fontWeight:600,color:labelColor}}>{rowLabel}</div>
-          {isFocus&&(
-            <div style={{fontSize:10,fontWeight:700,color:C.blue,background:`${C.blue}22`,padding:"3px 10px",borderRadius:6,letterSpacing:1.5}}>MARCA-FOCO</div>
-          )}
-        </div>
-        <div style={{display:"flex",gap:20,flexWrap:"wrap",alignItems:"flex-start"}}>
-          <div style={{flex:2,minWidth:240}}>
-            <SurveyChart id={`sc-${qIdx}-${rowIdx}`} labels={allKeys} ctrl={ctrlPct} exp={expPct}/>
-          </div>
-          <div style={{flex:1,minWidth:140,display:"flex",flexDirection:"column",gap:8}}>
-            {lifts.map((l,j)=>{
-              const color=l.abs>=0?"#2ECC71":"#E74C3C";
-              return(
-                <div key={j} style={{border:`1px solid ${bdr}`,borderRadius:8,padding:10}}>
-                  <div style={{fontSize:11,color:mt,marginBottom:4,fontWeight:600}}>Nota {l.key}</div>
-                  <div style={{display:"flex",gap:6}}>
-                    <div style={{flex:1,background:bgInner,borderRadius:6,padding:"6px 8px"}}>
-                      <div style={{fontSize:10,color:mt,marginBottom:1}}>Lift abs.</div>
-                      <div style={{fontSize:14,fontWeight:600,color}}>{l.abs>=0?"+":""}{l.abs} pp</div>
-                    </div>
-                    <div style={{flex:1,background:bgInner,borderRadius:6,padding:"6px 8px"}}>
-                      <div style={{fontSize:10,color:mt,marginBottom:1}}>Lift rel.</div>
-                      <div style={{fontSize:14,fontWeight:600,color}}>{l.rel>=0?"+":""}{l.rel}%</div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  // Bloco matrix completo. Itera as rows (linhas) colocando a marca-foco
-  // primeiro. Linhas sem dado em ctrl OU exp são puladas.
+  // Layout compacto pra matrix: 1 linha por marca, distribuição controle e
+  // exposto lado a lado, média + lift na direita. Marca-foco ganha borda
+  // esquerda azul, tint de fundo e ícone ★ — sem ocupar espaço extra.
   const renderMatrix = (q, qIdx) => {
     const allRows=[...new Set([...Object.keys(q.ctrlRows||{}),...Object.keys(q.expRows||{})])];
     const sortedRows=q.focusRow
       ?[q.focusRow,...allRows.filter(r=>r!==q.focusRow)]
       :allRows;
+
+    // Calcula tudo que cada linha precisa pra render
+    const rowData=sortedRows.map(rowLabel=>{
+      const ctrl=q.ctrlRows?.[rowLabel];
+      const exp=q.expRows?.[rowLabel];
+      if(!ctrl||!exp)return null;
+      const allKeys=[...new Set([...Object.keys(ctrl.counts||{}),...Object.keys(exp.counts||{})])].sort();
+
+      // Média ponderada (só faz sentido se as labels forem números)
+      const mean=(counts,total)=>{
+        if(!total)return 0;
+        let sum=0,n=0;
+        for(const[k,v]of Object.entries(counts||{})){
+          const num=parseFloat(k);
+          if(!isNaN(num)){sum+=num*v;n+=v;}
+        }
+        return n>0?sum/n:0;
+      };
+      const ctrlMean=mean(ctrl.counts,ctrl.total);
+      const expMean=mean(exp.counts,exp.total);
+      const numericKeys=allKeys.every(k=>!isNaN(parseFloat(k)));
+      const liftAbs=numericKeys?expMean-ctrlMean:0;
+      const liftRel=ctrlMean>0?(liftAbs/ctrlMean)*100:0;
+
+      const ctrlPct=allKeys.map(k=>ctrl.total?Math.round((ctrl.counts[k]||0)/ctrl.total*100):0);
+      const expPct=allKeys.map(k=>exp.total?Math.round((exp.counts[k]||0)/exp.total*100):0);
+
+      return{
+        label:rowLabel,
+        isFocus:rowLabel===q.focusRow,
+        ctrlMean,expMean,liftAbs,liftRel,
+        keys:allKeys,
+        ctrlPct,expPct,
+        ctrlTotal:ctrl.total||0,
+        expTotal:exp.total||0,
+        numericKeys,
+      };
+    }).filter(Boolean);
+
+    // Cor por nota: gradient red → yellow → green pra escalas numéricas;
+    // fallback HSL pra outros casos.
+    const noteColor=(idx,total)=>{
+      const palettes={
+        2:["#E74C3C","#27AE60"],
+        3:["#E74C3C","#F39C12","#27AE60"],
+        4:["#E74C3C","#E67E22","#52BE80","#27AE60"],
+        5:["#E74C3C","#E67E22","#F39C12","#52BE80","#16A085"],
+      };
+      if(palettes[total])return palettes[total][idx];
+      const hue=total>1?(idx/(total-1))*120:60;
+      return `hsl(${hue}, 60%, 50%)`;
+    };
+
+    const StackedBar=({pcts,keys})=>(
+      <div style={{display:"flex",height:18,borderRadius:4,overflow:"hidden",background:bgInner,border:`1px solid ${bdr}`}}>
+        {pcts.map((pct,i)=>pct>0&&(
+          <div key={i} title={`Nota ${keys[i]}: ${pct}%`} style={{
+            width:`${pct}%`,
+            background:noteColor(i,keys.length),
+            color:pct>=10?"#fff":"transparent",
+            fontSize:10,
+            fontWeight:600,
+            textAlign:"center",
+            lineHeight:"18px",
+            transition:"all 0.2s",
+          }}>{pct>=10?`${pct}%`:""}</div>
+        ))}
+      </div>
+    );
+
     return(
-      <div>
-        {sortedRows.map((rowLabel,rowIdx)=>{
-          const ctrlData=q.ctrlRows?.[rowLabel];
-          const expData=q.expRows?.[rowLabel];
-          if(!ctrlData||!expData)return null;
-          const isFocus=rowLabel===q.focusRow;
+      <div style={{border:`1px solid ${bdr}`,borderRadius:12,padding:16,background:bgCard,marginBottom:8}}>
+        {/* Legenda das notas */}
+        <div style={{display:"flex",gap:14,fontSize:11,color:mt,marginBottom:14,flexWrap:"wrap"}}>
+          <span style={{fontWeight:600}}>Notas:</span>
+          {(rowData[0]?.keys||[]).map((k,i)=>(
+            <span key={i} style={{display:"inline-flex",alignItems:"center",gap:5}}>
+              <span style={{width:10,height:10,background:noteColor(i,rowData[0].keys.length),borderRadius:2,display:"inline-block"}}/>
+              {k}
+            </span>
+          ))}
+          <span style={{marginLeft:"auto",color:mt,opacity:0.8}}>★ marca-foco</span>
+        </div>
+
+        {/* Linhas — 1 por marca */}
+        {rowData.map((r,idx)=>{
+          const liftColor=r.liftAbs>=0?"#2ECC71":"#E74C3C";
+          const sign=n=>n>=0?"+":"";
           return(
-            <div key={rowIdx}>
-              {renderMatrixRow(
-                rowLabel,
-                ctrlData.counts||{},
-                expData.counts||{},
-                ctrlData.total||0,
-                expData.total||0,
-                qIdx,
-                rowIdx,
-                isFocus
-              )}
+            <div key={idx} style={{
+              display:"grid",
+              gridTemplateColumns:"minmax(120px, 1.2fr) minmax(180px, 2fr) minmax(180px, 2fr) minmax(140px, 1.4fr)",
+              gap:14,
+              alignItems:"center",
+              padding:"12px 12px 12px 14px",
+              borderRadius:8,
+              borderLeft:r.isFocus?`3px solid ${C.blue}`:`3px solid transparent`,
+              background:r.isFocus?`${C.blue}14`:"transparent",
+              borderTop:idx>0?`1px solid ${bdr}`:"none",
+              borderTopLeftRadius:idx>0?0:8,
+              borderTopRightRadius:idx>0?0:8,
+            }}>
+              {/* Marca */}
+              <div style={{display:"flex",alignItems:"center",gap:6,minWidth:0}}>
+                {r.isFocus&&<span style={{color:C.blue,fontSize:14,lineHeight:1,flexShrink:0}}>★</span>}
+                <div style={{minWidth:0}}>
+                  <div style={{fontSize:14,fontWeight:r.isFocus?700:600,color:txt,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                    {r.label}
+                  </div>
+                  <div style={{fontSize:10,color:mt,marginTop:2}}>
+                    {r.ctrlTotal} ctrl • {r.expTotal} exp
+                  </div>
+                </div>
+              </div>
+
+              {/* Distribuição Controle */}
+              <div>
+                <div style={{fontSize:10,color:mt,marginBottom:4,display:"flex",justifyContent:"space-between"}}>
+                  <span>Controle</span>
+                  {r.numericKeys&&<span style={{fontWeight:600,color:txt}}>μ {r.ctrlMean.toFixed(2)}</span>}
+                </div>
+                <StackedBar pcts={r.ctrlPct} keys={r.keys}/>
+              </div>
+
+              {/* Distribuição Exposto */}
+              <div>
+                <div style={{fontSize:10,color:mt,marginBottom:4,display:"flex",justifyContent:"space-between"}}>
+                  <span>Exposto</span>
+                  {r.numericKeys&&<span style={{fontWeight:600,color:txt}}>μ {r.expMean.toFixed(2)}</span>}
+                </div>
+                <StackedBar pcts={r.expPct} keys={r.keys}/>
+              </div>
+
+              {/* Lift */}
+              <div style={{textAlign:"right"}}>
+                {r.numericKeys?(
+                  <>
+                    <div style={{fontSize:10,color:mt,marginBottom:2}}>Lift na média</div>
+                    <div style={{fontSize:15,fontWeight:700,color:liftColor,lineHeight:1.2}}>
+                      {sign(r.liftAbs)}{r.liftAbs.toFixed(2)}
+                    </div>
+                    <div style={{fontSize:11,color:liftColor,fontWeight:600}}>
+                      {sign(r.liftRel)}{r.liftRel.toFixed(1)}%
+                    </div>
+                  </>
+                ):(
+                  <div style={{fontSize:11,color:mt,fontStyle:"italic"}}>
+                    Escala não-numérica
+                  </div>
+                )}
+              </div>
             </div>
           );
         })}

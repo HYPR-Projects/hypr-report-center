@@ -563,7 +563,7 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
                 </div>
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${modalBdr}` }}>
                   <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>
-                    Marca-foco <span style={{ opacity: 0.6 }}>(opcional, só pra perguntas tipo Matrix)</span>
+                    Marca-foco para destaque <span style={{ opacity: 0.6 }}>(opcional)</span>
                   </div>
                   <input
                     value={block.focusRow || ""}
@@ -571,6 +571,9 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
                     placeholder="Ex: Heineken — destaca essa linha visualmente"
                     style={{ width: "100%", background: inputBg, border: `1px solid ${block.focusRow ? C.blue+"60" : modalBdr}`, borderRadius: 7, padding: "9px 12px", color: text, fontSize: 13, outline: "none" }}
                   />
+                  <div style={{ fontSize: 11, color: muted, marginTop: 6, lineHeight: 1.5, opacity: 0.85 }}>
+                    O tipo da pergunta (choice ou matrix) é detectado automaticamente pela API do Typeform. Se for matrix, a marca digitada acima fica em destaque visual no relatório.
+                  </div>
                 </div>
               </div>
             ))}
