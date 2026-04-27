@@ -1,5 +1,9 @@
 import { C } from "../../shared/theme";
 import { fmt, fmtP, fmtP2, fmtR } from "../../shared/format";
+import {
+  groupByDate, groupBySize, groupByAudience,
+  buildLineOptions, computeVideoKpis,
+} from "../../shared/aggregations";
 import Tabs from "../Tabs";
 import MultiLineSelect from "../MultiLineSelect";
 import DualChart from "../DualChart";
@@ -47,57 +51,18 @@ const VideoTab = ({
       {(() => {
         const rows       = totals.filter(r => r.media_type === "VIDEO" && r.tactic_type === vidTab);
         const detailAllV = detail0.filter(r => r.media_type === "VIDEO" && r.line_name?.toLowerCase().includes(vidTab.toLowerCase()));
-        const lineNamesV = ["ALL", ...[...new Set(detailAllV.map(r => r.line_name).filter(Boolean))].sort()];
+        const lineNamesV = buildLineOptions(detailAllV);
         const detail     = vidLines.length === 0 ? detailAllV : detailAllV.filter(r => vidLines.includes(r.line_name));
 
-        const daily = (() => {
-          const m = {};
-          detail.forEach(r => {
-            if (!r.date) return;
-            if (!m[r.date]) m[r.date] = { date: r.date, viewable_impressions: 0, video_view_100: 0 };
-            m[r.date].viewable_impressions += Number(r.viewable_impressions) || 0;
-            m[r.date].video_view_100        += Number(r.video_view_100 || r.completions || 0);
-          });
-          return Object.values(m)
-            .sort((a, b) => a.date > b.date ? 1 : -1)
-            .map(r => ({ ...r, vtr: r.viewable_impressions > 0 ? r.video_view_100 / r.viewable_impressions * 100 : 0 }));
-        })();
+        // Agregações pra os charts e KPIs — funções puras em aggregations.js.
+        // groupByDate fallbacka video_view_100 → completions automaticamente
+        // pra rows antigas que ainda usavam o nome velho.
+        const daily      = groupByDate(detail, "video_view_100", "viewable_impressions", "vtr");
+        const byAudience = groupByAudience(detailAllV, "video_view_100", "viewable_impressions", "vtr");
+        const bySize     = groupBySize(detail, "video_view_100", "viewable_impressions", "vtr");
 
-        // Gráfico por audiência — sempre do total
-        const getAudienceV = (ln) => { const p = (ln || "").split("_"); return p.length >= 2 ? p[p.length - 2] : "N/A"; };
-        const byAudience = Object.values(detailAllV.reduce((acc, r) => {
-          const k = getAudienceV(r.line_name);
-          if (/survey/i.test(k) || k === "N/A") return acc;
-          if (!acc[k]) acc[k] = { audience: k, viewable_impressions: 0, video_view_100: 0 };
-          acc[k].viewable_impressions += r.viewable_impressions || 0;
-          acc[k].video_view_100        += r.video_view_100 || 0;
-          return acc;
-        }, {})).map(r => ({ ...r, vtr: r.viewable_impressions > 0 ? r.video_view_100 / r.viewable_impressions * 100 : 0 }));
-
-        // KPIs filtrados pela line
-        const cost      = rows.reduce((s, r) => s + (r.effective_total_cost || 0), 0);
-        const vi        = detail.reduce((s, r) => s + (r.viewable_impressions || 0), 0);
-        const views100  = detail.reduce((s, r) => s + (r.video_view_100 || 0), 0);
-        const starts    = detail.reduce((s, r) => s + (r.video_starts || 0), 0);
-        const vtr       = vi > 0 ? views100 / vi * 100 : 0;
-
-        // Métricas contratuais — direto do totals
-        const budget   = rows.reduce((s, r) => s + (vidTab === "O2O" ? (r.o2o_video_budget || 0) : (r.ooh_video_budget || 0)), 0);
-        const cpcvNeg  = rows[0]?.deal_cpcv_amount || 0;
-        // CPCV Efetivo, Rentabilidade e Pacing — usar valores do backend
-        const cpcvEf   = rows[0]?.effective_cpcv_amount || 0;
-        const rentab   = rows[0]?.rentabilidade || 0;
-        const pac      = rows[0]?.pacing || 0;
-        const pacBase  = Math.min(pac, 100);
-        const pacOver  = Math.max(0, pac - 100);
-
-        const bySize = Object.values(detail.reduce((acc, r) => {
-          const k = r.creative_size || "N/A";
-          if (!acc[k]) acc[k] = { size: k, viewable_impressions: 0, video_view_100: 0 };
-          acc[k].viewable_impressions += r.viewable_impressions || 0;
-          acc[k].video_view_100        += r.video_view_100 || 0;
-          return acc;
-        }, {})).map(r => ({ ...r, vtr: r.viewable_impressions > 0 ? r.video_view_100 / r.viewable_impressions * 100 : 0 }));
+        const k = computeVideoKpis({ rows, detail, tactic: vidTab });
+        const { cost, views100, starts, vtr, budget, cpcvNeg, cpcvEf, rentab, pac, pacBase, pacOver } = k;
 
         return (
           <div>

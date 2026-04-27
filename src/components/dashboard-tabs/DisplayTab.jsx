@@ -1,5 +1,9 @@
 import { C } from "../../shared/theme";
 import { fmt, fmtP, fmtP2, fmtR } from "../../shared/format";
+import {
+  groupByDate, groupBySize, groupByAudience,
+  buildLineOptions, computeDisplayKpis,
+} from "../../shared/aggregations";
 import Tabs from "../Tabs";
 import MultiLineSelect from "../MultiLineSelect";
 import DualChart from "../DualChart";
@@ -57,80 +61,17 @@ const DisplayTab = ({
       {(() => {
         const rows      = totals.filter(r => r.media_type === "DISPLAY" && r.tactic_type === dispTab);
         const detailAll = detail0.filter(r => r.media_type === "DISPLAY" && r.line_name?.toLowerCase().includes(dispTab.toLowerCase()));
-        // Lines disponíveis para o dropdown
-        const lineNames = ["ALL", ...[...new Set(detailAll.map(r => r.line_name).filter(Boolean))].sort()];
-        // detail/daily filtrados pela line — para impressões, cliques, gráficos, tabela
-        const detail = dispLines.length === 0 ? detailAll : detailAll.filter(r => dispLines.includes(r.line_name));
-        const daily = (() => {
-          const m = {};
-          detail.forEach(r => {
-            if (!r.date) return;
-            if (!m[r.date]) m[r.date] = { date: r.date, viewable_impressions: 0, clicks: 0 };
-            m[r.date].viewable_impressions += Number(r.viewable_impressions) || 0;
-            m[r.date].clicks               += Number(r.clicks) || 0;
-          });
-          return Object.values(m)
-            .sort((a, b) => a.date > b.date ? 1 : -1)
-            .map(r => ({ ...r, ctr: r.viewable_impressions > 0 ? r.clicks / r.viewable_impressions * 100 : 0 }));
-        })();
+        const lineNames = buildLineOptions(detailAll);
+        const detail    = dispLines.length === 0 ? detailAll : detailAll.filter(r => dispLines.includes(r.line_name));
 
-        // Gráfico por audiência — sempre do total, ignora lines de survey
-        const getAudience = (ln) => { const p = (ln || "").split("_"); return p.length >= 2 ? p[p.length - 2] : "N/A"; };
-        const byAudience = Object.values(detailAll.reduce((acc, r) => {
-          const k = getAudience(r.line_name);
-          if (/survey/i.test(k) || k === "N/A") return acc;
-          if (!acc[k]) acc[k] = { audience: k, viewable_impressions: 0, clicks: 0 };
-          acc[k].viewable_impressions += r.viewable_impressions || 0;
-          acc[k].clicks               += r.clicks || 0;
-          return acc;
-        }, {})).map(r => ({ ...r, ctr: r.viewable_impressions > 0 ? r.clicks / r.viewable_impressions * 100 : 0 }));
+        // Agregações pra os 3 charts (data, tamanho, audiência) e KPIs.
+        // Tudo isolado em src/shared/aggregations.js — funções puras testáveis.
+        const daily      = groupByDate(detail, "clicks", "viewable_impressions", "ctr");
+        const byAudience = groupByAudience(detailAll, "clicks", "viewable_impressions", "ctr");
+        const bySize     = groupBySize(detail, "clicks", "viewable_impressions", "ctr");
 
-        // KPIs filtrados
-        const sumD    = k => detail.reduce((s, r) => s + (r[k] || 0), 0);
-        const cost    = rows.reduce((s, r) => s + (r.effective_total_cost || 0), 0);
-        const impr    = sumD("impressions");
-        const vi      = sumD("viewable_impressions");
-        const clks    = sumD("clicks");
-        const ctr     = vi > 0 ? clks / vi * 100 : 0;
-
-        // Métricas contratuais — sempre do TOTAL (ignora filtro de line)
-        const sumDAll = k => detailAll.reduce((s, r) => s + (r[k] || 0), 0);
-        const viAll   = sumDAll("viewable_impressions");
-        const budget  = rows.reduce((s, r) => s + (dispTab === "O2O" ? (r.o2o_display_budget || 0) : (r.ooh_display_budget || 0)), 0);
-        const cpmNeg  = rows[0]?.deal_cpm_amount || 0;
-
-        const [sy2, sm2, sd2] = camp.start_date.split("-").map(Number);
-        const [ey2, em2, ed2] = camp.end_date.split("-").map(Number);
-        const start2 = new Date(sy2, sm2 - 1, sd2);
-        const end2   = new Date(ey2, em2 - 1, ed2);
-        const today2 = new Date();
-
-        const contracted2 = dispTab === "O2O" ? (rows[0]?.contracted_o2o_display_impressions || 0) : (rows[0]?.contracted_ooh_display_impressions || 0);
-        const bonus2      = dispTab === "O2O" ? (rows[0]?.bonus_o2o_display_impressions || 0)      : (rows[0]?.bonus_ooh_display_impressions || 0);
-        const totalNeg2   = contracted2 + bonus2;
-
-        const tDays = (end2 - start2) / 864e5 + 1;
-        const eDays = today2 < start2 ? 0 : today2 > end2 ? tDays : Math.floor((today2 - start2) / 864e5);
-        const budgetPropDisp = today2 > end2 ? budget : budget / tDays * eDays;
-
-        // CPM Efetivo, Rentabilidade e Pacing sempre sobre total (não filtrado por audiência)
-        const cpmEf  = cpmNeg > 0 ? Math.min(viAll > 0 ? budgetPropDisp / viAll * 1000 : 0, cpmNeg) : 0;
-        const cpc    = clks > 0 ? cpmEf / 1000 * (viAll / clks) : 0;
-        const rentab = cpmNeg > 0 ? (cpmNeg - cpmEf) / cpmNeg * 100 : 0;
-
-        const deliveredAll = sumDAll("viewable_impressions");
-        const expected2    = totalNeg2 * (eDays / tDays);
-        const pac          = totalNeg2 > 0 ? (today2 > end2 ? deliveredAll / totalNeg2 * 100 : expected2 > 0 ? deliveredAll / expected2 * 100 : 0) : 0;
-        const pacBase      = Math.min(pac, 100);
-        const pacOver      = Math.max(0, pac - 100);
-
-        const bySize = Object.values(detail.reduce((acc, r) => {
-          const k = r.creative_size || "N/A";
-          if (!acc[k]) acc[k] = { size: k, viewable_impressions: 0, clicks: 0 };
-          acc[k].viewable_impressions += r.viewable_impressions || 0;
-          acc[k].clicks               += r.clicks || 0;
-          return acc;
-        }, {})).map(r => ({ ...r, ctr: r.viewable_impressions > 0 ? r.clicks / r.viewable_impressions * 100 : 0 }));
+        const k = computeDisplayKpis({ rows, detail, detailAll, tactic: dispTab, camp });
+        const { cost, impr, vi, clks, ctr, budget, cpmNeg, cpmEf, cpc, rentab, pac, pacBase, pacOver } = k;
 
         return (
           <div>
