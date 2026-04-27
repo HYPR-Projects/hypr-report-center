@@ -5,6 +5,9 @@ Changelog:
   - query_totals: adiciona pacing calculado (fórmula igual à planilha)
   - query_daily:  adiciona video_view_100 e vtr por dia
   - query_campaign_info: expõe start_date e end_date para cálculo de pacing no front
+  - perf: paralelização das 8 queries de fetch_campaign_data via ThreadPoolExecutor
+  - perf: cache em memória (instance-local) com TTL para report e lista admin
+  - perf: parâmetro ?refresh=true invalida cache do token alvo
 """
 
 import functions_framework
@@ -13,9 +16,12 @@ from google.cloud import bigquery
 import os
 import re
 import json
+import time
+import threading
 import urllib.request
 import urllib.parse
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
 from auth import (
@@ -26,6 +32,59 @@ from auth import (
 import owners
 
 bq = bigquery.Client()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cache em memória — escopo de instância da Cloud Function.
+# Cloud Functions reutiliza instâncias entre requests (warm), então um dict
+# global persiste entre invocações da mesma instância. Cold start zera o cache,
+# o que é aceitável: a próxima request reidrata e as subsequentes pegam o hit.
+#
+# TTLs:
+#   - report (token):      120s — payload pesado, refresca rápido após upload
+#   - campaigns list:       60s — admin abre/fecha o tempo todo
+#
+# Invalidação manual:
+#   - mutações (save_logo, save_loom, save_survey, save_upload,
+#     save_report_owner) limpam o cache do token afetado
+#   - ?refresh=true força bypass de cache na request atual
+# ─────────────────────────────────────────────────────────────────────────────
+_REPORT_CACHE_TTL = 120
+_LIST_CACHE_TTL   = 60
+
+_report_cache = {}     # short_token -> (timestamp, payload)
+_list_cache   = {}     # "all" -> (timestamp, payload)
+_cache_lock   = threading.Lock()
+
+
+def _cache_get(store, key, ttl):
+    with _cache_lock:
+        entry = store.get(key)
+        if not entry:
+            return None
+        ts, value = entry
+        if time.time() - ts > ttl:
+            store.pop(key, None)
+            return None
+        return value
+
+
+def _cache_set(store, key, value):
+    with _cache_lock:
+        store[key] = (time.time(), value)
+
+
+def _cache_invalidate_token(short_token):
+    """Remove qualquer entrada de cache associada ao token (report + list)."""
+    with _cache_lock:
+        _report_cache.pop(short_token, None)
+        _list_cache.pop("all", None)
+
+
+# Pool reutilizado entre invocações da mesma instância para evitar criar/destruir
+# threads a cada request. Com `--concurrency=10` na Cloud Function (Gen 2),
+# até 10 requests simultâneos podem competir pelo pool. 16 workers cobre o pico
+# sem fazer fila significativa: queries BigQuery são I/O-bound (GIL liberado).
+_query_pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="bq-fetch")
 
 PROJECT_ID      = os.environ.get("GCP_PROJECT",        "site-hypr")
 DATASET_HUB     = os.environ.get("BQ_DATASET_HUB",     "prod_prod_hypr_reporthub")
@@ -125,6 +184,7 @@ def report_data(request):
             if not short_token or not logo_base64:
                 return (jsonify({"error": "short_token e logo_base64 são obrigatórios"}), 400, headers)
             save_logo(short_token, logo_base64)
+            _cache_invalidate_token(short_token)
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             print(f"[ERROR save_logo] {e}")
@@ -141,6 +201,7 @@ def report_data(request):
             if not short_token or not loom_url:
                 return (jsonify({"error": "short_token e loom_url são obrigatórios"}), 400, headers)
             save_loom(short_token, loom_url)
+            _cache_invalidate_token(short_token)
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             print(f"[ERROR save_loom] {e}")
@@ -157,6 +218,7 @@ def report_data(request):
             if not short_token or not survey_data:
                 return (jsonify({"error": "short_token e survey_data são obrigatórios"}), 400, headers)
             save_survey(short_token, survey_data)
+            _cache_invalidate_token(short_token)
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             print(f"[ERROR save_survey] {e}")
@@ -299,6 +361,7 @@ def report_data(request):
             if upload_type not in ("RMND", "PDOOH"):
                 return (jsonify({"error": "type deve ser RMND ou PDOOH"}), 400, headers)
             save_upload(short_token, upload_type, data_json)
+            _cache_invalidate_token(short_token)
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             print(f"[ERROR save_upload] {e}")
@@ -357,6 +420,7 @@ def report_data(request):
                 cs_email=cs_email,
                 updated_by=admin.get("email", "unknown"),
             )
+            _cache_invalidate_token(short_token)
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             print(f"[ERROR save_report_owner] {e}")
@@ -366,8 +430,13 @@ def report_data(request):
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
+            force_refresh = request.args.get("refresh") == "true"
+            cached = None if force_refresh else _cache_get(_list_cache, "all", _LIST_CACHE_TTL)
+            if cached is not None:
+                return (jsonify({"campaigns": cached, "_cache": "hit"}), 200, headers)
             campaigns = query_campaigns_list()
-            return (jsonify({"campaigns": campaigns}), 200, headers)
+            _cache_set(_list_cache, "all", campaigns)
+            return (jsonify({"campaigns": campaigns, "_cache": "miss"}), 200, headers)
         except Exception as e:
             print(f"[ERROR] {e}")
             return (jsonify({"error": "Erro ao listar campanhas"}), 500, headers)
@@ -377,30 +446,63 @@ def report_data(request):
         return (jsonify({"error": "Parâmetro 'token' é obrigatório"}), 400, headers)
 
     try:
+        force_refresh = request.args.get("refresh") == "true"
+        if force_refresh:
+            _cache_invalidate_token(short_token)
+        cached = _cache_get(_report_cache, short_token, _REPORT_CACHE_TTL)
+        if cached is not None:
+            return (jsonify({**cached, "_cache": "hit"}), 200, headers)
         data = fetch_campaign_data(short_token)
         if not data:
             return (jsonify({"error": "Campanha não encontrada"}), 404, headers)
-        return (jsonify(data), 200, headers)
+        _cache_set(_report_cache, short_token, data)
+        return (jsonify({**data, "_cache": "miss"}), 200, headers)
     except Exception as e:
         print(f"[ERROR] {e}")
         return (jsonify({"error": "Erro interno ao buscar dados"}), 500, headers)
 
 
 def fetch_campaign_data(short_token):
+    """
+    Busca todos os dados de um report.
+
+    Estratégia:
+      1) query_campaign_info bloqueante (precisa de start_date/end_date para
+         alimentar query_totals).
+      2) Se não houver campaign_info, retorna None imediatamente.
+      3) Roda as 8 queries restantes em paralelo (ThreadPoolExecutor).
+         BigQuery client libera GIL no I/O, então threads escalam bem.
+
+    Antes (serial): ~6-10s típico.
+    Depois (paralelo): tempo do pior caso (~1.5-3s, geralmente query_totals).
+    """
     campaign_info = query_campaign_info(short_token)
     if not campaign_info:
         return None
-    return {
-        "campaign": campaign_info,
-        "totals":   query_totals(short_token, campaign_info),
-        "daily":    query_daily(short_token),
-        "detail":   query_detail(short_token),
-        "logo":     query_logo(short_token),
-        "loom":     query_loom(short_token),
-        "rmnd":     query_upload(short_token, "RMND"),
-        "pdooh":    query_upload(short_token, "PDOOH"),
-        "survey":   query_survey(short_token),
+
+    tasks = {
+        "totals": _query_pool.submit(query_totals, short_token, campaign_info),
+        "daily":  _query_pool.submit(query_daily,  short_token),
+        "detail": _query_pool.submit(query_detail, short_token),
+        "logo":   _query_pool.submit(query_logo,   short_token),
+        "loom":   _query_pool.submit(query_loom,   short_token),
+        "rmnd":   _query_pool.submit(query_upload, short_token, "RMND"),
+        "pdooh":  _query_pool.submit(query_upload, short_token, "PDOOH"),
+        "survey": _query_pool.submit(query_survey, short_token),
     }
+
+    result = {"campaign": campaign_info}
+    for key, future in tasks.items():
+        try:
+            result[key] = future.result()
+        except Exception as e:
+            # Falha em uma query auxiliar não deve derrubar o report inteiro.
+            # Front sabe lidar com chaves nulas (logo, loom, survey, rmnd, pdooh).
+            # Para totals/daily/detail logamos e retornamos vazio para que a UI
+            # mostre "sem dados" em vez de erro 500.
+            print(f"[WARN fetch_campaign_data {key}] {e}")
+            result[key] = None if key in ("logo", "loom", "rmnd", "pdooh", "survey") else []
+    return result
 
 
 def table_ref():

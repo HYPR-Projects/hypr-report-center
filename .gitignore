@@ -39,3 +39,4 @@ lerna-debug.log*
 .cache/
 .env.local
 backend/.env
+__pycache__/
