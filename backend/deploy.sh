@@ -13,6 +13,12 @@
 #   --max-instances=20  autoscaling cap pra não estourar quota do BigQuery
 #                       em pico de acesso.
 #
+# Sobre envvars:
+#   `--update-env-vars` preserva variáveis existentes na revisão (ex: JWT_SECRET,
+#   TYPEFORM_TOKEN gerenciados manualmente via console). NUNCA usar
+#   `--set-env-vars` aqui — ele apaga tudo o que não estiver listado e quebra
+#   auth + integrações.
+#
 # Pré-requisitos:
 #   gcloud auth login
 #   gcloud config set project site-hypr
@@ -42,7 +48,7 @@ gcloud functions deploy "$FUNCTION_NAME" \
   --min-instances=1 \
   --max-instances=20 \
   --concurrency=10 \
-  --set-env-vars=GCP_PROJECT=site-hypr,BQ_DATASET_HUB=prod_prod_hypr_reporthub,BQ_TABLE=campaign_results
+  --update-env-vars=GCP_PROJECT=site-hypr,BQ_DATASET_HUB=prod_prod_hypr_reporthub,BQ_TABLE=campaign_results,LOG_EXECUTION_ID=true
 
 echo ""
 echo "Deploy concluído. URL:"
