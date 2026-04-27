@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { C } from "../shared/theme";
 import { getComments, saveComment } from "../lib/api";
 
+const POLL_INTERVAL_MS = 30000;
+
 const TabChat = ({ token, tabName, author, adminJwt, theme }) => {
   const [messages, setMessages] = useState([]);
   const [newMsg, setNewMsg] = useState("");
@@ -9,16 +11,28 @@ const TabChat = ({ token, tabName, author, adminJwt, theme }) => {
   const containerRef = useRef(null);
   const shouldScroll = useRef(false);
 
-  const loadMessages = () => {
-    getComments(token).then(all => {
-      setMessages(all.filter(c => c.metric_name === tabName));
-    });
-  };
-
   useEffect(()=>{
+    const controller = new AbortController();
+    let active = true;
+
+    const loadMessages = () => {
+      getComments(token, { signal: controller.signal })
+        .then(all => {
+          if(!active) return;
+          setMessages(all.filter(c => c.metric_name === tabName));
+        })
+        .catch(err => {
+          if (err?.name === "AbortError") return;
+        });
+    };
+
     loadMessages();
-    const interval = setInterval(loadMessages, 30000);
-    return () => clearInterval(interval);
+    const interval = setInterval(loadMessages, POLL_INTERVAL_MS);
+    return () => {
+      active = false;
+      controller.abort();
+      clearInterval(interval);
+    };
   },[token, tabName]);
 
   useEffect(()=>{

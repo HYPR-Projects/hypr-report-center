@@ -187,13 +187,18 @@ export async function fetchTypeformViaProxy(formUrl) {
 
 /**
  * Busca comentários de uma campanha. Falha silenciosa retorna [].
+ * `options.signal` permite cancelamento via AbortController (usado pelo TabChat).
  */
-export async function getComments(token) {
+export async function getComments(token, options = {}) {
   try {
-    const r = await fetch(`${API_URL}?action=get_comments&token=${encodeURIComponent(token)}`);
+    const r = await fetch(
+      `${API_URL}?action=get_comments&token=${encodeURIComponent(token)}`,
+      { signal: options.signal },
+    );
     const d = await r.json();
     return d?.comments || [];
-  } catch {
+  } catch (err) {
+    if (err?.name === "AbortError") throw err;
     return [];
   }
 }

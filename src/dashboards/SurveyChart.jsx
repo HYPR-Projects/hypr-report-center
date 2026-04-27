@@ -1,12 +1,14 @@
 import { useEffect, useRef } from "react";
+import { useChart } from "../shared/useChart";
 
 const SurveyChart=({id,labels,ctrl,exp})=>{
   const ref=useRef(null);
+  const Chart=useChart();
   useEffect(()=>{
-    if(!ref.current)return;
+    if(!ref.current||!Chart)return;
     const existing=ref.current._chartInstance;
     if(existing)existing.destroy();
-    const chart=new window.Chart(ref.current,{
+    const chart=new Chart(ref.current,{
       type:"bar",
       data:{
         labels,
@@ -27,7 +29,7 @@ const SurveyChart=({id,labels,ctrl,exp})=>{
     });
     ref.current._chartInstance=chart;
     return()=>chart.destroy();
-  },[labels,ctrl,exp]);
+  },[labels,ctrl,exp,Chart]);
   return <div style={{position:"relative",height:460}}><canvas ref={ref} id={id}/></div>;
 };
 // ── TabChat ──────────────────────────────────────────────────────────────────
