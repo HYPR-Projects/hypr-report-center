@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { C, CL } from "../shared/theme";
+import { getTheme, setTheme } from "../shared/prefs";
 import { listCampaigns, listTeamMembers } from "../lib/api";
 import GlobalStyle from "../components/GlobalStyle";
 import Spinner from "../components/Spinner";
@@ -26,10 +27,13 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
   const [ownerModal,      setOwnerModal]      = useState(null); // { short_token, client_name, cp_email, cs_email } | null
 
   // New UI state
-  const [isDark,       setIsDark]       = useState(true);
+  const [isDark,       setIsDark]       = useState(() => getTheme() === "dark");
   const [sortBy,       setSortBy]       = useState("month");   // "month" | "start_date" | "alpha"
   const [sortAsc,      setSortAsc]      = useState(false);
   const [activeMonth,  setActiveMonth]  = useState(null);      // quick-access filter
+
+  // Persiste a escolha de tema entre sessões (compartilhada com ClientDashboard).
+  useEffect(() => { setTheme(isDark ? "dark" : "light"); }, [isDark]);
 
   // Owners — admin only
   const [teamMembers, setTeamMembers] = useState({ cps: [], css: [] });

@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { C } from "../shared/theme";
+import { getTheme, setTheme } from "../shared/prefs";
 import { gaEvent, gaPageView } from "../shared/analytics";
 import { enrichDetailCosts } from "../shared/enrichDetail";
 import { getCampaign, saveAlcanceFrequencia } from "../lib/api";
@@ -29,7 +30,9 @@ const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
   const [frequencia,setFrequencia]=useState("");
   const [editingAfReach,setEditingAfReach]=useState(false);
   const [savingAf,setSavingAf]=useState(false);
-  const [isDarkClient,setIsDarkClient]=useState(true);
+  const [isDarkClient,setIsDarkClient]=useState(() => getTheme() === "dark");
+  // Persiste a escolha de tema entre sessões (compartilhada com CampaignMenu).
+  useEffect(() => { setTheme(isDarkClient ? "dark" : "light"); }, [isDarkClient]);
   const cbg   = isDarkClient ? C.dark  : "#F4F6FA";
   const cbg2  = isDarkClient ? C.dark2 : "#FFFFFF";
   const cbg3  = isDarkClient ? C.dark3 : "#EEF1F7";
