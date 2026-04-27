@@ -3,7 +3,7 @@ import { C } from "../shared/theme";
 import { getTheme, setTheme } from "../shared/prefs";
 import { gaEvent, gaPageView } from "../shared/analytics";
 import { enrichDetailCosts } from "../shared/enrichDetail";
-import { detectIsColored } from "../shared/imageCompress";
+import { detectLuminance } from "../shared/imageCompress";
 import {
   readRangeFromUrl,
   writeRangeToUrl,
@@ -42,20 +42,20 @@ const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
   const [editingAfReach,setEditingAfReach]=useState(false);
   const [savingAf,setSavingAf]=useState(false);
   const [isDarkClient,setIsDarkClient]=useState(() => getTheme() === "dark");
-  // Detecta se a logo é colorida (PicPay roxo) ou monocromática (preto/branco).
-  // Coloridos: nunca inverter. Monocromáticos: inverter no light mode pra
-  // contraste. Default true (não inverter) enquanto detecta — safer.
-  const [logoIsColored,setLogoIsColored]=useState(true);
+  // Luminância média da logo (0-1). Usada pra forçar contraste quando a logo
+  // não combina com o fundo do tema (ex: PicPay azul-escuro em dark mode).
+  // Default 0.5 (neutro) enquanto detecta, evita filter no primeiro render.
+  const [logoLum,setLogoLum]=useState(0.5);
   // Persiste a escolha de tema entre sessões (compartilhada com CampaignMenu).
   useEffect(() => { setTheme(isDarkClient ? "dark" : "light"); }, [isDarkClient]);
 
-  // Roda detecção de cor sempre que o logo da campanha mudar.
+  // Roda detecção de luminância sempre que o logo da campanha mudar.
   // Cancela se o componente desmontar antes da Promise resolver.
   useEffect(() => {
-    if (!data?.logo) { setLogoIsColored(true); return; }
+    if (!data?.logo) { setLogoLum(0.5); return; }
     let cancelled = false;
-    detectIsColored(data.logo).then(colored => {
-      if (!cancelled) setLogoIsColored(colored);
+    detectLuminance(data.logo).then(lum => {
+      if (!cancelled) setLogoLum(lum);
     });
     return () => { cancelled = true; };
   }, [data?.logo]);
@@ -308,9 +308,17 @@ const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
         <h1 style={{fontSize:26,fontWeight:900,color:ctext}}>{camp.campaign_name}</h1>
         <p style={{color:cmuted,fontSize:14,marginTop:6}}>{camp.start_date} → {camp.end_date} · <span style={{color:C.blue}}>Token: {camp.short_token}</span></p>
       </div>
-        {data.logo&&(
-    <img src={data.logo} alt="logo" style={{height:60,objectFit:"contain",maxWidth:220,marginTop:4,filter:(!isDarkClient && !logoIsColored)?"invert(1)":"none"}}/>
-  )}
+        {data.logo&&(() => {
+          // Logo escura num fundo escuro ou clara num fundo claro = invisível.
+          // Forçar silhueta resolve sem precisar do user subir 2 versões.
+          // Zona neutra (0.4-0.6): aparece em ambos os temas, deixa passar.
+          let logoFilter = "none";
+          if (isDarkClient && logoLum < 0.4)        logoFilter = "brightness(0) invert(1)"; // → branco
+          else if (!isDarkClient && logoLum > 0.6)  logoFilter = "brightness(0)";           // → preto
+          return (
+            <img src={data.logo} alt="logo" style={{height:60,objectFit:"contain",maxWidth:220,marginTop:4,filter:logoFilter,transition:"filter 0.3s"}}/>
+          );
+        })()}
 </div>
 
         <Tabs tabs={mainTabs} active={mainTab} onChange={(tab)=>{ setMainTab(tab); gaEvent("tab_click", { tab_name: tab, report_token: token }); }} theme={cTheme}/>

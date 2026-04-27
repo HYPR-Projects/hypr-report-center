@@ -35,58 +35,48 @@ const loadImage = (src) =>
   });
 
 /**
- * Detecta se uma imagem é colorida ou monocromática (preto/branco/cinza).
- * Usado pra decidir se aplica filter:invert entre temas dark/light:
- *  - Monocromática: invert faz sentido (logo branca → preta no light).
- *  - Colorida: invert destrói as cores (PicPay roxo → amarelo).
+ * Calcula a luminância média perceptual de uma imagem (escala 0-1).
+ * Usa coeficientes Rec. 709 (peso maior pro verde, como o olho humano).
+ * Pixels transparentes são ignorados.
  *
- * Estratégia: desenha em canvas pequeno, amostra pixels, calcula saturação
- * via diferença max-min de R/G/B. Threshold conservador pra evitar falsos
- * positivos com sombras/anti-aliasing.
+ * Usado pra decidir se a logo precisa de filter pra ter contraste com o
+ * fundo do tema:
+ *   - Logo escura (lum < 0.4) num tema dark → forçar branca
+ *   - Logo clara (lum > 0.6) num tema light → forçar preta
+ *   - Zona neutra (0.4-0.6): aparece em ambos, não mexe.
  *
- * Retorna Promise<boolean>:
- *   true  → imagem tem cor (não inverter)
- *   false → monocromática (pode inverter)
- *
- * Em caso de erro (CORS, imagem inválida), assume colorido (safer default
- * — não distorce o logo do cliente).
+ * Em caso de erro retorna 0.5 (neutro, não força filter).
  */
-export function detectIsColored(src) {
+export function detectLuminance(src) {
   return new Promise((resolve) => {
-    if (!src) return resolve(true);
+    if (!src) return resolve(0.5);
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
       try {
-        // Canvas pequeno é suficiente pra amostragem estatística.
         const w = 64, h = Math.max(1, Math.round(64 * (img.height / img.width)));
         const canvas = document.createElement("canvas");
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext("2d");
-        if (!ctx) return resolve(true);
+        if (!ctx) return resolve(0.5);
         ctx.drawImage(img, 0, 0, w, h);
         const { data } = ctx.getImageData(0, 0, w, h);
-        let coloredPixels = 0;
+        let totalLum = 0;
         let opaquePixels = 0;
         for (let i = 0; i < data.length; i += 4) {
           const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
-          if (a < 32) continue; // ignora pixels transparentes
+          if (a < 32) continue;
           opaquePixels++;
-          // Saturação simples: max(r,g,b) - min(r,g,b).
-          // Threshold de 18/255 (~7%) tolera ruído de anti-aliasing
-          // sem deixar passar cores reais.
-          const sat = Math.max(r, g, b) - Math.min(r, g, b);
-          if (sat > 18) coloredPixels++;
+          totalLum += (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
         }
-        if (opaquePixels === 0) return resolve(true);
-        // Se mais de 5% dos pixels opacos têm cor, considera logo colorido.
-        resolve(coloredPixels / opaquePixels > 0.05);
+        if (opaquePixels === 0) return resolve(0.5);
+        resolve(totalLum / opaquePixels);
       } catch {
-        resolve(true);
+        resolve(0.5);
       }
     };
-    img.onerror = () => resolve(true);
+    img.onerror = () => resolve(0.5);
     img.src = src;
   });
 }
