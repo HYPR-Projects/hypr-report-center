@@ -1,11 +1,13 @@
 import { C } from "../../shared/theme";
 import { fmt, fmtP, fmtP2, fmtR } from "../../shared/format";
+import { parseYmd } from "../../shared/dateFilter";
 import {
   groupByDate, groupBySize, groupByAudience,
   buildLineOptions, computeVideoKpis,
 } from "../../shared/aggregations";
 import Tabs from "../Tabs";
-import MultiLineSelect from "../MultiLineSelect";
+import AudienceFilter from "../AudienceFilter";
+import DateRangeFilter from "../DateRangeFilter";
 import DualChart from "../DualChart";
 import CollapsibleTable from "../CollapsibleTable";
 import PerfTable from "../PerfTable";
@@ -14,16 +16,12 @@ import TabChat from "../TabChat";
 const TACTIC_TABS = ["O2O", "OOH"];
 
 /**
- * Tab "Video" — gêmea da DisplayTab mas operando em VIDEO completions/VTR
- * em vez de impressions/CTR. Diferença chave: pacing e CPCV vêm direto
- * do backend (totals[0].pacing, .effective_cpcv_amount, .rentabilidade)
- * porque a fórmula de video é mais sensível e o backend já normaliza
- * datas reais por frente.
+ * Tab "Video" — gêmea da DisplayTab operando em VIDEO completions/VTR.
+ * Diferença chave: pacing e CPCV vêm direto do backend porque a fórmula
+ * de video é mais sensível.
  *
- * Props
- * -----
- * Mesmo contrato do DisplayTab, com `vidTab`/`vidLines` no lugar de
- * `dispTab`/`dispLines`.
+ * Mesmo contrato do DisplayTab com vidTab/vidLines no lugar de
+ * dispTab/dispLines, e filtro de período compartilhado via mainRange.
  */
 const VideoTab = ({
   aggregates, camp, theme,
@@ -31,8 +29,9 @@ const VideoTab = ({
   isDarkClient,
   vidTab, setVidTab,
   vidLines, setVidLines,
+  mainRange, setMainRange,
 }) => {
-  const { totals, detail0, isFiltered } = aggregates;
+  const { totals, detail0, isFiltered, availableDates } = aggregates;
 
   const cbg2  = theme.bg2;
   const cbdr  = theme.bdr;
@@ -54,9 +53,6 @@ const VideoTab = ({
         const lineNamesV = buildLineOptions(detailAllV);
         const detail     = vidLines.length === 0 ? detailAllV : detailAllV.filter(r => vidLines.includes(r.line_name));
 
-        // Agregações pra os charts e KPIs — funções puras em aggregations.js.
-        // groupByDate fallbacka video_view_100 → completions automaticamente
-        // pra rows antigas que ainda usavam o nome velho.
         const daily      = groupByDate(detail, "video_view_100", "viewable_impressions", "vtr");
         const byAudience = groupByAudience(detailAllV, "video_view_100", "viewable_impressions", "vtr");
         const bySize     = groupBySize(detail, "video_view_100", "viewable_impressions", "vtr");
@@ -66,14 +62,17 @@ const VideoTab = ({
 
         return (
           <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20, padding: "10px 16px", background: cbg2, border: `1px solid ${cbdr}`, borderRadius: 10 }}>
-              <span style={{ fontSize: 12, color: cmuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, flexShrink: 0 }}>Line Item:</span>
-              <MultiLineSelect lines={lineNamesV} selected={vidLines} onChange={setVidLines} theme={theme}/>
-              {vidLines.length > 0 && (
-                <button onClick={() => setVidLines([])} style={{ background: "none", border: `1px solid ${cbdr}`, color: cmuted, borderRadius: 7, padding: "5px 12px", cursor: "pointer", fontSize: 12, flexShrink: 0 }}>
-                  ✕ Limpar
-                </button>
-              )}
+            {/* Toolbar: Audiência + Período alinhados à direita */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, marginTop: 16, marginBottom: 16, flexWrap: "wrap" }}>
+              <AudienceFilter lines={lineNamesV} selected={vidLines} onChange={setVidLines} theme={theme} isDark={isDarkClient}/>
+              <DateRangeFilter
+                value={mainRange}
+                onChange={setMainRange}
+                minDate={parseYmd(camp.start_date)}
+                maxDate={parseYmd(camp.end_date)}
+                availableDates={availableDates}
+                isDark={isDarkClient}
+              />
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 12, marginBottom: 20 }}>

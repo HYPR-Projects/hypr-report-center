@@ -1,11 +1,13 @@
 import { C } from "../../shared/theme";
 import { fmt, fmtP, fmtP2, fmtR } from "../../shared/format";
+import { parseYmd } from "../../shared/dateFilter";
 import {
   groupByDate, groupBySize, groupByAudience,
   buildLineOptions, computeDisplayKpis,
 } from "../../shared/aggregations";
 import Tabs from "../Tabs";
-import MultiLineSelect from "../MultiLineSelect";
+import AudienceFilter from "../AudienceFilter";
+import DateRangeFilter from "../DateRangeFilter";
 import DualChart from "../DualChart";
 import CollapsibleTable from "../CollapsibleTable";
 import PerfTable from "../PerfTable";
@@ -14,26 +16,21 @@ import TabChat from "../TabChat";
 const TACTIC_TABS = ["O2O", "OOH"];
 
 /**
- * Tab "Display" — switch O2O/OOH + filtro multi-line + KPIs + pacing
- * + 3 charts (entrega diária, por tamanho, por audiência) + tabela detalhada.
- *
- * Por que ficar separada
- * ----------------------
- * Antes inline no ClientDashboard ocupando ~147 linhas, com função IIFE
- * gigante misturando agregação e render. Aqui mantém a função interna
- * porque depende fortemente dos states (dispTab, dispLines) e os derivados
- * mudam a cada filtro — memoizar não compensa.
+ * Tab "Display" — switch O2O/OOH + filtro de audiência (line) + filtro
+ * de período + KPIs + pacing + 3 charts (entrega diária, por tamanho,
+ * por audiência) + tabela detalhada.
  *
  * Props
  * -----
- * - `aggregates`: { totals, daily0, detail0 } do dashboard (memoizado lá);
+ * - `aggregates`: { totals, daily0, detail0, isFiltered, availableDates }
  * - `camp`: data.campaign;
  * - `theme`: cTheme;
  * - `token`, `isAdmin`, `adminJwt`;
- * - `isDarkClient`: pra cores do pacing bar (over);
- * - `dispTab`, `setDispTab`: tactic ativa (O2O/OOH) — controlado pelo pai
- *   pra preservar quando trocar de tab;
- * - `dispLines`, `setDispLines`: filtro de lines (array vazio = todas).
+ * - `isDarkClient`: pra cores do pacing bar e tema dos filtros;
+ * - `dispTab`, `setDispTab`: tactic ativa (O2O/OOH);
+ * - `dispLines`, `setDispLines`: filtro de audiências (array vazio = todas);
+ * - `mainRange`, `setMainRange`: filtro de período (compartilhado com
+ *   Overview e Video).
  */
 const DisplayTab = ({
   aggregates, camp, theme,
@@ -41,8 +38,9 @@ const DisplayTab = ({
   isDarkClient,
   dispTab, setDispTab,
   dispLines, setDispLines,
+  mainRange, setMainRange,
 }) => {
-  const { totals, detail0, isFiltered } = aggregates;
+  const { totals, detail0, isFiltered, availableDates } = aggregates;
 
   const cbg2  = theme.bg2;
   const cbdr  = theme.bdr;
@@ -75,14 +73,17 @@ const DisplayTab = ({
 
         return (
           <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20, padding: "10px 16px", background: cbg2, border: `1px solid ${cbdr}`, borderRadius: 10 }}>
-              <span style={{ fontSize: 12, color: cmuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, flexShrink: 0 }}>Line Item:</span>
-              <MultiLineSelect lines={lineNames} selected={dispLines} onChange={setDispLines} theme={theme}/>
-              {dispLines.length > 0 && (
-                <button onClick={() => setDispLines([])} style={{ background: "none", border: `1px solid ${cbdr}`, color: cmuted, borderRadius: 7, padding: "5px 12px", cursor: "pointer", fontSize: 12, flexShrink: 0 }}>
-                  ✕ Limpar
-                </button>
-              )}
+            {/* Toolbar: Audiência + Período alinhados à direita */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, marginTop: 16, marginBottom: 16, flexWrap: "wrap" }}>
+              <AudienceFilter lines={lineNames} selected={dispLines} onChange={setDispLines} theme={theme} isDark={isDarkClient}/>
+              <DateRangeFilter
+                value={mainRange}
+                onChange={setMainRange}
+                minDate={parseYmd(camp.start_date)}
+                maxDate={parseYmd(camp.end_date)}
+                availableDates={availableDates}
+                isDark={isDarkClient}
+              />
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 12, marginBottom: 20 }}>

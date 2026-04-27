@@ -299,10 +299,10 @@ const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
 
         <Tabs tabs={mainTabs} active={mainTab} onChange={(tab)=>{ setMainTab(tab); gaEvent("tab_click", { tab_name: tab, report_token: token }); }} theme={cTheme}/>
 
-        {/* Barra do filtro de período — aparece nas abas que suportam.
-            Visão Geral / Display / Video compartilham `mainRange`.
-            RMND / PDOOH têm filtros próprios renderizados dentro do UploadTab. */}
-        {["Visão Geral", "Display", "Video"].includes(mainTab) && (
+        {/* Barra do filtro de período — só Visão Geral usa essa posição
+            global. Display/Video renderizam o próprio (junto com Audiência)
+            dentro de suas toolbars. RMND/PDOOH idem (com filtros próprios). */}
+        {mainTab === "Visão Geral" && (
           <div style={{
             display:"flex",
             justifyContent:"flex-end",
@@ -364,6 +364,8 @@ const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
             setDispTab={setDispTab}
             dispLines={dispLines}
             setDispLines={setDispLines}
+            mainRange={mainRange}
+            setMainRange={setMainRange}
           />
         )}
 
@@ -380,6 +382,8 @@ const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
             setVidTab={setVidTab}
             vidLines={vidLines}
             setVidLines={setVidLines}
+            mainRange={mainRange}
+            setMainRange={setMainRange}
           />
         )}
         {mainTab==="RMND"&&<div><UploadTab type="RMND" token={token} serverData={data.rmnd} readOnly={!isAdmin} adminJwt={adminJwt} isDark={isDarkClient}/><TabChat token={token} tabName="RMND" author={isAdmin?"HYPR":"Cliente"} adminJwt={adminJwt} theme={cTheme}/></div>}
