@@ -1,6 +1,11 @@
 import { useState, useEffect } from "react";
 import { C, CL } from "../shared/theme";
-import { getTheme, setTheme } from "../shared/prefs";
+import {
+  getTheme,
+  setTheme,
+  getOwnerFilter,
+  setOwnerFilter as persistOwnerFilter,
+} from "../shared/prefs";
 import { listCampaigns, listTeamMembers } from "../lib/api";
 import GlobalStyle from "../components/GlobalStyle";
 import Spinner from "../components/Spinner";
@@ -37,7 +42,10 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
 
   // Owners — admin only
   const [teamMembers, setTeamMembers] = useState({ cps: [], css: [] });
-  const [ownerFilter, setOwnerFilter] = useState("");          // email selecionado, "" = todos
+  const [ownerFilter, setOwnerFilter] = useState(() => getOwnerFilter()); // email selecionado, "" = todos
+
+  // Persiste o owner selecionado entre sessões.
+  useEffect(() => { persistOwnerFilter(ownerFilter); }, [ownerFilter]);
 
   // teamMap: email → display name (usado pelo CampaignCard pra mostrar nome curto nos chips)
   const teamMap = {};
@@ -52,7 +60,17 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
     let cancelled = false;
     (async () => {
       const members = await listTeamMembers();
-      if (!cancelled) setTeamMembers(members);
+      if (!cancelled) {
+        setTeamMembers(members);
+        // Se o filtro persistido aponta pra um email que não existe mais
+        // (pessoa saiu da equipe, email mudou), limpa pra evitar dropdown
+        // em estado inválido.
+        const validEmails = new Set([
+          ...members.cps.map(p => p.email),
+          ...members.css.map(p => p.email),
+        ]);
+        setOwnerFilter(prev => (prev && !validEmails.has(prev) ? "" : prev));
+      }
     })();
     return () => { cancelled = true; };
   }, []);
