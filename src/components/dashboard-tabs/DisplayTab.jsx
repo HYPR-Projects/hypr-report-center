@@ -42,7 +42,7 @@ const DisplayTab = ({
   dispTab, setDispTab,
   dispLines, setDispLines,
 }) => {
-  const { totals, detail0 } = aggregates;
+  const { totals, detail0, isFiltered } = aggregates;
 
   const cbg2  = theme.bg2;
   const cbdr  = theme.bdr;
@@ -116,7 +116,8 @@ const DisplayTab = ({
               ))}
             </div>
 
-            <div style={{ background: cbg2, border: `1px solid ${cbdr}`, borderRadius: 12, padding: "16px 20px", marginBottom: 20 }}>
+            {!isFiltered && (
+              <div style={{ background: cbg2, border: `1px solid ${cbdr}`, borderRadius: 12, padding: "16px 20px", marginBottom: 20 }}>
               {(() => {
                 const barC  = pac >= 100 ? "#2ECC71" : pac >= 70 ? "#F1C40F" : "#E74C3C";
                 const overC = isDarkClient ? "#C5EAF6" : "#246C84";
@@ -141,7 +142,8 @@ const DisplayTab = ({
                   </>
                 );
               })()}
-            </div>
+              </div>
+            )}
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
               <div style={{ background: cbg2, border: `1px solid ${cbdr}`, borderRadius: 12, padding: 20 }}>

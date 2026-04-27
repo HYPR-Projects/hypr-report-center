@@ -3,11 +3,21 @@ import { C } from "../shared/theme";
 import { getTheme, setTheme } from "../shared/prefs";
 import { gaEvent, gaPageView } from "../shared/analytics";
 import { enrichDetailCosts } from "../shared/enrichDetail";
+import {
+  readRangeFromUrl,
+  writeRangeToUrl,
+  inRange,
+  parseYmd,
+  daysInRange,
+  daysBetween,
+  formatRangeShort,
+} from "../shared/dateFilter";
 import { getCampaign, saveAlcanceFrequencia } from "../lib/api";
 import GlobalStyle from "../components/GlobalStyle";
 import Spinner from "../components/Spinner";
 import HyprLogo from "../components/HyprLogo";
 import Tabs from "../components/Tabs";
+import DateRangeFilter from "../components/DateRangeFilter";
 import UploadTab from "../dashboards/UploadTab";
 import SurveyTab from "../dashboards/SurveyTab";
 import TabChat from "../components/TabChat";
@@ -33,6 +43,16 @@ const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
   const [isDarkClient,setIsDarkClient]=useState(() => getTheme() === "dark");
   // Persiste a escolha de tema entre sessões (compartilhada com CampaignMenu).
   useEffect(() => { setTheme(isDarkClient ? "dark" : "light"); }, [isDarkClient]);
+
+  // Filtro de período — compartilhado entre Visão Geral / Display / Video.
+  // Lido da URL (?from=&to=) pra ser shareable e sobreviver a refresh.
+  // RMND e PDOOH têm seus próprios filtros independentes (gerenciados dentro
+  // de cada UploadTab via prefix "rmnd"/"pdooh").
+  const [mainRange, setMainRangeState] = useState(() => readRangeFromUrl());
+  const setMainRange = (r) => {
+    setMainRangeState(r);
+    writeRangeToUrl(r);
+  };
   const cbg   = isDarkClient ? C.dark  : "#F4F6FA";
   const cbg2  = isDarkClient ? C.dark2 : "#FFFFFF";
   const cbg3  = isDarkClient ? C.dark3 : "#EEF1F7";
@@ -73,12 +93,85 @@ const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
   // detail grande, enrichDetailCosts é O(n*m) e era o gargalo principal.
   // Memoizando, esse trabalho roda 1x quando data chega e fica em cache até
   // o próximo fetch. Hooks precisam vir antes de early returns — daí estar aqui.
+  //
+  // Quando há filtro de período (mainRange), re-agrega tudo a partir do
+  // `detail` filtrado por data. `detail` tem dimensão (date, line, creative)
+  // então é a fonte de verdade pra recalcular `totals` filtrados. Custos de
+  // detail são reproporcionalizados em `enrichDetailCosts` baseado nos novos
+  // totals.
   const aggregates = useMemo(() => {
     if (!data || !data.campaign) return null;
     const noSurvey = r => !/survey/i.test(r.line_name||"");
-    const totals = (data.totals||[]).filter(noSurvey);
-    const daily0  = (data.daily||[]).filter(noSurvey);
-    const detail0 = (data.detail||[]).filter(noSurvey);
+    const totalsRaw = (data.totals||[]).filter(noSurvey);
+    const dailyRaw  = (data.daily||[]).filter(noSurvey);
+    const detailRaw = (data.detail||[]).filter(noSurvey);
+
+    const isFiltered = !!mainRange;
+    const daily0  = isFiltered ? dailyRaw.filter(r => inRange(r.date, mainRange))   : dailyRaw;
+    const detail0 = isFiltered ? detailRaw.filter(r => inRange(r.date, mainRange))  : detailRaw;
+
+    // Quando filtrado, reconstroi `totals` agregando `detail0` por
+    // (media_type, tactic_type). Mantém preços de tabela (deal_cpm/cpcv) do
+    // `totalsRaw` original — esses são fixos da campanha e não dependem de
+    // qual janela está sendo analisada. Custo efetivo é re-somado de detail.
+    let totals = totalsRaw;
+    if (isFiltered) {
+      const byKey = {};
+      detail0.forEach(r => {
+        const k = `${r.media_type}|${r.tactic_type}`;
+        if (!byKey[k]) {
+          byKey[k] = {
+            media_type: r.media_type,
+            tactic_type: r.tactic_type,
+            impressions: 0,
+            viewable_impressions: 0,
+            clicks: 0,
+            video_view_100: 0,
+            video_view_25: 0, video_view_50: 0, video_view_75: 0,
+            video_starts: 0,
+            completions: 0,
+            effective_total_cost: 0,
+            line_name: "TOTAL",
+          };
+        }
+        const g = byKey[k];
+        g.impressions          += r.impressions          || 0;
+        g.viewable_impressions += r.viewable_impressions || 0;
+        g.clicks               += r.clicks               || 0;
+        g.video_view_100       += r.video_view_100       || 0;
+        g.video_view_25        += r.video_view_25        || 0;
+        g.video_view_50        += r.video_view_50        || 0;
+        g.video_view_75        += r.video_view_75        || 0;
+        g.video_starts         += r.video_starts         || 0;
+        g.effective_total_cost += r.effective_total_cost || 0;
+        g.completions          += r.video_view_100       || 0;
+      });
+      // Preserva preços contratados (deal_cpm/cpcv) do `totalsRaw` original
+      // e calcula CPM/CPCV efetivo a partir dos custos somados.
+      totals = Object.values(byKey).map(g => {
+        const orig = totalsRaw.find(t => t.media_type === g.media_type && t.tactic_type === g.tactic_type) || {};
+        const isVideo = g.media_type === "VIDEO";
+        // CPM efetivo: total_cost / (viewable / 1000); CPCV efetivo: total_cost / completions
+        const eff_cpm  = g.viewable_impressions > 0 ? (g.effective_total_cost / g.viewable_impressions) * 1000 : 0;
+        const eff_cpcv = g.completions          > 0 ? (g.effective_total_cost / g.completions)               : 0;
+        const deal_cpm = orig.deal_cpm_amount || 0;
+        const deal_cpcv = orig.deal_cpcv_amount || 0;
+        const cost_with_over = isVideo
+          ? deal_cpcv * g.completions
+          : deal_cpm * g.viewable_impressions / 1000;
+        return {
+          ...g,
+          deal_cpm_amount: deal_cpm,
+          deal_cpcv_amount: deal_cpcv,
+          effective_cpm_amount: Math.round(eff_cpm * 100) / 100,
+          effective_cpcv_amount: Math.round(eff_cpcv * 100) / 100,
+          effective_cost_with_over: Math.round(cost_with_over * 100) / 100,
+          // pacing não faz sentido em janela parcial — deixa null pra UI esconder
+          pacing: null,
+        };
+      });
+    }
+
     const daily  = daily0;
     const detail = enrichDetailCosts(detail0, totals);
     const chartDisplay = daily.filter(r=>r.media_type==="DISPLAY").map(r=>({...r,ctr:r.viewable_impressions>0?(r.clicks||0)/r.viewable_impressions*100:0}));
@@ -91,14 +184,15 @@ const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
     const enrich = (rows) => rows.map(r=>({
       ...r,
       ctr: r.impressions>0?(r.clicks/r.impressions)*100:null,
-      vcr: r.impressions>0?((r.viewable_video_view_100_complete||0)/r.impressions)*100:null,
+      vcr: r.impressions>0?((r.viewable_video_view_100_complete||r.video_view_100||0)/r.impressions)*100:null,
       // Usar pacing do backend diretamente — já calculado com datas reais por frente
+      // Quando filtrado, pacing fica null (escondido na UI)
       pacing: r.pacing ?? null,
       rentabilidade: r.deal_cpm_amount>0?((r.deal_cpm_amount-(r.effective_cpm_amount||0))/r.deal_cpm_amount)*100
         :r.deal_cpcv_amount>0?((r.deal_cpcv_amount-(r.effective_cpcv_amount||0))/r.deal_cpcv_amount)*100:null,
       custo_efetivo: r.effective_total_cost,
       custo_efetivo_over: r.effective_cost_with_over,
-      completions: r.viewable_video_view_100_complete ?? r.completions,
+      completions: r.viewable_video_view_100_complete ?? r.completions ?? r.video_view_100,
     }));
 
     const display = enrich(totals.filter(t=>t.media_type==="DISPLAY"));
@@ -108,13 +202,31 @@ const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
     const totalCusto=totals.reduce((s,t)=>s+(t.effective_total_cost||0),0);
     const totalCustoOver=totals.reduce((s,t)=>s+(t.effective_cost_with_over||0),0);
 
+    // Budget proporcional ao período filtrado: budget_total * (dias_filtro / dias_campanha).
+    // Aproximação linear — assume distribuição uniforme. É o mesmo cálculo
+    // usado no pacing.
+    const camp = data.campaign;
+    const budgetTotal = camp?.budget_contracted || 0;
+    const campaignDays = daysBetween(camp?.start_date, camp?.end_date) || 1;
+    const filterDays = isFiltered ? daysInRange(mainRange) : campaignDays;
+    const budgetProRata = isFiltered
+      ? Math.round(budgetTotal * (filterDays / campaignDays) * 100) / 100
+      : budgetTotal;
+
     return {
       totals, daily0, detail0, detail,
       chartDisplay, chartVideo,
       display, video,
       totalImpressions, totalCusto, totalCustoOver,
+      isFiltered,
+      range: mainRange,
+      rangeLabel: isFiltered ? formatRangeShort(mainRange) : null,
+      filterDays,
+      campaignDays,
+      budgetTotal,
+      budgetProRata,
     };
-  }, [data]);
+  }, [data, mainRange]);
 
   if(loading) return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:C.dark}}><GlobalStyle/><div style={{textAlign:"center"}}><Spinner size={48}/><p style={{marginTop:20,color:C.muted,fontSize:14}}>Carregando dados...</p></div></div>;
   if(error||!data||!aggregates) return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:C.dark}}><GlobalStyle/><p style={{color:C.red}}>{error||"Campanha não encontrada."}</p></div>;
@@ -150,6 +262,38 @@ const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
 </div>
 
         <Tabs tabs={mainTabs} active={mainTab} onChange={(tab)=>{ setMainTab(tab); gaEvent("tab_click", { tab_name: tab, report_token: token }); }} theme={cTheme}/>
+
+        {/* Barra do filtro de período — aparece nas abas que suportam.
+            Visão Geral / Display / Video compartilham `mainRange`.
+            RMND / PDOOH têm filtros próprios renderizados dentro do UploadTab. */}
+        {["Visão Geral", "Display", "Video"].includes(mainTab) && (
+          <div style={{
+            display:"flex",
+            justifyContent:"flex-end",
+            alignItems:"center",
+            gap:12,
+            marginTop:20,
+            marginBottom:-4,
+            flexWrap:"wrap",
+          }}>
+            {aggregates.isFiltered && (
+              <span style={{
+                fontSize:12,
+                color:cmuted,
+                fontWeight:500,
+              }}>
+                Exibindo {aggregates.filterDays} de {aggregates.campaignDays} dias da campanha
+              </span>
+            )}
+            <DateRangeFilter
+              value={mainRange}
+              onChange={setMainRange}
+              minDate={parseYmd(camp.start_date)}
+              maxDate={parseYmd(camp.end_date)}
+              isDark={isDarkClient}
+            />
+          </div>
+        )}
 
         {mainTab==="Visão Geral" && (
           <OverviewTab
@@ -201,8 +345,8 @@ const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
             setVidLines={setVidLines}
           />
         )}
-        {mainTab==="RMND"&&<div><UploadTab type="RMND" token={token} serverData={data.rmnd} readOnly={!isAdmin} adminJwt={adminJwt}/><TabChat token={token} tabName="RMND" author={isAdmin?"HYPR":"Cliente"} adminJwt={adminJwt} theme={cTheme}/></div>}
-        {mainTab==="PDOOH"&&<div><UploadTab type="PDOOH" token={token} serverData={data.pdooh} readOnly={!isAdmin} adminJwt={adminJwt}/><TabChat token={token} tabName="PDOOH" author={isAdmin?"HYPR":"Cliente"} adminJwt={adminJwt} theme={cTheme}/></div>}
+        {mainTab==="RMND"&&<div><UploadTab type="RMND" token={token} serverData={data.rmnd} readOnly={!isAdmin} adminJwt={adminJwt} isDark={isDarkClient}/><TabChat token={token} tabName="RMND" author={isAdmin?"HYPR":"Cliente"} adminJwt={adminJwt} theme={cTheme}/></div>}
+        {mainTab==="PDOOH"&&<div><UploadTab type="PDOOH" token={token} serverData={data.pdooh} readOnly={!isAdmin} adminJwt={adminJwt} isDark={isDarkClient}/><TabChat token={token} tabName="PDOOH" author={isAdmin?"HYPR":"Cliente"} adminJwt={adminJwt} theme={cTheme}/></div>}
         {mainTab==="VIDEO LOOM" && <LoomTab loomUrl={data.loom}/>}
         {mainTab==="SURVEY" && (
           <div style={{padding:"24px 0"}}>

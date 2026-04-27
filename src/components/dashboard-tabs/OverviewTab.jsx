@@ -44,6 +44,7 @@ const OverviewTab = ({
     chartDisplay, chartVideo,
     display, video,
     totalImpressions, totalCusto, totalCustoOver,
+    isFiltered, budgetProRata,
   } = aggregates;
 
   const cbg2  = theme.bg2;
@@ -57,7 +58,11 @@ const OverviewTab = ({
 
       {/* KPI Cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 8 }}>
-        <KpiCard label="Budget Total"        value={fmtR(camp.budget_contracted)} theme={theme}/>
+        <KpiCard
+          label={isFiltered ? "Budget (período)" : "Budget Total"}
+          value={fmtR(isFiltered ? budgetProRata : camp.budget_contracted)}
+          theme={theme}
+        />
         {display.length > 0 && <KpiCard label="CPM Neg." value={fmtR(camp.cpm_negociado)} theme={theme}/>}
         {video.length   > 0 && <KpiCard label="CPCV Neg." value={fmtR(camp.cpcv_negociado)} theme={theme}/>}
         <KpiCard label="Imp. Visíveis" value={fmt(totalImpressions)} theme={theme}/>
@@ -66,9 +71,10 @@ const OverviewTab = ({
         <KpiCard label="Custo Ef. + Over" value={fmtR(totalCustoOver)} color={C.blue} theme={theme}/>
       </div>
 
-      {/* Pacing Display — calcula no front porque o backend ainda não expõe
-          pacing display agregado. Video tem pacing já no totals[0]. */}
-      {display.length > 0 && (
+      {/* Pacing — escondido quando há filtro de período (não faz sentido em janela parcial).
+          Display calcula no front porque o backend ainda não expõe pacing display agregado.
+          Video tem pacing já no totals[0]. */}
+      {!isFiltered && display.length > 0 && (
         <PacingBar
           theme={theme}
           label="Pacing Display"
@@ -93,7 +99,7 @@ const OverviewTab = ({
           cost={display.reduce((s,r)=>s+(r.effective_total_cost||0), 0)}
         />
       )}
-      {video.length > 0 && (
+      {!isFiltered && video.length > 0 && (
         <PacingBar
           theme={theme}
           label="Pacing Video"

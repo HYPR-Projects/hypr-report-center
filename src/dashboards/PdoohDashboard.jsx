@@ -1,14 +1,51 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Bar } from "recharts";
 import { C } from "../shared/theme";
 import { fmt } from "../shared/format";
+import {
+  readRangeFromUrl,
+  writeRangeToUrl,
+  inRange,
+  parseYmd,
+  getRowDate,
+  daysInRange,
+} from "../shared/dateFilter";
 import BarChart from "../components/BarChart";
 import KpiCard from "../components/KpiCard";
+import DateRangeFilter from "../components/DateRangeFilter";
 import PdoohMap from "./PdoohMap";
 
-const PdoohDashboard = ({ data, onClear }) => {
+const PdoohDashboard = ({ data, onClear, isDark = true }) => {
   const [mapMetric, setMapMetric] = useState("impressions");
-  const rows = data.rows;
+  const allRows = data.rows;
+
+  const dateBounds = useMemo(() => {
+    let min = null, max = null;
+    allRows.forEach(r => {
+      const d = getRowDate(r, ["DATE", "Date", "date"]);
+      if (!d) return;
+      if (!min || d < min) min = d;
+      if (!max || d > max) max = d;
+    });
+    return {
+      min: min ? parseYmd(min) : null,
+      max: max ? parseYmd(max) : null,
+    };
+  }, [allRows]);
+
+  const [range, setRangeState] = useState(() => readRangeFromUrl("pdooh"));
+  const setRange = (r) => {
+    setRangeState(r);
+    writeRangeToUrl(r, "pdooh");
+  };
+
+  const rows = useMemo(() => {
+    if (!range) return allRows;
+    return allRows.filter(r => {
+      const d = getRowDate(r, ["DATE", "Date", "date"]);
+      return d && inRange(d, range);
+    });
+  }, [allRows, range]);
 
   const totalImpressions = rows.reduce((s,r)=>s+(Number(r["IMPRESSIONS"])||0),0);
   const totalPlays       = rows.reduce((s,r)=>s+(Number(r["PLAYS"])||0),0);
@@ -16,24 +53,13 @@ const PdoohDashboard = ({ data, onClear }) => {
   const uniqueOwners     = new Set(rows.map(r=>r["MEDIA_OWNER"]).filter(Boolean)).size;
 
   const byDate={};
-rows.forEach(r=>{
-  let d=r["DATE"]||r["Date"]||"";
-  d=String(d).trim();
-  // Converte número serial do Excel para data
-  if(/^\d+$/.test(d)){
-    const dt=new Date(Date.UTC(1899,11,30)+Number(d)*86400000);
-    d=dt.toISOString().slice(0,10);
-  }
-  // Converte DD/MM/YYYY para YYYY-MM-DD
-  if(/^\d{2}\/\d{2}\/\d{4}$/.test(d)){
-    const [dd,mm,yyyy]=d.split("/");
-    d=`${yyyy}-${mm}-${dd}`;
-  }
-  if(!d||d==="NaN-Na")return;
-  if(!byDate[d])byDate[d]={date:d,impressions:0,plays:0};
-  byDate[d].impressions+=Number(r["IMPRESSIONS"])||0;
-  byDate[d].plays+=Number(r["PLAYS"])||0;
-});
+  rows.forEach(r=>{
+    const d = getRowDate(r, ["DATE", "Date", "date"]);
+    if (!d) return;
+    if(!byDate[d])byDate[d]={date:d,impressions:0,plays:0};
+    byDate[d].impressions+=Number(r["IMPRESSIONS"])||0;
+    byDate[d].plays+=Number(r["PLAYS"])||0;
+  });
   const chartData=Object.values(byDate).sort((a,b)=>a.date>b.date?1:-1);
   const hasGeo = rows.some(r=>Number(r["LATITUDE"]||r["LAT"]||0)!==0);
   const byCity={};
@@ -61,9 +87,25 @@ rows.forEach(r=>{
   ]);
   return (
     <div>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:12}}>
         <div style={{fontSize:11,color:C.muted}}>Atualizado em: {new Date(data.uploadedAt).toLocaleString("pt-BR")}</div>
-        <button onClick={onClear} style={{background:C.dark3,color:C.muted,border:"none",padding:"6px 14px",borderRadius:8,cursor:"pointer",fontSize:12}}>🔄 Trocar arquivo</button>
+        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          {range && (
+            <span style={{fontSize:12,color:C.muted}}>
+              {rows.length} de {allRows.length} linhas · {daysInRange(range)}d
+            </span>
+          )}
+          <DateRangeFilter
+            value={range}
+            onChange={setRange}
+            minDate={dateBounds.min}
+            maxDate={dateBounds.max}
+            isDark={isDark}
+          />
+          {onClear && (
+            <button onClick={onClear} style={{background:C.dark3,color:C.muted,border:"none",padding:"6px 14px",borderRadius:8,cursor:"pointer",fontSize:12}}>🔄 Trocar arquivo</button>
+          )}
+        </div>
       </div>
 
       {/* KPI Cards */}
@@ -74,8 +116,13 @@ rows.forEach(r=>{
         <KpiCard label="Media Owners" value={uniqueOwners}/>
       </div>
 
+      {rows.length === 0 ? (
+        <div style={{textAlign:"center",padding:48,color:C.muted,background:C.dark2,border:`1px solid ${C.dark3}`,borderRadius:12}}>
+          Nenhuma linha encontrada no período selecionado.
+        </div>
+      ) : (<>
       {/* Gráficos diários */}
-<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
   <div style={{background:C.dark2,border:`1px solid ${C.dark3}`,borderRadius:12,padding:20}}>
     <div style={{fontSize:13,fontWeight:700,color:C.blue,marginBottom:12,textTransform:"uppercase",letterSpacing:1}}>Impressões Diárias</div>
     <BarChart data={chartData} xKey="date" yKey="impressions" color={C.blue}
@@ -164,6 +211,7 @@ rows.forEach(r=>{
           </table>
         </div>
       </div>
+      </>)}
     </div>
   );
 };

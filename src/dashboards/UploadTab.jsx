@@ -5,7 +5,7 @@ import { saveUpload } from "../lib/api";
 import RmndDashboard from "./RmndDashboard";
 import PdoohDashboard from "./PdoohDashboard";
 
-const UploadTab = ({ type, token, serverData, readOnly, adminJwt }) => {
+const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true }) => {
   const XLSX       = useXlsx();
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(false);
@@ -76,8 +76,8 @@ const UploadTab = ({ type, token, serverData, readOnly, adminJwt }) => {
       )}
     </div>
   );
-  if(type==="RMND") return <RmndDashboard data={data} onClear={readOnly?null:clear}/>;
-  return <PdoohDashboard data={data} onClear={readOnly?null:clear}/>;
+  if(type==="RMND") return <RmndDashboard data={data} onClear={readOnly?null:clear} isDark={isDark}/>;
+  return <PdoohDashboard data={data} onClear={readOnly?null:clear} isDark={isDark}/>;
 };
 
 // ── RMND Dashboard ────────────────────────────────────────────────────────────
