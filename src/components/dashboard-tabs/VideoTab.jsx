@@ -40,13 +40,6 @@ const VideoTab = ({
 
   return (
     <div>
-      <Tabs
-        tabs={TACTIC_TABS}
-        active={vidTab}
-        onChange={(t) => { setVidTab(t); setVidLines([]); }}
-        small
-        theme={theme}
-      />
       {(() => {
         const rows       = totals.filter(r => r.media_type === "VIDEO" && r.tactic_type === vidTab);
         const detailAllV = detail0.filter(r => r.media_type === "VIDEO" && r.line_name?.toLowerCase().includes(vidTab.toLowerCase()));
@@ -62,17 +55,27 @@ const VideoTab = ({
 
         return (
           <div>
-            {/* Toolbar: Audiência + Período alinhados à direita */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, marginTop: 16, marginBottom: 16, flexWrap: "wrap" }}>
-              <AudienceFilter lines={lineNamesV} selected={vidLines} onChange={setVidLines} theme={theme} isDark={isDarkClient}/>
-              <DateRangeFilter
-                value={mainRange}
-                onChange={setMainRange}
-                minDate={parseYmd(camp.start_date)}
-                maxDate={parseYmd(camp.end_date)}
-                availableDates={availableDates}
-                isDark={isDarkClient}
+            {/* Toolbar única: O2O/OOH à esquerda, Audiência + Período à direita */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 16, marginBottom: 16, flexWrap: "wrap" }}>
+              <Tabs
+                tabs={TACTIC_TABS}
+                active={vidTab}
+                onChange={(t) => { setVidTab(t); setVidLines([]); }}
+                small
+                theme={theme}
+                inline
               />
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <AudienceFilter lines={lineNamesV} selected={vidLines} onChange={setVidLines} theme={theme} isDark={isDarkClient}/>
+                <DateRangeFilter
+                  value={mainRange}
+                  onChange={setMainRange}
+                  minDate={parseYmd(camp.start_date)}
+                  maxDate={parseYmd(camp.end_date)}
+                  availableDates={availableDates}
+                  isDark={isDarkClient}
+                />
+              </div>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 12, marginBottom: 20 }}>

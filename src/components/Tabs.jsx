@@ -1,7 +1,7 @@
 import { C } from "../shared/theme";
 
-const Tabs = ({ tabs, active, onChange, small, theme }) => (
-  <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:small?12:20}}>
+const Tabs = ({ tabs, active, onChange, small, theme, inline }) => (
+  <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom: inline ? 0 : (small?12:20)}}>
     {tabs.map(t=>(
       <button key={t} onClick={()=>onChange(t)} style={{
         background:active===t?C.blue:(theme?.bg3||C.dark3),
