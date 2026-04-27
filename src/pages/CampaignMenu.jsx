@@ -23,7 +23,7 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
   const [savingLoom,    setSavingLoom]    = useState(false);
   const [surveyModal,   setSurveyModal]   = useState(null);
   const [savingSurvey,  setSavingSurvey]  = useState(false);
-  const [surveyBlocks,  setSurveyBlocks]  = useState([{ nome: "", ctrlUrl: "", expUrl: "" }]);
+  const [surveyBlocks,  setSurveyBlocks]  = useState([{ nome: "", ctrlUrl: "", expUrl: "", focusRow: "" }]);
   const [logoModal,     setLogoModal]     = useState(null);
   const [logoModalFile, setLogoModalFile] = useState(null);
   const [logoModalPreview, setLogoModalPreview] = useState(null);
@@ -110,14 +110,18 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
         if (!b.ctrlUrl.trim() || !b.expUrl.trim()) { alert("Preencha os dois links em todas as perguntas."); setSavingSurvey(false); return; }
         if (!b.nome.trim()) { alert("Preencha o nome de todas as perguntas."); setSavingSurvey(false); return; }
       }
-      const payload = surveyBlocks.map(b => ({ nome: b.nome.trim(), ctrlUrl: b.ctrlUrl.trim(), expUrl: b.expUrl.trim() }));
+      const payload = surveyBlocks.map(b => {
+        const out = { nome: b.nome.trim(), ctrlUrl: b.ctrlUrl.trim(), expUrl: b.expUrl.trim() };
+        if (b.focusRow && b.focusRow.trim()) out.focusRow = b.focusRow.trim();
+        return out;
+      });
       const jwt = await getOrIssueAdminJwt();
       await fetch(`${API_URL}?action=save_survey`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...adminAuthHeaders(jwt) },
         body: JSON.stringify({ short_token: surveyModal, survey_data: JSON.stringify(payload) }),
       });
-      alert("Survey salvo com sucesso!"); setSurveyModal(null); setSurveyBlocks([{ nome: "", ctrlUrl: "", expUrl: "" }]);
+      alert("Survey salvo com sucesso!"); setSurveyModal(null); setSurveyBlocks([{ nome: "", ctrlUrl: "", expUrl: "", focusRow: "" }]);
     } catch { alert("Erro ao salvar survey."); } finally { setSavingSurvey(false); }
   };
 
@@ -513,7 +517,7 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
       {/* Survey modal */}
       {surveyModal && (
         <div style={{ position: "fixed", inset: 0, background: "#00000080", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 24 }}
-          onClick={e => { if (e.target === e.currentTarget) { setSurveyModal(null); setSurveyBlocks([{ nome: "", ctrlUrl: "", expUrl: "" }]); } }}>
+          onClick={e => { if (e.target === e.currentTarget) { setSurveyModal(null); setSurveyBlocks([{ nome: "", ctrlUrl: "", expUrl: "", focusRow: "" }]); } }}>
           <div className="fade-in" style={{ background: modalBg, border: `1px solid ${modalBdr}`, borderRadius: 16, padding: 32, width: "100%", maxWidth: 540, maxHeight: "90vh", overflowY: "auto" }}>
             <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 4, color: text }}>📋 Configurar Survey</h2>
             <p style={{ color: muted, fontSize: 14, marginBottom: 6 }}>Links públicos do Typeform para <strong>{surveyModal}</strong>.</p>
@@ -557,14 +561,25 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
                     style={{ width: "100%", background: inputBg, border: `1px solid ${block.expUrl ? C.blue+"60" : modalBdr}`, borderRadius: 7, padding: "9px 12px", color: text, fontSize: 12, outline: "none", fontFamily: "monospace" }}
                   />
                 </div>
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${modalBdr}` }}>
+                  <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>
+                    Marca-foco <span style={{ opacity: 0.6 }}>(opcional, só pra perguntas tipo Matrix)</span>
+                  </div>
+                  <input
+                    value={block.focusRow || ""}
+                    onChange={e => setSurveyBlocks(b => b.map((bl, i) => i === idx ? { ...bl, focusRow: e.target.value } : bl))}
+                    placeholder="Ex: Heineken — destaca essa linha visualmente"
+                    style={{ width: "100%", background: inputBg, border: `1px solid ${block.focusRow ? C.blue+"60" : modalBdr}`, borderRadius: 7, padding: "9px 12px", color: text, fontSize: 13, outline: "none" }}
+                  />
+                </div>
               </div>
             ))}
-            <button onClick={() => setSurveyBlocks(b => [...b, { nome: "", ctrlUrl: "", expUrl: "" }])}
+            <button onClick={() => setSurveyBlocks(b => [...b, { nome: "", ctrlUrl: "", expUrl: "", focusRow: "" }])}
               style={{ width: "100%", background: "none", border: `1px dashed ${modalBdr}`, color: C.blue, borderRadius: 8, padding: "10px 0", cursor: "pointer", fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
               + Adicionar pergunta
             </button>
             <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={() => { setSurveyModal(null); setSurveyBlocks([{ nome: "", ctrlUrl: "", expUrl: "" }]); }}
+              <button onClick={() => { setSurveyModal(null); setSurveyBlocks([{ nome: "", ctrlUrl: "", expUrl: "", focusRow: "" }]); }}
                 style={{ flex: 1, background: inputBg, color: muted, border: `1px solid ${modalBdr}`, padding: 12, borderRadius: 8, cursor: "pointer", fontSize: 14 }}>Cancelar</button>
               <button disabled={savingSurvey} onClick={saveSurvey}
                 style={{ flex: 2, background: C.blue, color: C.white, border: "none", padding: 12, borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 700, opacity: savingSurvey ? 0.5 : 1 }}>

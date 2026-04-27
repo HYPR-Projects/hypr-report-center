@@ -143,8 +143,16 @@ def report_data(request):
 
     # ── Endpoint: proxy Typeform API (evita CORS) ────────────────────────────
     # Aceita `form_url` (URL pública do form, modo preferido) ou `form_id`
-    # (legado). Devolve as respostas já agregadas como contagem por label,
-    # economizando payload e CPU no front. O front só precisa renderizar.
+    # (legado). Resposta é unificada em dois formatos possíveis:
+    #
+    #   { "type": "choice", "counts": {label: n}, "total": N }
+    #     → Para perguntas choice/choices simples (Sim/Não/Talvez, etc).
+    #
+    #   { "type": "matrix", "rows": {row: {counts, total}}, "total": N }
+    #     → Para perguntas matrix (ex: "avalie cada marca em 1-3").
+    #       Cada linha é tratada como uma sub-pergunta independente.
+    #
+    # `total` em ambos os casos = número de respostas completadas no form.
     if request.args.get("action") == "typeform_proxy":
         form_url = request.args.get("form_url", "").strip()
         form_id_param = request.args.get("form_id", "").strip()
@@ -156,7 +164,9 @@ def report_data(request):
         if not TYPEFORM_TOKEN:
             return (jsonify({"error": "TYPEFORM_TOKEN não configurado"}), 500, headers)
 
-        counts = Counter()
+        flat_counts = Counter()
+        matrix_rows = {}
+        has_matrix = False
         total = 0
         before_token = None
         try:
@@ -168,25 +178,41 @@ def report_data(request):
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     data = json.loads(resp.read().decode())
                 items = data.get("items", [])
-                for item in items:
-                    total += 1
-                    for ans in item.get("answers", []):
-                        # Choice única
-                        if ans.get("type") == "choice":
-                            label = (ans.get("choice") or {}).get("label")
-                            if label:
-                                counts[label] += 1
-                        # Múltipla escolha
-                        elif ans.get("type") == "choices":
-                            for label in (ans.get("choices") or {}).get("labels", []) or []:
-                                if label:
-                                    counts[label] += 1
+                total += len(items)
+
+                page_flat, page_matrix, page_has_matrix, _ = _process_typeform_items(items)
+                # Acumula
+                flat_counts.update(page_flat)
+                if page_has_matrix:
+                    has_matrix = True
+                for row_label, row_counter in page_matrix.items():
+                    if row_label not in matrix_rows:
+                        matrix_rows[row_label] = Counter()
+                    matrix_rows[row_label].update(row_counter)
+
                 if len(items) < 1000:
                     break
                 before_token = items[-1].get("token")
-            return (jsonify({"counts": dict(counts), "total": total, "form_id": form_id}), 200, headers)
+
+            if has_matrix:
+                # Serializa o dict de Counters
+                rows_out = {
+                    row: {"counts": dict(cnt), "total": sum(cnt.values())}
+                    for row, cnt in matrix_rows.items()
+                }
+                return (jsonify({
+                    "type": "matrix",
+                    "rows": rows_out,
+                    "total": total,
+                    "form_id": form_id,
+                }), 200, headers)
+            return (jsonify({
+                "type": "choice",
+                "counts": dict(flat_counts),
+                "total": total,
+                "form_id": form_id,
+            }), 200, headers)
         except urllib.error.HTTPError as e:
-            # Erros típicos: 401 token inválido, 404 form não encontrado, 403 sem acesso
             print(f"[ERROR typeform_proxy] HTTP {e.code} for form {form_id}: {e.reason}")
             msg = {
                 401: "TYPEFORM_TOKEN inválido ou expirado",
@@ -1179,3 +1205,67 @@ def _extract_typeform_form_id(value: str) -> str:
     if _TYPEFORM_BARE_ID_RE.match(s):
         return s
     return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Processamento de respostas Typeform — detecta tipo (choice / matrix)
+# ─────────────────────────────────────────────────────────────────────────────
+def _process_typeform_items(items):
+    """Agrega respostas de uma página de items do Typeform num formato unificado.
+
+    Suporta três tipos de pergunta:
+      - 'choice'   → resposta única em múltipla escolha
+      - 'choices'  → várias selecionadas em múltipla escolha
+      - 'matrix'   → matriz N linhas × M colunas (ex: avalie marca X em escala 1-3)
+
+    Se o form contém matrix em qualquer item, prevalece o formato 'matrix' no
+    output (forms costumam ser homogêneos por pergunta — estamos pegando
+    response-level aqui, então em prática só tem um tipo predominante).
+
+    Retorna duas estruturas; o caller escolhe qual usar baseado em has_matrix:
+      flat_counts: Counter de labels (modo choice/choices)
+      matrix_rows: dict[row_label] → Counter[col_label]
+    """
+    flat_counts = Counter()
+    matrix_rows = {}  # row_label → Counter[col_label]
+    has_matrix = False
+    has_flat = False
+
+    for item in items:
+        for ans in item.get("answers", []) or []:
+            atype = ans.get("type")
+
+            # Choice única
+            if atype == "choice":
+                label = (ans.get("choice") or {}).get("label")
+                if label:
+                    flat_counts[label] += 1
+                    has_flat = True
+
+            # Múltipla escolha
+            elif atype == "choices":
+                for label in ((ans.get("choices") or {}).get("labels") or []):
+                    if label:
+                        flat_counts[label] += 1
+                        has_flat = True
+
+            # Matrix (estrutura: ans["matrix"]["rows"] = lista de {row:{label}, choice:{label}})
+            elif atype == "matrix" or ans.get("matrix"):
+                has_matrix = True
+                matrix = ans.get("matrix") or {}
+                for row in (matrix.get("rows") or []):
+                    row_label = ((row.get("row") or {}).get("label")
+                                 or (row.get("field") or {}).get("title"))
+                    choice_label = (row.get("choice") or {}).get("label")
+                    if row_label and choice_label:
+                        if row_label not in matrix_rows:
+                            matrix_rows[row_label] = Counter()
+                        matrix_rows[row_label][choice_label] += 1
+                    # Suporte a matrix com múltipla seleção por linha (raro)
+                    for c_label in ((row.get("choices") or {}).get("labels") or []):
+                        if row_label and c_label:
+                            if row_label not in matrix_rows:
+                                matrix_rows[row_label] = Counter()
+                            matrix_rows[row_label][c_label] += 1
+
+    return flat_counts, matrix_rows, has_matrix, has_flat
