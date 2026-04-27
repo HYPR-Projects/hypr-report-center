@@ -55,13 +55,16 @@ ALLOWED_ORIGINS = [
     "https://www.report.hypr.mobi",
 ]
 
-# Previews do Vercel — cada PR e cada branch geram um subdomínio único do tipo
-# https://hypr-report-{hash}-hypr-projects.vercel.app. Como são efêmeros e
-# imprevisíveis, não dá pra listar manualmente. Liberamos por regex restrito
-# à org hypr-projects pra não abrir CORS pro mundo. URL de produção customizada
-# (report.hypr.mobi) continua na allowlist explícita acima.
+# Previews do Vercel — cada PR e cada branch geram um subdomínio único.
+# Padrões observados em produção:
+#   hypr-report-{hash}-hypr-projects.vercel.app
+#   hypr-report-hub-git-{branch}-{hash}-hypr-projects.vercel.app
+# Hash do Vercel pode conter maiúsculas e minúsculas. Liberamos por regex
+# restrito ao prefixo 'hypr-report' + sufixo '-hypr-projects.vercel.app'
+# pra não abrir CORS pro mundo. URL de produção (report.hypr.mobi) continua
+# na allowlist explícita acima.
 _VERCEL_PREVIEW_RE = re.compile(
-    r"^https://hypr-report-[a-z0-9-]+-hypr-projects\.vercel\.app$"
+    r"^https://hypr-report[a-zA-Z0-9-]*-hypr-projects\.vercel\.app$"
 )
 
 
