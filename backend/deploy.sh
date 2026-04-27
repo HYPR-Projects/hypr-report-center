@@ -2,26 +2,27 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Deploy da Cloud Function do HYPR Report Hub.
 #
-# Flags relevantes pra performance:
-#   --min-instances=1   mantém 1 instância sempre quente, eliminando cold start
-#                       (~2-4s) na primeira request depois de inatividade.
-#                       Custo: ~US$0.40-1.20/mês a 256MB/0.25 vCPU.
-#   --memory=512MB      headroom pra processar payloads pesados (totals/daily/
-#                       detail somados podem passar de 5MB) sem OOM.
-#   --timeout=60s       limite por request. Como agora rodamos 8 queries em
-#                       paralelo, o teto cai pra ~3-5s. 60s é folga.
-#   --max-instances=20  autoscaling cap pra não estourar quota do BigQuery
-#                       em pico de acesso.
-#
 # Sobre envvars:
-#   `--update-env-vars` preserva variáveis existentes na revisão (ex: JWT_SECRET,
-#   TYPEFORM_TOKEN gerenciados manualmente via console). NUNCA usar
-#   `--set-env-vars` aqui — ele apaga tudo o que não estiver listado e quebra
-#   auth + integrações.
+#   gcloud functions deploy NÃO preserva envvars existentes — qualquer flag
+#   (--set-env-vars OU --update-env-vars) que não inclua uma variável faz a
+#   nova revisão nascer sem ela. Como JWT_SECRET e TYPEFORM_TOKEN são
+#   secrets gerenciados manualmente (fora do git), o script captura os
+#   valores atuais da revisão em produção e re-passa no deploy via arquivo
+#   YAML temporário (mais seguro que --set-env-vars na linha de comando,
+#   que vazaria no histórico do shell).
+#
+# Sobre traffic split:
+#   Após rollback manual, o serviço pode ficar com config de "não rotear
+#   automaticamente para a última revisão". Por isso, ao final do deploy
+#   forçamos `update-traffic --to-latest` para garantir 100% na nova.
+#
+# Flags de performance:
+#   --min-instances=1   elimina cold start (~US$0.40-1.20/mês)
+#   --memory=512MB      headroom pra payloads grandes
+#   --concurrency=10    múltiplos requests por instância (queries são I/O-bound)
 #
 # Pré-requisitos:
-#   gcloud auth login
-#   gcloud config set project site-hypr
+#   gcloud auth login && gcloud config set project site-hypr
 #
 # Uso:
 #   ./deploy.sh
@@ -31,8 +32,73 @@ set -euo pipefail
 
 REGION="southamerica-east1"
 FUNCTION_NAME="report_data"
+SERVICE_NAME="report-data"
 
 cd "$(dirname "$0")"
+
+# ── 1. Capturar secrets da revisão atualmente em produção ────────────────────
+echo "▸ Capturando envvars da revisão ativa em produção..."
+
+ACTIVE_REV=$(gcloud run services describe "$SERVICE_NAME" \
+  --region="$REGION" \
+  --format="value(status.traffic[0].revisionName)" 2>/dev/null || echo "")
+
+if [ -z "$ACTIVE_REV" ]; then
+  echo "✗ Não consegui identificar a revisão ativa. Abortando."
+  exit 1
+fi
+echo "  revisão ativa: $ACTIVE_REV"
+
+# Extrai valor de uma envvar específica via JSON parse (mais robusto que grep)
+extract_env() {
+  local var_name="$1"
+  gcloud run revisions describe "$ACTIVE_REV" \
+    --region="$REGION" \
+    --format=json 2>/dev/null | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+env = data.get('spec', {}).get('template', {}).get('spec', {}).get('containers', [{}])[0].get('env', [])
+for e in env:
+    if e.get('name') == '$var_name':
+        print(e.get('value', ''))
+        break
+"
+}
+
+JWT_SECRET=$(extract_env "JWT_SECRET")
+TYPEFORM_TOKEN=$(extract_env "TYPEFORM_TOKEN")
+
+if [ -z "$JWT_SECRET" ]; then
+  echo "✗ JWT_SECRET não encontrado na revisão $ACTIVE_REV. Abortando."
+  echo "  (sem ele o login admin quebra em loop)"
+  exit 1
+fi
+echo "  ✓ JWT_SECRET capturado"
+if [ -n "$TYPEFORM_TOKEN" ]; then
+  echo "  ✓ TYPEFORM_TOKEN capturado"
+else
+  echo "  ⚠ TYPEFORM_TOKEN ausente (proxy de survey pode falhar)"
+fi
+
+# ── 2. Montar arquivo YAML com todas as envvars ──────────────────────────────
+ENV_FILE=$(mktemp -t envs.XXXXXX.yaml)
+trap "rm -f $ENV_FILE" EXIT
+
+cat > "$ENV_FILE" <<EOF
+GCP_PROJECT: site-hypr
+BQ_DATASET_HUB: prod_prod_hypr_reporthub
+BQ_TABLE: campaign_results
+LOG_EXECUTION_ID: 'true'
+JWT_SECRET: '${JWT_SECRET}'
+EOF
+
+if [ -n "$TYPEFORM_TOKEN" ]; then
+  echo "TYPEFORM_TOKEN: '${TYPEFORM_TOKEN}'" >> "$ENV_FILE"
+fi
+
+# ── 3. Deploy ────────────────────────────────────────────────────────────────
+echo ""
+echo "▸ Iniciando deploy (2-4 min)..."
 
 gcloud functions deploy "$FUNCTION_NAME" \
   --gen2 \
@@ -48,8 +114,18 @@ gcloud functions deploy "$FUNCTION_NAME" \
   --min-instances=1 \
   --max-instances=20 \
   --concurrency=10 \
-  --update-env-vars=GCP_PROJECT=site-hypr,BQ_DATASET_HUB=prod_prod_hypr_reporthub,BQ_TABLE=campaign_results,LOG_EXECUTION_ID=true
+  --env-vars-file="$ENV_FILE"
 
+# ── 4. Rotear 100% do tráfego para a revisão recém-deployada ─────────────────
 echo ""
-echo "Deploy concluído. URL:"
-gcloud functions describe "$FUNCTION_NAME" --region="$REGION" --format="value(serviceConfig.uri)"
+echo "▸ Roteando 100% do tráfego para a nova revisão..."
+gcloud run services update-traffic "$SERVICE_NAME" \
+  --region="$REGION" \
+  --to-latest
+
+# ── 5. Output final ──────────────────────────────────────────────────────────
+echo ""
+echo "✓ Deploy concluído. URL pública:"
+gcloud functions describe "$FUNCTION_NAME" \
+  --region="$REGION" \
+  --format="value(serviceConfig.uri)"
