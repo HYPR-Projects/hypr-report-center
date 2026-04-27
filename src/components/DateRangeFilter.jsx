@@ -297,7 +297,7 @@ const DateRangeFilter = ({
                 : "0 16px 48px rgba(15,30,55,0.16), 0 2px 8px rgba(15,30,55,0.08)",
               display: "flex",
               flexDirection: "row",
-              width: 460,
+              width: 560,
               maxWidth: "calc(100vw - 32px)",
               overflow: "hidden",
               animation: "drpFadeIn 0.14s ease-out",
@@ -320,7 +320,8 @@ const DateRangeFilter = ({
               padding: 10px 6px;
               background: ${bg2};
               border-right: 1px solid ${border};
-              min-width: 138px;
+              width: 144px;
+              flex-shrink: 0;
             }
             .drp-presets button {
               text-align: left;
@@ -343,8 +344,16 @@ const DateRangeFilter = ({
             .drp-presets button.active:hover { background: ${accent}; color: white; }
             .drp-presets button:disabled { opacity: 0.35; cursor: not-allowed; }
 
-            .drp-right { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-            .drp-cal { padding: 10px 12px 6px; }
+            .drp-right { display: flex; flex-direction: column; flex: 1; min-width: 0; overflow: hidden; }
+            .drp-cal {
+              padding: 10px 14px 6px;
+              display: flex;
+              justify-content: center;
+            }
+            .drp-cal .rdp-root { width: 100%; }
+            .drp-cal .rdp-months { width: 100%; }
+            .drp-cal .rdp-month { width: 100%; }
+            .drp-cal .rdp-month_grid { width: 100%; table-layout: fixed; }
 
             /* Reset/override do react-day-picker pra respeitar tema */
             .drp-cal .rdp-root {

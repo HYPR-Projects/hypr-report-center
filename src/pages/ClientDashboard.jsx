@@ -280,7 +280,7 @@ const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
             alignItems:"center",
             gap:12,
             marginTop:20,
-            marginBottom:-4,
+            marginBottom:16,
             flexWrap:"wrap",
           }}>
             {aggregates.isFiltered && (
