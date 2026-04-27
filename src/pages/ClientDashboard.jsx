@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Line } from "recharts";
 import { API_URL } from "../shared/config";
 import { C } from "../shared/theme";
@@ -75,55 +75,64 @@ const ClientDashboard = ({ token, isAdmin }) => {
       .catch(e=>{setError("Erro ao carregar dados: "+e.message);setLoading(false);});
   },[token]);
 
+  // Agregações derivadas de `data`. Tudo aqui rodava a cada render do componente
+  // (incluindo cliques em tabs, digitação no chat, etc.). Em campanhas com
+  // detail grande, enrichDetailCosts é O(n*m) e era o gargalo principal.
+  // Memoizando, esse trabalho roda 1x quando data chega e fica em cache até
+  // o próximo fetch. Hooks precisam vir antes de early returns — daí estar aqui.
+  const aggregates = useMemo(() => {
+    if (!data || !data.campaign) return null;
+    const noSurvey = r => !/survey/i.test(r.line_name||"");
+    const totals = (data.totals||[]).filter(noSurvey);
+    const daily0  = (data.daily||[]).filter(noSurvey);
+    const detail0 = (data.detail||[]).filter(noSurvey);
+    const daily  = daily0;
+    const detail = enrichDetailCosts(detail0, totals);
+    const chartDisplay = daily.filter(r=>r.media_type==="DISPLAY").map(r=>({...r,ctr:r.viewable_impressions>0?(r.clicks||0)/r.viewable_impressions*100:0}));
+    const chartVideo   = daily.filter(r=>r.media_type==="VIDEO").map(r=>{
+      const v100 = r.video_view_100||r.completions||r.viewable_video_view_100_complete||0;
+      const vi   = r.viewable_impressions||0;
+      return {...r, video_view_100: v100, completions: v100, vtr: vi>0 ? v100/vi*100 : 0};
+    });
+
+    const enrich = (rows) => rows.map(r=>({
+      ...r,
+      ctr: r.impressions>0?(r.clicks/r.impressions)*100:null,
+      vcr: r.impressions>0?((r.viewable_video_view_100_complete||0)/r.impressions)*100:null,
+      // Usar pacing do backend diretamente — já calculado com datas reais por frente
+      pacing: r.pacing ?? null,
+      rentabilidade: r.deal_cpm_amount>0?((r.deal_cpm_amount-(r.effective_cpm_amount||0))/r.deal_cpm_amount)*100
+        :r.deal_cpcv_amount>0?((r.deal_cpcv_amount-(r.effective_cpcv_amount||0))/r.deal_cpcv_amount)*100:null,
+      custo_efetivo: r.effective_total_cost,
+      custo_efetivo_over: r.effective_cost_with_over,
+      completions: r.viewable_video_view_100_complete ?? r.completions,
+    }));
+
+    const display = enrich(totals.filter(t=>t.media_type==="DISPLAY"));
+    const video   = enrich(totals.filter(t=>t.media_type==="VIDEO"));
+
+    const totalImpressions=totals.reduce((s,t)=>s+(t.viewable_impressions||0),0);
+    const totalCusto=totals.reduce((s,t)=>s+(t.effective_total_cost||0),0);
+    const totalCustoOver=totals.reduce((s,t)=>s+(t.effective_cost_with_over||0),0);
+
+    return {
+      totals, daily0, detail0, detail,
+      chartDisplay, chartVideo,
+      display, video,
+      totalImpressions, totalCusto, totalCustoOver,
+    };
+  }, [data]);
+
   if(loading) return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:C.dark}}><GlobalStyle/><div style={{textAlign:"center"}}><Spinner size={48}/><p style={{marginTop:20,color:C.muted,fontSize:14}}>Carregando dados...</p></div></div>;
-  if(error||!data) return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:C.dark}}><GlobalStyle/><p style={{color:C.red}}>{error||"Campanha não encontrada."}</p></div>;
+  if(error||!data||!aggregates) return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:C.dark}}><GlobalStyle/><p style={{color:C.red}}>{error||"Campanha não encontrada."}</p></div>;
 
   const camp   = data.campaign;
-  const noSurvey = r => !/survey/i.test(r.line_name||"");
-  const totals = (data.totals||[]).filter(noSurvey);
-  const daily0  = (data.daily||[]).filter(noSurvey);
-  const detail0 = (data.detail||[]).filter(noSurvey);
-  const daily  = daily0;
-  const detail = enrichDetailCosts(detail0, totals);
-  const chartDisplay = daily.filter(r=>r.media_type==="DISPLAY").map(r=>({...r,ctr:r.viewable_impressions>0?(r.clicks||0)/r.viewable_impressions*100:0}));
-  const chartVideo   = daily.filter(r=>r.media_type==="VIDEO").map(r=>{
-    const v100 = r.video_view_100||r.completions||r.viewable_video_view_100_complete||0;
-    const vi   = r.viewable_impressions||0;
-    return {...r, video_view_100: v100, completions: v100, vtr: vi>0 ? v100/vi*100 : 0};
-  });
-
-  const enrich = (rows) => rows.map(r=>({
-    ...r,
-    ctr: r.impressions>0?(r.clicks/r.impressions)*100:null,
-    vcr: r.impressions>0?((r.viewable_video_view_100_complete||0)/r.impressions)*100:null,
-    // Usar pacing do backend diretamente — já calculado com datas reais por frente
-    pacing: r.pacing ?? null,
-    rentabilidade: r.deal_cpm_amount>0?((r.deal_cpm_amount-(r.effective_cpm_amount||0))/r.deal_cpm_amount)*100
-      :r.deal_cpcv_amount>0?((r.deal_cpcv_amount-(r.effective_cpcv_amount||0))/r.deal_cpcv_amount)*100:null,
-    custo_efetivo: r.effective_total_cost,
-    custo_efetivo_over: r.effective_cost_with_over,
-    completions: r.viewable_video_view_100_complete ?? r.completions,
-  }));
-
-  const display = enrich(totals.filter(t=>t.media_type==="DISPLAY"));
-  const video   = enrich(totals.filter(t=>t.media_type==="VIDEO"));
-
-  const dailyByDate={};
-  daily.forEach(r=>{
-    if(!dailyByDate[r.date])dailyByDate[r.date]={date:r.date,impressions:0,custo:0,viewable_impressions:0,completions:0,clicks:0,video_view_100:0};
-    dailyByDate[r.date].impressions+=Number(r.viewable_impressions)||0;
-    dailyByDate[r.date].viewable_impressions+=Number(r.viewable_impressions)||0;
-    dailyByDate[r.date].custo+=Number(r.effective_total_cost)||0;
-    dailyByDate[r.date].completions+=Number(r.completions||r.video_view_100||0);
-    dailyByDate[r.date].clicks+=Number(r.clicks)||0;
-    dailyByDate[r.date].video_view_100+=Number(r.video_view_100||0);
-  });
-  const chartDailyRaw=Object.values(dailyByDate).sort((a,b)=>a.date>b.date?1:-1);
-  const chartDaily=chartDailyRaw.map(r=>({...r,ctr:r.viewable_impressions>0?r.clicks/r.viewable_impressions*100:0,vtr:r.viewable_impressions>0?r.video_view_100/r.viewable_impressions*100:0}));
-
-  const totalImpressions=totals.reduce((s,t)=>s+(t.viewable_impressions||0),0);
-  const totalCusto=totals.reduce((s,t)=>s+(t.effective_total_cost||0),0);
-  const totalCustoOver=totals.reduce((s,t)=>s+(t.effective_cost_with_over||0),0);
+  const {
+    totals, daily0, detail0, detail,
+    chartDisplay, chartVideo,
+    display, video,
+    totalImpressions, totalCusto, totalCustoOver,
+  } = aggregates;
   const mainTabs=["Visão Geral","Display","Video","RMND","PDOOH", "VIDEO LOOM","SURVEY"];
   const tacticTabs=["O2O","OOH"];
 
