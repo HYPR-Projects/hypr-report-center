@@ -65,7 +65,7 @@ export function CampaignHeaderV2({
           )}
         </div>
 
-        <h1 className="text-2xl md:text-3xl font-bold text-fg leading-tight truncate">
+        <h1 className="text-2xl md:text-3xl font-bold text-fg leading-tight line-clamp-2">
           {campaignName || "Campanha sem nome"}
         </h1>
 

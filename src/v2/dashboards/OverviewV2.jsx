@@ -1,25 +1,25 @@
 // src/v2/dashboards/OverviewV2.jsx
 //
-// Visão Geral V2 — primeira fatia (PR-06).
+// Visão Geral V2 — completa (Fase 2 fechada nas PRs 06, 07, 08).
 //
-// O QUE TEM
-//   - CampaignHeaderV2 (nome, cliente, período, status badge, ações)
-//   - DateRangeFilterV2 (chips de presets)
-//   - Grid de KpiCardV2 (Budget, CPM Neg, CPCV Neg, Imp. Visíveis, Views 100%,
-//     Custo Efetivo, Custo Efetivo + Over)
-//
-// O QUE NÃO TEM AINDA (próximas PRs da Fase 2)
-//   - PacingBar Display/Video (PR-07)
-//   - MediaSummary com CPM/CPCV negociado vs efetivo (PR-07)
-//   - Charts diários Imp. Visíveis × CTR e Views 100% × VTR (PR-08)
-//   - Tabela detalhada (PR-08)
-//   - Bloco A&F admin (PR-08)
-//   - Custom range arbitrário (calendário) — só presets nessa fatia
+// LAYOUT, NA ORDEM
+//   1. CampaignHeaderV2 — nome, cliente, período, status badge, botão
+//      "Voltar à versão atual"
+//   2. DateRangeFilterV2 — chips de presets + custom range com calendário.
+//      Persiste em ?from=&to= na URL (deep-link, voltar/avançar funcionam)
+//   3. KpiCardV2 grid — 7 indicadores principais
+//   4. PacingBarV2 (Display + Video) — escondido com filtro ativo
+//   5. MediaSummaryV2 — Negociado vs Efetivo destacado (diferencial do ADR)
+//   6. DualChartV2 — séries diárias Display (Imp.Visíveis × CTR) e Video
+//      (Views 100% × VTR)
+//   7. CollapsibleSectionV2 + DataTableV2 — tabela detalhada com filtro
+//      de mídia e download CSV
+//   8. AlcanceFrequenciaV2 — bloco editável admin
 //
 // CONTRATO COM ClientDashboardV2
-//   Recebe `data` (output de getCampaign) já carregado e os handlers
-//   de range. Não faz fetch — fetch fica no ClientDashboardV2 pra
-//   orquestrar loading state + ErrorBoundary.
+//   Recebe `data` (output de getCampaign) já carregado, mais token,
+//   isAdmin, adminJwt e onBackToLegacy. Não faz fetch — fetch fica no
+//   ClientDashboardV2 pra orquestrar loading state + ErrorBoundary.
 
 import { useEffect, useMemo, useState } from "react";
 import { computeAggregates } from "../../shared/aggregations";
@@ -216,8 +216,8 @@ export default function OverviewV2({ data, token, isAdmin, adminJwt, onBackToLeg
                 Resumo por mídia
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {hasDisplay && <MediaSummaryV2 type="DISPLAY" row={display[0]} />}
-                {hasVideo && <MediaSummaryV2 type="VIDEO" row={video[0]} />}
+                {hasDisplay && <MediaSummaryV2 type="DISPLAY" rows={display} />}
+                {hasVideo && <MediaSummaryV2 type="VIDEO" rows={video} />}
               </div>
             </section>
           )}

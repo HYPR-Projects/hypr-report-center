@@ -2,17 +2,27 @@
 //
 // Seção colapsável usando <details>/<summary> nativos do HTML.
 //
-// Por que <details> em vez de gerenciar estado com useState?
+// Por que <details>/<summary>
 //   - A11y nativa: leitor de tela já anuncia "expandido/colapsado"
 //   - Keyboard nav (Enter/Space) funciona sem código
-//   - Funciona com JS desabilitado
 //   - Atributo `open` controla estado, fácil de estilizar via CSS
+//
+// Por que controlamos com useState
+//   `<details open={defaultOpen}>` em React é CONTROLED, não default. Sem
+//   useState interno, qualquer re-render do parent (ex: usuário muda
+//   filtro de período no OverviewV2) faria React re-aplicar `open` igual
+//   ao defaultOpen, fechando uma seção que o usuário tinha aberto.
+//
+//   Com useState + onToggle, o estado vive no componente: parent
+//   re-render não afeta, e o toggle nativo do summary continua
+//   funcionando (event onToggle é disparado pelo browser).
 //
 // API:
 //   <CollapsibleSectionV2 title="Tabela Consolidada" defaultOpen>
 //     ...children...
 //   </CollapsibleSectionV2>
 
+import { useState } from "react";
 import { cn } from "../../ui/cn";
 
 export function CollapsibleSectionV2({
@@ -21,13 +31,16 @@ export function CollapsibleSectionV2({
   children,
   className,
 }) {
+  const [open, setOpen] = useState(defaultOpen);
+
   return (
     <details
       className={cn(
         "group rounded-xl border border-border bg-surface overflow-hidden",
         className,
       )}
-      open={defaultOpen}
+      open={open}
+      onToggle={(e) => setOpen(e.currentTarget.open)}
     >
       <summary
         className={cn(
