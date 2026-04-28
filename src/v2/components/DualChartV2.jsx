@@ -12,6 +12,16 @@
 //   - Bar default: signature (--color-signature)
 //   - Line default: warning (--color-warning) — contraste forte com bar,
 //     destaca a métrica de performance (taxa)
+//
+// Espaçamentos (PR-16 audit visual)
+//   - margin.right: 8 (não 64 — YAxis right tem width próprio que já
+//     reserva o espaço dos labels de %)
+//   - margin.left: 0 (YAxis left width=52 cobre tudo)
+//   - margin.top: 8 + YAxis padding-top: 8 → maior bar/ponto não cola no topo
+//   - XAxis padding.left/right: 16 → primeira e última barra com respiro
+//     dos eixos Y (antes ficavam coladas nas pontas)
+//   - XAxis minTickGap: 24 → evita sobreposição de labels de data em telas
+//     estreitas
 
 import {
   Bar,
@@ -57,7 +67,7 @@ export function DualChartV2({
       </div>
 
       <ResponsiveContainer width="100%" height={height}>
-        <LineChart data={data} margin={{ top: 4, right: 64, left: 8, bottom: 4 }}>
+        <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={chartNeutral.grid} vertical={false} />
           <XAxis
             dataKey={xKey}
@@ -66,6 +76,8 @@ export function DualChartV2({
             axisLine={{ stroke: chartNeutral.grid }}
             tickFormatter={(v) => (isDate ? String(v).slice(5) : String(v))}
             interval="preserveStartEnd"
+            minTickGap={24}
+            padding={{ left: 16, right: 16 }}
           />
           <YAxis
             yAxisId="left"
@@ -74,6 +86,7 @@ export function DualChartV2({
             axisLine={false}
             tickFormatter={fmtBig}
             width={52}
+            padding={{ top: 8, bottom: 0 }}
           />
           <YAxis
             yAxisId="right"
@@ -82,7 +95,8 @@ export function DualChartV2({
             tickLine={false}
             axisLine={false}
             tickFormatter={fmtPct}
-            width={56}
+            width={52}
+            padding={{ top: 8, bottom: 0 }}
           />
           <RTooltip
             cursor={{ fill: hypr.surfaceStrong }}
