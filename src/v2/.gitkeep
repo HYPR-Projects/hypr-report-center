@@ -1,0 +1,12 @@
+# Pasta reservada para os componentes do V2.
+#
+# Estrutura prevista (Fases 1-6):
+#   src/v2/
+#     components/   → cards, tabelas, charts e widgets específicos do V2
+#     dashboards/   → ClientDashboardV2 e suas abas (Overview, Display, Video, RMND, PDOOH, Loom, Survey)
+#
+# O Legacy continua em src/components/, src/dashboards/ e src/pages/.
+# V2 cresce em paralelo, sem mover ou renomear nada do Legacy.
+#
+# Esta pasta é descartável: se a Fase 7 nunca acontecer, basta remover
+# src/v2/ inteira sem afetar produção.

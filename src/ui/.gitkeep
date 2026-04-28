@@ -1,0 +1,7 @@
+# UI primitives compartilhados entre Legacy e V2.
+#
+# Esta pasta é o ponto de convergência: componentes "neutros" que o V2
+# adota desde já e o Legacy pode adotar gradualmente, sem grandes
+# refactors. Botões, inputs, modais e tipografia base entram aqui.
+#
+# Populada a partir da Fase 1 (Design System primitives + tokens).
