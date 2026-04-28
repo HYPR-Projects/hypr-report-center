@@ -31,7 +31,9 @@ src/
 ├── dashboards/             Dashboards específicos (RMND, PDOOH, Survey, Upload)
 ├── lib/                    Cliente HTTP (api.js)
 ├── shared/                 Utilitários compartilhados (auth, theme, dateFilter, aggregations…)
-├── ui/                     UI primitives compartilhados Legacy ↔ V2 (a partir da Fase 1)
+├── ui/                     UI primitives compartilhados Legacy ↔ V2
+│   ├── typography.js       Urbanist (4 pesos via @fontsource) + FONT_FAMILY exportado
+│   └── global-reset.css    Reset CSS moderno (dormente até Fase 1)
 └── v2/                     Refatoração visual V2 (a partir da Fase 1)
     ├── components/
     └── dashboards/
