@@ -11,12 +11,15 @@
 //      inline compacto após PR-16 (label+valor numa linha só)
 //   5. Charts diários (Display Imp×CTR + Video Views×VTR)
 //   6. DailyAggregateTableV2 — tabela "Entrega Agregada por Dia" (collapsible, aberto)
-//   7. CollapsibleSection + DataTable — "Detalhamento por Linha" (collapsible, fechado)
-//   8. AlcanceFrequenciaV2 — admin edita, cliente vê read-only
+//   7. AlcanceFrequenciaV2 — admin edita, cliente vê read-only
 //
 // ComparisonRow (CPM Display + CPCV Video) saiu na PR-16 — era redundante
 // com o MediaSummaryV2 abaixo, que já carrega Efetivo + Delta. Continua
 // existindo como hero principal nas tabs Display e Video.
+//
+// Detalhamento por Linha (DataTableV2) também saiu na PR-16 — virou tab
+// dedicada (DetalhamentoV2). Visão Geral fica como executive summary
+// puro, sem raw data competindo por foco.
 //
 // Quando há filtro de período ativo, Pacing some (não faz sentido em
 // janela parcial). Insights podem se ajustar no texto (verbo passado vs
@@ -32,7 +35,6 @@ import { PacingBarV2 } from "../components/PacingBarV2";
 import { MediaSummaryV2 } from "../components/MediaSummaryV2";
 import { DualChartV2 } from "../components/DualChartV2";
 import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
-import { DataTableV2 } from "../components/DataTableV2";
 import { DailyAggregateTableV2 } from "../components/DailyAggregateTableV2";
 import { AlcanceFrequenciaV2 } from "../components/AlcanceFrequenciaV2";
 
@@ -42,7 +44,7 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt 
     totalImpressions, totalCusto, totalCustoOver,
     display, video, totals,
     isFiltered, budgetProRata, budgetTotal,
-    chartDisplay, chartVideo, detail, daily0,
+    chartDisplay, chartVideo, daily0,
   } = aggregates;
 
   const hasDisplay = display.length > 0;
@@ -279,14 +281,7 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt 
         </CollapsibleSectionV2>
       )}
 
-      {/* ─── 7. Detalhamento granular por linha ─────────────────────── */}
-      {detail.length > 0 && (
-        <CollapsibleSectionV2 title="Detalhamento por Linha">
-          <DataTableV2 detail={detail} campaignName={camp.campaign_name} />
-        </CollapsibleSectionV2>
-      )}
-
-      {/* ─── 8. Alcance & Frequência ────────────────────────────────── */}
+      {/* ─── 7. Alcance & Frequência ────────────────────────────────── */}
       <AlcanceFrequenciaV2
         token={token}
         isAdmin={isAdmin}

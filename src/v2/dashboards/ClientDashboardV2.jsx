@@ -6,9 +6,15 @@
 //   1. TopBarV2 — branding "Report Hub" + share + voltar à versão atual
 //   2. CampaignHeaderV2 — hero card com gradient + nome campanha + token badge
 //   3. Filtro de período (compacto, alinhado à direita)
-//   4. Tabs Radix com ícones: Visão Geral / Display / Video
-//      (no Legacy tem RMND, PDOOH, VIDEO LOOM, SURVEY também — virão em PR-17+)
-//   5. TabsContent — OverviewV2 / DisplayV2 / VideoV2
+//   4. Tabs Radix com ícones: Visão Geral / Display / Video / Detalhamento /
+//      RMND / PDOOH / Video Loom / Survey
+//   5. TabsContent — OverviewV2 / DisplayV2 / VideoV2 / DetalhamentoV2 /
+//      RmndV2 / PdoohV2 / LoomV2 / SurveyV2
+//
+// Detalhamento (PR-16) é a tab dedicada à base de dados completa
+// (DataTableV2 com filter Tudo/Display/Video). Antes vivia como
+// CollapsibleSection na Visão Geral — saiu pra reduzir peso visual e
+// dar destaque proporcional pro raw data export.
 //
 // RESPONSABILIDADES (mantidas da PR-10):
 //   - Buscar dados via getCampaign(token)
@@ -46,6 +52,7 @@ import { DateRangeFilterV2 } from "../components/DateRangeFilterV2";
 import OverviewV2 from "./OverviewV2";
 import DisplayV2 from "./DisplayV2";
 import VideoV2 from "./VideoV2";
+import DetalhamentoV2 from "./DetalhamentoV2";
 import RmndV2 from "./RmndV2";
 import PdoohV2 from "./PdoohV2";
 import LoomV2 from "./LoomV2";
@@ -53,7 +60,7 @@ import SurveyV2 from "./SurveyV2";
 
 // ─── Helpers de URL ────────────────────────────────────────────────────
 
-const VALID_TABS = ["overview", "display", "video", "rmnd", "pdooh", "loom", "survey"];
+const VALID_TABS = ["overview", "display", "video", "detalhamento", "rmnd", "pdooh", "loom", "survey"];
 const VALID_TACTICS = ["O2O", "OOH"];
 
 function readTabFromUrl() {
@@ -240,6 +247,9 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 <TabsTrigger value="video" iconLeft={<VideoIcon />}>
                   Video
                 </TabsTrigger>
+                <TabsTrigger value="detalhamento" iconLeft={<TableIcon />}>
+                  Detalhamento
+                </TabsTrigger>
                 <TabsTrigger value="rmnd" iconLeft={<ShoppingCartIcon />}>
                   RMND
                 </TabsTrigger>
@@ -296,6 +306,10 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 lines={videoLines}
                 setLines={setVideoLines}
               />
+            </TabsContent>
+
+            <TabsContent value="detalhamento">
+              <DetalhamentoV2 data={data} aggregates={aggregates} />
             </TabsContent>
 
             <TabsContent value="rmnd">
@@ -473,6 +487,25 @@ function FilmIcon() {
       <line x1="2" y1="17" x2="7" y2="17" />
       <line x1="17" y1="17" x2="22" y2="17" />
       <line x1="17" y1="7" x2="22" y2="7" />
+    </svg>
+  );
+}
+
+function TableIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+      <line x1="3" y1="9" x2="21" y2="9" />
+      <line x1="3" y1="15" x2="21" y2="15" />
+      <line x1="9" y1="3" x2="9" y2="21" />
     </svg>
   );
 }
