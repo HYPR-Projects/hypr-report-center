@@ -33,7 +33,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { chartNeutral, colors as hypr } from "../../shared/tokens";
+import { useThemeColors, useChartNeutral } from "../hooks/useThemeColors";
 
 const fmtBig = (v) =>
   v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M`
@@ -48,10 +48,18 @@ export function DualChartV2({
   y2Key,
   label1,
   label2,
-  color1 = hypr.signature,
-  color2 = hypr.warning,
+  color1,
+  color2,
   height = 200,
 }) {
+  const hypr = useThemeColors();
+  const chartNeutral = useChartNeutral();
+
+  // Cores default vêm do tema (re-resolvidas quando tema muda). Se
+  // caller passou color1/color2 explícito, respeita override.
+  const barColor = color1 || hypr.signature;
+  const lineColor = color2 || hypr.warning;
+
   if (!data?.length) return null;
 
   const isDate = /^\d{4}-\d{2}/.test(String(data[0][xKey]));
@@ -62,8 +70,8 @@ export function DualChartV2({
   return (
     <div>
       <div className="flex flex-wrap items-center gap-4 mb-3">
-        <Legend color={color1} label={label1} />
-        <Legend color={color2} label={label2} />
+        <Legend color={barColor} label={label1} />
+        <Legend color={lineColor} label={label2} />
       </div>
 
       <ResponsiveContainer width="100%" height={height}>
@@ -118,7 +126,7 @@ export function DualChartV2({
             yAxisId="left"
             dataKey={y1Key}
             name={label1}
-            fill={color1}
+            fill={barColor}
             radius={[3, 3, 0, 0]}
             opacity={0.85}
             isAnimationActive={false}
@@ -129,9 +137,9 @@ export function DualChartV2({
             dataKey={y2Key}
             name={label2}
             type="monotone"
-            stroke={color2}
+            stroke={lineColor}
             strokeWidth={2}
-            dot={{ r: 3, fill: color2 }}
+            dot={{ r: 3, fill: lineColor }}
             activeDot={{ r: 5 }}
           />
         </LineChart>
