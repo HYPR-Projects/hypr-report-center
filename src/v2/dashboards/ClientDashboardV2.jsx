@@ -6,15 +6,15 @@
 //   1. TopBarV2 — branding "Report Hub" + share + voltar à versão atual
 //   2. CampaignHeaderV2 — hero card com gradient + nome campanha + token badge
 //   3. Filtro de período (compacto, alinhado à direita)
-//   4. Tabs Radix com ícones: Visão Geral / Display / Video / Detalhamento /
+//   4. Tabs Radix com ícones: Visão Geral / Display / Video / Base de Dados /
 //      RMND / PDOOH / Video Loom / Survey
 //   5. TabsContent — OverviewV2 / DisplayV2 / VideoV2 / DetalhamentoV2 /
 //      RmndV2 / PdoohV2 / LoomV2 / SurveyV2
 //
-// Detalhamento (PR-16) é a tab dedicada à base de dados completa
-// (DataTableV2 com filter Tudo/Display/Video). Antes vivia como
-// CollapsibleSection na Visão Geral — saiu pra reduzir peso visual e
-// dar destaque proporcional pro raw data export.
+// Base de Dados (PR-16) é a tab dedicada à raw data completa (DataTableV2
+// com filter Tudo/Display/Video). Antes vivia como CollapsibleSection na
+// Visão Geral. Renomeada de "Detalhamento" pra "Base de Dados" — semântica
+// mais clara. URL: value="base" (com alias backward-compat ?tab=detalhamento).
 //
 // RESPONSABILIDADES (mantidas da PR-10):
 //   - Buscar dados via getCampaign(token)
@@ -60,13 +60,15 @@ import SurveyV2 from "./SurveyV2";
 
 // ─── Helpers de URL ────────────────────────────────────────────────────
 
-const VALID_TABS = ["overview", "display", "video", "detalhamento", "rmnd", "pdooh", "loom", "survey"];
+const VALID_TABS = ["overview", "display", "video", "base", "rmnd", "pdooh", "loom", "survey"];
 const VALID_TACTICS = ["O2O", "OOH"];
 
 function readTabFromUrl() {
   if (typeof window === "undefined") return "overview";
   try {
     const t = new URLSearchParams(window.location.search).get("tab");
+    // Backward compat: ?tab=detalhamento → base (renomeado em PR-16)
+    if (t === "detalhamento") return "base";
     return VALID_TABS.includes(t) ? t : "overview";
   } catch {
     return "overview";
@@ -281,8 +283,8 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 <TabsTrigger value="video" iconLeft={<VideoIcon />}>
                   Video
                 </TabsTrigger>
-                <TabsTrigger value="detalhamento" iconLeft={<TableIcon />}>
-                  Detalhamento
+                <TabsTrigger value="base" iconLeft={<TableIcon />}>
+                  Base de Dados
                 </TabsTrigger>
 
                 {hasAnySecondary && (
@@ -374,7 +376,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
               />
             </TabsContent>
 
-            <TabsContent value="detalhamento">
+            <TabsContent value="base">
               <DetalhamentoV2 data={data} aggregates={aggregates} />
             </TabsContent>
 

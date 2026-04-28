@@ -34,9 +34,9 @@ export default function DetalhamentoV2({ data, aggregates }) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6 pb-12">
       <div>
-        <h2 className="text-base font-bold text-fg">Detalhamento por Linha</h2>
+        <h2 className="text-base font-bold text-fg">Base de Dados</h2>
         <p className="text-xs text-fg-muted mt-1 max-w-2xl">
           Base de dados completa: cada linha representa uma combinação única
           de Data × Linha × Criativo, com todas as métricas brutas. Use os
