@@ -4,8 +4,8 @@
 // (src/components/dashboard-tabs/DisplayTab.jsx).
 //
 // LAYOUT, NA ORDEM
-//   1. Toolbar — SegmentedControlV2 (O2O/OOH) à esquerda;
-//      AudienceFilterV2 + DateRangeFilterV2 à direita
+//   1. Toolbar interna — SegmentedControlV2 (O2O/OOH) à esquerda;
+//      AudienceFilterV2 à direita
 //   2. KPI grid 1 (contratual): Budget, Imp. Contratadas, Imp. Bonus,
 //      CPM Negociado
 //   3. KPI grid 2 (entrega): Impressões, Imp. Visíveis, CPM Efetivo,
@@ -16,21 +16,25 @@
 //   7. CollapsibleSectionV2 + DataTableV2 (filtrado p/ DISPLAY) com
 //      download CSV
 //
-// CONTRATO COM ClientDashboardV2 (a partir da PR-10 commit 3)
-//   Recebe `data`, `mainRange` e `setMainRange` como props (state
-//   liftado pro shell pra compartilhar período entre tabs). Tactic
-//   (O2O/OOH) e filtro de audiência são state local — efêmeros à tab.
-//   Tactic é persistido em URL (?tactic=) pelo shell pra deep-link;
-//   audience NÃO é persistido (string ficaria gigante).
+// FILTRO DE PERÍODO É GLOBAL
+//   O DateRangeFilterV2 vive no ClientDashboardV2 (shell), acima das
+//   tabs. mainRange é compartilhado entre Visão Geral e Display via
+//   `aggregates` recebido como prop. Evita duplicação visual e deixa
+//   explícito que trocar a janela afeta todas as tabs.
+//
+// CONTRATO COM ClientDashboardV2
+//   Recebe `data` e `aggregates` (já calculado para o mainRange atual),
+//   além de tactic/lines como state local da tab. Tactic é persistido
+//   em URL (?tactic=) pelo shell pra deep-link; lines NÃO é persistido
+//   (string ficaria gigante e UX é efêmero).
 //
 // REUSO
 //   - computeAggregates / computeDisplayKpis: shared/aggregations.js
 //   - groupByDate / groupBySize / groupByAudience / buildLineOptions:
 //     shared/aggregations.js (mesmas funções que o Legacy DisplayTab)
-//   - DualChartV2, KpiCardV2, PacingBarV2, DataTableV2,
-//     CollapsibleSectionV2: src/v2/components (do OverviewV2)
-//   - DateRangeFilterV2: idem
-//   - AudienceFilterV2, SegmentedControlV2: novos no commit 1
+//   - DualChartV2, KpiCardV2, PacingBarV2, CollapsibleSectionV2:
+//     src/v2/components (do OverviewV2)
+//   - AudienceFilterV2, SegmentedControlV2: novos no commit 1 da PR-10
 //
 // QUIRK PRESERVADA DO LEGACY
 //   Filtro de detail por tactic usa `line_name?.toLowerCase()
@@ -53,7 +57,6 @@ import { Button } from "../../ui/Button";
 
 import { AudienceFilterV2 } from "../components/AudienceFilterV2";
 import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
-import { DateRangeFilterV2 } from "../components/DateRangeFilterV2";
 import { DualChartV2 } from "../components/DualChartV2";
 import { KpiCardV2 } from "../components/KpiCardV2";
 import { PacingBarV2 } from "../components/PacingBarV2";
@@ -67,8 +70,6 @@ const TACTIC_OPTIONS = [
 export default function DisplayV2({
   data,
   aggregates,
-  mainRange,
-  setMainRange,
   tactic,
   setTactic,
   lines,
@@ -179,7 +180,9 @@ export default function DisplayV2({
 
   return (
     <div className="space-y-6">
-      {/* Toolbar única — tactic à esquerda, filtros à direita */}
+      {/* Toolbar interna — tactic à esquerda, filtro de audiência à direita.
+          Filtro de período é global (vive no ClientDashboardV2 acima das
+          tabs) — compartilhado entre Visão Geral e Display. */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
         <SegmentedControlV2
           label="Tática Display"
@@ -192,20 +195,11 @@ export default function DisplayV2({
             setLines([]);
           }}
         />
-        <div className="flex flex-wrap items-center gap-2">
-          <AudienceFilterV2
-            lines={lineOptions}
-            selected={lines}
-            onChange={setLines}
-          />
-          <DateRangeFilterV2
-            value={mainRange}
-            campaignStart={camp.start_date}
-            campaignEnd={camp.end_date}
-            availableDates={aggregates.availableDates}
-            onChange={setMainRange}
-          />
-        </div>
+        <AudienceFilterV2
+          lines={lineOptions}
+          selected={lines}
+          onChange={setLines}
+        />
       </div>
 
       {/* KPI grid 1 — contratual */}

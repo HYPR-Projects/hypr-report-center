@@ -1,39 +1,31 @@
 // src/v2/dashboards/OverviewV2.jsx
 //
-// Visão Geral V2 — completa (Fase 2 fechada nas PRs 06, 07, 08).
+// Visão Geral V2.
 //
 // LAYOUT, NA ORDEM
-//   1. CampaignHeaderV2 — nome, cliente, período, status badge, botão
-//      "Voltar à versão atual"
-//   2. DateRangeFilterV2 — chips de presets + custom range com calendário.
-//      Persiste em ?from=&to= na URL (deep-link, voltar/avançar funcionam)
-//   3. KpiCardV2 grid — 7 indicadores principais
-//   4. PacingBarV2 (Display + Video) — escondido com filtro ativo
-//   5. MediaSummaryV2 — Negociado vs Efetivo destacado (diferencial do ADR)
-//   6. DualChartV2 — séries diárias Display (Imp.Visíveis × CTR) e Video
+//   1. KpiCardV2 grid — 7 indicadores principais
+//   2. PacingBarV2 (Display + Video) — escondido com filtro ativo
+//   3. MediaSummaryV2 — Negociado vs Efetivo destacado (diferencial do ADR)
+//   4. DualChartV2 — séries diárias Display (Imp.Visíveis × CTR) e Video
 //      (Views 100% × VTR)
-//   7. CollapsibleSectionV2 + DataTableV2 — tabela detalhada com filtro
+//   5. CollapsibleSectionV2 + DataTableV2 — tabela detalhada com filtro
 //      de mídia e download CSV
-//   8. AlcanceFrequenciaV2 — bloco editável admin
+//   6. AlcanceFrequenciaV2 — bloco editável admin
+//
+// HISTÓRICO
+//   PRs 06–09 (Fase 2) introduziram este dashboard como filho único do
+//   ClientDashboardV2. Na PR-10 (commit 3) o shell ganhou Tabs Radix e
+//   passou a hospedar mais de uma tab — wrapper visual (canvas, max-w),
+//   CampaignHeader, filtro de período e o useMemo de aggregates SUBIRAM
+//   pro shell. Este componente passou a receber `aggregates` por prop.
 //
 // CONTRATO COM ClientDashboardV2
-//   Recebe `data` (output de getCampaign) já carregado, mais token,
-//   isAdmin, adminJwt e onBackToLegacy. Não faz fetch — fetch fica no
-//   ClientDashboardV2 pra orquestrar loading state + ErrorBoundary.
+//   Recebe `data`, `aggregates` (já calculado para mainRange atual),
+//   token, isAdmin, adminJwt. Não faz fetch nem gerencia período —
+//   tudo isso é responsabilidade do shell.
 
-import { useEffect, useMemo, useState } from "react";
-import { computeAggregates } from "../../shared/aggregations";
 import { fmt, fmtR } from "../../shared/format";
-import {
-  readRangeFromUrl,
-  writeRangeToUrl,
-} from "../../shared/dateFilter";
 
-import { Button } from "../../ui/Button";
-import { TooltipProvider } from "../../ui/Tooltip";
-
-import { CampaignHeaderV2 } from "../components/CampaignHeaderV2";
-import { DateRangeFilterV2 } from "../components/DateRangeFilterV2";
 import { KpiCardV2 } from "../components/KpiCardV2";
 import { PacingBarV2 } from "../components/PacingBarV2";
 import { MediaSummaryV2 } from "../components/MediaSummaryV2";
@@ -42,42 +34,12 @@ import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
 import { DataTableV2 } from "../components/DataTableV2";
 import { AlcanceFrequenciaV2 } from "../components/AlcanceFrequenciaV2";
 
-export default function OverviewV2({ data, token, isAdmin, adminJwt, onBackToLegacy }) {
-  // Range persiste em ?from=YYYY-MM-DD&to=YYYY-MM-DD na URL — mesmo
-  // padrão usado pelo Legacy (readRangeFromUrl/writeRangeToUrl), o que
-  // garante deep-link funcional e voltar/avançar do navegador.
-  const [mainRange, setMainRangeState] = useState(() => readRangeFromUrl());
-  const setMainRange = (r) => {
-    setMainRangeState(r);
-    writeRangeToUrl(r);
-  };
-
-  // Sincroniza com botão voltar/avançar do navegador (popstate)
-  useEffect(() => {
-    const onPop = () => setMainRangeState(readRangeFromUrl());
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
-  }, []);
-
-  const aggregates = useMemo(
-    () => computeAggregates(data, mainRange),
-    [data, mainRange],
-  );
-
-  if (!aggregates) {
-    return (
-      <div className="text-fg-muted text-sm p-6">
-        Não foi possível processar os dados desta campanha.
-      </div>
-    );
-  }
-
+export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt }) {
   const camp = data.campaign;
   const {
     totalImpressions, totalCusto, totalCustoOver,
     display, video, totals,
-    isFiltered, rangeLabel, budgetProRata, budgetTotal,
-    availableDates,
+    isFiltered, budgetProRata, budgetTotal,
     chartDisplay, chartVideo, detail,
   } = aggregates;
 
@@ -86,206 +48,173 @@ export default function OverviewV2({ data, token, isAdmin, adminJwt, onBackToLeg
   const totalViews100 = totals.reduce((s, t) => s + (t.completions || 0), 0);
 
   return (
-    <TooltipProvider delayDuration={200}>
-      <div className="min-h-screen bg-canvas text-fg font-sans">
-        <div className="mx-auto max-w-7xl px-4 md:px-6 lg:px-8 py-6 md:py-10">
-
-          <CampaignHeaderV2
-            campaignName={camp.campaign_name}
-            clientName={camp.client_name}
-            startDate={camp.start_date}
-            endDate={camp.end_date}
-            rangeLabel={rangeLabel}
-            actions={
-              <Button variant="ghost" size="sm" onClick={onBackToLegacy}>
-                Voltar à versão atual
-              </Button>
+    <div className="space-y-6">
+      {/* KPI grid */}
+      <section>
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle mb-3">
+          Indicadores
+        </h2>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+          <KpiCardV2
+            label={isFiltered ? "Budget (período)" : "Budget Total"}
+            value={fmtR(isFiltered ? budgetProRata : budgetTotal)}
+            hint={
+              isFiltered
+                ? "Budget contratado proporcionalizado pelo período do filtro (linear, dias/dias-totais)."
+                : "Budget contratado total da campanha."
             }
           />
 
-          {/* Filtro de período */}
-          <section className="mt-6">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle mb-3">
-              Período
-            </h2>
-            <DateRangeFilterV2
-              value={mainRange}
-              campaignStart={camp.start_date}
-              campaignEnd={camp.end_date}
-              availableDates={availableDates}
-              onChange={setMainRange}
+          {hasDisplay && (
+            <KpiCardV2
+              label="CPM Negociado"
+              value={fmtR(camp.cpm_negociado)}
+              hint="CPM acordado em contrato — aplicado às mídias Display."
             />
-          </section>
-
-          {/* KPI grid */}
-          <section className="mt-8">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle mb-3">
-              Indicadores
-            </h2>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-              <KpiCardV2
-                label={isFiltered ? "Budget (período)" : "Budget Total"}
-                value={fmtR(isFiltered ? budgetProRata : budgetTotal)}
-                hint={
-                  isFiltered
-                    ? "Budget contratado proporcionalizado pelo período do filtro (linear, dias/dias-totais)."
-                    : "Budget contratado total da campanha."
-                }
-              />
-
-              {hasDisplay && (
-                <KpiCardV2
-                  label="CPM Negociado"
-                  value={fmtR(camp.cpm_negociado)}
-                  hint="CPM acordado em contrato — aplicado às mídias Display."
-                />
-              )}
-
-              {hasVideo && (
-                <KpiCardV2
-                  label="CPCV Negociado"
-                  value={fmtR(camp.cpcv_negociado)}
-                  hint="Custo por completion negociado — aplicado às mídias Video."
-                />
-              )}
-
-              <KpiCardV2
-                label="Imp. Visíveis"
-                value={fmt(totalImpressions)}
-                hint="Soma de viewable impressions no período selecionado."
-              />
-
-              {hasVideo && (
-                <KpiCardV2
-                  label="Views 100%"
-                  value={fmt(totalViews100)}
-                  hint="Completions de vídeo (visualizações até 100%)."
-                />
-              )}
-
-              <KpiCardV2
-                label="Custo Efetivo"
-                value={fmtR(totalCusto)}
-                accent
-                hint="Custo real entregue no período — derivado do delivery × CPM/CPCV efetivo."
-              />
-
-              <KpiCardV2
-                label="Custo Efetivo + Over"
-                value={fmtR(totalCustoOver)}
-                accent
-                hint="Inclui valor da over-delivery (entrega acima do contratado)."
-              />
-            </div>
-          </section>
-
-          {/* Pacing — escondido quando há filtro de período (não faz sentido
-              em janela parcial). Display calcula no front (backend não expõe
-              pacing display agregado). Video tem pacing já no row[0] do backend. */}
-          {!isFiltered && (hasDisplay || hasVideo) && (
-            <section className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-3">
-              {hasDisplay && (
-                <PacingBarV2
-                  label="Pacing Display"
-                  pacing={computeDisplayPacing(display, camp)}
-                  budget={display.reduce(
-                    (s, r) => s + (r.o2o_display_budget || 0) + (r.ooh_display_budget || 0),
-                    0,
-                  )}
-                  cost={display.reduce((s, r) => s + (r.effective_total_cost || 0), 0)}
-                />
-              )}
-              {hasVideo && (
-                <PacingBarV2
-                  label="Pacing Video"
-                  pacing={video[0]?.pacing || 0}
-                  budget={video.reduce(
-                    (s, r) => s + (r.o2o_video_budget || 0) + (r.ooh_video_budget || 0),
-                    0,
-                  )}
-                  cost={video.reduce((s, r) => s + (r.effective_total_cost || 0), 0)}
-                />
-              )}
-            </section>
           )}
 
-          {/* Resumo por mídia: Negociado vs Efetivo (diferencial citado no ADR) */}
-          {(hasDisplay || hasVideo) && (
-            <section className="mt-8">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle mb-3">
-                Resumo por mídia
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {hasDisplay && <MediaSummaryV2 type="DISPLAY" rows={display} />}
-                {hasVideo && <MediaSummaryV2 type="VIDEO" rows={video} />}
-              </div>
-            </section>
-          )}
-
-          {/* Charts diários — só se tiver dados */}
-          {(chartDisplay.length > 0 || chartVideo.length > 0) && (
-            <section className="mt-8">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle mb-3">
-                Performance diária
-              </h2>
-              <div className="space-y-3">
-                {chartDisplay.length > 0 && (
-                  <div className="rounded-xl border border-border bg-surface p-5">
-                    <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
-                      Display — Imp. Visíveis × CTR
-                    </div>
-                    <DualChartV2
-                      data={chartDisplay}
-                      xKey="date"
-                      y1Key="viewable_impressions"
-                      y2Key="ctr"
-                      label1="Imp. Visíveis"
-                      label2="CTR %"
-                    />
-                  </div>
-                )}
-                {chartVideo.length > 0 && (
-                  <div className="rounded-xl border border-border bg-surface p-5">
-                    <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
-                      Video — Views 100% × VTR
-                    </div>
-                    <DualChartV2
-                      data={chartVideo}
-                      xKey="date"
-                      y1Key="video_view_100"
-                      y2Key="vtr"
-                      label1="Views 100%"
-                      label2="VTR %"
-                    />
-                  </div>
-                )}
-              </div>
-            </section>
-          )}
-
-          {/* Tabela detalhada (colapsável) */}
-          {detail.length > 0 && (
-            <section className="mt-8">
-              <CollapsibleSectionV2 title="Tabela Consolidada">
-                <DataTableV2 detail={detail} campaignName={camp.campaign_name} />
-              </CollapsibleSectionV2>
-            </section>
-          )}
-
-          {/* Alcance & Frequência */}
-          <section className="mt-6">
-            <AlcanceFrequenciaV2
-              token={token}
-              isAdmin={isAdmin}
-              adminJwt={adminJwt}
-              initialAlcance={data.alcance}
-              initialFrequencia={data.frequencia}
+          {hasVideo && (
+            <KpiCardV2
+              label="CPCV Negociado"
+              value={fmtR(camp.cpcv_negociado)}
+              hint="Custo por completion negociado — aplicado às mídias Video."
             />
-          </section>
+          )}
 
+          <KpiCardV2
+            label="Imp. Visíveis"
+            value={fmt(totalImpressions)}
+            hint="Soma de viewable impressions no período selecionado."
+          />
+
+          {hasVideo && (
+            <KpiCardV2
+              label="Views 100%"
+              value={fmt(totalViews100)}
+              hint="Completions de vídeo (visualizações até 100%)."
+            />
+          )}
+
+          <KpiCardV2
+            label="Custo Efetivo"
+            value={fmtR(totalCusto)}
+            accent
+            hint="Custo real entregue no período — derivado do delivery × CPM/CPCV efetivo."
+          />
+
+          <KpiCardV2
+            label="Custo Efetivo + Over"
+            value={fmtR(totalCustoOver)}
+            accent
+            hint="Inclui valor da over-delivery (entrega acima do contratado)."
+          />
         </div>
-      </div>
-    </TooltipProvider>
+      </section>
+
+      {/* Pacing — escondido quando há filtro de período (não faz sentido
+          em janela parcial). Display calcula no front (backend não expõe
+          pacing display agregado). Video tem pacing já no row[0] do backend. */}
+      {!isFiltered && (hasDisplay || hasVideo) && (
+        <section className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {hasDisplay && (
+            <PacingBarV2
+              label="Pacing Display"
+              pacing={computeDisplayPacing(display, camp)}
+              budget={display.reduce(
+                (s, r) => s + (r.o2o_display_budget || 0) + (r.ooh_display_budget || 0),
+                0,
+              )}
+              cost={display.reduce((s, r) => s + (r.effective_total_cost || 0), 0)}
+            />
+          )}
+          {hasVideo && (
+            <PacingBarV2
+              label="Pacing Video"
+              pacing={video[0]?.pacing || 0}
+              budget={video.reduce(
+                (s, r) => s + (r.o2o_video_budget || 0) + (r.ooh_video_budget || 0),
+                0,
+              )}
+              cost={video.reduce((s, r) => s + (r.effective_total_cost || 0), 0)}
+            />
+          )}
+        </section>
+      )}
+
+      {/* Resumo por mídia: Negociado vs Efetivo (diferencial citado no ADR) */}
+      {(hasDisplay || hasVideo) && (
+        <section>
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle mb-3">
+            Resumo por mídia
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {hasDisplay && <MediaSummaryV2 type="DISPLAY" rows={display} />}
+            {hasVideo && <MediaSummaryV2 type="VIDEO" rows={video} />}
+          </div>
+        </section>
+      )}
+
+      {/* Charts diários — só se tiver dados */}
+      {(chartDisplay.length > 0 || chartVideo.length > 0) && (
+        <section>
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle mb-3">
+            Performance diária
+          </h2>
+          <div className="space-y-3">
+            {chartDisplay.length > 0 && (
+              <div className="rounded-xl border border-border bg-surface p-5">
+                <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
+                  Display — Imp. Visíveis × CTR
+                </div>
+                <DualChartV2
+                  data={chartDisplay}
+                  xKey="date"
+                  y1Key="viewable_impressions"
+                  y2Key="ctr"
+                  label1="Imp. Visíveis"
+                  label2="CTR %"
+                />
+              </div>
+            )}
+            {chartVideo.length > 0 && (
+              <div className="rounded-xl border border-border bg-surface p-5">
+                <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
+                  Video — Views 100% × VTR
+                </div>
+                <DualChartV2
+                  data={chartVideo}
+                  xKey="date"
+                  y1Key="video_view_100"
+                  y2Key="vtr"
+                  label1="Views 100%"
+                  label2="VTR %"
+                />
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* Tabela detalhada (colapsável) */}
+      {detail.length > 0 && (
+        <section>
+          <CollapsibleSectionV2 title="Tabela Consolidada">
+            <DataTableV2 detail={detail} campaignName={camp.campaign_name} />
+          </CollapsibleSectionV2>
+        </section>
+      )}
+
+      {/* Alcance & Frequência */}
+      <section>
+        <AlcanceFrequenciaV2
+          token={token}
+          isAdmin={isAdmin}
+          adminJwt={adminJwt}
+          initialAlcance={data.alcance}
+          initialFrequencia={data.frequencia}
+        />
+      </section>
+    </div>
   );
 }
 
