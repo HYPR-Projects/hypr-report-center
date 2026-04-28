@@ -1,50 +1,27 @@
 // src/v2/dashboards/VideoV2.jsx
 //
-// Dashboard Video V2 — equivalente refatorado do VideoTab Legacy
-// (src/components/dashboard-tabs/VideoTab.jsx).
+// Dashboard Video V2 — REDESIGN PR-14
 //
-// LAYOUT, NA ORDEM
-//   1. Toolbar interna — SegmentedControlV2 (O2O/OOH) à esquerda;
-//      AudienceFilterV2 à direita
-//   2. KPI grid 1 (contratual): Budget, Views Contratadas, Views Bonus,
-//      CPCV Negociado
-//   3. KPI grid 2 (entrega): Views Start, Views 100%, VTR, CPCV Efetivo,
-//      Rentabilidade — 5 cards em lg:grid-cols-5 (exceção do Video;
-//      Display usa 4)
-//   4. PacingBarV2 (escondido com filtro de período ativo)
-//   5. DualChartV2 — Views 100% × VTR Diário (full-width)
-//   6. DualChartV2 grid (2-col em ≥md): Tamanho + Audiência
-//   7. CollapsibleSectionV2 + tabela detalhada (filtrada VIDEO) + CSV
+// Reescrita pra alinhar com o padrão visual da OverviewV2 (PR-13):
+// hero ComparisonCard no topo, KPI grids contratual+performance,
+// Pacing com marker "esperado hoje", tabela "Por Formato" com share
+// visual, charts diários e detalhamento em collapsible fechado.
 //
-// FILTRO DE PERÍODO É GLOBAL
-//   DateRangeFilterV2 vive no ClientDashboardV2 (shell), acima das tabs.
-//   mainRange é compartilhado entre Visão Geral, Display e Video via
-//   `aggregates` recebido como prop.
+// LAYOUT, NA ORDEM (top → bottom)
+//   1. Toolbar interna       — SegmentedControlV2 (O2O/OOH) + AudienceFilterV2
+//   2. Hero ComparisonCard   — CPCV Negociado vs Efetivo + economia
+//   3. KPI grid contratual   — Budget · Views Contratadas · Bonus · CPCV Neg
+//   4. KPI grid performance  — Starts · Views 100% · VTR · CPCV Ef · Rentab
+//   5. PacingBar             — com marker "esperado hoje" (escondido sob filtro)
+//   6. Charts diários        — Views 100% × VTR
+//   7. FormatBreakdownTable  — distribuição por creative_size com share visual
+//   8. Chart Audiência       — DualChart byAudience (mantido como gráfico)
+//   9. DailyAggregateTable   — agregada por dia (mediaFilter="VIDEO")
+//  10. Detalhamento por linha — collapsible FECHADO
 //
-// COMPORTAMENTO COM FILTRO DE PERÍODO
-//   Quando isFiltered=true, computeAggregates já reconstrói os totals
-//   recalculando effective_cpcv_amount e rentabilidade com base no
-//   delivery proporcional. PacingBarV2 some inteira (mesmo critério
-//   do Display e da Visão Geral) — pacing em janela parcial não tem
-//   leitura útil.
-//
-// CONTRATO COM ClientDashboardV2
-//   Recebe `data` e `aggregates` (já calculado para mainRange atual),
-//   além de tactic/lines como state vindo do shell. Ao trocar tactic,
-//   filtro de audiência é zerado (line_names diferem entre O2O e OOH).
-//
-// REUSO
-//   - computeAggregates / computeVideoKpis: shared/aggregations.js
-//   - groupByDate / groupBySize / groupByAudience / buildLineOptions:
-//     shared/aggregations.js (mesmas funções que o Legacy VideoTab)
-//   - DualChartV2, KpiCardV2, PacingBarV2, CollapsibleSectionV2:
-//     src/v2/components (do OverviewV2/DisplayV2)
-//   - AudienceFilterV2, SegmentedControlV2: PR-10
-//
-// QUIRK PRESERVADA DO LEGACY
-//   Filtro de detail por tactic usa `line_name?.toLowerCase()
-//   .includes(tactic.toLowerCase())` em vez de `tactic_type === tactic`.
-//   Mesma convenção HYPR documentada no DisplayV2.
+// FILTRO DE PERÍODO É GLOBAL (shell ClientDashboardV2).
+// QUIRK PRESERVADA: filtro de detail por tactic via substring no
+//   line_name (convenção HYPR documentada no DisplayV2).
 
 import { useMemo } from "react";
 import {
@@ -60,7 +37,10 @@ import { Button } from "../../ui/Button";
 
 import { AudienceFilterV2 } from "../components/AudienceFilterV2";
 import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
+import { ComparisonCardV2 } from "../components/ComparisonCardV2";
+import { DailyAggregateTableV2 } from "../components/DailyAggregateTableV2";
 import { DualChartV2 } from "../components/DualChartV2";
+import { FormatBreakdownTableV2 } from "../components/FormatBreakdownTableV2";
 import { KpiCardV2 } from "../components/KpiCardV2";
 import { PacingBarV2 } from "../components/PacingBarV2";
 import { SegmentedControlV2 } from "../components/SegmentedControlV2";
@@ -69,6 +49,12 @@ const TACTIC_OPTIONS = [
   { value: "O2O", label: "O2O" },
   { value: "OOH", label: "OOH" },
 ];
+
+// Formatter pra CPCV (3 casas decimais — valores tipicamente < R$ 0,50).
+const fmtCpcv = (v) =>
+  typeof v === "number" && v > 0
+    ? `R$ ${v.toFixed(3).replace(".", ",")}`
+    : "—";
 
 export default function VideoV2({
   data,
@@ -80,8 +66,6 @@ export default function VideoV2({
 }) {
   const camp = data.campaign;
 
-  // Derivações por tactic + filtro de audiência. Mesma quirk Legacy:
-  // detail filtrado por substring no line_name (ver header).
   const view = useMemo(() => {
     const totals = aggregates.totals.filter(
       (r) => r.media_type === "VIDEO" && r.tactic_type === tactic,
@@ -103,10 +87,6 @@ export default function VideoV2({
       tactic,
     });
 
-    // Séries pros 3 charts. groupByDate/Size respeitam o filtro do
-    // usuário; groupByAudience opera sobre detailAll (visão de
-    // audiências mostra TODAS, independente do filtro — coerente com
-    // Legacy).
     const daily = groupByDate(detailFiltered, "video_view_100", "viewable_impressions", "vtr");
     const bySize = groupBySize(detailFiltered, "video_view_100", "viewable_impressions", "vtr");
     const byAudience = groupByAudience(detailAll, "video_view_100", "viewable_impressions", "vtr");
@@ -116,10 +96,6 @@ export default function VideoV2({
 
   const { totals, detailFiltered, lineOptions, kpis, daily, bySize, byAudience } = view;
 
-  // Sem dados de Video — render mínimo informativo.
-  // Cobre dois casos: (a) campanha só-Display sem rows VIDEO em todos os
-  // estados; (b) tactic atual sem entrega (ex.: campanha só O2O e usuário
-  // selecionou OOH).
   if (totals.length === 0 && view.detailAll.length === 0) {
     return (
       <div className="rounded-xl border border-border bg-surface p-8 text-center">
@@ -140,6 +116,9 @@ export default function VideoV2({
     tactic === "O2O"
       ? row0.bonus_o2o_video_completions || 0
       : row0.bonus_ooh_video_completions || 0;
+
+  // Marker "esperado hoje" — % do tempo decorrido linear.
+  const expectedToday = computeExpectedTodayPct(camp);
 
   const downloadCSV = () => {
     const headers = [
@@ -189,8 +168,7 @@ export default function VideoV2({
 
   return (
     <div className="space-y-6">
-      {/* Toolbar interna — tactic à esquerda, filtro de audiência à direita.
-          Filtro de período é global (shell). */}
+      {/* ─── 1. Toolbar interna ──────────────────────────────────────── */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
         <SegmentedControlV2
           label="Tática Video"
@@ -198,8 +176,6 @@ export default function VideoV2({
           value={tactic}
           onChange={(t) => {
             setTactic(t);
-            // Limpa filtro de audiência ao trocar tactic — o conjunto de
-            // line_names é diferente entre O2O e OOH.
             setLines([]);
           }}
         />
@@ -210,7 +186,15 @@ export default function VideoV2({
         />
       </div>
 
-      {/* KPI grid 1 — contratual */}
+      {/* ─── 2. Hero ComparisonCard ──────────────────────────────────── */}
+      <ComparisonCardV2
+        title={`CPCV Video ${tactic} · Negociado vs Efetivo`}
+        negociado={kpis.cpcvNeg}
+        efetivo={kpis.cpcvEf}
+        formatValue={(v) => `R$ ${(v || 0).toFixed(3).replace(".", ",")}`}
+      />
+
+      {/* ─── 3. KPI grid contratual ──────────────────────────────────── */}
       <section>
         <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle mb-3">
           Contratual
@@ -233,17 +217,16 @@ export default function VideoV2({
           />
           <KpiCardV2
             label="CPCV Negociado"
-            value={fmtR(kpis.cpcvNeg)}
+            value={fmtCpcv(kpis.cpcvNeg)}
             hint="CPCV (Custo Por Completion View) acordado em contrato."
           />
         </div>
       </section>
 
-      {/* KPI grid 2 — entrega. 5 cards em lg:grid-cols-5 (exceção do
-          Video; Display usa lg:grid-cols-4). */}
+      {/* ─── 4. KPI grid performance ─────────────────────────────────── */}
       <section>
         <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle mb-3">
-          Entrega
+          Performance
         </h2>
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
           <KpiCardV2
@@ -263,7 +246,7 @@ export default function VideoV2({
           />
           <KpiCardV2
             label="CPCV Efetivo"
-            value={fmtR(kpis.cpcvEf)}
+            value={fmtCpcv(kpis.cpcvEf)}
             accent
             hint="Custo Efetivo / Views 100%. Quando filtrado, recalculado proporcionalmente ao período."
           />
@@ -276,20 +259,18 @@ export default function VideoV2({
         </div>
       </section>
 
-      {/* Pacing — esconde quando há filtro de período (mesma regra de
-          Overview/Display). Pacing Video vem direto do backend (rows[0]
-          .pacing) — fórmula com days_with_delivery por frente, mais
-          precisa que dá pra fazer no front. */}
+      {/* ─── 5. Pacing (com marker "esperado hoje") ──────────────────── */}
       {!aggregates.isFiltered && (
         <PacingBarV2
-          label={`Pacing ${tactic}`}
+          label={`Pacing Video ${tactic}`}
           pacing={kpis.pac}
           budget={kpis.budget}
           cost={kpis.cost}
+          expectedPct={expectedToday}
         />
       )}
 
-      {/* Chart diário — full width */}
+      {/* ─── 6. Chart diário (full-width) ────────────────────────────── */}
       {daily.length > 0 && (
         <section>
           <div className="rounded-xl border border-border bg-surface p-5">
@@ -308,64 +289,89 @@ export default function VideoV2({
         </section>
       )}
 
-      {/* Charts por dimensão — 2 colunas em ≥md, 1 em mobile */}
-      {(bySize.length > 0 || byAudience.length > 0) && (
-        <section className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {bySize.length > 0 && (
-            <div className="rounded-xl border border-border bg-surface p-5">
-              <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
-                Views 100% × VTR por Tamanho
-              </div>
-              <DualChartV2
-                data={bySize}
-                xKey="size"
-                y1Key="video_view_100"
-                y2Key="vtr"
-                label1="Views 100%"
-                label2="VTR %"
-              />
+      {/* ─── 7. Tabela "Por Formato" (creative_size) ─────────────────── */}
+      {bySize.length > 0 && (
+        <FormatBreakdownTableV2
+          rows={bySize}
+          groupKey="size"
+          groupLabel="Tamanho"
+          denomKey="viewable_impressions"
+          denomLabel="Imp. Visíveis"
+          numeratorKey="video_view_100"
+          numeratorLabel="Views 100%"
+          rateKey="vtr"
+          rateLabel="VTR"
+          rateFormatter={fmtP2}
+          extraRows={detailFiltered}
+          mediaType="VIDEO"
+        />
+      )}
+
+      {/* ─── 8. Chart de Audiência (mantido como gráfico) ────────────── */}
+      {byAudience.length > 0 && (
+        <section>
+          <div className="rounded-xl border border-border bg-surface p-5">
+            <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
+              Views 100% × VTR por Audiência
             </div>
-          )}
-          {byAudience.length > 0 && (
-            <div className="rounded-xl border border-border bg-surface p-5">
-              <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
-                Views 100% × VTR por Audiência
-              </div>
-              <DualChartV2
-                data={byAudience}
-                xKey="audience"
-                y1Key="video_view_100"
-                y2Key="vtr"
-                label1="Views 100%"
-                label2="VTR %"
-              />
-            </div>
-          )}
+            <DualChartV2
+              data={byAudience}
+              xKey="audience"
+              y1Key="video_view_100"
+              y2Key="vtr"
+              label1="Views 100%"
+              label2="VTR %"
+            />
+          </div>
         </section>
       )}
 
-      {/* Tabela detalhada — colapsável + CSV */}
+      {/* ─── 9. Tabela "Por Dia" agregada ────────────────────────────── */}
       {detailFiltered.length > 0 && (
-        <section>
-          <CollapsibleSectionV2 title="Detalhamento Diário">
-            <div className="flex justify-end mb-3">
-              <Button variant="secondary" size="sm" onClick={downloadCSV}>
-                ⬇ Download CSV
-              </Button>
-            </div>
-            <VideoDetailTable rows={detailFiltered} />
-          </CollapsibleSectionV2>
-        </section>
+        <CollapsibleSectionV2 title="Entrega Agregada por Dia" defaultOpen>
+          <DailyAggregateTableV2
+            daily={detailFiltered}
+            campaignName={`${camp.campaign_name || "campanha"}_video_${tactic}`}
+            mediaFilter="VIDEO"
+          />
+        </CollapsibleSectionV2>
+      )}
+
+      {/* ─── 10. Detalhamento por linha (collapsible FECHADO) ────────── */}
+      {detailFiltered.length > 0 && (
+        <CollapsibleSectionV2 title="Detalhamento por Linha">
+          <div className="flex justify-end mb-3">
+            <Button variant="secondary" size="sm" onClick={downloadCSV}>
+              ⬇ Download CSV
+            </Button>
+          </div>
+          <VideoDetailTable rows={detailFiltered} />
+        </CollapsibleSectionV2>
       )}
     </div>
   );
 }
 
-// ─── Tabela detalhada inline ───────────────────────────────────────────
+// ─── Helper local: % esperada hoje (linear) ───────────────────────────
 //
-// Tabela específica do VideoV2 — só colunas relevantes pra Video. Mesmo
-// design pattern da DisplayDetailTable: header sticky, hover row,
-// truncamento em 200 linhas (com aviso) + CSV completo via botão.
+// Duplica computeExpectedTodayPct da OverviewV2/DisplayV2. TODO refactor:
+// extrair pra src/shared/pacing.js (fora do escopo da PR-14).
+
+function computeExpectedTodayPct(camp) {
+  if (!camp.start_date || !camp.end_date) return 0;
+  const [sy, sm, sd] = camp.start_date.split("-").map(Number);
+  const [ey, em, ed] = camp.end_date.split("-").map(Number);
+  const start = new Date(sy, sm - 1, sd);
+  const end = new Date(ey, em - 1, ed);
+  const now = new Date();
+  if (now < start) return 0;
+  if (now > end) return 100;
+  const total = (end - start) / 864e5 + 1;
+  const elapsed = (now - start) / 864e5 + 1;
+  return (elapsed / total) * 100;
+}
+
+// ─── Tabela detalhada inline ───────────────────────────────────────────
 
 const DETAIL_COLUMNS = [
   { key: "date", label: "Data" },
