@@ -1,0 +1,39 @@
+/* src/v2/v2.css
+ * ──────────────────────────────────────────────────────────────────────
+ * Entry CSS do HYPR Report Hub V2.
+ *
+ * Importado UMA ÚNICA VEZ no root do V2 (ClientDashboardV2.jsx). Este
+ * arquivo é o único ponto de entrada de estilos do V2 — qualquer
+ * adição global de CSS deve passar por aqui.
+ *
+ * IMPORTANTE: este arquivo NÃO é importado pelo Legacy. O Tailwind
+ * processa apenas os arquivos onde encontra classes utilitárias (que
+ * estão exclusivamente em src/v2/ e src/ui/). O bundle CSS do Legacy
+ * permanece intocado.
+ *
+ * ORDEM DOS IMPORTS
+ * ──────────────────────────────────────────────────────────────────────
+ * A ordem importa por causa do cascade do CSS:
+ *
+ *   1. tailwindcss   — preflight, theme tokens default, utilitárias
+ *   2. theme.css     — sobrescreve tokens com valores HYPR via @theme
+ *   3. global-reset  — opiniões extras em @layer base (vencem preflight
+ *                      mas perdem para utilitárias do Tailwind)
+ *
+ * As fontes Urbanist são carregadas via JS em src/ui/typography.js,
+ * importado pelo ClientDashboardV2.jsx (não daqui), porque o
+ * @fontsource já vem como CSS-side-effect via JS imports — o Vite
+ * cuida disso automaticamente.
+ */
+
+@import "tailwindcss";
+@import "../ui/theme.css";
+@import "../ui/global-reset.css";
+
+/* ───────────────────────────────────────────────────────────
+ * Custom variants do Tailwind v4
+ * ───────────────────────────────────────────────────────────
+ * Adiciona modificadores específicos do V2 que não vêm com o
+ * Tailwind core. Por enquanto vazio — preparado para extensões
+ * futuras (ex: @custom-variant supported, @custom-variant rtl).
+ */
