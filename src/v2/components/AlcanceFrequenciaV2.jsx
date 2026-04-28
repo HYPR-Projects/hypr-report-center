@@ -9,7 +9,7 @@
 // (alcance/frequencia/setAlcance/setFrequencia/editingAfReach/saveAf
 // como 7 props) — fica mais simples assim.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { saveAlcanceFrequencia } from "../../lib/api";
 import { Card, CardBody } from "../../ui/Card";
 import { Button } from "../../ui/Button";
@@ -28,13 +28,22 @@ export function AlcanceFrequenciaV2({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
+  // "Última versão salva" — usada pelo cancelar pra reverter pro
+  // último estado persistido, não pro initial fixo. Sem isso, o
+  // cancelar após um save anterior reverteria pro initial e perderia
+  // o que já foi salvo.
+  const lastSavedRef = useRef({
+    alcance: initialAlcance || "",
+    frequencia: initialFrequencia || "",
+  });
+
   const isEmpty = !alcance && !frequencia;
 
   const startEdit = () => { setError(null); setEditing(true); };
 
   const cancel = () => {
-    setAlcance(initialAlcance || "");
-    setFrequencia(initialFrequencia || "");
+    setAlcance(lastSavedRef.current.alcance);
+    setFrequencia(lastSavedRef.current.frequencia);
     setError(null);
     setEditing(false);
   };
@@ -43,12 +52,22 @@ export function AlcanceFrequenciaV2({
     setSaving(true);
     setError(null);
     try {
+      const trimmedAlcance = alcance.trim();
+      const trimmedFrequencia = frequencia.trim();
       await saveAlcanceFrequencia({
         short_token: token,
-        alcance: alcance.trim(),
-        frequencia: frequencia.trim(),
+        alcance: trimmedAlcance,
+        frequencia: trimmedFrequencia,
         adminJwt,
       });
+      // Atualiza "última versão salva" pra cancelar futuro saber pra
+      // onde voltar.
+      lastSavedRef.current = {
+        alcance: trimmedAlcance,
+        frequencia: trimmedFrequencia,
+      };
+      setAlcance(trimmedAlcance);
+      setFrequencia(trimmedFrequencia);
       setEditing(false);
     } catch (e) {
       setError(e?.message || "Erro ao salvar");
