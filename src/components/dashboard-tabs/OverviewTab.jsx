@@ -79,8 +79,8 @@ const OverviewTab = ({
           theme={theme}
           label="Pacing Display"
           pacing={(()=>{
-            const contracted = display.reduce((s,r)=>s+(r.contracted_o2o_display_impressions||0)+(r.contracted_ooh_display_impressions||0), 0);
-            const bonus      = display.reduce((s,r)=>s+(r.bonus_o2o_display_impressions||0)+(r.bonus_ooh_display_impressions||0), 0);
+            const contracted = (display[0]?.contracted_o2o_display_impressions||0)+(display[0]?.contracted_ooh_display_impressions||0);
+            const bonus      = (display[0]?.bonus_o2o_display_impressions||0)+(display[0]?.bonus_ooh_display_impressions||0);
             const totalNeg   = contracted + bonus;
             const delivered  = display.reduce((s,r)=>s+(r.viewable_impressions||0), 0);
             if (!camp.start_date || !camp.end_date || !totalNeg) return 0;
@@ -95,7 +95,7 @@ const OverviewTab = ({
             const expected = totalNeg * (elapsed / total);
             return expected > 0 ? (delivered / expected * 100) : 0;
           })()}
-          budget={display.reduce((s,r)=>s+(r.o2o_display_budget||0)+(r.ooh_display_budget||0), 0)}
+          budget={(display[0]?.o2o_display_budget||0)+(display[0]?.ooh_display_budget||0)}
           cost={display.reduce((s,r)=>s+(r.effective_total_cost||0), 0)}
         />
       )}
@@ -104,7 +104,7 @@ const OverviewTab = ({
           theme={theme}
           label="Pacing Video"
           pacing={video[0]?.pacing || 0}
-          budget={video.reduce((s,r)=>s+(r.o2o_video_budget||0)+(r.ooh_video_budget||0), 0)}
+          budget={(video[0]?.o2o_video_budget||0)+(video[0]?.ooh_video_budget||0)}
           cost={video.reduce((s,r)=>s+(r.effective_total_cost||0), 0)}
         />
       )}
