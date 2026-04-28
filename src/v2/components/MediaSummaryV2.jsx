@@ -47,14 +47,19 @@ function MiniKpi({ label, value, accent = false }) {
   );
 }
 
-// Bloco hero: NEG. vs EFET. com delta. Cor do delta:
+// Bloco hero: CPM/CPCV Efetivo com delta de rentabilidade ao lado.
+// O número negociado foi removido (já aparece no header da campanha e no
+// ComparisonCardV2 das tabs Display/Video). Aqui o que importa é o que
+// efetivamente custou + se está abaixo ou acima do contratado — sinal
+// preservado pela pill.
+//
+// Cor da pill segue a convenção:
 //   - rentab >  0 → success (efetivo abaixo do negociado, lucro)
 //   - rentab <  0 → danger  (efetivo acima do negociado, prejuízo)
 //   - rentab == 0 ou null → neutral (sem variação)
-function NegVsEffective({ negLabel, negValue, effLabel, effValue, rentab }) {
+function EffectiveHero({ effLabel, effValue, rentab }) {
   let pillColor = "text-fg-muted";
   let pillBg = "bg-surface-strong";
-  let pillSign = "—";
   let pillText;
 
   if (rentab == null) {
@@ -62,45 +67,33 @@ function NegVsEffective({ negLabel, negValue, effLabel, effValue, rentab }) {
   } else if (rentab > 0) {
     pillColor = "text-success";
     pillBg = "bg-success-soft";
-    pillSign = "↓";
-    pillText = `${pillSign} ${fmtP(Math.abs(rentab))}`;
+    pillText = `↓ ${fmtP(Math.abs(rentab))}`;
   } else if (rentab < 0) {
     pillColor = "text-danger";
     pillBg = "bg-danger-soft";
-    pillSign = "↑";
-    pillText = `${pillSign} ${fmtP(Math.abs(rentab))}`;
+    pillText = `↑ ${fmtP(Math.abs(rentab))}`;
   } else {
     pillText = fmtP(0);
   }
 
   return (
-    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-      <div className="text-center">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-fg-muted">
-          {negLabel}
-        </div>
-        <div className="text-2xl font-bold text-fg tabular-nums leading-tight mt-1">
-          {fmtR(negValue)}
-        </div>
+    <div className="text-center">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-fg-muted">
+        {effLabel}
       </div>
-
-      <div
-        className={cn(
-          "rounded-full px-3 py-1 text-xs font-bold tabular-nums",
-          pillBg,
-          pillColor,
-        )}
-        title="Rentabilidade — diferença % entre o CPM/CPCV negociado e o efetivo entregue"
-      >
-        {pillText}
-      </div>
-
-      <div className="text-center">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-fg-muted">
-          {effLabel}
-        </div>
-        <div className="text-2xl font-bold text-signature tabular-nums leading-tight mt-1">
+      <div className="flex items-baseline justify-center gap-2.5 mt-1">
+        <div className="text-3xl font-bold text-signature tabular-nums leading-tight">
           {fmtR(effValue)}
+        </div>
+        <div
+          className={cn(
+            "rounded-full px-2.5 py-1 text-xs font-bold tabular-nums",
+            pillBg,
+            pillColor,
+          )}
+          title="Rentabilidade — diferença % entre o CPM/CPCV negociado e o efetivo entregue"
+        >
+          {pillText}
         </div>
       </div>
     </div>
@@ -160,10 +153,8 @@ export function MediaSummaryV2({ type, rows }) {
           <div className="h-px flex-1 bg-border" />
         </div>
 
-        {/* Hero: Negociado vs Efetivo */}
-        <NegVsEffective
-          negLabel={isDisplay ? "CPM Negociado" : "CPCV Negociado"}
-          negValue={isDisplay ? dealCpm : dealCpcv}
+        {/* Hero: Efetivo com delta de rentabilidade */}
+        <EffectiveHero
           effLabel={isDisplay ? "CPM Efetivo" : "CPCV Efetivo"}
           effValue={isDisplay ? effCpm : effCpcv}
           rentab={rentab}
