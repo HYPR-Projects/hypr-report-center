@@ -1,0 +1,102 @@
+/* src/v2/components/DateRangeFilterV2.css
+ * ──────────────────────────────────────────────────────────────────────
+ * Override do react-day-picker (v9) usando a paleta HYPR.
+ *
+ * O DayPicker expõe CSS variables (--rdp-*) documentadas. Aqui
+ * sobrescrevemos as cores e tamanhos no escopo `.rdp-hypr` para não
+ * vazar pra outros DayPicker eventualmente presentes (ex: Legacy ainda
+ * usa o original sem essa classe).
+ *
+ * Compacta o calendário pra caber bem dentro do Dialog modal (max-w-md).
+ */
+
+.rdp-hypr {
+  display: flex;
+  justify-content: center;
+}
+
+.rdp-hypr .rdp-root {
+  /* Cores HYPR */
+  --rdp-accent-color: var(--color-signature);
+  --rdp-accent-background-color: var(--color-signature-soft);
+  --rdp-today-color: var(--color-signature);
+  --rdp-range_start-color: var(--color-fg);
+  --rdp-range_end-color: var(--color-fg);
+  --rdp-range_middle-color: var(--color-fg);
+  --rdp-range_start-date-background-color: var(--color-signature);
+  --rdp-range_end-date-background-color: var(--color-signature);
+
+  /* Compacto */
+  --rdp-day-height: 36px;
+  --rdp-day-width: 36px;
+  --rdp-day_button-height: 34px;
+  --rdp-day_button-width: 34px;
+  --rdp-nav_button-height: 1.75rem;
+  --rdp-nav_button-width: 1.75rem;
+  --rdp-nav-height: 2.25rem;
+
+  font-family: var(--font-sans);
+  color: var(--color-fg);
+}
+
+/* Dias da semana (cabeçalho) — opacidade um pouco maior pra ler em fundo escuro */
+.rdp-hypr .rdp-weekday {
+  color: var(--color-fg-muted);
+  opacity: 1;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Botão do dia: hover sutil + cursor */
+.rdp-hypr .rdp-day_button {
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.rdp-hypr .rdp-day_button:hover:not([disabled]) {
+  background-color: var(--color-surface-strong);
+}
+
+/* Hoje — borda sinalizando data atual quando não selecionada */
+.rdp-hypr .rdp-today:not(.rdp-selected) .rdp-day_button {
+  font-weight: 700;
+  color: var(--color-signature);
+}
+
+/* Dias desabilitados — opacidade reduzida + linha riscada quando é
+ * dia sem entrega (matched pelo availableDates).
+ * react-day-picker já aplica .rdp-disabled; reforçamos visualmente. */
+.rdp-hypr .rdp-disabled .rdp-day_button {
+  cursor: not-allowed;
+  opacity: 0.35;
+  text-decoration: line-through;
+}
+
+/* Range middle — fundo signature soft */
+.rdp-hypr .rdp-range_middle .rdp-day_button {
+  background-color: var(--color-signature-soft);
+  color: var(--color-fg);
+  border-radius: 0;
+}
+
+/* Botões de navegação — cores e tamanho */
+.rdp-hypr .rdp-button_previous,
+.rdp-hypr .rdp-button_next {
+  color: var(--color-fg-muted);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.rdp-hypr .rdp-button_previous:hover:not([disabled]),
+.rdp-hypr .rdp-button_next:hover:not([disabled]) {
+  background-color: var(--color-surface-strong);
+  color: var(--color-fg);
+}
+
+/* Caption do mês — destacar */
+.rdp-hypr .rdp-caption_label {
+  font-weight: 700;
+  font-size: 14px;
+  text-transform: capitalize;
+  color: var(--color-fg);
+}
