@@ -1,35 +1,32 @@
 // src/v2/dashboards/ClientDashboardV2.jsx
 //
-// STUB do ClientDashboardV2.
+// STUB do ClientDashboardV2 — versão Tailwind.
 //
-// Esta é a primeira página V2 efetivamente importada e renderizada.
-// O propósito desta versão é provar que a infraestrutura das PRs
-// anteriores (typography, version toggle, ErrorBoundary, paleta HYPR)
-// está funcionando antes do conteúdo real começar a ser construído
-// na Fase 2.
+// Esta é a primeira página V2 efetivamente importada e renderizada,
+// agora usando Tailwind v4 + tokens HYPR (src/ui/theme.css) em vez
+// de estilos inline.
 //
 // ──────────────────────────────────────────────────────────────────────
-// O QUE ESTE STUB FAZ
+// O QUE ESTE STUB VALIDA
 // ──────────────────────────────────────────────────────────────────────
-// 1. Importa typography.js — primeira vez que isso acontece, o que
-//    valida que o tree-shaking do Vite passa a incluir os arquivos
-//    .woff2 da Urbanist no bundle quando há consumidor real
-// 2. Aplica a paleta HYPR oficial (canvas #1C262F + signature #3397B9)
-// 3. Mostra um botão "Voltar à versão atual" que persiste 'legacy' no
-//    localStorage e recarrega — exatamente o mesmo fluxo do
-//    ErrorBoundary, validando que a rota de fuga funciona
-// 4. Exibe os props recebidos (token, isAdmin) para confirmar que o
-//    roteamento do App.jsx está passando as informações corretas
+// 1. Tailwind v4 está processando classes corretamente
+// 2. Tokens HYPR (bg-canvas, text-signature, etc) gerados via @theme
+//    estão funcionando como utilitárias
+// 3. Urbanist (typography.js) é carregada como fonte default
+// 4. global-reset.css aplica opiniões extras (focus-visible, etc)
+// 5. Botão "Voltar à versão atual" persiste 'legacy' no localStorage
+//    e recarrega
 //
 // ──────────────────────────────────────────────────────────────────────
 // SUBSTITUIÇÃO NA FASE 2
 // ──────────────────────────────────────────────────────────────────────
-// Na Fase 2, este arquivo passa a renderizar o ClientDashboard V2 real
-// (com tabs, dados, filtros, etc). O stub é descartado. O contrato com
+// Na Fase 2, este arquivo passa a renderizar o ClientDashboardV2 real
+// (com tabs, dados, filtros). O stub é descartado. O contrato com
 // App.jsx (props: token, isAdmin, adminJwt) permanece o mesmo.
 
+import "../v2.css";          // entry CSS (Tailwind + theme + reset)
+import "../../ui/typography"; // carrega Urbanist (efeito colateral)
 import { setReportVersion } from "../../shared/version";
-import { FONT_FAMILY } from "../../ui/typography";
 
 export default function ClientDashboardV2({ token, isAdmin /*, adminJwt */ }) {
   const goLegacy = () => {
@@ -42,69 +39,17 @@ export default function ClientDashboardV2({ token, isAdmin /*, adminJwt */ }) {
   };
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: "#1C262F", // canvas HYPR oficial
-        color: "#fff",
-        fontFamily: FONT_FAMILY,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 24,
-      }}
-    >
-      <div
-        style={{
-          maxWidth: 480,
-          width: "100%",
-          textAlign: "center",
-          background: "rgba(255,255,255,0.04)",
-          border: "1px solid rgba(255,255,255,0.08)",
-          borderRadius: 12,
-          padding: "40px 32px",
-        }}
-      >
-        <div
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "4px 12px",
-            borderRadius: 999,
-            background: "rgba(51,151,185,0.15)",
-            color: "#3397B9", // azul signature HYPR
-            fontSize: 12,
-            fontWeight: 600,
-            letterSpacing: 0.4,
-            textTransform: "uppercase",
-            marginBottom: 24,
-          }}
-        >
+    <div className="font-sans min-h-screen bg-canvas text-fg flex items-center justify-center p-6">
+      <div className="w-full max-w-md rounded-xl border border-border bg-surface shadow-md px-8 py-10 text-center">
+        <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-signature-soft text-signature text-xs font-semibold uppercase tracking-wider mb-6">
           Preview · V2
-        </div>
+        </span>
 
-        <h1
-          style={{
-            fontSize: 28,
-            fontWeight: 700,
-            lineHeight: 1.2,
-            margin: 0,
-            marginBottom: 12,
-          }}
-        >
+        <h1 className="text-3xl font-bold leading-tight mb-3">
           Em construção
         </h1>
 
-        <p
-          style={{
-            fontSize: 15,
-            lineHeight: 1.5,
-            color: "rgba(255,255,255,0.7)",
-            margin: 0,
-            marginBottom: 32,
-          }}
-        >
+        <p className="text-base leading-relaxed text-fg-muted mb-8">
           Esta é a próxima versão do dashboard de reports da HYPR. O
           conteúdo será construído nas próximas semanas. Por enquanto,
           a versão estável continua disponível.
@@ -113,38 +58,14 @@ export default function ClientDashboardV2({ token, isAdmin /*, adminJwt */ }) {
         <button
           type="button"
           onClick={goLegacy}
-          style={{
-            background: "#3397B9",
-            color: "#fff",
-            border: "none",
-            borderRadius: 8,
-            padding: "12px 24px",
-            fontSize: 14,
-            fontWeight: 600,
-            fontFamily: "inherit",
-            cursor: "pointer",
-            transition: "background 120ms ease",
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = "#246C84")}
-          onMouseLeave={(e) => (e.currentTarget.style.background = "#3397B9")}
+          className="inline-flex items-center justify-center px-6 py-3 rounded-lg bg-signature hover:bg-signature-hover text-fg text-sm font-semibold transition-colors duration-150 cursor-pointer"
         >
           Voltar à versão atual
         </button>
 
-        <div
-          style={{
-            marginTop: 32,
-            paddingTop: 20,
-            borderTop: "1px solid rgba(255,255,255,0.08)",
-            fontSize: 12,
-            color: "rgba(255,255,255,0.45)",
-            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-            wordBreak: "break-all",
-          }}
-        >
-          token: {token || "—"}
-          <br />
-          modo: {isAdmin ? "admin" : "cliente"}
+        <div className="mt-8 pt-5 border-t border-border font-mono text-xs text-fg-subtle break-all text-left">
+          <div>token: {token || "—"}</div>
+          <div>modo: {isAdmin ? "admin" : "cliente"}</div>
         </div>
       </div>
     </div>
