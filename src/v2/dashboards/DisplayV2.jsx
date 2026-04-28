@@ -120,48 +120,6 @@ export default function DisplayV2({
   // onde o pacing deveria estar agora.
   const expectedToday = computeExpectedTodayPct(camp);
 
-  const downloadCSV = () => {
-    const headers = [
-      "Data",
-      "Campanha",
-      "Line",
-      "Criativo",
-      "Tamanho",
-      "Tática",
-      "Impressões",
-      "Imp. Visíveis",
-      "Cliques",
-      "CTR",
-      "CPM Ef.",
-      "Custo Ef.",
-    ];
-    const escape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const rows = detailFiltered.map((r) => [
-      r.date,
-      r.campaign_name,
-      r.line_name,
-      r.creative_name,
-      r.creative_size,
-      r.tactic_type,
-      r.impressions,
-      r.viewable_impressions,
-      r.clicks,
-      r.ctr,
-      r.effective_cpm_amount,
-      r.effective_total_cost,
-    ]);
-    const csv = [headers, ...rows]
-      .map((r) => r.map(escape).join(","))
-      .join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `display_${tactic}_${camp.campaign_name || "campanha"}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   return (
     <div className="space-y-6">
       {/* ─── 1. Toolbar interna ──────────────────────────────────────── */}
@@ -334,18 +292,6 @@ export default function DisplayV2({
           />
         </CollapsibleSectionV2>
       )}
-
-      {/* ─── 10. Detalhamento por linha (collapsible FECHADO) ────────── */}
-      {detailFiltered.length > 0 && (
-        <CollapsibleSectionV2 title="Detalhamento por Linha">
-          <div className="flex justify-end mb-3">
-            <Button variant="secondary" size="sm" onClick={downloadCSV}>
-              ⬇ Download CSV
-            </Button>
-          </div>
-          <DisplayDetailTable rows={detailFiltered} />
-        </CollapsibleSectionV2>
-      )}
     </div>
   );
 }
@@ -367,98 +313,4 @@ function computeExpectedTodayPct(camp) {
   const total = (end - start) / 864e5 + 1;
   const elapsed = (now - start) / 864e5 + 1;
   return (elapsed / total) * 100;
-}
-
-// ─── Tabela detalhada inline ───────────────────────────────────────────
-//
-// Tabela específica do DisplayV2 — só colunas relevantes pra Display.
-// Limit visual de 200 linhas; CSV completo via botão acima.
-
-const DETAIL_COLUMNS = [
-  { key: "date", label: "Data" },
-  { key: "line_name", label: "Line" },
-  { key: "creative_name", label: "Criativo" },
-  { key: "creative_size", label: "Tamanho" },
-  { key: "impressions", label: "Impressões", numeric: true },
-  { key: "viewable_impressions", label: "Imp. Visíveis", numeric: true },
-  { key: "clicks", label: "Cliques", numeric: true },
-  { key: "ctr", label: "CTR", numeric: true, formatter: fmtP2 },
-  {
-    key: "effective_cpm_amount",
-    label: "CPM Ef.",
-    numeric: true,
-    formatter: fmtR,
-  },
-  {
-    key: "effective_total_cost",
-    label: "Custo Ef.",
-    numeric: true,
-    formatter: fmtR,
-  },
-];
-
-const ROW_LIMIT = 200;
-
-function DisplayDetailTable({ rows }) {
-  const visible = rows.slice(0, ROW_LIMIT);
-  const truncated = rows.length > ROW_LIMIT;
-
-  return (
-    <div>
-      <div className="text-[11px] text-fg-subtle mb-2 tabular-nums">
-        Mostrando {fmt(visible.length)} de {fmt(rows.length)} linhas
-        {truncated && " — exporte CSV para o conjunto completo"}
-      </div>
-      <div className="overflow-x-auto rounded-lg border border-border max-h-[480px]">
-        <table className="w-full text-xs tabular-nums">
-          <thead className="sticky top-0 bg-surface-strong border-b border-border">
-            <tr>
-              {DETAIL_COLUMNS.map((c) => (
-                <th
-                  key={c.key}
-                  className={
-                    c.numeric
-                      ? "px-3 py-2 text-right font-semibold text-fg-muted whitespace-nowrap"
-                      : "px-3 py-2 text-left font-semibold text-fg-muted whitespace-nowrap"
-                  }
-                >
-                  {c.label}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {visible.map((r, i) => (
-              <tr
-                key={i}
-                className="border-b border-border/40 last:border-b-0 hover:bg-surface transition-colors"
-              >
-                {DETAIL_COLUMNS.map((c) => {
-                  const raw = r[c.key];
-                  const display = c.formatter
-                    ? c.formatter(raw)
-                    : c.numeric
-                      ? fmt(raw)
-                      : raw ?? "—";
-                  return (
-                    <td
-                      key={c.key}
-                      className={
-                        c.numeric
-                          ? "px-3 py-2 text-right text-fg whitespace-nowrap"
-                          : "px-3 py-2 text-left text-fg whitespace-nowrap"
-                      }
-                      title={typeof raw === "string" ? raw : undefined}
-                    >
-                      {display}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
 }
