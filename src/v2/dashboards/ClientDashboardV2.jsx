@@ -29,7 +29,7 @@ import { Skeleton } from "../../ui/Skeleton";
 
 import OverviewV2 from "./OverviewV2";
 
-export default function ClientDashboardV2({ token /*, isAdmin, adminJwt */ }) {
+export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
 
@@ -82,7 +82,15 @@ export default function ClientDashboardV2({ token /*, isAdmin, adminJwt */ }) {
     return <DashboardSkeleton onBackToLegacy={goLegacy} />;
   }
 
-  return <OverviewV2 data={data} onBackToLegacy={goLegacy} />;
+  return (
+    <OverviewV2
+      data={data}
+      token={token}
+      isAdmin={isAdmin}
+      adminJwt={adminJwt}
+      onBackToLegacy={goLegacy}
+    />
+  );
 }
 
 // ─── Loading state ────────────────────────────────────────────────────

@@ -21,9 +21,13 @@
 //   de range. Não faz fetch — fetch fica no ClientDashboardV2 pra
 //   orquestrar loading state + ErrorBoundary.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { computeAggregates } from "../../shared/aggregations";
 import { fmt, fmtR } from "../../shared/format";
+import {
+  readRangeFromUrl,
+  writeRangeToUrl,
+} from "../../shared/dateFilter";
 
 import { Button } from "../../ui/Button";
 import { TooltipProvider } from "../../ui/Tooltip";
@@ -33,12 +37,27 @@ import { DateRangeFilterV2 } from "../components/DateRangeFilterV2";
 import { KpiCardV2 } from "../components/KpiCardV2";
 import { PacingBarV2 } from "../components/PacingBarV2";
 import { MediaSummaryV2 } from "../components/MediaSummaryV2";
+import { DualChartV2 } from "../components/DualChartV2";
+import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
+import { DataTableV2 } from "../components/DataTableV2";
+import { AlcanceFrequenciaV2 } from "../components/AlcanceFrequenciaV2";
 
-export default function OverviewV2({ data, onBackToLegacy }) {
-  // mainRange local — quando o filtro de período evoluir pra ?from=&to=
-  // na URL, troca pra readRangeFromUrl/writeRangeToUrl (já existe em
-  // shared/dateFilter). Pra primeira fatia, state local basta.
-  const [mainRange, setMainRange] = useState(null);
+export default function OverviewV2({ data, token, isAdmin, adminJwt, onBackToLegacy }) {
+  // Range persiste em ?from=YYYY-MM-DD&to=YYYY-MM-DD na URL — mesmo
+  // padrão usado pelo Legacy (readRangeFromUrl/writeRangeToUrl), o que
+  // garante deep-link funcional e voltar/avançar do navegador.
+  const [mainRange, setMainRangeState] = useState(() => readRangeFromUrl());
+  const setMainRange = (r) => {
+    setMainRangeState(r);
+    writeRangeToUrl(r);
+  };
+
+  // Sincroniza com botão voltar/avançar do navegador (popstate)
+  useEffect(() => {
+    const onPop = () => setMainRangeState(readRangeFromUrl());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   const aggregates = useMemo(
     () => computeAggregates(data, mainRange),
@@ -59,6 +78,7 @@ export default function OverviewV2({ data, onBackToLegacy }) {
     display, video, totals,
     isFiltered, rangeLabel, budgetProRata, budgetTotal,
     availableDates,
+    chartDisplay, chartVideo, detail,
   } = aggregates;
 
   const hasDisplay = display.length > 0;
@@ -202,13 +222,65 @@ export default function OverviewV2({ data, onBackToLegacy }) {
             </section>
           )}
 
-          {/* Placeholder das próximas fatias */}
-          <section className="mt-10 rounded-xl border border-border bg-surface px-5 py-6 text-center">
-            <p className="text-sm text-fg-muted">
-              <span className="font-semibold text-fg">Em breve:</span>{" "}
-              Gráficos diários (Imp. Visíveis × CTR, Views 100% × VTR) e tabela
-              detalhada chegam na próxima atualização.
-            </p>
+          {/* Charts diários — só se tiver dados */}
+          {(chartDisplay.length > 0 || chartVideo.length > 0) && (
+            <section className="mt-8">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle mb-3">
+                Performance diária
+              </h2>
+              <div className="space-y-3">
+                {chartDisplay.length > 0 && (
+                  <div className="rounded-xl border border-border bg-surface p-5">
+                    <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
+                      Display — Imp. Visíveis × CTR
+                    </div>
+                    <DualChartV2
+                      data={chartDisplay}
+                      xKey="date"
+                      y1Key="viewable_impressions"
+                      y2Key="ctr"
+                      label1="Imp. Visíveis"
+                      label2="CTR %"
+                    />
+                  </div>
+                )}
+                {chartVideo.length > 0 && (
+                  <div className="rounded-xl border border-border bg-surface p-5">
+                    <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
+                      Video — Views 100% × VTR
+                    </div>
+                    <DualChartV2
+                      data={chartVideo}
+                      xKey="date"
+                      y1Key="video_view_100"
+                      y2Key="vtr"
+                      label1="Views 100%"
+                      label2="VTR %"
+                    />
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* Tabela detalhada (colapsável) */}
+          {detail.length > 0 && (
+            <section className="mt-8">
+              <CollapsibleSectionV2 title="Tabela Consolidada">
+                <DataTableV2 detail={detail} campaignName={camp.campaign_name} />
+              </CollapsibleSectionV2>
+            </section>
+          )}
+
+          {/* Alcance & Frequência */}
+          <section className="mt-6">
+            <AlcanceFrequenciaV2
+              token={token}
+              isAdmin={isAdmin}
+              adminJwt={adminJwt}
+              initialAlcance={data.alcance}
+              initialFrequencia={data.frequencia}
+            />
           </section>
 
         </div>
