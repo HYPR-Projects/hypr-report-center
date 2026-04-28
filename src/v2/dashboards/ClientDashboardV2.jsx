@@ -216,6 +216,40 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
 
   const camp = data.campaign;
 
+  // Tabs auxiliares (RMND, PDOOH, Loom, Survey) são complementos opcionais —
+  // só aparecem pro cliente quando o admin já inseriu dado. Admin sempre vê
+  // todas, pra poder fazer upload/cadastro. Diretiva PR-16: separar core
+  // (Visão Geral / Display / Video / Detalhamento) de plus visualmente.
+  const hasRmnd = !!data.rmnd;
+  const hasPdooh = !!data.pdooh;
+  const hasLoom = !!data.loom;
+  const hasSurvey = !!data.survey;
+  const showRmnd = isAdmin || hasRmnd;
+  const showPdooh = isAdmin || hasPdooh;
+  const showLoom = isAdmin || hasLoom;
+  const showSurvey = isAdmin || hasSurvey;
+  const hasAnySecondary = showRmnd || showPdooh || showLoom || showSurvey;
+
+  // Estilo visual das tabs secundárias — peso menor que as core.
+  // text-xs (12px vs sm 14px), font-medium (500 vs semibold 600), cor
+  // text-fg-subtle (mais apagada que muted). data-[state=active]:text-fg
+  // do componente base continua valendo no estado ativo.
+  const secondaryTabClass =
+    "text-xs font-medium text-fg-subtle hover:text-fg-muted";
+
+  // Se deep-link aponta pra tab secundária que esse user não vê (cliente
+  // sem dado cadastrado), downgrade pra overview no render — evita tela
+  // vazia sem trigger ativo no menu. URL pode ficar momentaneamente fora
+  // de sync com a UI até o próximo clique em tab; preço aceitável pra
+  // evitar setState em effect (anti-padrão React 19).
+  const effectiveTab =
+    (tab === "rmnd" && !showRmnd) ||
+    (tab === "pdooh" && !showPdooh) ||
+    (tab === "loom" && !showLoom) ||
+    (tab === "survey" && !showSurvey)
+      ? "overview"
+      : tab;
+
   return (
     <TooltipProvider delayDuration={200}>
       <div className="min-h-screen bg-canvas text-fg font-sans">
@@ -235,7 +269,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
           />
 
           {/* Tabs com filtro de período alinhado à direita */}
-          <Tabs value={tab} onValueChange={setTab}>
+          <Tabs value={effectiveTab} onValueChange={setTab}>
             <div className="flex items-end justify-between gap-4 flex-wrap border-b border-border">
               <TabsList variant="underline" className="border-b-0">
                 <TabsTrigger value="overview" iconLeft={<GridIcon />}>
@@ -250,18 +284,50 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 <TabsTrigger value="detalhamento" iconLeft={<TableIcon />}>
                   Detalhamento
                 </TabsTrigger>
-                <TabsTrigger value="rmnd" iconLeft={<ShoppingCartIcon />}>
-                  RMND
-                </TabsTrigger>
-                <TabsTrigger value="pdooh" iconLeft={<MapPinIcon />}>
-                  PDOOH
-                </TabsTrigger>
-                <TabsTrigger value="loom" iconLeft={<FilmIcon />}>
-                  Video Loom
-                </TabsTrigger>
-                <TabsTrigger value="survey" iconLeft={<ClipboardIcon />}>
-                  Survey
-                </TabsTrigger>
+
+                {hasAnySecondary && (
+                  <span
+                    className="self-center mx-2 h-6 w-px bg-border"
+                    aria-hidden
+                  />
+                )}
+
+                {showRmnd && (
+                  <TabsTrigger
+                    value="rmnd"
+                    iconLeft={<ShoppingCartIcon />}
+                    className={secondaryTabClass}
+                  >
+                    RMND
+                  </TabsTrigger>
+                )}
+                {showPdooh && (
+                  <TabsTrigger
+                    value="pdooh"
+                    iconLeft={<MapPinIcon />}
+                    className={secondaryTabClass}
+                  >
+                    PDOOH
+                  </TabsTrigger>
+                )}
+                {showLoom && (
+                  <TabsTrigger
+                    value="loom"
+                    iconLeft={<FilmIcon />}
+                    className={secondaryTabClass}
+                  >
+                    Video Loom
+                  </TabsTrigger>
+                )}
+                {showSurvey && (
+                  <TabsTrigger
+                    value="survey"
+                    iconLeft={<ClipboardIcon />}
+                    className={secondaryTabClass}
+                  >
+                    Survey
+                  </TabsTrigger>
+                )}
               </TabsList>
 
               {/* Filtro de período compacto */}
