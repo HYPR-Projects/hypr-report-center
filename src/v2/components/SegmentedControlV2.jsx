@@ -58,7 +58,7 @@ export function SegmentedControlV2({
       aria-label={label}
       className={cn(
         "inline-flex items-center gap-1 p-1",
-        "rounded-lg bg-surface-strong border border-border",
+        "rounded-lg bg-canvas-deeper border border-border",
         className,
       )}
     >

@@ -28,7 +28,7 @@ export const TabsList = forwardRef(function TabsList(
     <RadixTabs.List
       ref={ref}
       className={cn(
-        "inline-flex items-center gap-1 p-1 rounded-lg bg-surface-strong border border-border",
+        "inline-flex items-center gap-1 p-1 rounded-lg bg-canvas-deeper border border-border",
         className
       )}
       {...rest}
