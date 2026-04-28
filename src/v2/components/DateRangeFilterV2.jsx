@@ -156,7 +156,7 @@ export function DateRangeFilterV2({
           align="end"
           sideOffset={8}
           className={cn(
-            "z-50 rounded-xl border border-border bg-surface shadow-2xl",
+            "z-50 rounded-xl overflow-hidden border border-border bg-surface-2 shadow-2xl",
             "animate-in fade-in-0 zoom-in-95",
             "data-[side=bottom]:slide-in-from-top-2",
           )}
