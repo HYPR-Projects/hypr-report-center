@@ -191,9 +191,16 @@
  * só DualChartV2).
  */
 :root[data-theme="light"] {
-  /* Canvas */
+  /* Canvas
+   *
+   * Ajustado em PR-20: canvas-deeper subiu de #ECEEF1 → #F1F3F6.
+   * #ECEEF1 ficava perceptivelmente cinza contra o page-bg #F8F9FA
+   * quando usado como track/well (PacingBarV2, SegmentedControlV2),
+   * destoando da leveza geral da paleta light. #F1F3F6 mantém o
+   * contraste necessário com canvas (~3% diferença de luminância)
+   * sem virar bloco cinza escuro. */
   --color-canvas: #F8F9FA;
-  --color-canvas-deeper: #ECEEF1;
+  --color-canvas-deeper: #F1F3F6;
   --color-canvas-elevated: #FFFFFF;
 
   /* Signature — escurece pra contrastar com branco */
@@ -221,13 +228,41 @@
   --color-border: rgba(15, 20, 25, 0.10);
   --color-border-strong: rgba(15, 20, 25, 0.16);
 
-  /* Surfaces translúcidas — base preta com baixa opacity sobre canvas claro */
-  --color-surface: rgba(15, 20, 25, 0.04);
-  --color-surface-strong: rgba(15, 20, 25, 0.06);
+  /* Surfaces translúcidas — base preta com baixa opacity sobre canvas claro
+   *
+   * Ajustado em PR-20: 0.04/0.06 → 0.025/0.045.
+   *
+   * O dark theme usa surface 0.06 / surface-strong 0.10 sobre canvas
+   * #1C262F — o resultado é ~rgb(41,51,60), um cinza-azulado quase
+   * imperceptível mas que dá hierarquia. Replicar essa mesma intensidade
+   * no light theme NÃO funciona porque:
+   *
+   *   1. Cards usam bg-surface-2 = #FFFFFF (branco puro). Quando um
+   *      header sticky / hover row / badge usa bg-surface por cima,
+   *      o overlay rgba(15,20,25,0.06) renderiza como ~#F0F1F2 sobre
+   *      branco — cinza chapado bem visível.
+   *
+   *   2. O page-bg do light é #F8F9FA, então a percepção relativa do
+   *      cinza fica AINDA mais forte (sai de "branco" pra "cinza" num
+   *      delta visual maior que sai de "canvas dark" pra "surface dark").
+   *
+   * Reduzir as opacidades em ~30% mantém a delimitação onde precisa
+   * (zebra de tabela, hover, header sticky) sem o efeito de "bloco
+   * cinza escuro" que estava destoando da paleta clean light.
+   */
+  --color-surface: rgba(15, 20, 25, 0.025);
+  --color-surface-strong: rgba(15, 20, 25, 0.045);
 
-  /* Surfaces sólidas — branco puro pra cards de hierarquia */
+  /* Surfaces sólidas — branco puro pra cards de hierarquia
+   *
+   * Ajustado em PR-20: surface-3 corrigido de #F8F9FA → #F1F3F6.
+   * Antes, surface-3 era idêntico ao canvas, então cards/elementos
+   * usando bg-surface-3 sobre o page-bg ficavam invisíveis (sem
+   * delimitação, sem contorno). Agora surface-3 fica um nível mais
+   * baixo na escala (= canvas-deeper), garantindo hierarquia mesmo
+   * quando aplicado sobre canvas. */
   --color-surface-2: #FFFFFF;
-  --color-surface-3: #F8F9FA;
+  --color-surface-3: #F1F3F6;
 
   /* Sombras precisam mais peso em fundo claro */
   --shadow-sm: 0 1px 2px 0 rgba(15, 20, 25, 0.06);
