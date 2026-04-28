@@ -22,11 +22,16 @@
  * muda — manutenção manual é aceitável.
  *
  * ──────────────────────────────────────────────────────────────────────
- * MODO DARK
+ * MODOS DARK / LIGHT
  * ──────────────────────────────────────────────────────────────────────
- * O V2 nasce dark-first (alinhado com a paleta HYPR canvas #1C262F).
- * Suporte a light mode será adicionado em fase posterior, sobrescrevendo
- * estes mesmos tokens dentro de :root:not(.dark) ou similar.
+ * V2 nasce dark-first (alinhado com a paleta HYPR canvas #1C262F).
+ * Variante light foi adicionada na PR-18 — bloco :root[data-theme="light"]
+ * no fim deste arquivo sobrescreve as 24 vars de cor.
+ *
+ * Toggle UI: src/v2/components/ThemeToggleV2.jsx
+ * Hook: src/v2/hooks/useTheme.js (persiste em localStorage)
+ * Anti-FOUC: script inline em index.html aplica data-theme antes do React
+ * Charts theme-aware: useThemeColors hook lê CSS vars via getComputedStyle
  */
 
 @theme {
@@ -162,4 +167,72 @@
     from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
     to   { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
   }
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * MODO LIGHT
+ * ──────────────────────────────────────────────────────────────────────
+ * Sobrescreve as 24 cores quando html tem data-theme="light". Os
+ * utilitários do Tailwind (bg-canvas, text-fg, etc) continuam idênticos
+ * — eles resolvem via var(--color-X) em runtime, então qualquer
+ * sobrescrita aqui se propaga automaticamente.
+ *
+ * Filosofia da paleta light:
+ *   - Canvas cinza levíssimo (#F8F9FA), não branco puro — sóbrio
+ *   - Cards elevated → branco puro #FFFFFF (contraste sutil contra canvas)
+ *   - Acentos (signature/warning/success/danger) escurecem pra contrastar
+ *     com fundo claro, mantendo identidade
+ *   - Sombras carregam mais peso (rgba 0.08-0.15 em vez de 0.2-0.4) —
+ *     sem elas, cards somem em fundo claro
+ *
+ * tokens.js continua exportando strings dark fixas (legado / fallback).
+ * O hook useThemeColors lê CSS vars em runtime via getComputedStyle —
+ * é o caminho theme-aware pros consumidores de tokens.js (atualmente
+ * só DualChartV2).
+ */
+:root[data-theme="light"] {
+  /* Canvas */
+  --color-canvas: #F8F9FA;
+  --color-canvas-deeper: #ECEEF1;
+  --color-canvas-elevated: #FFFFFF;
+
+  /* Signature — escurece pra contrastar com branco */
+  --color-signature: #2A7B97;
+  --color-signature-hover: #1F5E75;
+  --color-signature-soft: rgba(42, 123, 151, 0.12);
+  --color-signature-light: #5BA8C7;
+  --color-signature-glow: rgba(42, 123, 151, 0.10);
+
+  /* Semânticas — todas escurecem pra contrastar */
+  --color-warning: #B8A500;
+  --color-warning-soft: rgba(184, 165, 0, 0.18);
+  --color-success: #3D9842;
+  --color-success-soft: rgba(61, 152, 66, 0.18);
+  --color-danger: #D8201E;
+  --color-danger-soft: rgba(216, 32, 30, 0.18);
+
+  /* Foreground — preto/cinzas */
+  --color-fg: #0F1419;
+  --color-fg-muted: rgba(15, 20, 25, 0.65);
+  --color-fg-subtle: rgba(15, 20, 25, 0.5);
+  --color-fg-disabled: rgba(15, 20, 25, 0.35);
+
+  /* Borders */
+  --color-border: rgba(15, 20, 25, 0.10);
+  --color-border-strong: rgba(15, 20, 25, 0.16);
+
+  /* Surfaces translúcidas — base preta com baixa opacity sobre canvas claro */
+  --color-surface: rgba(15, 20, 25, 0.04);
+  --color-surface-strong: rgba(15, 20, 25, 0.06);
+
+  /* Surfaces sólidas — branco puro pra cards de hierarquia */
+  --color-surface-2: #FFFFFF;
+  --color-surface-3: #F8F9FA;
+
+  /* Sombras precisam mais peso em fundo claro */
+  --shadow-sm: 0 1px 2px 0 rgba(15, 20, 25, 0.06);
+  --shadow-md: 0 4px 12px -2px rgba(15, 20, 25, 0.08);
+  --shadow-lg: 0 10px 30px -5px rgba(15, 20, 25, 0.10);
+  --shadow-xl: 0 20px 50px -10px rgba(15, 20, 25, 0.12);
+  --shadow-inset: inset 0 1px 2px 0 rgba(15, 20, 25, 0.05);
 }
