@@ -2,16 +2,12 @@ import { useState, useEffect, useMemo } from "react";
 import { C } from "../shared/theme";
 import { getTheme, setTheme } from "../shared/prefs";
 import { gaEvent, gaPageView } from "../shared/analytics";
-import { enrichDetailCosts } from "../shared/enrichDetail";
+import { computeAggregates } from "../shared/aggregations";
 import { detectLuminance } from "../shared/imageCompress";
 import {
   readRangeFromUrl,
   writeRangeToUrl,
-  inRange,
   parseYmd,
-  daysInRange,
-  daysBetween,
-  formatRangeShort,
 } from "../shared/dateFilter";
 import { getCampaign, saveAlcanceFrequencia } from "../lib/api";
 import GlobalStyle from "../components/GlobalStyle";
@@ -104,181 +100,16 @@ const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
       .catch(e=>{setError("Erro ao carregar dados: "+e.message);setLoading(false);});
   },[token]);
 
-  // Agregações derivadas de `data`. Tudo aqui rodava a cada render do componente
-  // (incluindo cliques em tabs, digitação no chat, etc.). Em campanhas com
-  // detail grande, enrichDetailCosts é O(n*m) e era o gargalo principal.
-  // Memoizando, esse trabalho roda 1x quando data chega e fica em cache até
-  // o próximo fetch. Hooks precisam vir antes de early returns — daí estar aqui.
-  //
-  // Quando há filtro de período (mainRange), re-agrega tudo a partir do
-  // `detail` filtrado por data. `detail` tem dimensão (date, line, creative)
-  // então é a fonte de verdade pra recalcular `totals` filtrados. Custos de
-  // detail são reproporcionalizados em `enrichDetailCosts` baseado nos novos
-  // totals.
-  //
-  // Sobre custo: o backend retorna `effective_total_cost` com SUM em
-  // `query_totals` (correto, soma real), mas com MAX em `query_daily` e
-  // `query_detail` porque a coluna é cumulativa na tabela base. Somar os
-  // valores diários/detail do front infla o custo (somaria cumulativos).
-  // Solução: pra qualquer recálculo de custo filtrado, aplicar PROPORÇÃO
-  // sobre o custo total de `totalsRaw` (que é correto) baseado em delivery
-  // do detail filtrado — exatamente o que `enrichDetailCosts` já faz.
-  const aggregates = useMemo(() => {
-    if (!data || !data.campaign) return null;
-    const noSurvey = r => !/survey/i.test(r.line_name||"");
-    const totalsRaw = (data.totals||[]).filter(noSurvey);
-    const dailyRaw  = (data.daily||[]).filter(noSurvey);
-    const detailRaw = (data.detail||[]).filter(noSurvey);
-
-    const isFiltered = !!mainRange;
-    const daily0  = isFiltered ? dailyRaw.filter(r => inRange(r.date, mainRange))   : dailyRaw;
-    const detail0 = isFiltered ? detailRaw.filter(r => inRange(r.date, mainRange))  : detailRaw;
-
-    // Quando filtrado, reconstroi `totals` agregando delivery do `detail0`
-    // (campos SUM no backend — somar é correto) e aplicando proporção sobre
-    // o custo total de `totalsRaw` (que vem com SUM correto do backend).
-    let totals = totalsRaw;
-    if (isFiltered) {
-      // 1) Soma delivery do detail filtrado por (media_type, tactic_type)
-      const byKey = {};
-      detail0.forEach(r => {
-        const k = `${r.media_type}|${r.tactic_type}`;
-        if (!byKey[k]) {
-          byKey[k] = {
-            media_type: r.media_type,
-            tactic_type: r.tactic_type,
-            impressions: 0,
-            viewable_impressions: 0,
-            clicks: 0,
-            video_view_100: 0,
-            video_view_25: 0, video_view_50: 0, video_view_75: 0,
-            video_starts: 0,
-            completions: 0,
-            line_name: "TOTAL",
-          };
-        }
-        const g = byKey[k];
-        g.impressions          += r.impressions          || 0;
-        g.viewable_impressions += r.viewable_impressions || 0;
-        g.clicks               += r.clicks               || 0;
-        g.video_view_100       += r.video_view_100       || 0;
-        g.video_view_25        += r.video_view_25        || 0;
-        g.video_view_50        += r.video_view_50        || 0;
-        g.video_view_75        += r.video_view_75        || 0;
-        g.video_starts         += r.video_starts         || 0;
-        g.completions          += r.video_view_100       || 0;
-      });
-
-      // 2) Pra cada (media_type, tactic_type), aplica proporção sobre o
-      //    custo total CORRETO de totalsRaw. Display usa viewable_impressions
-      //    como denominador, Video usa completions (consistente com CPM/CPCV).
-      totals = totalsRaw.map(orig => {
-        const k = `${orig.media_type}|${orig.tactic_type}`;
-        const g = byKey[k] || {
-          media_type: orig.media_type,
-          tactic_type: orig.tactic_type,
-          impressions: 0, viewable_impressions: 0, clicks: 0,
-          video_view_100: 0, video_view_25: 0, video_view_50: 0, video_view_75: 0,
-          video_starts: 0, completions: 0,
-          line_name: "TOTAL",
-        };
-        const isVideo = orig.media_type === "VIDEO";
-        const denom_filtered = isVideo ? (g.completions || 0)            : (g.viewable_impressions || 0);
-        const denom_total    = isVideo ? (orig.completions || 0)         : (orig.viewable_impressions || 0);
-        const proportion     = denom_total > 0 ? denom_filtered / denom_total : 0;
-
-        const cost_filtered      = (orig.effective_total_cost      || 0) * proportion;
-        const cost_over_filtered = (orig.effective_cost_with_over  || 0) * proportion;
-
-        // CPM/CPCV efetivo derivado dos novos valores
-        const eff_cpm  = g.viewable_impressions > 0 ? (cost_filtered / g.viewable_impressions) * 1000 : 0;
-        const eff_cpcv = g.completions          > 0 ? (cost_filtered / g.completions)                : 0;
-
-        return {
-          ...g,
-          deal_cpm_amount:           orig.deal_cpm_amount  || 0,
-          deal_cpcv_amount:          orig.deal_cpcv_amount || 0,
-          effective_total_cost:      Math.round(cost_filtered      * 100) / 100,
-          effective_cost_with_over:  Math.round(cost_over_filtered * 100) / 100,
-          effective_cpm_amount:      Math.round(eff_cpm  * 100) / 100,
-          effective_cpcv_amount:     Math.round(eff_cpcv * 100) / 100,
-          // Preserva campos de contratação (usados em pacing display)
-          contracted_o2o_display_impressions: orig.contracted_o2o_display_impressions,
-          contracted_ooh_display_impressions: orig.contracted_ooh_display_impressions,
-          contracted_o2o_video_completions:   orig.contracted_o2o_video_completions,
-          contracted_ooh_video_completions:   orig.contracted_ooh_video_completions,
-          bonus_o2o_display_impressions:      orig.bonus_o2o_display_impressions,
-          bonus_ooh_display_impressions:      orig.bonus_ooh_display_impressions,
-          bonus_o2o_video_completions:        orig.bonus_o2o_video_completions,
-          bonus_ooh_video_completions:        orig.bonus_ooh_video_completions,
-          // pacing não faz sentido em janela parcial — null pra UI esconder
-          pacing: null,
-        };
-      });
-    }
-
-    const daily  = daily0;
-    const detail = enrichDetailCosts(detail0, totals);
-    const chartDisplay = daily.filter(r=>r.media_type==="DISPLAY").map(r=>({...r,ctr:r.viewable_impressions>0?(r.clicks||0)/r.viewable_impressions*100:0}));
-    const chartVideo   = daily.filter(r=>r.media_type==="VIDEO").map(r=>{
-      const v100 = r.video_view_100||r.completions||r.viewable_video_view_100_complete||0;
-      const vi   = r.viewable_impressions||0;
-      return {...r, video_view_100: v100, completions: v100, vtr: vi>0 ? v100/vi*100 : 0};
-    });
-
-    const enrich = (rows) => rows.map(r=>({
-      ...r,
-      ctr: r.impressions>0?(r.clicks/r.impressions)*100:null,
-      vcr: r.impressions>0?((r.viewable_video_view_100_complete||r.video_view_100||0)/r.impressions)*100:null,
-      // Usar pacing do backend diretamente — já calculado com datas reais por frente
-      // Quando filtrado, pacing fica null (escondido na UI)
-      pacing: r.pacing ?? null,
-      rentabilidade: r.deal_cpm_amount>0?((r.deal_cpm_amount-(r.effective_cpm_amount||0))/r.deal_cpm_amount)*100
-        :r.deal_cpcv_amount>0?((r.deal_cpcv_amount-(r.effective_cpcv_amount||0))/r.deal_cpcv_amount)*100:null,
-      custo_efetivo: r.effective_total_cost,
-      custo_efetivo_over: r.effective_cost_with_over,
-      completions: r.viewable_video_view_100_complete ?? r.completions ?? r.video_view_100,
-    }));
-
-    const display = enrich(totals.filter(t=>t.media_type==="DISPLAY"));
-    const video   = enrich(totals.filter(t=>t.media_type==="VIDEO"));
-
-    const totalImpressions=totals.reduce((s,t)=>s+(t.viewable_impressions||0),0);
-    const totalCusto=totals.reduce((s,t)=>s+(t.effective_total_cost||0),0);
-    const totalCustoOver=totals.reduce((s,t)=>s+(t.effective_cost_with_over||0),0);
-
-    // Budget proporcional ao período filtrado: budget_total * (dias_filtro / dias_campanha).
-    // Aproximação linear — assume distribuição uniforme. É o mesmo cálculo
-    // usado no pacing.
-    const camp = data.campaign;
-    const budgetTotal = camp?.budget_contracted || 0;
-    const campaignDays = daysBetween(camp?.start_date, camp?.end_date) || 1;
-    const filterDays = isFiltered ? daysInRange(mainRange) : campaignDays;
-    const budgetProRata = isFiltered
-      ? Math.round(budgetTotal * (filterDays / campaignDays) * 100) / 100
-      : budgetTotal;
-
-    // Datas com entrega real (extraídas do daily bruto, antes do filtro).
-    // Usado pro DateRangeFilter desabilitar dias sem dado.
-    const availableDates = Array.from(
-      new Set(dailyRaw.map(r => r.date).filter(Boolean))
-    ).sort();
-
-    return {
-      totals, daily0, detail0, detail,
-      chartDisplay, chartVideo,
-      display, video,
-      totalImpressions, totalCusto, totalCustoOver,
-      isFiltered,
-      range: mainRange,
-      rangeLabel: isFiltered ? formatRangeShort(mainRange) : null,
-      filterDays,
-      campaignDays,
-      budgetTotal,
-      budgetProRata,
-      availableDates,
-    };
-  }, [data, mainRange]);
+  // Agregações derivadas de `data`. A função pura `computeAggregates`
+  // (shared/aggregations.js) encapsula ~150 linhas de lógica que antes
+  // viviam aqui inline. Compartilhada com o V2 (src/v2/) — bug fix
+  // futuro acontece num lugar só. useMemo continua porque
+  // enrichDetailCosts dentro dela é O(n*m) e roda a cada render se não
+  // memoizado. Hooks precisam vir antes de early returns — daí estar aqui.
+  const aggregates = useMemo(
+    () => computeAggregates(data, mainRange),
+    [data, mainRange],
+  );
 
   if(loading) return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:cbg,transition:"background 0.3s"}}><GlobalStyle/><div style={{textAlign:"center"}}><Spinner size={48}/><p style={{marginTop:20,color:cmuted,fontSize:14}}>Carregando dados...</p></div></div>;
   if(error||!data||!aggregates) return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:cbg,transition:"background 0.3s"}}><GlobalStyle/><p style={{color:C.red}}>{error||"Campanha não encontrada."}</p></div>;
