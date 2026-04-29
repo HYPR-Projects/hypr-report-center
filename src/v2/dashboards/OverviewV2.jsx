@@ -35,6 +35,7 @@ import { HeroKpiCardV2 } from "../components/HeroKpiCardV2";
 import { SparklineV2 } from "../components/SparklineV2";
 import { PacingBarV2 } from "../components/PacingBarV2";
 import { PacingOverPillV2 } from "../components/PacingOverPillV2";
+import { CumulativePacingChartV2 } from "../components/CumulativePacingChartV2";
 import { MediaSummaryV2 } from "../components/MediaSummaryV2";
 import { DualChartV2 } from "../components/DualChartV2";
 import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
@@ -200,6 +201,40 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt 
             />
           )}
         </div>
+      )}
+
+      {/* ─── 2.5 Curva cumulativa de delivery (real × esperado) ─────────
+          Complementar às barras de pacing acima: enquanto a barra é um
+          snapshot do ritmo atual, este chart mostra a curva ao longo do
+          tempo, evidenciando tendências (recuperação após sub-delivery
+          inicial, plateau de over, etc). Só renderiza quando sem filtro
+          de período (faz sentido olhar a campanha inteira). */}
+      {!isFiltered && daily0 && daily0.length > 0 && (
+        <CumulativePacingChartV2
+          daily={daily0}
+          contracted={
+            display.reduce(
+              (s, r) =>
+                s +
+                (r.contracted_o2o_display_impressions || 0) +
+                (r.contracted_ooh_display_impressions || 0) +
+                (r.bonus_o2o_display_impressions || 0) +
+                (r.bonus_ooh_display_impressions || 0),
+              0,
+            ) +
+            video.reduce(
+              (s, r) =>
+                s +
+                (r.contracted_o2o_video_impressions || 0) +
+                (r.contracted_ooh_video_impressions || 0) +
+                (r.bonus_o2o_video_impressions || 0) +
+                (r.bonus_ooh_video_impressions || 0),
+              0,
+            )
+          }
+          startDate={camp.start_date}
+          endDate={camp.end_date}
+        />
       )}
 
       {/* ─── 3. Resumo por mídia ─────────────────────────────────────── */}
