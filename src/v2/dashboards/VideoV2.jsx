@@ -17,7 +17,6 @@
 //   7. FormatBreakdownTable  — distribuição por creative_size com share visual
 //   8. Chart Audiência       — DualChart byAudience (mantido como gráfico)
 //   9. DailyAggregateTable   — agregada por dia (mediaFilter="VIDEO")
-//  10. Detalhamento por linha — collapsible FECHADO
 //
 // FILTRO DE PERÍODO É GLOBAL (shell ClientDashboardV2).
 // QUIRK PRESERVADA: filtro de detail por tactic via substring no
@@ -32,8 +31,6 @@ import {
   groupByAudience,
 } from "../../shared/aggregations";
 import { fmt, fmtP, fmtP2, fmtR } from "../../shared/format";
-
-import { Button } from "../../ui/Button";
 
 import { AudienceFilterV2 } from "../components/AudienceFilterV2";
 import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
@@ -119,52 +116,6 @@ export default function VideoV2({
 
   // Marker "esperado hoje" — % do tempo decorrido linear.
   const expectedToday = computeExpectedTodayPct(camp);
-
-  const downloadCSV = () => {
-    const headers = [
-      "Data",
-      "Campanha",
-      "Line",
-      "Criativo",
-      "Tamanho",
-      "Tática",
-      "Imp. Visíveis",
-      "Video Start",
-      "Views 25%",
-      "Views 50%",
-      "Views 75%",
-      "Views 100%",
-      "VTR",
-      "Custo Ef.",
-    ];
-    const escape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const rows = detailFiltered.map((r) => [
-      r.date,
-      r.campaign_name,
-      r.line_name,
-      r.creative_name,
-      r.creative_size,
-      r.tactic_type,
-      r.viewable_impressions,
-      r.video_starts,
-      r.video_view_25,
-      r.video_view_50,
-      r.video_view_75,
-      r.video_view_100,
-      r.vtr ?? 0,
-      r.effective_total_cost,
-    ]);
-    const csv = [headers, ...rows]
-      .map((r) => r.map(escape).join(","))
-      .join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `video_${tactic}_${camp.campaign_name || "campanha"}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
 
   return (
     <div className="space-y-6">
@@ -337,17 +288,6 @@ export default function VideoV2({
         </CollapsibleSectionV2>
       )}
 
-      {/* ─── 10. Detalhamento por linha (collapsible FECHADO) ────────── */}
-      {detailFiltered.length > 0 && (
-        <CollapsibleSectionV2 title="Detalhamento por Linha">
-          <div className="flex justify-end mb-3">
-            <Button variant="secondary" size="sm" onClick={downloadCSV}>
-              ⬇ Download CSV
-            </Button>
-          </div>
-          <VideoDetailTable rows={detailFiltered} />
-        </CollapsibleSectionV2>
-      )}
     </div>
   );
 }
@@ -369,92 +309,4 @@ function computeExpectedTodayPct(camp) {
   const total = (end - start) / 864e5 + 1;
   const elapsed = (now - start) / 864e5 + 1;
   return (elapsed / total) * 100;
-}
-
-// ─── Tabela detalhada inline ───────────────────────────────────────────
-
-const DETAIL_COLUMNS = [
-  { key: "date", label: "Data" },
-  { key: "line_name", label: "Line" },
-  { key: "creative_name", label: "Criativo" },
-  { key: "creative_size", label: "Tamanho" },
-  { key: "viewable_impressions", label: "Imp. Visíveis", numeric: true },
-  { key: "video_starts", label: "Starts", numeric: true },
-  { key: "video_view_25", label: "25%", numeric: true },
-  { key: "video_view_50", label: "50%", numeric: true },
-  { key: "video_view_75", label: "75%", numeric: true },
-  { key: "video_view_100", label: "100%", numeric: true },
-  { key: "vtr", label: "VTR", numeric: true, formatter: fmtP2 },
-  {
-    key: "effective_total_cost",
-    label: "Custo Ef.",
-    numeric: true,
-    formatter: fmtR,
-  },
-];
-
-const ROW_LIMIT = 200;
-
-function VideoDetailTable({ rows }) {
-  const visible = rows.slice(0, ROW_LIMIT);
-  const truncated = rows.length > ROW_LIMIT;
-
-  return (
-    <div>
-      <div className="text-[11px] text-fg-subtle mb-2 tabular-nums">
-        Mostrando {fmt(visible.length)} de {fmt(rows.length)} linhas
-        {truncated && " — exporte CSV para o conjunto completo"}
-      </div>
-      <div className="overflow-x-auto rounded-lg border border-border max-h-[480px]">
-        <table className="w-full text-xs tabular-nums">
-          <thead className="sticky top-0 bg-surface-strong border-b border-border">
-            <tr>
-              {DETAIL_COLUMNS.map((c) => (
-                <th
-                  key={c.key}
-                  className={
-                    c.numeric
-                      ? "px-3 py-2 text-right font-semibold text-fg-muted whitespace-nowrap"
-                      : "px-3 py-2 text-left font-semibold text-fg-muted whitespace-nowrap"
-                  }
-                >
-                  {c.label}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {visible.map((r, i) => (
-              <tr
-                key={i}
-                className="border-b border-border/40 last:border-b-0 hover:bg-surface transition-colors"
-              >
-                {DETAIL_COLUMNS.map((c) => {
-                  const raw = r[c.key];
-                  const display = c.formatter
-                    ? c.formatter(raw)
-                    : c.numeric
-                      ? fmt(raw)
-                      : raw ?? "—";
-                  return (
-                    <td
-                      key={c.key}
-                      className={
-                        c.numeric
-                          ? "px-3 py-2 text-right text-fg whitespace-nowrap"
-                          : "px-3 py-2 text-left text-fg whitespace-nowrap"
-                      }
-                      title={typeof raw === "string" ? raw : undefined}
-                    >
-                      {display}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
 }

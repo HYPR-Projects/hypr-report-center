@@ -14,8 +14,14 @@
 
 import UploadTab from "../../dashboards/UploadTab";
 import TabChat from "../../components/TabChat";
+import { useTheme } from "../hooks/useTheme";
+import { legacyThemeObj } from "../legacyThemeBridge";
 
 export default function PdoohV2({ token, data, isAdmin, adminJwt }) {
+  const [theme] = useTheme();
+  const isDark = theme === "dark";
+  const legacyTheme = legacyThemeObj(theme);
+
   return (
     <div className="space-y-6">
       <header className="space-y-1">
@@ -34,7 +40,7 @@ export default function PdoohV2({ token, data, isAdmin, adminJwt }) {
         serverData={data?.pdooh}
         readOnly={!isAdmin}
         adminJwt={adminJwt}
-        isDark={true}
+        isDark={isDark}
       />
 
       <TabChat
@@ -42,7 +48,7 @@ export default function PdoohV2({ token, data, isAdmin, adminJwt }) {
         tabName="PDOOH"
         author={isAdmin ? "HYPR" : "Cliente"}
         adminJwt={adminJwt}
-        theme="dark"
+        theme={legacyTheme}
       />
     </div>
   );

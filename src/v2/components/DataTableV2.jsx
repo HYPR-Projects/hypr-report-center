@@ -12,6 +12,14 @@
 //   - Header sticky funciona via position:sticky no <thead> dentro do
 //     scroll container (mesma estratégia Legacy)
 //
+// Cores (PR-16 audit visual)
+//   - Container: bg-surface-2 (sólido, consistente com KpiCard/HeroKpi/etc).
+//     Antes era bg-canvas-deeper (#0F1419 — quase preto, destoava do resto).
+//   - Header sticky: bg-surface-strong (overlay 10% sobre surface-2, sutil
+//     mas visível pra distinguir de tbody). Antes bg-canvas-elevated, quase
+//     idêntico ao novo container — sem contraste.
+//   - Hover row: bg-surface-strong (mais claro que zebra surface/40).
+//
 // Limit de 200 linhas visuais
 //   Renderizar 10k+ linhas no DOM degrada scroll. Mostra primeiras 200
 //   e oferece CSV pra ver tudo. Mesma regra do Legacy.
@@ -103,7 +111,7 @@ export function DataTableV2({ detail, campaignName }) {
         </Button>
       </div>
 
-      <div className="overflow-auto max-h-[420px] rounded-lg border border-border bg-canvas-deeper">
+      <div className="overflow-auto max-h-[640px] rounded-lg border border-border bg-surface-2">
         <table className="w-full text-sm border-collapse">
           <thead className="sticky top-0 z-10">
             <tr>
@@ -112,7 +120,7 @@ export function DataTableV2({ detail, campaignName }) {
                   key={c.key}
                   className={cn(
                     "px-3 py-2 text-[10px] font-bold uppercase tracking-wider whitespace-nowrap",
-                    "bg-canvas-elevated text-fg-muted border-b border-border-strong",
+                    "bg-surface-strong text-fg-muted border-b border-border-strong",
                     c.numeric ? "text-right" : "text-left",
                   )}
                 >
@@ -137,7 +145,7 @@ export function DataTableV2({ detail, campaignName }) {
                   key={i}
                   className={cn(
                     "border-b border-border/60 last:border-b-0",
-                    "hover:bg-surface transition-colors",
+                    "hover:bg-surface-strong transition-colors",
                     i % 2 === 1 && "bg-surface/40",
                   )}
                 >

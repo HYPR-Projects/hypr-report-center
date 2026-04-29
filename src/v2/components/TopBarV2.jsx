@@ -4,7 +4,8 @@
 //   - Pill "atualizado há X" (informação, não interativa)
 //   - Botão "Falar com CS" (abre WhatsApp/Slack/email — TODO Fase 4)
 //   - Share (copiar link do report)
-//   - Toggle dark/light (default dark; light vem em fase futura)
+//   - Toggle dark/light (PR-18 — botão icon-only, sol quando dark, lua
+//     quando light, persiste em localStorage)
 //
 // O Voltar à versão atual é movido aqui também — é uma ação global,
 // não pertence ao header da campanha.
@@ -14,6 +15,7 @@
 
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
+import { ThemeToggleV2 } from "./ThemeToggleV2";
 
 export function TopBarV2({
   updatedAtLabel,
@@ -76,6 +78,8 @@ export function TopBarV2({
             <ShareIcon className="size-4" />
           </IconButton>
         )}
+
+        <ThemeToggleV2 />
 
         {onBackToLegacy && (
           <Button variant="ghost" size="sm" onClick={onBackToLegacy} className="hidden md:inline-flex">

@@ -12,8 +12,12 @@
 // renderizamos placeholder V2 em vez de delegar.
 
 import SurveyTab from "../../dashboards/SurveyTab";
+import { useTheme } from "../hooks/useTheme";
+import { legacyThemeObj } from "../legacyThemeBridge";
 
 export default function SurveyV2({ token, data, isAdmin, adminJwt }) {
+  const [theme] = useTheme();
+
   // Sem survey cadastrado — placeholder consistente com tom V2
   if (!data?.survey) {
     return (
@@ -47,7 +51,7 @@ export default function SurveyV2({ token, data, isAdmin, adminJwt }) {
         token={token}
         isAdmin={isAdmin}
         adminJwt={adminJwt}
-        theme="dark"
+        theme={legacyThemeObj(theme)}
       />
     </div>
   );

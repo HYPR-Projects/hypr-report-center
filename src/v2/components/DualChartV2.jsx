@@ -12,6 +12,16 @@
 //   - Bar default: signature (--color-signature)
 //   - Line default: warning (--color-warning) — contraste forte com bar,
 //     destaca a métrica de performance (taxa)
+//
+// Espaçamentos (PR-16 audit visual)
+//   - margin.right: 8 (não 64 — YAxis right tem width próprio que já
+//     reserva o espaço dos labels de %)
+//   - margin.left: 0 (YAxis left width=52 cobre tudo)
+//   - margin.top: 8 + YAxis padding-top: 8 → maior bar/ponto não cola no topo
+//   - XAxis padding.left/right: 16 → primeira e última barra com respiro
+//     dos eixos Y (antes ficavam coladas nas pontas)
+//   - XAxis minTickGap: 24 → evita sobreposição de labels de data em telas
+//     estreitas
 
 import {
   Bar,
@@ -23,7 +33,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { chartNeutral, colors as hypr } from "../../shared/tokens";
+import { useThemeColors, useChartNeutral } from "../hooks/useThemeColors";
 
 const fmtBig = (v) =>
   v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M`
@@ -38,10 +48,18 @@ export function DualChartV2({
   y2Key,
   label1,
   label2,
-  color1 = hypr.signature,
-  color2 = hypr.warning,
+  color1,
+  color2,
   height = 200,
 }) {
+  const hypr = useThemeColors();
+  const chartNeutral = useChartNeutral();
+
+  // Cores default vêm do tema (re-resolvidas quando tema muda). Se
+  // caller passou color1/color2 explícito, respeita override.
+  const barColor = color1 || hypr.signature;
+  const lineColor = color2 || hypr.warning;
+
   if (!data?.length) return null;
 
   const isDate = /^\d{4}-\d{2}/.test(String(data[0][xKey]));
@@ -52,12 +70,12 @@ export function DualChartV2({
   return (
     <div>
       <div className="flex flex-wrap items-center gap-4 mb-3">
-        <Legend color={color1} label={label1} />
-        <Legend color={color2} label={label2} />
+        <Legend color={barColor} label={label1} />
+        <Legend color={lineColor} label={label2} />
       </div>
 
       <ResponsiveContainer width="100%" height={height}>
-        <LineChart data={data} margin={{ top: 4, right: 64, left: 8, bottom: 4 }}>
+        <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={chartNeutral.grid} vertical={false} />
           <XAxis
             dataKey={xKey}
@@ -66,6 +84,8 @@ export function DualChartV2({
             axisLine={{ stroke: chartNeutral.grid }}
             tickFormatter={(v) => (isDate ? String(v).slice(5) : String(v))}
             interval="preserveStartEnd"
+            minTickGap={24}
+            padding={{ left: 16, right: 16 }}
           />
           <YAxis
             yAxisId="left"
@@ -74,6 +94,7 @@ export function DualChartV2({
             axisLine={false}
             tickFormatter={fmtBig}
             width={52}
+            padding={{ top: 8, bottom: 0 }}
           />
           <YAxis
             yAxisId="right"
@@ -82,7 +103,8 @@ export function DualChartV2({
             tickLine={false}
             axisLine={false}
             tickFormatter={fmtPct}
-            width={56}
+            width={52}
+            padding={{ top: 8, bottom: 0 }}
           />
           <RTooltip
             cursor={{ fill: hypr.surfaceStrong }}
@@ -104,7 +126,7 @@ export function DualChartV2({
             yAxisId="left"
             dataKey={y1Key}
             name={label1}
-            fill={color1}
+            fill={barColor}
             radius={[3, 3, 0, 0]}
             opacity={0.85}
             isAnimationActive={false}
@@ -115,9 +137,9 @@ export function DualChartV2({
             dataKey={y2Key}
             name={label2}
             type="monotone"
-            stroke={color2}
+            stroke={lineColor}
             strokeWidth={2}
-            dot={{ r: 3, fill: color2 }}
+            dot={{ r: 3, fill: lineColor }}
             activeDot={{ r: 5 }}
           />
         </LineChart>

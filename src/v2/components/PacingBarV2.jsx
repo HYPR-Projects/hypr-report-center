@@ -60,7 +60,7 @@ export function PacingBarV2({
   const wrapperClass =
     variant === "compact"
       ? "flex flex-col gap-2"
-      : "rounded-xl border border-border bg-surface px-5 py-4";
+      : "rounded-xl border border-border bg-surface px-5 py-5";
 
   return (
     <div className={wrapperClass}>
@@ -94,8 +94,15 @@ export function PacingBarV2({
         </span>
       </div>
 
-      {/* Bar com marker "esperado hoje" sobreposto */}
-      <div className="relative h-2.5 rounded-full bg-canvas-deeper overflow-visible">
+      {/* Bar com marker "esperado hoje" sobreposto.
+          mt-7 quando há marker (label flutuante a -top-5 precisa de ~24px
+          de respiro pra não colidir com o header acima). */}
+      <div
+        className={cn(
+          "relative h-2.5 rounded-full bg-canvas-deeper overflow-visible",
+          markerLeft ? "mt-7" : "mt-4",
+        )}
+      >
         <div className="absolute inset-0 rounded-full bg-canvas-deeper overflow-hidden">
           <div
             className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-500 ease-out"
@@ -132,7 +139,7 @@ export function PacingBarV2({
       </div>
 
       {/* Footer: investido / budget */}
-      <div className="flex justify-between mt-1 text-[11px] text-fg-muted tabular-nums">
+      <div className="flex justify-between mt-3 text-[11px] text-fg-muted tabular-nums">
         <span>
           Investido: <span className="text-fg font-semibold">{fmtR(cost)}</span>
         </span>

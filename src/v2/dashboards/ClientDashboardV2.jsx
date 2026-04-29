@@ -6,9 +6,15 @@
 //   1. TopBarV2 — branding "Report Hub" + share + voltar à versão atual
 //   2. CampaignHeaderV2 — hero card com gradient + nome campanha + token badge
 //   3. Filtro de período (compacto, alinhado à direita)
-//   4. Tabs Radix com ícones: Visão Geral / Display / Video
-//      (no Legacy tem RMND, PDOOH, VIDEO LOOM, SURVEY também — virão em PR-17+)
-//   5. TabsContent — OverviewV2 / DisplayV2 / VideoV2
+//   4. Tabs Radix com ícones: Visão Geral / Display / Video / Base de Dados /
+//      RMND / PDOOH / Video Loom / Survey
+//   5. TabsContent — OverviewV2 / DisplayV2 / VideoV2 / DetalhamentoV2 /
+//      RmndV2 / PdoohV2 / LoomV2 / SurveyV2
+//
+// Base de Dados (PR-16) é a tab dedicada à raw data completa (DataTableV2
+// com filter Tudo/Display/Video). Antes vivia como CollapsibleSection na
+// Visão Geral. Renomeada de "Detalhamento" pra "Base de Dados" — semântica
+// mais clara. URL: value="base" (com alias backward-compat ?tab=detalhamento).
 //
 // RESPONSABILIDADES (mantidas da PR-10):
 //   - Buscar dados via getCampaign(token)
@@ -46,6 +52,7 @@ import { DateRangeFilterV2 } from "../components/DateRangeFilterV2";
 import OverviewV2 from "./OverviewV2";
 import DisplayV2 from "./DisplayV2";
 import VideoV2 from "./VideoV2";
+import DetalhamentoV2 from "./DetalhamentoV2";
 import RmndV2 from "./RmndV2";
 import PdoohV2 from "./PdoohV2";
 import LoomV2 from "./LoomV2";
@@ -53,13 +60,15 @@ import SurveyV2 from "./SurveyV2";
 
 // ─── Helpers de URL ────────────────────────────────────────────────────
 
-const VALID_TABS = ["overview", "display", "video", "rmnd", "pdooh", "loom", "survey"];
+const VALID_TABS = ["overview", "display", "video", "base", "rmnd", "pdooh", "loom", "survey"];
 const VALID_TACTICS = ["O2O", "OOH"];
 
 function readTabFromUrl() {
   if (typeof window === "undefined") return "overview";
   try {
     const t = new URLSearchParams(window.location.search).get("tab");
+    // Backward compat: ?tab=detalhamento → base (renomeado em PR-16)
+    if (t === "detalhamento") return "base";
     return VALID_TABS.includes(t) ? t : "overview";
   } catch {
     return "overview";
@@ -209,6 +218,40 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
 
   const camp = data.campaign;
 
+  // Tabs auxiliares (RMND, PDOOH, Loom, Survey) são complementos opcionais —
+  // só aparecem pro cliente quando o admin já inseriu dado. Admin sempre vê
+  // todas, pra poder fazer upload/cadastro. Diretiva PR-16: separar core
+  // (Visão Geral / Display / Video / Detalhamento) de plus visualmente.
+  const hasRmnd = !!data.rmnd;
+  const hasPdooh = !!data.pdooh;
+  const hasLoom = !!data.loom;
+  const hasSurvey = !!data.survey;
+  const showRmnd = isAdmin || hasRmnd;
+  const showPdooh = isAdmin || hasPdooh;
+  const showLoom = isAdmin || hasLoom;
+  const showSurvey = isAdmin || hasSurvey;
+  const hasAnySecondary = showRmnd || showPdooh || showLoom || showSurvey;
+
+  // Estilo visual das tabs secundárias — peso menor que as core.
+  // text-xs (12px vs sm 14px), font-medium (500 vs semibold 600), cor
+  // text-fg-subtle (mais apagada que muted). data-[state=active]:text-fg
+  // do componente base continua valendo no estado ativo.
+  const secondaryTabClass =
+    "text-xs font-medium text-fg-subtle hover:text-fg-muted";
+
+  // Se deep-link aponta pra tab secundária que esse user não vê (cliente
+  // sem dado cadastrado), downgrade pra overview no render — evita tela
+  // vazia sem trigger ativo no menu. URL pode ficar momentaneamente fora
+  // de sync com a UI até o próximo clique em tab; preço aceitável pra
+  // evitar setState em effect (anti-padrão React 19).
+  const effectiveTab =
+    (tab === "rmnd" && !showRmnd) ||
+    (tab === "pdooh" && !showPdooh) ||
+    (tab === "loom" && !showLoom) ||
+    (tab === "survey" && !showSurvey)
+      ? "overview"
+      : tab;
+
   return (
     <TooltipProvider delayDuration={200}>
       <div className="min-h-screen bg-canvas text-fg font-sans">
@@ -228,7 +271,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
           />
 
           {/* Tabs com filtro de período alinhado à direita */}
-          <Tabs value={tab} onValueChange={setTab}>
+          <Tabs value={effectiveTab} onValueChange={setTab}>
             <div className="flex items-end justify-between gap-4 flex-wrap border-b border-border">
               <TabsList variant="underline" className="border-b-0">
                 <TabsTrigger value="overview" iconLeft={<GridIcon />}>
@@ -240,18 +283,53 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 <TabsTrigger value="video" iconLeft={<VideoIcon />}>
                   Video
                 </TabsTrigger>
-                <TabsTrigger value="rmnd" iconLeft={<ShoppingCartIcon />}>
-                  RMND
+                <TabsTrigger value="base" iconLeft={<TableIcon />}>
+                  Base de Dados
                 </TabsTrigger>
-                <TabsTrigger value="pdooh" iconLeft={<MapPinIcon />}>
-                  PDOOH
-                </TabsTrigger>
-                <TabsTrigger value="loom" iconLeft={<FilmIcon />}>
-                  Video Loom
-                </TabsTrigger>
-                <TabsTrigger value="survey" iconLeft={<ClipboardIcon />}>
-                  Survey
-                </TabsTrigger>
+
+                {hasAnySecondary && (
+                  <span
+                    className="self-center mx-2 h-6 w-px bg-border"
+                    aria-hidden
+                  />
+                )}
+
+                {showRmnd && (
+                  <TabsTrigger
+                    value="rmnd"
+                    iconLeft={<ShoppingCartIcon />}
+                    className={secondaryTabClass}
+                  >
+                    RMND
+                  </TabsTrigger>
+                )}
+                {showPdooh && (
+                  <TabsTrigger
+                    value="pdooh"
+                    iconLeft={<MapPinIcon />}
+                    className={secondaryTabClass}
+                  >
+                    PDOOH
+                  </TabsTrigger>
+                )}
+                {showLoom && (
+                  <TabsTrigger
+                    value="loom"
+                    iconLeft={<FilmIcon />}
+                    className={secondaryTabClass}
+                  >
+                    Video Loom
+                  </TabsTrigger>
+                )}
+                {showSurvey && (
+                  <TabsTrigger
+                    value="survey"
+                    iconLeft={<ClipboardIcon />}
+                    className={secondaryTabClass}
+                  >
+                    Survey
+                  </TabsTrigger>
+                )}
               </TabsList>
 
               {/* Filtro de período compacto */}
@@ -296,6 +374,10 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 lines={videoLines}
                 setLines={setVideoLines}
               />
+            </TabsContent>
+
+            <TabsContent value="base">
+              <DetalhamentoV2 data={data} aggregates={aggregates} />
             </TabsContent>
 
             <TabsContent value="rmnd">
@@ -473,6 +555,25 @@ function FilmIcon() {
       <line x1="2" y1="17" x2="7" y2="17" />
       <line x1="17" y1="17" x2="22" y2="17" />
       <line x1="17" y1="7" x2="22" y2="7" />
+    </svg>
+  );
+}
+
+function TableIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+      <line x1="3" y1="9" x2="21" y2="9" />
+      <line x1="3" y1="15" x2="21" y2="15" />
+      <line x1="9" y1="3" x2="9" y2="21" />
     </svg>
   );
 }

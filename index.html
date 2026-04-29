@@ -32,6 +32,31 @@
       gtag('js', new Date());
       gtag('config', 'G-GL9LXQVMT4', { send_page_view: false });
     </script>
+
+    <!-- Anti-FOUC: aplica data-theme no <html> ANTES do React montar.
+         Sem isso, primeiro render usa default dark mesmo se user salvou
+         light no localStorage, causando flash visual. Lógica idêntica
+         ao getInitialTheme em src/v2/hooks/useTheme.js (mantida em
+         sync manual — set raríssimo, vale a duplicação pra evitar
+         dependência de bundle JS no path crítico). -->
+    <script>
+      (function(){
+        try {
+          var stored = localStorage.getItem('hypr_theme');
+          if (stored === 'dark' || stored === 'light') {
+            document.documentElement.setAttribute('data-theme', stored);
+            return;
+          }
+        } catch(e) {}
+        try {
+          if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+            document.documentElement.setAttribute('data-theme', 'light');
+            return;
+          }
+        } catch(e) {}
+        document.documentElement.setAttribute('data-theme', 'dark');
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

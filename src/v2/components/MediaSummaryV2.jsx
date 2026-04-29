@@ -1,15 +1,23 @@
 // src/v2/components/MediaSummaryV2.jsx
 //
-// Card de resumo por mídia (Display ou Video) com FOCO na comparação
-// Negociado vs Efetivo — diferencial citado no ADR como prioritário.
+// Card de resumo por mídia (Display ou Video) — versão compacta inline.
 //
-// Diferenças vs Legacy MediaSummary:
-//   - Layout hero: CPM Negociado e CPM Efetivo lado a lado, com delta %
-//     destacado (verde se efetivo < negociado, vermelho se acima)
-//   - KPIs secundários em grid abaixo (Imp.Visíveis, Clicks/Views100, CTR/VTR, CPC)
-//   - Sem cálculo interno de CPM efetivo (usa o que já vem dos rows
-//     calculado pela computeAggregates) — evita divergência sutil que
-//     existia entre Legacy MediaSummary e o restante do dashboard
+// LAYOUT (PR-16 audit visual):
+//   ┌─────────────────────────────────────────────┐
+//   │ DISPLAY · CPM EFETIVO   R$ 10,05  ↓ 30,2%   │
+//   │ ─────────────────────────────────────────── │
+//   │ IMP.VISÍVEIS  CLICKS    CTR     CPC         │
+//   │ 25.073.420   135.704    0,5%    R$ 1,86     │
+//   └─────────────────────────────────────────────┘
+//
+// Mudanças vs versão anterior (PR-13/PR-14):
+//   - Header e hero fundidos numa única linha (label tipo+métrica à esq,
+//     valor+pill à dir) — economiza ~3 linhas verticais.
+//   - Lado "Negociado" removido (já redundante: aparece no header da
+//     campanha e no ComparisonCardV2 das tabs Display/Video).
+//   - ComparisonRow saiu da OverviewV2 → este card é a única referência
+//     da Visão Geral pra performance por mídia, mas continua secundário
+//     ao Hero KPI lá em cima — daí o aperto visual é proposital.
 //
 // Por que recebe array `rows` (e não `row` único)
 //   Uma mesma mídia pode ter múltiplas tactics (Display O2O + Display OOH).
@@ -47,64 +55,29 @@ function MiniKpi({ label, value, accent = false }) {
   );
 }
 
-// Bloco hero: NEG. vs EFET. com delta. Cor do delta:
+// Estilo da pill de rentabilidade. Convenção:
 //   - rentab >  0 → success (efetivo abaixo do negociado, lucro)
 //   - rentab <  0 → danger  (efetivo acima do negociado, prejuízo)
-//   - rentab == 0 ou null → neutral (sem variação)
-function NegVsEffective({ negLabel, negValue, effLabel, effValue, rentab }) {
-  let pillColor = "text-fg-muted";
-  let pillBg = "bg-surface-strong";
-  let pillSign = "—";
-  let pillText;
-
+//   - rentab == 0 ou null → neutral
+function getPillStyle(rentab) {
   if (rentab == null) {
-    pillText = "—";
-  } else if (rentab > 0) {
-    pillColor = "text-success";
-    pillBg = "bg-success-soft";
-    pillSign = "↓";
-    pillText = `${pillSign} ${fmtP(Math.abs(rentab))}`;
-  } else if (rentab < 0) {
-    pillColor = "text-danger";
-    pillBg = "bg-danger-soft";
-    pillSign = "↑";
-    pillText = `${pillSign} ${fmtP(Math.abs(rentab))}`;
-  } else {
-    pillText = fmtP(0);
+    return { bg: "bg-surface-strong", color: "text-fg-muted", text: "—" };
   }
-
-  return (
-    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-      <div className="text-center">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-fg-muted">
-          {negLabel}
-        </div>
-        <div className="text-2xl font-bold text-fg tabular-nums leading-tight mt-1">
-          {fmtR(negValue)}
-        </div>
-      </div>
-
-      <div
-        className={cn(
-          "rounded-full px-3 py-1 text-xs font-bold tabular-nums",
-          pillBg,
-          pillColor,
-        )}
-        title="Rentabilidade — diferença % entre o CPM/CPCV negociado e o efetivo entregue"
-      >
-        {pillText}
-      </div>
-
-      <div className="text-center">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-fg-muted">
-          {effLabel}
-        </div>
-        <div className="text-2xl font-bold text-signature tabular-nums leading-tight mt-1">
-          {fmtR(effValue)}
-        </div>
-      </div>
-    </div>
-  );
+  if (rentab > 0) {
+    return {
+      bg: "bg-success-soft",
+      color: "text-success",
+      text: `↓ ${fmtP(Math.abs(rentab))}`,
+    };
+  }
+  if (rentab < 0) {
+    return {
+      bg: "bg-danger-soft",
+      color: "text-danger",
+      text: `↑ ${fmtP(Math.abs(rentab))}`,
+    };
+  }
+  return { bg: "bg-surface-strong", color: "text-fg-muted", text: fmtP(0) };
 }
 
 export function MediaSummaryV2({ type, rows }) {
@@ -150,27 +123,43 @@ export function MediaSummaryV2({ type, rows }) {
     ? (effCpm / 1000) * (totals.vi / totals.clks)
     : null;
 
+  const effLabel = isDisplay ? "CPM Efetivo" : "CPCV Efetivo";
+  const effValue = isDisplay ? effCpm : effCpcv;
+  const pill = getPillStyle(rentab);
+
   return (
     <Card>
-      <CardBody className="p-5 space-y-4">
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] font-bold uppercase tracking-widest text-signature">
-            {type}
-          </span>
-          <div className="h-px flex-1 bg-border" />
+      <CardBody className="p-4 space-y-3">
+        {/* Linha hero compacta: tipo · label  ────────  valor + pill */}
+        <div className="flex items-baseline justify-between gap-3 flex-wrap">
+          <div className="flex items-baseline gap-2 min-w-0">
+            <span className="text-[11px] font-bold uppercase tracking-widest text-signature">
+              {type}
+            </span>
+            <span className="text-fg-subtle">·</span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-fg-muted">
+              {effLabel}
+            </span>
+          </div>
+          <div className="flex items-baseline gap-2 shrink-0">
+            <span className="text-2xl font-bold text-signature tabular-nums leading-tight">
+              {fmtR(effValue)}
+            </span>
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5 text-[11px] font-bold tabular-nums",
+                pill.bg,
+                pill.color,
+              )}
+              title="Rentabilidade — diferença % entre o CPM/CPCV negociado e o efetivo entregue"
+            >
+              {pill.text}
+            </span>
+          </div>
         </div>
 
-        {/* Hero: Negociado vs Efetivo */}
-        <NegVsEffective
-          negLabel={isDisplay ? "CPM Negociado" : "CPCV Negociado"}
-          negValue={isDisplay ? dealCpm : dealCpcv}
-          effLabel={isDisplay ? "CPM Efetivo" : "CPCV Efetivo"}
-          effValue={isDisplay ? effCpm : effCpcv}
-          rentab={rentab}
-        />
-
         {/* KPIs secundários */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-border">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 border-t border-border">
           <MiniKpi label="Imp. Visíveis" value={fmt(totals.vi)} />
           {isDisplay ? (
             <>

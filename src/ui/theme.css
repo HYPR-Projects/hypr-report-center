@@ -22,11 +22,16 @@
  * muda — manutenção manual é aceitável.
  *
  * ──────────────────────────────────────────────────────────────────────
- * MODO DARK
+ * MODOS DARK / LIGHT
  * ──────────────────────────────────────────────────────────────────────
- * O V2 nasce dark-first (alinhado com a paleta HYPR canvas #1C262F).
- * Suporte a light mode será adicionado em fase posterior, sobrescrevendo
- * estes mesmos tokens dentro de :root:not(.dark) ou similar.
+ * V2 nasce dark-first (alinhado com a paleta HYPR canvas #1C262F).
+ * Variante light foi adicionada na PR-18 — bloco :root[data-theme="light"]
+ * no fim deste arquivo sobrescreve as 24 vars de cor.
+ *
+ * Toggle UI: src/v2/components/ThemeToggleV2.jsx
+ * Hook: src/v2/hooks/useTheme.js (persiste em localStorage)
+ * Anti-FOUC: script inline em index.html aplica data-theme antes do React
+ * Charts theme-aware: useThemeColors hook lê CSS vars via getComputedStyle
  */
 
 @theme {
@@ -162,4 +167,107 @@
     from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
     to   { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
   }
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * MODO LIGHT
+ * ──────────────────────────────────────────────────────────────────────
+ * Sobrescreve as 24 cores quando html tem data-theme="light". Os
+ * utilitários do Tailwind (bg-canvas, text-fg, etc) continuam idênticos
+ * — eles resolvem via var(--color-X) em runtime, então qualquer
+ * sobrescrita aqui se propaga automaticamente.
+ *
+ * Filosofia da paleta light:
+ *   - Canvas cinza levíssimo (#F8F9FA), não branco puro — sóbrio
+ *   - Cards elevated → branco puro #FFFFFF (contraste sutil contra canvas)
+ *   - Acentos (signature/warning/success/danger) escurecem pra contrastar
+ *     com fundo claro, mantendo identidade
+ *   - Sombras carregam mais peso (rgba 0.08-0.15 em vez de 0.2-0.4) —
+ *     sem elas, cards somem em fundo claro
+ *
+ * tokens.js continua exportando strings dark fixas (legado / fallback).
+ * O hook useThemeColors lê CSS vars em runtime via getComputedStyle —
+ * é o caminho theme-aware pros consumidores de tokens.js (atualmente
+ * só DualChartV2).
+ */
+:root[data-theme="light"] {
+  /* Canvas
+   *
+   * Ajustado em PR-20: canvas-deeper subiu de #ECEEF1 → #F1F3F6.
+   * #ECEEF1 ficava perceptivelmente cinza contra o page-bg #F8F9FA
+   * quando usado como track/well (PacingBarV2, SegmentedControlV2),
+   * destoando da leveza geral da paleta light. #F1F3F6 mantém o
+   * contraste necessário com canvas (~3% diferença de luminância)
+   * sem virar bloco cinza escuro. */
+  --color-canvas: #F8F9FA;
+  --color-canvas-deeper: #F1F3F6;
+  --color-canvas-elevated: #FFFFFF;
+
+  /* Signature — escurece pra contrastar com branco */
+  --color-signature: #2A7B97;
+  --color-signature-hover: #1F5E75;
+  --color-signature-soft: rgba(42, 123, 151, 0.12);
+  --color-signature-light: #5BA8C7;
+  --color-signature-glow: rgba(42, 123, 151, 0.10);
+
+  /* Semânticas — todas escurecem pra contrastar */
+  --color-warning: #B8A500;
+  --color-warning-soft: rgba(184, 165, 0, 0.18);
+  --color-success: #3D9842;
+  --color-success-soft: rgba(61, 152, 66, 0.18);
+  --color-danger: #D8201E;
+  --color-danger-soft: rgba(216, 32, 30, 0.18);
+
+  /* Foreground — preto/cinzas */
+  --color-fg: #0F1419;
+  --color-fg-muted: rgba(15, 20, 25, 0.65);
+  --color-fg-subtle: rgba(15, 20, 25, 0.5);
+  --color-fg-disabled: rgba(15, 20, 25, 0.35);
+
+  /* Borders */
+  --color-border: rgba(15, 20, 25, 0.10);
+  --color-border-strong: rgba(15, 20, 25, 0.16);
+
+  /* Surfaces translúcidas — base preta com baixa opacity sobre canvas claro
+   *
+   * Ajustado em PR-20: 0.04/0.06 → 0.025/0.045.
+   *
+   * O dark theme usa surface 0.06 / surface-strong 0.10 sobre canvas
+   * #1C262F — o resultado é ~rgb(41,51,60), um cinza-azulado quase
+   * imperceptível mas que dá hierarquia. Replicar essa mesma intensidade
+   * no light theme NÃO funciona porque:
+   *
+   *   1. Cards usam bg-surface-2 = #FFFFFF (branco puro). Quando um
+   *      header sticky / hover row / badge usa bg-surface por cima,
+   *      o overlay rgba(15,20,25,0.06) renderiza como ~#F0F1F2 sobre
+   *      branco — cinza chapado bem visível.
+   *
+   *   2. O page-bg do light é #F8F9FA, então a percepção relativa do
+   *      cinza fica AINDA mais forte (sai de "branco" pra "cinza" num
+   *      delta visual maior que sai de "canvas dark" pra "surface dark").
+   *
+   * Reduzir as opacidades em ~30% mantém a delimitação onde precisa
+   * (zebra de tabela, hover, header sticky) sem o efeito de "bloco
+   * cinza escuro" que estava destoando da paleta clean light.
+   */
+  --color-surface: rgba(15, 20, 25, 0.025);
+  --color-surface-strong: rgba(15, 20, 25, 0.045);
+
+  /* Surfaces sólidas — branco puro pra cards de hierarquia
+   *
+   * Ajustado em PR-20: surface-3 corrigido de #F8F9FA → #F1F3F6.
+   * Antes, surface-3 era idêntico ao canvas, então cards/elementos
+   * usando bg-surface-3 sobre o page-bg ficavam invisíveis (sem
+   * delimitação, sem contorno). Agora surface-3 fica um nível mais
+   * baixo na escala (= canvas-deeper), garantindo hierarquia mesmo
+   * quando aplicado sobre canvas. */
+  --color-surface-2: #FFFFFF;
+  --color-surface-3: #F1F3F6;
+
+  /* Sombras precisam mais peso em fundo claro */
+  --shadow-sm: 0 1px 2px 0 rgba(15, 20, 25, 0.06);
+  --shadow-md: 0 4px 12px -2px rgba(15, 20, 25, 0.08);
+  --shadow-lg: 0 10px 30px -5px rgba(15, 20, 25, 0.10);
+  --shadow-xl: 0 20px 50px -10px rgba(15, 20, 25, 0.12);
+  --shadow-inset: inset 0 1px 2px 0 rgba(15, 20, 25, 0.05);
 }
