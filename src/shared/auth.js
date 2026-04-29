@@ -111,12 +111,21 @@ export function getGoogleIdToken() {
 /**
  * Marca o token de campanha como desbloqueado para a aba/dispositivo atual,
  * com TTL de 8h. Cada campanha tem sua própria chave.
+ *
+ * Aceita opcionalmente o `resolvedShortToken` — quando a URL pública usa o
+ * formato novo `/report/{share_id}`, o backend resolve para o short_token
+ * real, que é o que o dashboard precisa para chamar os endpoints de dados.
+ * No formato legacy (URL = short_token), `resolvedShortToken` é o próprio
+ * `urlToken`, ou pode ser omitido (cai no fallback).
  */
-export function markClientUnlocked(token) {
-  if (!token) return;
+export function markClientUnlocked(urlToken, resolvedShortToken = null) {
+  if (!urlToken) return;
   try {
-    const key = LS_CLIENT_UNLOCK_PREFIX + token.toUpperCase();
-    const payload = { expiresAt: Date.now() + SESSION_TTL_MS };
+    const key = LS_CLIENT_UNLOCK_PREFIX + urlToken.toUpperCase();
+    const payload = {
+      expiresAt: Date.now() + SESSION_TTL_MS,
+      shortToken: resolvedShortToken || urlToken,
+    };
     localStorage.setItem(key, JSON.stringify(payload));
   } catch {
     /* ignore */
@@ -137,6 +146,31 @@ export function isClientUnlocked(token) {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Lê o short_token real (resolvido pelo backend) que está armazenado
+ * junto ao registro de unlock. Retorna null se não existir / expirou.
+ *
+ * Usado quando a URL tem `share_id` em vez de short_token: o dashboard
+ * precisa do short_token canônico para chamar os endpoints de dados.
+ * No formato legacy o valor armazenado é o próprio `urlToken`.
+ */
+export function getResolvedShortToken(urlToken) {
+  if (!urlToken) return null;
+  try {
+    const key = LS_CLIENT_UNLOCK_PREFIX + urlToken.toUpperCase();
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.expiresAt || Date.now() > parsed.expiresAt) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    return parsed.shortToken || urlToken;
+  } catch {
+    return null;
   }
 }
 

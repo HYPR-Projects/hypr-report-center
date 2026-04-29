@@ -11,6 +11,7 @@ import {
   loadSession,
   clearSession,
   isClientUnlocked,
+  getResolvedShortToken,
 } from "./shared/auth";
 
 // ── Code-splitting (Fase 4 · PR-21) ─────────────────────────────────────
@@ -40,6 +41,14 @@ export default function App() {
   const path = window.location.pathname;
   const isClient = path.startsWith("/report/");
   const clientToken = isClient ? path.replace("/report/", "") : null;
+  // Quando o cliente desbloqueia, guardamos o short_token resolvido pelo
+  // backend (que pode diferir do `clientToken` da URL no formato novo
+  // /report/{share_id}). O state inicial é populado do localStorage para
+  // sobreviver a refresh; `setResolvedToken` é chamado depois do unlock
+  // pra cobrir o primeiro acesso.
+  const [resolvedToken, setResolvedToken] = useState(() =>
+    clientToken ? getResolvedShortToken(clientToken) : null
+  );
   const [unlocked, setUnlocked] = useState(() =>
     clientToken ? isClientUnlocked(clientToken) : false
   );
@@ -63,10 +72,22 @@ export default function App() {
     if (!_isAdmin && !unlocked) {
       return (
         <Suspense fallback={<RouteSuspense />}>
-          <ClientPasswordScreen token={clientToken} onUnlock={() => setUnlocked(true)} />
+          <ClientPasswordScreen
+            token={clientToken}
+            onUnlock={(shortToken) => {
+              if (shortToken) setResolvedToken(shortToken);
+              setUnlocked(true);
+            }}
+          />
         </Suspense>
       );
     }
+
+    // Admin sempre abre via short_token na URL (fluxo do menu não muda).
+    // Cliente pode estar com share_id na URL — usa o resolvedToken.
+    const dashboardToken = _isAdmin
+      ? clientToken
+      : (resolvedToken || getResolvedShortToken(clientToken) || clientToken);
 
     // Roteamento Legacy ↔ V2 controlado por src/shared/version.js.
     // Default permanece 'legacy' até a Fase 7. O cliente só vê o V2 se
@@ -75,7 +96,7 @@ export default function App() {
     // GA via gaEvent('v2_crash'), força localStorage='legacy' e
     // recarrega — cliente nunca vê tela branca.
     const dashboardProps = {
-      token: clientToken,
+      token: dashboardToken,
       isAdmin: _isAdmin,
       adminJwt: hasValidAdminJwt ? adminJwt : null,
     };

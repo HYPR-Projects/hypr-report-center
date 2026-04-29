@@ -30,6 +30,7 @@ from auth import (
     verify_google_id_token,
 )
 import owners
+import shares
 
 bq = bigquery.Client()
 
@@ -172,6 +173,42 @@ def report_data(request):
         except Exception as e:
             print(f"[ERROR issue_admin_token] {e}")
             return (jsonify({"error": "Erro ao emitir token"}), 500, headers)
+
+    # ── Endpoint: resolver credenciais do cliente → short_token ──────────────
+    # Público (sem auth admin). Recebe `{share_id, password}` e devolve o
+    # short_token correspondente se a senha bater. Aceita também
+    # short_token legacy no campo `share_id` para manter URLs antigas
+    # funcionando durante a transição (ver shares.resolve_share).
+    if request.method == "POST" and request.args.get("action") == "resolve_share":
+        try:
+            body = request.get_json(silent=True) or {}
+            share_id = (body.get("share_id") or "").strip()
+            password = (body.get("password") or "").strip()
+            if not share_id or not password:
+                return (jsonify({"error": "share_id e password são obrigatórios"}), 400, headers)
+            short_token = shares.resolve_share(share_id, password)
+            if not short_token:
+                return (jsonify({"error": "Código inválido"}), 401, headers)
+            return (jsonify({"short_token": short_token}), 200, headers)
+        except Exception as e:
+            print(f"[ERROR resolve_share] {e}")
+            return (jsonify({"error": "Erro ao validar código"}), 500, headers)
+
+    # ── Endpoint: obter share_id de uma campanha (admin) ─────────────────────
+    # Cria o share_id se não existir. Usado pelo menu admin para gerar
+    # links compartilháveis sem expor a senha na URL.
+    if request.method == "GET" and request.args.get("action") == "get_share_id":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            short_token = (request.args.get("token") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "token obrigatório"}), 400, headers)
+            share_id = shares.get_or_create_share_id(short_token)
+            return (jsonify({"share_id": share_id, "short_token": short_token}), 200, headers)
+        except Exception as e:
+            print(f"[ERROR get_share_id] {e}")
+            return (jsonify({"error": "Erro ao obter share_id"}), 500, headers)
 
     # ── Endpoint: salvar logo ─────────────────────────────────────────────────
     if request.method == "POST" and request.args.get("action") == "save_logo":
