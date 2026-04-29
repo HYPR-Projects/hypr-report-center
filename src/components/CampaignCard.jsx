@@ -214,9 +214,18 @@ const CampaignCard = ({ c, onOpenReport, onLoom, onSurvey, onLogo, onCopyLink, o
             { label: "🖼️ Logo",       onClick: () => onLogo(c.short_token) },
             { label: "👤 Owner",      onClick: () => onOwner(c) },
             {
-              label: copied === c.short_token ? "✓ Copiado!" : "🔗 Link Cliente",
+              label:
+                copied === c.short_token
+                  ? "✓ Copiado!"
+                  : copied === `${c.short_token}:loading`
+                    ? "⏳ Gerando..."
+                    : copied === `${c.short_token}:error`
+                      ? "✕ Erro, tente de novo"
+                      : "🔗 Link Cliente",
               onClick: () => onCopyLink(c),
               highlight: copied === c.short_token,
+              loading: copied === `${c.short_token}:loading`,
+              error: copied === `${c.short_token}:error`,
             },
           ].map(btn => (
             <button
