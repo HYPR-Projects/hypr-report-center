@@ -6,7 +6,7 @@ import {
   getOwnerFilter,
   setOwnerFilter as persistOwnerFilter,
 } from "../shared/prefs";
-import { listCampaigns, listTeamMembers } from "../lib/api";
+import { listCampaigns, listTeamMembers, getShareId } from "../lib/api";
 import GlobalStyle from "../components/GlobalStyle";
 import Spinner from "../components/Spinner";
 import HyprReportCenterLogo from "../components/HyprReportCenterLogo";
@@ -118,8 +118,14 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
     setShowNewCampaign(false);
   };
 
-  const copyLink = (token) => {
-    navigator.clipboard.writeText(`${window.location.origin}/report/${token}`);
+  const copyLink = async (token) => {
+    // Pede o share_id ao backend (cria se não existir). Se a Cloud Function
+    // ainda não foi redeployada com o endpoint, retorna null e caímos no
+    // formato legacy (URL = short_token, senha exposta) — link continua
+    // funcionando, só não tem o ganho de privacidade.
+    const shareId = await getShareId(token);
+    const slug = shareId || token;
+    navigator.clipboard.writeText(`${window.location.origin}/report/${slug}`);
     setCopied(token); setTimeout(() => setCopied(null), 2000);
   };
 

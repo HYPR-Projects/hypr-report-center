@@ -140,6 +140,33 @@ export async function saveReportOwner({ short_token, cp_email, cs_email }) {
   return r;
 }
 
+// ── Share IDs (admin) ────────────────────────────────────────────────────────
+
+/**
+ * Retorna o `share_id` público de uma campanha. Cria sob demanda no backend
+ * se ainda não existir (idempotente). Usado pelo botão "Link Cliente" para
+ * gerar URLs compartilháveis sem expor a senha (short_token) no path.
+ *
+ * Se o backend não tem o endpoint ainda (rollout em andamento) ou o JWT
+ * estiver indisponível, retorna null — o caller cai no formato legacy
+ * (URL com short_token) sem quebrar o fluxo.
+ */
+export async function getShareId(short_token) {
+  try {
+    const jwt = await getOrIssueAdminJwt();
+    if (!jwt) return null;
+    const r = await fetch(
+      `${API_URL}?action=get_share_id&token=${encodeURIComponent(short_token)}`,
+      { headers: { ...adminAuthHeaders(jwt) } },
+    );
+    if (!r.ok) return null;
+    const d = await r.json();
+    return d?.share_id || null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Logo (admin) ─────────────────────────────────────────────────────────────
 
 /**

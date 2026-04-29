@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { C } from "../../shared/theme";
-import { checkCampaignToken, saveLogo as saveLogoApi } from "../../lib/api";
+import { checkCampaignToken, saveLogo as saveLogoApi, getShareId } from "../../lib/api";
 import Spinner from "../Spinner";
 import ModalShell from "./ModalShell";
 
@@ -24,6 +24,7 @@ import ModalShell from "./ModalShell";
 const NewCampaignModal = ({ onClose, onConfirm, theme }) => {
   const [newToken,    setNewToken]    = useState("");
   const [tokenData,   setTokenData]   = useState(null);
+  const [shareId,     setShareId]     = useState(null);
   const [logoFile,    setLogoFile]    = useState(null);
   const [logoPreview, setLogoPreview] = useState(null);
   const [checking,    setChecking]    = useState(false);
@@ -34,7 +35,8 @@ const NewCampaignModal = ({ onClose, onConfirm, theme }) => {
   const inputBg  = theme?.inputBg  || C.dark3;
 
   const reset = () => {
-    setNewToken(""); setTokenData(null); setLogoFile(null); setLogoPreview(null);
+    setNewToken(""); setTokenData(null); setShareId(null);
+    setLogoFile(null); setLogoPreview(null);
   };
 
   const handleClose = () => {
@@ -47,8 +49,16 @@ const NewCampaignModal = ({ onClose, onConfirm, theme }) => {
     setChecking(true);
     try {
       const d = await checkCampaignToken(newToken.trim());
-      if (d?.campaign) setTokenData(d.campaign);
-      else alert("Token não encontrado.");
+      if (d?.campaign) {
+        setTokenData(d.campaign);
+        // Busca/cria share_id em paralelo. Se falhar (rede ou backend
+        // sem o endpoint), o display cai no formato legacy via fallback
+        // no template — link continua válido, só sem o ganho de
+        // privacidade na URL.
+        getShareId(d.campaign.short_token).then(setShareId).catch(() => setShareId(null));
+      } else {
+        alert("Token não encontrado.");
+      }
     } catch {
       alert("Erro ao buscar token.");
     } finally {
@@ -172,7 +182,7 @@ const NewCampaignModal = ({ onClose, onConfirm, theme }) => {
               Link do cliente (senha = short token)
             </div>
             <div style={{ fontSize: 13, color: C.blue, wordBreak: "break-all" }}>
-              {window.location.origin}/report/{tokenData.short_token}
+              {window.location.origin}/report/{shareId || tokenData.short_token}
             </div>
           </div>
 
