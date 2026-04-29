@@ -3,7 +3,7 @@ import { GOOGLE_CLIENT_ID } from "../shared/config";
 import { C } from "../shared/theme";
 import { saveSession } from "../shared/auth";
 import GlobalStyle from "../components/GlobalStyle";
-import HyprLogo from "../components/HyprLogo";
+import HyprReportCenterLogo from "../components/HyprReportCenterLogo";
 
 const LoginScreen = ({ onLogin }) => {
   useEffect(()=>{
@@ -31,8 +31,9 @@ const LoginScreen = ({ onLogin }) => {
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:`radial-gradient(ellipse at 30% 50%,${C.dark3},${C.dark})`,padding:24}}>
       <GlobalStyle/>
       <div className="fade-in" style={{background:C.dark2,border:`1px solid ${C.dark3}`,borderRadius:20,padding:"56px 48px",maxWidth:400,width:"100%",textAlign:"center",boxShadow:`0 32px 80px #00000060`}}>
-        <HyprLogo height={44} center/>
-        <div style={{marginTop:8,fontSize:13,color:C.muted,letterSpacing:3,textTransform:"uppercase"}}>Report Hub</div>
+        <div style={{display:"flex",justifyContent:"center",color:"#FFFFFF"}}>
+          <HyprReportCenterLogo height={36}/>
+        </div>
         <div style={{margin:"40px 0",height:1,background:C.dark3}}/>
         <p style={{color:C.muted,fontSize:14,marginBottom:32,lineHeight:1.6}}>Acesso restrito à equipe HYPR.<br/>Faça login com seu email <strong style={{color:C.blueLight}}>@hypr.mobi</strong>.</p>
         <div id="gbtn" style={{display:"flex",justifyContent:"center"}}/>

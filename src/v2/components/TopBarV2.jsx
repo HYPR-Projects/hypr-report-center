@@ -16,6 +16,7 @@
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { ThemeToggleV2 } from "./ThemeToggleV2";
+import HyprReportCenterLogo from "../../components/HyprReportCenterLogo";
 
 export function TopBarV2({
   updatedAtLabel,
@@ -32,12 +33,9 @@ export function TopBarV2({
         className,
       )}
     >
-      {/* Branding */}
-      <div className="flex items-center gap-2.5">
-        <LogoMark />
-        <span className="font-extrabold text-base text-fg tracking-tight">
-          Report Hub
-        </span>
+      {/* Branding: wordmark HYPR°REPORT CENTER tematizado */}
+      <div className="flex items-center text-fg">
+        <HyprReportCenterLogo height={22} />
       </div>
 
       {/* Ações */}
@@ -92,21 +90,6 @@ export function TopBarV2({
 }
 
 // ─── Subcomponentes ───────────────────────────────────────────────────
-
-function LogoMark() {
-  // Quadrado azul com "H" branco e degree symbol amarelo (igual mockup)
-  return (
-    <div className="relative inline-flex items-center justify-center size-7 rounded-lg bg-signature text-fg font-black text-sm">
-      H
-      <span
-        aria-hidden="true"
-        className="absolute -right-0.5 -top-0.5 text-warning text-base font-black leading-none"
-      >
-        °
-      </span>
-    </div>
-  );
-}
 
 function IconButton({ children, onClick, title }) {
   return (

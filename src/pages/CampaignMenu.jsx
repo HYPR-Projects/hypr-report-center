@@ -9,7 +9,7 @@ import {
 import { listCampaigns, listTeamMembers } from "../lib/api";
 import GlobalStyle from "../components/GlobalStyle";
 import Spinner from "../components/Spinner";
-import HyprLogo from "../components/HyprLogo";
+import HyprReportCenterLogo from "../components/HyprReportCenterLogo";
 import MonthGroup from "../components/MonthGroup";
 import NewCampaignModal from "../components/modals/NewCampaignModal";
 import LoomModal from "../components/modals/LoomModal";
@@ -220,7 +220,9 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
         width: "100%",
         transition: "background 0.3s, border-color 0.3s",
       }}>
-        <HyprLogo height={28} isDark={isDark}/>
+        <div style={{display:"flex",alignItems:"center",color:isDark?"#FFFFFF":"#0F1419"}}>
+          <HyprReportCenterLogo height={22}/>
+        </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           {/* Theme toggle */}
           <button

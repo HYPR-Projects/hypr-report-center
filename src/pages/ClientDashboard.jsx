@@ -12,7 +12,7 @@ import {
 import { getCampaign, saveAlcanceFrequencia } from "../lib/api";
 import GlobalStyle from "../components/GlobalStyle";
 import Spinner from "../components/Spinner";
-import HyprLogo from "../components/HyprLogo";
+import HyprReportCenterLogo from "../components/HyprReportCenterLogo";
 import Tabs from "../components/Tabs";
 import DateRangeFilter from "../components/DateRangeFilter";
 import UploadTab from "../dashboards/UploadTab";
@@ -122,7 +122,9 @@ const ClientDashboard = ({ token, isAdmin, adminJwt }) => {
       <GlobalStyle/>
       {!isDarkClient && <style>{`body{background:${cbg}!important;color:${ctext}!important;}`}</style>}
       <div style={{background:cbg2,borderBottom:`1px solid ${cbdr}`,padding:"0 32px",height:64,display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",transition:"background 0.3s"}}>
-        <HyprLogo height={26} isDark={isDarkClient}/>
+        <div style={{display:"flex",alignItems:"center",color:isDarkClient?"#FFFFFF":"#0F1419"}}>
+          <HyprReportCenterLogo height={20}/>
+        </div>
         <div style={{display:"flex",alignItems:"center",gap:16}}>
           <button
             onClick={()=>setIsDarkClient(v=>!v)}
