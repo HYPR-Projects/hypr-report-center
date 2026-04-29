@@ -1,11 +1,13 @@
 // src/v2/components/KpiCardV2.jsx
 //
-// KPI card do V2. Mostra label + valor grande + hint opcional via tooltip.
+// KPI card do V2. Mostra label + valor grande + hint opcional via tooltip
+// + sparkline opcional embaixo do valor.
 //
 // Diferenças vs Legacy KpiCard:
 //   - Tipografia escalada (label menor, valor maior)
 //   - Cor signature como acento opcional (prop `accent`)
 //   - Tooltip do Radix integrado quando `hint` é passado
+//   - Sparkline inline quando `sparkline` é passado (PR-13)
 //   - Loading state via Skeleton (prop `loading`)
 
 import { Card, CardBody } from "../../ui/Card";
@@ -23,15 +25,16 @@ export function KpiCardV2({
   hint,
   accent = false,
   loading = false,
+  sparkline = null, // ReactNode opcional (SparklineV2)
   className,
 }) {
   const labelEl = (
     <span
       className={cn(
-        "text-[11px] font-semibold uppercase tracking-wider leading-none",
+        "inline-block text-[11px] font-semibold uppercase tracking-wider leading-none",
         "text-fg-muted",
-        // Quando tem hint, marca visualmente o label como "tooltipável"
-        hint && "underline decoration-dotted decoration-fg-subtle underline-offset-4 cursor-help",
+        hint &&
+          "underline decoration-dotted decoration-fg-subtle underline-offset-4 cursor-help",
       )}
     >
       {label}
@@ -41,9 +44,9 @@ export function KpiCardV2({
   return (
     <Card
       variant={accent ? "highlighted" : "default"}
-      className={cn("min-w-0", className)}
+      className={cn("min-w-0 bg-surface-2 border-border", className)}
     >
-      <CardBody className="flex flex-col gap-2 p-4">
+      <CardBody className="flex flex-col gap-2.5 p-4">
         {hint ? (
           <Tooltip>
             <TooltipTrigger asChild>{labelEl}</TooltipTrigger>
@@ -66,6 +69,8 @@ export function KpiCardV2({
             {value}
           </span>
         )}
+
+        {sparkline && <div className="mt-1">{sparkline}</div>}
       </CardBody>
     </Card>
   );

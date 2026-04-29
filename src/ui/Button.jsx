@@ -31,7 +31,7 @@ const buttonStyles = cva(
         secondary:
           "bg-surface-strong text-fg hover:bg-surface border border-border-strong",
         ghost:
-          "bg-transparent text-fg-muted hover:bg-surface hover:text-fg",
+          "bg-transparent text-fg hover:bg-surface",
         danger:
           "bg-danger text-fg hover:opacity-90",
       },

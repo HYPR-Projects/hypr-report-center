@@ -41,6 +41,8 @@
   --color-signature: #3397B9;
   --color-signature-hover: #246C84;      /* hover/active do signature */
   --color-signature-soft: rgba(51, 151, 185, 0.15);   /* fundo de pill/badge */
+  --color-signature-light: #C5EAF6;      /* azul-claro: sparklines secundárias, glow detail */
+  --color-signature-glow: rgba(51, 151, 185, 0.18);   /* glow radial em hero/cards de destaque */
 
   /* Semânticas (avisos, sucesso, erro) */
   --color-warning: #EDD900;              /* atenção, pacing, alertas leves */
@@ -56,13 +58,42 @@
   --color-fg-subtle: rgba(245, 247, 250, 0.45); /* texto terciário, captions */
   --color-fg-disabled: rgba(245, 247, 250, 0.3);
 
-  /* Borders e divisores */
-  --color-border: rgba(245, 247, 250, 0.08);    /* divisor padrão */
-  --color-border-strong: rgba(245, 247, 250, 0.16); /* divisor com ênfase */
+  /* Borders e divisores
+   *
+   * Ajustados em PR-12 (de 0.08/0.16 → 0.12/0.20). O nível anterior
+   * era teoricamente legível (rgba composta sobre canvas produz uma
+   * borda visível), mas na prática chips, cards e tabs ficavam sem
+   * delimitação clara — você precisava enxergar o card pelo padding
+   * do conteúdo, não pela borda. 0.12 dá contorno discernível mantendo
+   * o look minimalista; 0.20 marca elementos com ênfase (input focado,
+   * card hover) sem virar moldura.
+   */
+  --color-border: rgba(245, 247, 250, 0.12);    /* divisor padrão */
+  --color-border-strong: rgba(245, 247, 250, 0.20); /* divisor com ênfase */
 
-  /* Surface (cards, modais, popovers sobre canvas) */
-  --color-surface: rgba(245, 247, 250, 0.04);   /* surface sutil */
-  --color-surface-strong: rgba(245, 247, 250, 0.08); /* surface ativa/hover */
+  /* Surface (cards, modais, popovers sobre canvas)
+   *
+   * Ajustados em PR-12 (de 0.04/0.08 → 0.06/0.10). Mantém a paleta
+   * dark-first sem virar cinza chapado, mas dá ~50% mais contraste
+   * com canvas pra cards/popovers/tabs ficarem visualmente delimitados.
+   * Sobre canvas #1C262F:
+   *   surface 0.06        → ~rgb(41, 51, 60)   (era ~37,46,55)
+   *   surface-strong 0.10 → ~rgb(50, 59, 67)   (era ~45,55,63)
+   */
+  --color-surface: rgba(245, 247, 250, 0.06);   /* surface sutil */
+  --color-surface-strong: rgba(245, 247, 250, 0.10); /* surface ativa/hover */
+
+  /* Surface sólidos (não translúcidos) — usados em cards de destaque
+   * onde a hierarquia visual depende de contornos nítidos contra
+   * canvas. Adicionados em PR-13 (redesign do mockup). Quando um card
+   * "hero" empilha conteúdo crítico, surface translúcido some demais
+   * e perde a hierarquia. Esses sólidos ficam um nível mais claros
+   * que canvas, criando elevação clara.
+   *   surface-2: #232F3A — base de cards normais (hero header, KPI cards)
+   *   surface-3: #2D3D4F — emphasis (comparison cards, hero KPI)
+   */
+  --color-surface-2: #232F3A;            /* card sólido nível 1 */
+  --color-surface-3: #2D3D4F;            /* card sólido nível 2 (emphasis) */
 
   /* ═══════════════ TIPOGRAFIA ═══════════════ */
 

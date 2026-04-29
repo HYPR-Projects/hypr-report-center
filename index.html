@@ -7,8 +7,21 @@
     <title>HYPR° Report Hub</title>
     <link rel="icon" type="image/jpeg" href="/favicon.jpeg" />
     <style>
-      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-      html, body, #root { width: 100%; min-height: 100vh; display: flex; flex-direction: column; }
+      /* Reset mínimo. NÃO usar `* { margin: 0; padding: 0 }` aqui —
+       * por estar unlayered no <style> inline, vence todas as utilities
+       * do Tailwind v4 (que vivem em @layer utilities), quebrando
+       * mx-auto, space-y-*, p-*, gap-*. Tailwind preflight já zera
+       * margins de elementos relevantes (body, headings, p, etc) e
+       * aplica box-sizing border-box em *. Quem precisar de padding/
+       * margin = 0 explícito usa as utilities `m-0` / `p-0`.
+       *
+       * `display: flex` em html/body/#root também foi removido — em
+       * flex column, `margin: auto` em filho direto se comporta
+       * diferente de block layout, e Legacy/V2 não dependiam disso
+       * pra layout (ambos tratam dimensões nos seus próprios
+       * containers). width:100% + min-height:100vh é suficiente pra
+       * garantir que #root preencha a viewport. */
+      html, body, #root { width: 100%; min-height: 100vh; }
       body { overflow-x: hidden; }
     </style>
     <!-- Google Analytics -->

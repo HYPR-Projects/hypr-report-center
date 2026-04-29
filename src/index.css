@@ -1,68 +1,29 @@
-:root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
-
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
-}
-
-body {
-  margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
-}
-
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
-}
-
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
-  }
-}
+/* src/index.css
+ * ──────────────────────────────────────────────────────────────────────
+ * Arquivo intencionalmente vazio.
+ *
+ * Histórico: este arquivo continha o boilerplate default do Vite
+ * (`button { background: #1a1a1a; padding: 0.6em 1.2em }`,
+ *  `body { display: flex; place-items: center }`,
+ *  `@media (prefers-color-scheme: light) { :root { background: #fff } }`).
+ *
+ * Essas regras são bare-element selectors fora de @layer, o que faz com
+ * que vençam por cascade TODAS as utilities Tailwind v4 do V2 (utilities
+ * vivem em @layer utilities; regra unlayered tem prioridade sobre
+ * qualquer layer). Resultado: botões/tabs/chips do V2 ganhavam fundo
+ * claro/escuro errado, padding errado e o body em flex squishava o
+ * dashboard inteiro em uma coluna narrow porque o V2 não compensa com
+ * width:100% inline (legacy compensa via <GlobalStyle/> + style tags).
+ *
+ * Legacy não depende de nada deste arquivo: cada componente legacy
+ * aplica seus próprios estilos inline (style={{ background, padding,
+ * border, width: "100%" }}) e injeta um <style>{`body{...!important}`}</style>
+ * no ClientDashboard / CampaignMenu. O V2 traz seu próprio reset via
+ * Tailwind preflight + src/ui/global-reset.css em @layer base.
+ *
+ * Mantemos o arquivo + import em main.jsx para evitar mexer em main.jsx
+ * neste hotfix e para servir de ponto de extensão futuro caso surja
+ * necessidade de CSS verdadeiramente global (compartilhado por Legacy
+ * e V2). Qualquer regra adicionada aqui no futuro DEVE vir dentro de
+ * @layer base ou ter selector com classe específica para não vazar.
+ */
