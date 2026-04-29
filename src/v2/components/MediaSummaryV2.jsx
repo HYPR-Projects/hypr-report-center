@@ -139,7 +139,6 @@ export function MediaSummaryV2({ type, rows }) {
         { label: "Imp. visíveis", value: fmt(totals.vi) },
         { label: "Views 100%",    value: fmt(totals.v100) },
         { label: "VTR",           value: vtr == null ? "—" : fmtP(vtr),  accent: true },
-        { label: "Custo efetivo", value: fmtR(totals.cost) },
       ];
 
   return (
@@ -152,9 +151,15 @@ export function MediaSummaryV2({ type, rows }) {
           </div>
         </div>
 
-        {/* Strip: 5 colunas iguais com dividers verticais em desktop;
-            coluna única com dividers horizontais em mobile */}
-        <div className="grid grid-cols-1 md:grid-cols-5 divide-y md:divide-y-0 md:divide-x divide-border/40">
+        {/* Strip: N colunas iguais com dividers verticais em desktop;
+            coluna única com dividers horizontais em mobile.
+            Display tem 5 cells (CPM + 4 KPIs), Video tem 4 (CPCV + 3 KPIs). */}
+        <div
+          className={cn(
+            "grid grid-cols-1 divide-y md:divide-y-0 md:divide-x divide-border/40",
+            cells.length === 5 ? "md:grid-cols-5" : "md:grid-cols-4",
+          )}
+        >
           {cells.map((c) => (
             <StatCell
               key={c.label}
