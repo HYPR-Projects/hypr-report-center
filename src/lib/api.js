@@ -93,11 +93,20 @@ export async function listCampaigns() {
     const d = await r.json();
     const raw = d.campaigns || [];
     const seen = new Set();
-    return raw.filter(c => {
+    const filtered = raw.filter(c => {
       if (seen.has(c.short_token)) return false;
       seen.add(c.short_token);
       return true;
     });
+    // Pré-popula cache local de share_ids com o que vem no payload
+    // (Frente 2 — backend agora devolve share_id no ?list=true). Resultado:
+    // clicks em "Link Cliente" são instantâneos desde o primeiro,
+    // em qualquer device e qualquer sessão. Campanhas sem share_id ainda
+    // criado caem no fallback on-demand do `getShareId`.
+    for (const c of filtered) {
+      if (c.share_id) setCachedShareId(c.short_token, c.share_id);
+    }
+    return filtered;
   } catch {
     return [];
   }

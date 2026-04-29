@@ -1406,6 +1406,24 @@ def query_campaigns_list():
             c.setdefault("cp_email", None)
             c.setdefault("cs_email", None)
 
+    # Enriquece com share_id quando existe — uma única query batch contra
+    # campaign_share_ids. Evita o round-trip dedicado que o frontend fazia
+    # a cada click em "Link Cliente" (cold start + lookup BigQuery = 1-4s).
+    # Com share_id no payload, o menu admin tem o link pronto pra copiar
+    # desde o primeiro click, em qualquer dispositivo. Tokens sem share_id
+    # criado ainda caem no fallback on-demand do frontend.
+    try:
+        short_tokens_in_result = [c["short_token"] for c in result if c.get("short_token")]
+        share_ids_map = shares.get_share_ids_for_tokens(short_tokens_in_result)
+        for c in result:
+            sid = share_ids_map.get(c["short_token"])
+            if sid:
+                c["share_id"] = sid
+    except Exception as e:
+        print(f"[WARN query_campaigns_list] enriquecer share_ids falhou: {e}")
+        # Falha graciosa: campanhas ficam sem share_id no payload e o
+        # frontend cai no fallback on-demand (comportamento pré-Frente 2).
+
     return result
 def query_upload(short_token, upload_type):
     from google.cloud import bigquery as bq2

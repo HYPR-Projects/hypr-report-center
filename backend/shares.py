@@ -112,6 +112,47 @@ def get_share_id_for_token(short_token: str) -> str | None:
     return rows[0]["share_id"] if rows else None
 
 
+def get_share_ids_for_tokens(short_tokens: list[str]) -> dict[str, str]:
+    """Versão batch de `get_share_id_for_token` — uma única query.
+
+    Retorna um dict {short_token: share_id} contendo apenas os tokens que
+    JÁ têm share_id criado (tokens sem share_id ficam ausentes do dict).
+
+    Usado em `query_campaigns_list` para enriquecer o payload da listagem
+    com share_ids existentes — evita N round-trips dedicados quando o
+    admin clica em "Link Cliente" no menu. Custo: 1 query, ~300 rows na
+    tabela atual, lookup por short_token = ms.
+
+    Match case-insensitive (campaign_share_ids guarda short_token no case
+    do banco; o caller pode passar em qualquer case). Chaves do dict
+    retornado preservam o case que o caller passou.
+    """
+    if not short_tokens:
+        return {}
+    ensure_table_exists()
+    # Map upper → original pra reverter o case na resposta
+    upper_to_orig = {t.upper(): t for t in short_tokens if t}
+    if not upper_to_orig:
+        return {}
+    sql = f"""
+        SELECT short_token, share_id
+        FROM `{_shares_table_id()}`
+        WHERE UPPER(short_token) IN UNNEST(@tokens)
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ArrayQueryParameter("tokens", "STRING", list(upper_to_orig.keys()))
+        ]
+    )
+    rows = list(bq.query(sql, job_config=job_config).result())
+    result = {}
+    for r in rows:
+        orig = upper_to_orig.get(r["short_token"].upper())
+        if orig:
+            result[orig] = r["share_id"]
+    return result
+
+
 def get_token_for_share_id(share_id: str) -> str | None:
     """Retorna o short_token associado a um share_id, ou None.
 
