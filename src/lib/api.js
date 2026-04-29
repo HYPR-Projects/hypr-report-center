@@ -167,6 +167,33 @@ export async function getShareId(short_token) {
   }
 }
 
+/**
+ * Resolve um share_id → short_token sem senha. Admin-only.
+ *
+ * Caso de uso: admin colou uma URL com share_id em outra aba/janela
+ * enquanto ainda está com sessão admin ativa. App pula a tela de senha,
+ * mas o dashboard precisa do short_token canônico pra chamar os
+ * endpoints de dados. Este lookup faz isso autenticado pelo JWT admin.
+ *
+ * Retorna null em qualquer falha — caller deve mostrar erro pro admin
+ * (provavelmente share_id digitado errado ou link de outra campanha).
+ */
+export async function lookupShare(share_id) {
+  try {
+    const jwt = await getOrIssueAdminJwt();
+    if (!jwt) return null;
+    const r = await fetch(
+      `${API_URL}?action=lookup_share&share_id=${encodeURIComponent(share_id)}`,
+      { headers: { ...adminAuthHeaders(jwt) } },
+    );
+    if (!r.ok) return null;
+    const d = await r.json();
+    return d?.short_token || null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Logo (admin) ─────────────────────────────────────────────────────────────
 
 /**

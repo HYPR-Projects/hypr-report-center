@@ -210,6 +210,27 @@ def report_data(request):
             print(f"[ERROR get_share_id] {e}")
             return (jsonify({"error": "Erro ao obter share_id"}), 500, headers)
 
+    # ── Endpoint: resolver share_id → short_token sem senha (admin) ──────────
+    # Caso de uso: admin loga no menu, copia o "Link Cliente" (URL com
+    # share_id) e cola em outra aba/janela. Como ainda está com sessão
+    # admin no navegador, o app pula a tela de senha — mas o dashboard
+    # precisa do short_token para chamar os endpoints de dados. Este
+    # endpoint faz o lookup direto, sem senha, autenticado por JWT admin.
+    if request.method == "GET" and request.args.get("action") == "lookup_share":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            share_id = (request.args.get("share_id") or "").strip()
+            if not share_id:
+                return (jsonify({"error": "share_id obrigatório"}), 400, headers)
+            short_token = shares.get_token_for_share_id(share_id)
+            if not short_token:
+                return (jsonify({"error": "share_id não encontrado"}), 404, headers)
+            return (jsonify({"short_token": short_token}), 200, headers)
+        except Exception as e:
+            print(f"[ERROR lookup_share] {e}")
+            return (jsonify({"error": "Erro ao buscar share_id"}), 500, headers)
+
     # ── Endpoint: salvar logo ─────────────────────────────────────────────────
     if request.method == "POST" and request.args.get("action") == "save_logo":
         if not authenticate_admin(request):
