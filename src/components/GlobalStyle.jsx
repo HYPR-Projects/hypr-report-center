@@ -13,12 +13,6 @@ const GlobalStyle = () => (
     input:focus,input:focus-visible{outline:none!important;}
     @keyframes fadeIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
     @keyframes spin{to{transform:rotate(360deg)}}
-    @keyframes glitterPulse{
-      0%{transform:scale(1.08) rotate(0deg);opacity:0.5;}
-      33%{transform:scale(1.15) rotate(1.5deg);opacity:0.65;}
-      66%{transform:scale(1.1) rotate(-1deg);opacity:0.55;}
-      100%{transform:scale(1.08) rotate(0deg);opacity:0.5;}
-    }
     @keyframes particleFloat{
       0%,100%{transform:translateY(0) translateX(0) scale(1);opacity:0.6;}
       25%{transform:translateY(-20px) translateX(12px) scale(1.15);opacity:0.9;}

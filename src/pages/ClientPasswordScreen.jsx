@@ -73,8 +73,12 @@ const ClientPasswordScreen = ({ token, onUnlock }) => {
   return (
     <div style={{minHeight:"100vh",width:"100%",display:"flex",alignItems:"center",justifyContent:"center",padding:24,position:"relative",overflow:"hidden",background:C.dark}}>
       <GlobalStyle/>
-      <div style={{position:"absolute",inset:0,backgroundImage:`url(/glitter.jpg)`,backgroundSize:"cover",backgroundPosition:"center",animation:"glitterPulse 9s ease-in-out infinite",filter:"blur(3px) brightness(0.4) saturate(1.5)",transformOrigin:"center"}}/>
-      <div style={{position:"absolute",inset:0,background:`radial-gradient(ellipse at 62% 42%, ${C.blueDark}50 0%, transparent 58%)`,pointerEvents:"none"}}/>
+      {/* Dot grid layer: pontos sutis em azul brand, espaçamento 24px */}
+      <div style={{position:"absolute",inset:0,backgroundImage:`radial-gradient(rgba(51,151,185,0.18) 1px, transparent 1px)`,backgroundSize:"24px 24px",pointerEvents:"none"}}/>
+      {/* Vignette layer: fade radial centralizado pra dar foco no card */}
+      <div style={{position:"absolute",inset:0,background:`radial-gradient(ellipse 70% 60% at center, transparent 0%, ${C.dark}d9 80%)`,pointerEvents:"none"}}/>
+      {/* Soft glow atrás do card pra dar profundidade */}
+      <div style={{position:"absolute",inset:0,background:`radial-gradient(ellipse 40% 35% at center, ${C.blue}1f 0%, transparent 60%)`,pointerEvents:"none"}}/>
       <div className="fade-in" style={{position:"relative",zIndex:10,background:"rgba(28,38,47,0.52)",backdropFilter:"blur(28px) saturate(1.7)",WebkitBackdropFilter:"blur(28px) saturate(1.7)",border:`1px solid ${err?"rgba(83,104,114,0.7)":"rgba(51,151,185,0.22)"}`,borderRadius:24,padding:"48px 40px",maxWidth:380,width:"100%",textAlign:"center",boxShadow:"0 8px 40px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.07)",transition:"border-color 0.3s"}}>
         <div style={{display:"flex",justifyContent:"center",marginBottom:32,color:"#FFFFFF"}}><HyprReportCenterLogo height={32}/></div>
         <div style={{height:1,background:"rgba(255,255,255,0.07)",marginBottom:28}}/>
