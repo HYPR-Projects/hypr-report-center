@@ -6,7 +6,7 @@ import {
   getOwnerFilter,
   setOwnerFilter as persistOwnerFilter,
 } from "../shared/prefs";
-import { listCampaigns, listTeamMembers, getShareId } from "../lib/api";
+import { listCampaigns, listTeamMembers, getShareId, getCachedShareId } from "../lib/api";
 import GlobalStyle from "../components/GlobalStyle";
 import Spinner from "../components/Spinner";
 import HyprReportCenterLogo from "../components/HyprReportCenterLogo";
@@ -118,12 +118,23 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
     setShowNewCampaign(false);
   };
 
-  const copyLink = async (token) => {
-    // Pede o share_id ao backend (cria se não existir). Se a Cloud Function
-    // ainda não foi redeployada com o endpoint, retorna null e caímos no
-    // formato legacy (URL = short_token, senha exposta) — link continua
-    // funcionando, só não tem o ganho de privacidade.
-    const shareId = await getShareId(token);
+  const copyLink = async (campaign) => {
+    // Compat: callers antigos podem ainda passar só o token (string).
+    const token = typeof campaign === "string" ? campaign : campaign.short_token;
+    const fromObject = typeof campaign === "object" ? campaign.share_id : null;
+
+    // Hierarquia de resolução (mais rápido → mais lento):
+    //   1. share_id veio direto no objeto da campanha (Frente 2: backend
+    //      enriquece o payload de ?list=true). Síncrono, instantâneo.
+    //   2. cache localStorage (Frente 1: populado após primeiro fetch).
+    //      Síncrono, instantâneo.
+    //   3. fetch dedicado pra get_share_id — só roda se as duas opções
+    //      acima falharam (campanha sem share_id criado ainda OU backend
+    //      caiu no enriquecimento da lista).
+    let shareId = fromObject || getCachedShareId(token);
+    if (!shareId) {
+      shareId = await getShareId(token);
+    }
     const slug = shareId || token;
     navigator.clipboard.writeText(`${window.location.origin}/report/${slug}`);
     setCopied(token); setTimeout(() => setCopied(null), 2000);
