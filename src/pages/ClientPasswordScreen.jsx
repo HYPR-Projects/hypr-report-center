@@ -79,23 +79,28 @@ const ClientPasswordScreen = ({ token, onUnlock }) => {
       <div style={{position:"absolute",inset:0,background:`radial-gradient(ellipse 70% 60% at center, transparent 0%, ${C.dark}d9 80%)`,pointerEvents:"none"}}/>
       {/* Soft glow atrás do card pra dar profundidade */}
       <div style={{position:"absolute",inset:0,background:`radial-gradient(ellipse 40% 35% at center, ${C.blue}1f 0%, transparent 60%)`,pointerEvents:"none"}}/>
-      <div className="fade-in" style={{position:"relative",zIndex:10,background:"rgba(28,38,47,0.52)",backdropFilter:"blur(28px) saturate(1.7)",WebkitBackdropFilter:"blur(28px) saturate(1.7)",border:`1px solid ${err?"rgba(83,104,114,0.7)":"rgba(51,151,185,0.22)"}`,borderRadius:24,padding:"48px 40px",maxWidth:380,width:"100%",textAlign:"center",boxShadow:"0 8px 40px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.07)",transition:"border-color 0.3s"}}>
-        <div style={{display:"flex",justifyContent:"center",marginBottom:32,color:"#FFFFFF"}}><HyprReportCenterLogo height={32}/></div>
-        <div style={{height:1,background:"rgba(255,255,255,0.07)",marginBottom:28}}/>
-        <p style={{color:C.lightGray,fontSize:14,marginBottom:28,lineHeight:1.7,fontWeight:300}}>Insira o código de acesso fornecido<br/>pela equipe HYPR para visualizar o report.</p>
+      <div className="fade-in" style={{position:"relative",zIndex:10,background:"rgba(28,38,47,0.45)",backdropFilter:"blur(32px) saturate(1.2)",WebkitBackdropFilter:"blur(32px) saturate(1.2)",border:`1px solid ${err?"rgba(231,76,60,0.4)":"rgba(255,255,255,0.08)"}`,borderRadius:20,padding:"52px 44px",maxWidth:400,width:"100%",textAlign:"center",boxShadow:"0 24px 80px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06)",transition:"border-color 0.3s"}}>
+        <div style={{display:"flex",justifyContent:"center",marginBottom:36,color:"#FFFFFF"}}><HyprReportCenterLogo height={32}/></div>
+        <p style={{color:"rgba(229,235,242,0.7)",fontSize:13,marginBottom:32,lineHeight:1.7,fontWeight:400}}>Insira o código de acesso fornecido<br/>pela equipe HYPR para visualizar o report.</p>
         <input
           value={pw}
           onChange={e=>setPw(e.target.value.toUpperCase())}
           onKeyDown={e=>e.key==="Enter"&&!loading&&submit()}
           placeholder="Código de acesso"
           disabled={loading}
-          style={{width:"100%",background:"rgba(255,255,255,0.07)",border:`1px solid ${err?"rgba(83,104,114,0.8)":"rgba(51,151,185,0.28)"}`,borderRadius:10,padding:"14px 16px",color:C.white,fontSize:16,fontWeight:700,letterSpacing:2,textAlign:"center",outline:"none",marginBottom:12,transition:"border-color 0.3s",opacity:loading?0.6:1}}
+          style={{width:"100%",background:"rgba(255,255,255,0.04)",border:`1px solid ${err?"rgba(231,76,60,0.5)":"rgba(255,255,255,0.10)"}`,borderRadius:12,padding:"15px 16px",color:C.white,fontSize:15,fontWeight:600,letterSpacing:3,textAlign:"center",outline:"none",marginBottom:14,transition:"border-color 0.2s, background 0.2s",opacity:loading?0.6:1}}
+          onFocus={e=>{if(!err)e.currentTarget.style.borderColor="rgba(255,255,255,0.20)";e.currentTarget.style.background="rgba(255,255,255,0.06)";}}
+          onBlur={e=>{if(!err)e.currentTarget.style.borderColor="rgba(255,255,255,0.10)";e.currentTarget.style.background="rgba(255,255,255,0.04)";}}
         />
-        {err&&<p style={{color:C.darkMuted,fontSize:13,marginBottom:12}}>Código inválido. Tente novamente.</p>}
+        {err&&<p style={{color:"rgba(231,76,60,0.85)",fontSize:12,marginBottom:14,fontWeight:500}}>Código inválido. Tente novamente.</p>}
         <button
           onClick={submit}
           disabled={loading}
-          style={{width:"100%",background:C.blue,color:C.white,border:"none",padding:14,borderRadius:10,cursor:loading?"wait":"pointer",fontSize:15,fontWeight:700,opacity:loading?0.7:1}}
+          style={{width:"100%",background:C.blue,color:C.white,border:"none",padding:"15px",borderRadius:12,cursor:loading?"wait":"pointer",fontSize:14,fontWeight:600,letterSpacing:0.3,opacity:loading?0.7:1,transition:"background 0.2s, transform 0.1s"}}
+          onMouseEnter={e=>{if(!loading)e.currentTarget.style.background=C.blueDark;}}
+          onMouseLeave={e=>{if(!loading)e.currentTarget.style.background=C.blue;}}
+          onMouseDown={e=>{if(!loading)e.currentTarget.style.transform="scale(0.98)";}}
+          onMouseUp={e=>{if(!loading)e.currentTarget.style.transform="scale(1)";}}
         >
           {loading ? "Validando..." : "Acessar Report"}
         </button>
