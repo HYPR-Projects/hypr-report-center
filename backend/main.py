@@ -1,5 +1,5 @@
 """
-HYPR Report Hub — Cloud Function
+HYPR Report Center — Cloud Function
 Changelog:
   - query_detail: JOIN com unified_daily_performance_metrics para trazer line_name
   - query_totals: adiciona pacing calculado (fórmula igual à planilha)

@@ -1,6 +1,6 @@
 # Procedimento de Rollback de Emergência
 
-Este documento descreve como reverter o **HYPR Report Hub** ao estado de produção pré-V2 caso a refatoração visual (Fases 0–7) cause um incidente em `report.hypr.mobi`.
+Este documento descreve como reverter o **HYPR Report Center** ao estado de produção pré-V2 caso a refatoração visual (Fases 0–7) cause um incidente em `report.hypr.mobi`.
 
 > **TL;DR:** o ponto de restauração é a tag `v1.0-legacy-baseline`. Todo o código do V2 vive em `src/v2/` e `src/ui/`, em paralelo ao Legacy, então um rollback é **sempre seguro** — nada do código original foi movido ou renomeado.
 

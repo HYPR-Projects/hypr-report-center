@@ -1,6 +1,6 @@
 // src/v2/components/TopBarV2.jsx
 //
-// Top bar fina com branding "Report Hub" + ações no canto direito:
+// Top bar fina com branding "Report Center" + ações no canto direito:
 //   - Pill "atualizado há X" (informação, não interativa)
 //   - Botão "Falar com CS" (abre WhatsApp/Slack/email — TODO Fase 4)
 //   - Share (copiar link do report)

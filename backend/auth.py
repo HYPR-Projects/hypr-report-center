@@ -1,5 +1,5 @@
 """
-Auth module for the HYPR Report Hub backend.
+Auth module for the HYPR Report Center backend.
 
 Threat model recap
 ------------------

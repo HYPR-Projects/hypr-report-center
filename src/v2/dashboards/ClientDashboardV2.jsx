@@ -3,7 +3,7 @@
 // Shell do dashboard V2 — redesenhado em PR-13 pra bater com o mockup.
 //
 // LAYOUT (top → bottom):
-//   1. TopBarV2 — branding "Report Hub" + share + voltar à versão atual
+//   1. TopBarV2 — branding "Report Center" + share + voltar à versão atual
 //   2. CampaignHeaderV2 — hero card com gradient + nome campanha + token badge
 //   3. Filtro de período (compacto, alinhado à direita)
 //   4. Tabs Radix com ícones: Visão Geral / Display / Video / Base de Dados /

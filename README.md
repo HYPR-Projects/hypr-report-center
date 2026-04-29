@@ -1,4 +1,4 @@
-# HYPR Report Hub
+# HYPR Report Center
 
 Dashboard de reports de campanhas em produção em **report.hypr.mobi**, atendendo todos os clientes da HYPR (DV360, Xandr Curate, StackAdapt).
 
@@ -45,7 +45,7 @@ docs/
 
 ## Arquitetura: coexistência Legacy + V2
 
-O HYPR Report Hub está em meio a uma refatoração visual profunda (Fases 0–7, ~6 semanas). Para que isso aconteça **sem big-bang rewrite e sem risco de tela branca em produção**, adotamos coexistência:
+O HYPR Report Center está em meio a uma refatoração visual profunda (Fases 0–7, ~6 semanas). Para que isso aconteça **sem big-bang rewrite e sem risco de tela branca em produção**, adotamos coexistência:
 
 - A interface atual ("Legacy") permanece intacta em `src/pages/`, `src/components/` e `src/dashboards/`
 - A nova interface ("V2") cresce em paralelo em `src/v2/`, com primitives compartilhados em `src/ui/`

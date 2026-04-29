@@ -1,4 +1,4 @@
-# ADR 001 — Coexistência Legacy + V2 do HYPR Report Hub
+# ADR 001 — Coexistência Legacy + V2 do HYPR Report Center
 
 - **Status:** aceito
 - **Data:** 2026-04-28
@@ -7,7 +7,7 @@
 
 ## Contexto
 
-O HYPR Report Hub está em produção em `report.hypr.mobi` há vários meses, atendendo todos os clientes da HYPR (DV360, Xandr Curate, StackAdapt). A interface atual ("Legacy") cumpre o papel funcional, mas:
+O HYPR Report Center está em produção em `report.hypr.mobi` há vários meses, atendendo todos os clientes da HYPR (DV360, Xandr Curate, StackAdapt). A interface atual ("Legacy") cumpre o papel funcional, mas:
 
 - A identidade visual não reflete a marca HYPR atual (paleta, tipografia, hierarquia)
 - Componentes-chave para o negócio não existem ou são pouco visíveis (ex.: comparação CPM Negociado vs Efetivo, CPCV Negociado vs Efetivo)

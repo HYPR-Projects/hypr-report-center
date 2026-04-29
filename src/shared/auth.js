@@ -1,5 +1,5 @@
 /**
- * Auth helpers for the HYPR Report Hub front-end.
+ * Auth helpers for the HYPR Report Center front-end.
  *
  * Three jobs:
  *

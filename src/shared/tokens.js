@@ -1,7 +1,7 @@
 // src/shared/tokens.js
 //
 // ──────────────────────────────────────────────────────────────────────
-// Design tokens do HYPR Report Hub V2 (espelho JS).
+// Design tokens do HYPR Report Center V2 (espelho JS).
 // ──────────────────────────────────────────────────────────────────────
 //
 // Single source of truth para CSS = src/ui/theme.css (bloco @theme do
