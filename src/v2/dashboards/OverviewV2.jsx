@@ -67,7 +67,6 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt 
   // Pacing helpers.
   const pacingDisplay = computeDisplayPacing(display, camp);
   const pacingVideo = video[0]?.pacing || 0;
-  const expectedToday = computeExpectedTodayPct(camp);
 
   // Pacing Geral % — média ponderada por budget de Display + Video.
   const pacingGeral = computePacingGeral(display, video, camp);
@@ -176,7 +175,6 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt 
             <PacingBarV2
               label="Pacing Display"
               pacing={pacingDisplay}
-              expectedPct={expectedToday}
               budget={display.reduce(
                 (s, r) => s + (r.o2o_display_budget || 0) + (r.ooh_display_budget || 0),
                 0,
@@ -188,7 +186,6 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt 
             <PacingBarV2
               label="Pacing Video"
               pacing={pacingVideo}
-              expectedPct={expectedToday}
               budget={video.reduce(
                 (s, r) => s + (r.o2o_video_budget || 0) + (r.ooh_video_budget || 0),
                 0,
@@ -347,22 +344,6 @@ function computePacingGeral(display, video, camp) {
   if (!total) return 0;
 
   return (dpacing * dbudget + vpacing * vbudget) / total;
-}
-
-// % do tempo decorrido da campanha — onde o pacing "deveria estar" hoje
-// (linear). Retorna 0 antes do início, 100 após o fim.
-function computeExpectedTodayPct(camp) {
-  if (!camp.start_date || !camp.end_date) return 0;
-  const [sy, sm, sd] = camp.start_date.split("-").map(Number);
-  const [ey, em, ed] = camp.end_date.split("-").map(Number);
-  const start = new Date(sy, sm - 1, sd);
-  const end = new Date(ey, em - 1, ed);
-  const now = new Date();
-  if (now < start) return 0;
-  if (now > end) return 100;
-  const total = (end - start) / 864e5 + 1;
-  const elapsed = (now - start) / 864e5 + 1;
-  return (elapsed / total) * 100;
 }
 
 // Para a sparkline de custo do hero — combina display+video por data.

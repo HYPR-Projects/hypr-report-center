@@ -1,9 +1,5 @@
-import { useState } from "react";
-import LoginScreen from "./pages/LoginScreen";
-import ClientPasswordScreen from "./pages/ClientPasswordScreen";
-import CampaignMenu from "./pages/CampaignMenu";
-import ClientDashboard from "./pages/ClientDashboard";
-import ClientDashboardV2 from "./v2/dashboards/ClientDashboardV2";
+import { lazy, Suspense, useState } from "react";
+import RouteSuspense from "./components/RouteSuspense";
 import V2ErrorBoundary from "./v2/components/ErrorBoundary";
 import { useReportVersion } from "./shared/version";
 import {
@@ -16,6 +12,26 @@ import {
   clearSession,
   isClientUnlocked,
 } from "./shared/auth";
+
+// ── Code-splitting (Fase 4 · PR-21) ─────────────────────────────────────
+// Cada rota é um chunk próprio. O bundle inicial cai de ~975 kB pra
+// apenas o que App.jsx + auth + version + ErrorBoundary precisam.
+//
+// Por que importar ErrorBoundary V2 estático
+//   ErrorBoundary deve estar disponível ANTES do componente que ele
+//   protege carregar — caso contrário, se o lazy do V2 falhar (chunk
+//   404 por deploy stale, rede caiu), não há boundary pra capturar.
+//   ErrorBoundary é leve (~3kB) então fica no bundle inicial.
+//
+// Por que getAdminJwt / loadSession / etc também ficam estáticos
+//   São utilitários sync usados antes do lazy resolver. Tentar
+//   lazy-loadar shared/auth criaria um await desnecessário no caminho
+//   crítico.
+const LoginScreen          = lazy(() => import("./pages/LoginScreen"));
+const ClientPasswordScreen = lazy(() => import("./pages/ClientPasswordScreen"));
+const CampaignMenu         = lazy(() => import("./pages/CampaignMenu"));
+const ClientDashboard      = lazy(() => import("./pages/ClientDashboard"));
+const ClientDashboardV2    = lazy(() => import("./v2/dashboards/ClientDashboardV2"));
 
 export default function App() {
   // Restaura sessão admin (8h TTL) e unlock de cliente direto do localStorage
@@ -44,7 +60,13 @@ export default function App() {
     const hasValidAdminJwt = !!adminJwt && !isJwtExpired(adminJwt);
     const hasLegacyAk = new URLSearchParams(window.location.search).get("ak") === "hypr2026";
     const _isAdmin = !!user || hasValidAdminJwt || hasLegacyAk;
-    if (!_isAdmin && !unlocked) return <ClientPasswordScreen token={clientToken} onUnlock={() => setUnlocked(true)} />;
+    if (!_isAdmin && !unlocked) {
+      return (
+        <Suspense fallback={<RouteSuspense />}>
+          <ClientPasswordScreen token={clientToken} onUnlock={() => setUnlocked(true)} />
+        </Suspense>
+      );
+    }
 
     // Roteamento Legacy ↔ V2 controlado por src/shared/version.js.
     // Default permanece 'legacy' até a Fase 7. O cliente só vê o V2 se
@@ -60,14 +82,26 @@ export default function App() {
     if (reportVersion === "v2") {
       return (
         <V2ErrorBoundary>
-          <ClientDashboardV2 {...dashboardProps} />
+          <Suspense fallback={<RouteSuspense />}>
+            <ClientDashboardV2 {...dashboardProps} />
+          </Suspense>
         </V2ErrorBoundary>
       );
     }
-    return <ClientDashboard {...dashboardProps} />;
+    return (
+      <Suspense fallback={<RouteSuspense />}>
+        <ClientDashboard {...dashboardProps} />
+      </Suspense>
+    );
   }
 
-  if (!user) return <LoginScreen onLogin={setUser} />;
+  if (!user) {
+    return (
+      <Suspense fallback={<RouteSuspense />}>
+        <LoginScreen onLogin={setUser} />
+      </Suspense>
+    );
+  }
 
   // Ao clicar "Ver Report":
   //  • Tenta emitir um JWT custom de 5min via backend (modo novo).
@@ -95,5 +129,9 @@ export default function App() {
     setUser(null);
   };
 
-  return <CampaignMenu user={user} onLogout={onLogout} onOpenReport={onOpenReport} />;
+  return (
+    <Suspense fallback={<RouteSuspense />}>
+      <CampaignMenu user={user} onLogout={onLogout} onOpenReport={onOpenReport} />
+    </Suspense>
+  );
 }

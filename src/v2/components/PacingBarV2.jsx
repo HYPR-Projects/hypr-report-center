@@ -1,11 +1,22 @@
 // src/v2/components/PacingBarV2.jsx
 //
-// Barra de pacing horizontal — redesenhada em PR-13 pra incluir o
-// marker "esperado hoje" do mockup. O marker é um traço vertical
-// posicionado em `expectedPct` que indica onde a campanha deveria
-// estar AGORA (linear pro tempo decorrido).
+// Barra de pacing horizontal.
 //
-// Comportamento:
+// A métrica `pacing` vinda do backend é `delivered / expected_today × 100`,
+// que é matematicamente equivalente ao forecast de entrega final como %
+// do contrato. Ou seja:
+//   100% = projetado pra bater a meta exata
+//   >100% = vai over-deliver (mostrado como pill "OVER X%" + segmento
+//            signature blue além do limite verde)
+//   <100% = vai sub-entregar (cor da barra reflete severidade)
+//
+// Como o eixo da barra já é normalizado em relação ao esperado, NÃO faz
+// sentido sobrepor um marker de "tempo decorrido" — o esperado-hoje é,
+// por definição, sempre 100% nessa escala. A transição de cor + pill
+// "OVER" já comunica visualmente o status. (PR-13 introduziu um marker
+// linear que confundia mais que ajudava; removido em PR-22.)
+//
+// Comportamento de cor:
 //   <70%   → vermelho (atrasado)
 //   70-99% → amarelo (alerta)
 //   ≥100%  → verde (no alvo / over)
@@ -17,7 +28,6 @@
 // Renderiza null quando pacing é null/undefined.
 
 import { fmt, fmtR } from "../../shared/format";
-import { cn } from "../../ui/cn";
 
 const palette = {
   success: "var(--color-success)",
@@ -37,7 +47,6 @@ export function PacingBarV2({
   pacing,
   budget,
   cost,
-  expectedPct, // % esperada hoje (campanha-progresso linear). Null = não mostra marker.
   label = "Pacing",
   variant = "default", // "default" (card completo) | "compact" (sem card, só barra+label)
 }) {
@@ -49,13 +58,6 @@ export function PacingBarV2({
   const baseWidth = Math.min(visiblePct, 100);
   const barColor = pickColor(visiblePct);
   const labelColor = realPct > 100 ? palette.signature : barColor;
-
-  // Posição do marker como % do total visível (que é capado em 150%).
-  // Convertemos pra % do width relativo do bar container (0-150% → 0-100%).
-  const markerLeft =
-    typeof expectedPct === "number" && expectedPct > 0
-      ? `${Math.min((expectedPct / 150) * 100, 100)}%`
-      : null;
 
   const wrapperClass =
     variant === "compact"
@@ -94,15 +96,8 @@ export function PacingBarV2({
         </span>
       </div>
 
-      {/* Bar com marker "esperado hoje" sobreposto.
-          mt-7 quando há marker (label flutuante a -top-5 precisa de ~24px
-          de respiro pra não colidir com o header acima). */}
-      <div
-        className={cn(
-          "relative h-2.5 rounded-full bg-canvas-deeper overflow-visible",
-          markerLeft ? "mt-7" : "mt-4",
-        )}
-      >
+      {/* Bar */}
+      <div className="relative h-2.5 rounded-full bg-canvas-deeper overflow-visible mt-4">
         <div className="absolute inset-0 rounded-full bg-canvas-deeper overflow-hidden">
           <div
             className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-500 ease-out"
@@ -119,23 +114,6 @@ export function PacingBarV2({
             />
           )}
         </div>
-
-        {/* Marker "esperado hoje" — traço vertical com label flutuante */}
-        {markerLeft && (
-          <>
-            <div
-              className="absolute -top-1 -bottom-1 w-px bg-warning z-10"
-              style={{ left: markerLeft }}
-              aria-hidden
-            />
-            <span
-              className="absolute -top-5 -translate-x-1/2 text-[9px] font-bold uppercase tracking-wider text-warning whitespace-nowrap"
-              style={{ left: markerLeft }}
-            >
-              esperado hoje
-            </span>
-          </>
-        )}
       </div>
 
       {/* Footer: investido / budget */}

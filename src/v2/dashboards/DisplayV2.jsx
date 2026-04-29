@@ -116,10 +116,6 @@ export default function DisplayV2({
       ? row0.bonus_o2o_display_impressions || 0
       : row0.bonus_ooh_display_impressions || 0;
 
-  // Marker "esperado hoje" — % do tempo decorrido linear pra mostrar
-  // onde o pacing deveria estar agora.
-  const expectedToday = computeExpectedTodayPct(camp);
-
   return (
     <div className="space-y-6">
       {/* ─── 1. Toolbar interna ──────────────────────────────────────── */}
@@ -215,14 +211,13 @@ export default function DisplayV2({
         </div>
       </section>
 
-      {/* ─── 5. Pacing (com marker "esperado hoje") ──────────────────── */}
+      {/* ─── 5. Pacing ───────────────────────────────────────────────── */}
       {!aggregates.isFiltered && (
         <PacingBarV2
           label={`Pacing Display ${tactic}`}
           pacing={kpis.pac}
           budget={kpis.budget}
           cost={kpis.cost}
-          expectedPct={expectedToday}
         />
       )}
 
@@ -294,23 +289,4 @@ export default function DisplayV2({
       )}
     </div>
   );
-}
-
-// ─── Helper local: % esperada hoje (linear) ───────────────────────────
-//
-// Duplica computeExpectedTodayPct da OverviewV2. TODO refactor:
-// extrair pra src/shared/pacing.js (fora do escopo da PR-14).
-
-function computeExpectedTodayPct(camp) {
-  if (!camp.start_date || !camp.end_date) return 0;
-  const [sy, sm, sd] = camp.start_date.split("-").map(Number);
-  const [ey, em, ed] = camp.end_date.split("-").map(Number);
-  const start = new Date(sy, sm - 1, sd);
-  const end = new Date(ey, em - 1, ed);
-  const now = new Date();
-  if (now < start) return 0;
-  if (now > end) return 100;
-  const total = (end - start) / 864e5 + 1;
-  const elapsed = (now - start) / 864e5 + 1;
-  return (elapsed / total) * 100;
 }
