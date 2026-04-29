@@ -118,26 +118,35 @@ const CampaignMenu = ({ user, onLogout, onOpenReport }) => {
     setShowNewCampaign(false);
   };
 
-  const copyLink = async (campaign) => {
+  const copyLink = (campaign) => {
     // Compat: callers antigos podem ainda passar só o token (string).
     const token = typeof campaign === "string" ? campaign : campaign.short_token;
     const fromObject = typeof campaign === "object" ? campaign.share_id : null;
 
-    // Hierarquia de resolução (mais rápido → mais lento):
-    //   1. share_id veio direto no objeto da campanha (Frente 2: backend
-    //      enriquece o payload de ?list=true). Síncrono, instantâneo.
-    //   2. cache localStorage (Frente 1: populado após primeiro fetch).
-    //      Síncrono, instantâneo.
-    //   3. fetch dedicado pra get_share_id — só roda se as duas opções
-    //      acima falharam (campanha sem share_id criado ainda OU backend
-    //      caiu no enriquecimento da lista).
-    let shareId = fromObject || getCachedShareId(token);
-    if (!shareId) {
-      shareId = await getShareId(token);
-    }
-    const slug = shareId || token;
+    // Resolve share_id síncrono (do objeto da campanha OU cache local).
+    // Zero await aqui — feedback "✓ Copiado!" precisa ser instantâneo.
+    const shareIdSync = fromObject || getCachedShareId(token);
+
+    // SEMPRE copia algo no clipboard IMEDIATAMENTE e mostra feedback:
+    //   - Se temos share_id em mão: copia o link novo (privacidade preservada)
+    //   - Se não: copia o legacy (URL = short_token) como fallback. O link
+    //     continua funcionando, só não tem o ganho de privacidade do share_id.
+    const slug = shareIdSync || token;
     navigator.clipboard.writeText(`${window.location.origin}/report/${slug}`);
-    setCopied(token); setTimeout(() => setCopied(null), 2000);
+    setCopied(token);
+    setTimeout(() => setCopied(null), 2000);
+
+    // Se caímos no legacy, dispara fetch em background pra pegar/criar o
+    // share_id. Quando terminar, sobrescreve o clipboard silenciosamente
+    // (o "✓ Copiado!" já apareceu instantâneo, esse upgrade é invisível
+    // pro admin). Próximas chamadas pegam cache hit instantâneo.
+    if (!shareIdSync) {
+      getShareId(token).then((shareId) => {
+        if (shareId && shareId !== token) {
+          navigator.clipboard.writeText(`${window.location.origin}/report/${shareId}`);
+        }
+      });
+    }
   };
 
   const openLoomModal  = (token) => setLoomModal(token);
