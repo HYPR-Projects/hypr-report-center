@@ -84,8 +84,10 @@ export function ComparisonCardV2({
       </div>
 
       {/* Strip 3 cells iguais com dividers verticais em desktop;
-          coluna única com dividers horizontais em mobile */}
-      <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-border/40">
+          coluna única com dividers horizontais em mobile.
+          items-stretch + h-full nas cells garantem altura consistente
+          do border-l mesmo se conteúdo quebrar linha. */}
+      <div className="grid grid-cols-1 md:grid-cols-3 items-stretch divide-y md:divide-y-0 md:divide-x divide-border/60">
         <ComparisonCell
           label="Negociado"
           value={hasValues ? formatValue(negociado) : "—"}
@@ -108,7 +110,7 @@ export function ComparisonCardV2({
 
 function ComparisonCell({ label, value, tone = "default" }) {
   return (
-    <div className="px-5 py-4 min-w-0">
+    <div className="px-5 py-4 min-w-0 h-full flex flex-col">
       <div
         className={cn(
           "text-[22px] font-semibold tabular-nums leading-tight truncate",

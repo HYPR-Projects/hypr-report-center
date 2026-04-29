@@ -38,10 +38,14 @@ import { fmt, fmtCompact, fmtP2, fmtR } from "../../shared/format";
 import { cn } from "../../ui/cn";
 import { Card, CardBody } from "../../ui/Card";
 
-// Célula do strip. Valor (com delta opcional inline) em cima, label embaixo.
+// Stat secundário (value-first, label embaixo). Tabular-nums pra alinhar
+// dígitos verticalmente quando aparece em coluna. h-full + flex-col garantem
+// que a cell estica até o fim da row do grid (sem isso, em alguns layouts
+// onde o flex-wrap quebra o delta pra outra linha numa cell e em outras
+// não, o border-l do divide-x ficava com altura inconsistente).
 function StatCell({ label, value, accent = false, delta = null }) {
   return (
-    <div className="px-5 py-4 min-w-0">
+    <div className="px-5 py-4 min-w-0 h-full flex flex-col">
       <div className="flex items-baseline gap-2 flex-wrap">
         <span
           className={cn(
@@ -157,10 +161,13 @@ export function MediaSummaryV2({ type, rows, compact = false }) {
 
         {/* Strip: N colunas iguais com dividers verticais em desktop;
             coluna única com dividers horizontais em mobile.
-            Display tem 5 cells (CPM + 4 KPIs), Video tem 4 (CPCV + 3 KPIs). */}
+            Display tem 5 cells (CPM + 4 KPIs), Video tem 4 (CPCV + 3 KPIs).
+            items-stretch + h-full nas cells garantem que o border-l do
+            divide-x estica até o fim da row, mesmo quando o flex-wrap
+            do delta quebra linha em alguns cells e não em outros. */}
         <div
           className={cn(
-            "grid grid-cols-1 divide-y md:divide-y-0 md:divide-x divide-border/40",
+            "grid grid-cols-1 items-stretch divide-y md:divide-y-0 md:divide-x divide-border/60",
             cells.length === 5 ? "md:grid-cols-5" : "md:grid-cols-4",
           )}
         >
