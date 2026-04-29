@@ -28,14 +28,14 @@ export function TopBarV2({
   return (
     <header
       className={cn(
-        "h-20 px-4 md:px-6 lg:px-8 flex items-center justify-between gap-3",
+        "h-24 px-4 md:px-6 lg:px-8 flex items-center justify-between gap-3",
         "bg-canvas border-b border-border",
         className,
       )}
     >
       {/* Branding: wordmark HYPR°REPORT CENTER tematizado */}
       <div className="flex items-center text-fg">
-        <HyprReportCenterLogo height={60} />
+        <HyprReportCenterLogo height={80} />
       </div>
 
       {/* Ações */}
