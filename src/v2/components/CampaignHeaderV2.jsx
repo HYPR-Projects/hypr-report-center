@@ -124,15 +124,13 @@ export function CampaignHeaderV2({
             texto com inicial estilizada. Box dimensionado pra acomodar logos
             horizontais com padding generoso pra respirar.
 
-            Adaptação dark/light:
-              - light: bg-white (logos coloridas/dark dão contraste natural)
-              - dark:  bg muito sutil (white/[0.04]) pra integrar com o
-                       tema escuro em vez de virar um quadrado branco
-                       gritante; combinado com filtro de inversão
-                       hue-rotate na <img>, logos monocromáticas (preto
-                       sobre transparente) ficam legíveis no dark, e logos
-                       coloridas mantêm proximidade com a paleta original
-                       (hue-rotate 180° devolve cores ao espectro).
+            Padrão "logo wall" (Stripe / Vercel / Linear): fundo branco
+            sempre, em qualquer tema. Garante legibilidade universal —
+            logos coloridas mantêm a cor de marca (Nintendo vermelho,
+            Spotify verde, etc) e logos monocromáticas escuras já são
+            otimizadas pra fundo claro. Em dark mode, suavizamos a
+            "presença" do branco com box-shadow sutil em vez de tentar
+            inversão automática (que quebra cores de marca).
 
             Padding lateral generoso (px-8 py-5) dá margem pra logo
             respirar dentro do box em vez de encostar nas bordas. */}
@@ -140,7 +138,7 @@ export function CampaignHeaderV2({
           <div
             className={`hidden md:flex items-center justify-center w-44 h-20 rounded-lg overflow-hidden border transition-colors ${
               logo
-                ? "bg-white border-border px-8 py-5 dark:bg-white/[0.04] dark:border-white/10"
+                ? "bg-white border-border px-8 py-5 dark:shadow-[0_0_0_1px_rgba(255,255,255,0.04)]"
                 : "bg-white/[0.03] border-border p-3"
             }`}
           >
@@ -148,7 +146,7 @@ export function CampaignHeaderV2({
               <img
                 src={logo}
                 alt={clientName ? `Logo ${clientName}` : "Logo do cliente"}
-                className="max-w-full max-h-full object-contain dark:[filter:invert(1)_hue-rotate(180deg)]"
+                className="max-w-full max-h-full object-contain"
                 loading="lazy"
               />
             ) : (
