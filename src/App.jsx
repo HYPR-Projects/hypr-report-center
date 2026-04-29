@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import RouteSuspense from "./components/RouteSuspense";
 import LoadingShell from "./components/LoadingShell";
 import V2ErrorBoundary from "./v2/components/ErrorBoundary";
+import ClientPasswordScreen from "./pages/ClientPasswordScreen";
 import {
   getAdminJwtFromUrl,
   isJwtExpired,
@@ -16,12 +17,19 @@ import {
 import { lookupShare } from "./lib/api";
 
 // ── Code-splitting ──────────────────────────────────────────────────────
-// Cada rota é um chunk próprio. ErrorBoundary fica estático no bundle
-// inicial pra estar disponível ANTES do dashboard lazy carregar — caso
-// o chunk falhe, o boundary captura. Helpers de auth também ficam
-// estáticos por serem usados sincronamente no caminho crítico.
+// Cada rota é um chunk próprio, EXCETO o ClientPasswordScreen — esse é
+// pequeno (~3-5KB gzipped) e está no caminho crítico de qualquer cliente
+// que abre o link de uma campanha sem unlock cacheado. Mantê-lo no bundle
+// inicial elimina o Suspense fallback (spinner solto sobre fundo escuro)
+// que aparecia antes da tela de senha enquanto o chunk era baixado —
+// transição visual ficava feia: spinner básico → tela de senha →
+// LoadingShell bonito → dashboard.
+//
+// ErrorBoundary também fica estático pra estar disponível ANTES do
+// dashboard lazy carregar — caso o chunk falhe, o boundary captura.
+// Helpers de auth também ficam estáticos por serem usados sincronamente
+// no caminho crítico.
 const LoginScreen          = lazy(() => import("./pages/LoginScreen"));
-const ClientPasswordScreen = lazy(() => import("./pages/ClientPasswordScreen"));
 const CampaignMenu         = lazy(() => import("./pages/CampaignMenu"));
 const ClientDashboard      = lazy(() => import("./v2/dashboards/ClientDashboardV2"));
 
@@ -107,15 +115,13 @@ export default function App() {
   if (isClient && clientToken) {
     if (!isAdminMode && !unlocked) {
       return (
-        <Suspense fallback={<RouteSuspense />}>
-          <ClientPasswordScreen
-            token={clientToken}
-            onUnlock={(shortToken) => {
-              if (shortToken) setResolvedToken(shortToken);
-              setUnlocked(true);
-            }}
-          />
-        </Suspense>
+        <ClientPasswordScreen
+          token={clientToken}
+          onUnlock={(shortToken) => {
+            if (shortToken) setResolvedToken(shortToken);
+            setUnlocked(true);
+          }}
+        />
       );
     }
 
