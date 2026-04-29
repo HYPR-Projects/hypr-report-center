@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import RouteSuspense from "./components/RouteSuspense";
 import V2ErrorBoundary from "./v2/components/ErrorBoundary";
 import { useReportVersion } from "./shared/version";
@@ -13,6 +13,31 @@ import {
   isClientUnlocked,
   getResolvedShortToken,
 } from "./shared/auth";
+import { lookupShare } from "./lib/api";
+
+/**
+ * Heurística pra distinguir share_id (formato novo, opaco) de
+ * short_token (formato legacy, exposto).
+ *
+ *  - short_token: 4-8 chars, alfanuméricos, todo maiúsculo.
+ *    Ex: "ABC123", "UT10QW", "6BVGU6Q".
+ *
+ *  - share_id: 16 chars URL-safe (base64url) gerados via
+ *    secrets.token_urlsafe(12). Pode conter '-' ou '_', e tem
+ *    mistura de maiúsculas/minúsculas.
+ *
+ * Critérios para classificar como share_id:
+ *   - Mais de 12 chars (short_tokens nunca chegam perto disso); OU
+ *   - Contém '-' ou '_' (caracteres inválidos em short_token); OU
+ *   - Contém minúscula (short_tokens são todo uppercase).
+ */
+function isLikelyShareId(token) {
+  if (!token) return false;
+  if (token.length > 12) return true;
+  if (/[-_]/.test(token)) return true;
+  if (/[a-z]/.test(token)) return true;
+  return false;
+}
 
 // ── Code-splitting (Fase 4 · PR-21) ─────────────────────────────────────
 // Cada rota é um chunk próprio. O bundle inicial cai de ~975 kB pra
@@ -52,6 +77,43 @@ export default function App() {
   const [unlocked, setUnlocked] = useState(() =>
     clientToken ? isClientUnlocked(clientToken) : false
   );
+
+  // Computa status admin sincronamente — usado tanto no effect abaixo
+  // quanto na renderização condicional.
+  const adminJwtFromUrl = isClient ? getAdminJwtFromUrl() : null;
+  const hasValidAdminJwt = !!adminJwtFromUrl && !isJwtExpired(adminJwtFromUrl);
+  const hasLegacyAk = isClient
+    ? new URLSearchParams(window.location.search).get("ak") === "hypr2026"
+    : false;
+  const isAdminMode = !!user || hasValidAdminJwt || hasLegacyAk;
+
+  // Quando o admin abre uma URL com share_id direto (ex: "Link Cliente"
+  // colado em outra aba enquanto ainda logado), o app pula a tela de
+  // senha — mas o dashboard precisa do short_token canônico para chamar
+  // os endpoints de dados. Resolve via endpoint admin antes de renderizar.
+  const needsAdminLookup =
+    isClient && isAdminMode && clientToken && isLikelyShareId(clientToken);
+  const [adminLookup, setAdminLookup] = useState(() => ({
+    loading: needsAdminLookup,
+    token: null,
+    error: false,
+  }));
+
+  useEffect(() => {
+    if (!needsAdminLookup) return;
+    let cancelled = false;
+    setAdminLookup({ loading: true, token: null, error: false });
+    lookupShare(clientToken).then((short) => {
+      if (cancelled) return;
+      if (short) {
+        setAdminLookup({ loading: false, token: short, error: false });
+      } else {
+        setAdminLookup({ loading: false, token: null, error: true });
+      }
+    });
+    return () => { cancelled = true; };
+  }, [needsAdminLookup, clientToken]);
+
   // Resolução do toggle Legacy ↔ V2. Chamado no topo do componente para
   // respeitar a regra de hooks do React (mesmo que useReportVersion seja
   // hoje uma função pura, manter como hook prepara o terreno se um dia
@@ -59,17 +121,7 @@ export default function App() {
   const reportVersion = useReportVersion();
 
   if (isClient && clientToken) {
-    // Modo admin determinado por (em ordem):
-    //   1. Sessão local — quem logou e abriu o report na mesma aba.
-    //   2. JWT admin via ?adm=<jwt> — emitido pelo backend, viaja na URL
-    //      quando o menu abre o report em nova aba.
-    //   3. Legacy ?ak=hypr2026 — fallback para links antigos durante a
-    //      transição. Removido depois que a migração completar.
-    const adminJwt = getAdminJwtFromUrl();
-    const hasValidAdminJwt = !!adminJwt && !isJwtExpired(adminJwt);
-    const hasLegacyAk = new URLSearchParams(window.location.search).get("ak") === "hypr2026";
-    const _isAdmin = !!user || hasValidAdminJwt || hasLegacyAk;
-    if (!_isAdmin && !unlocked) {
+    if (!isAdminMode && !unlocked) {
       return (
         <Suspense fallback={<RouteSuspense />}>
           <ClientPasswordScreen
@@ -83,10 +135,39 @@ export default function App() {
       );
     }
 
+    // Admin abrindo URL com share_id: aguarda lookup terminar.
+    if (needsAdminLookup) {
+      if (adminLookup.loading) return <RouteSuspense />;
+      if (adminLookup.error) {
+        return (
+          <div style={{
+            minHeight: "100vh",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+            color: "#fff",
+            background: "#0d1117",
+            fontFamily: "system-ui, sans-serif",
+            textAlign: "center",
+          }}>
+            <div>
+              <h2 style={{ marginBottom: 12 }}>Link inválido</h2>
+              <p style={{ opacity: 0.7, fontSize: 14 }}>
+                O share_id <code>{clientToken}</code> não foi encontrado.
+              </p>
+            </div>
+          </div>
+        );
+      }
+    }
+
     // Admin sempre abre via short_token na URL (fluxo do menu não muda).
     // Cliente pode estar com share_id na URL — usa o resolvedToken.
+    const adminJwt = adminJwtFromUrl;
+    const _isAdmin = isAdminMode;
     const dashboardToken = _isAdmin
-      ? clientToken
+      ? (adminLookup.token || clientToken)
       : (resolvedToken || getResolvedShortToken(clientToken) || clientToken);
 
     // Roteamento Legacy ↔ V2 controlado por src/shared/version.js.
