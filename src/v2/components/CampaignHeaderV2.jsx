@@ -13,7 +13,8 @@
 // claro contra canvas. O glow radial vem por inline style (gradient
 // arbitrário, não tem utility direta).
 
-import { useLogoLuminance } from "../hooks/useLogoLuminance";
+import { useLogoAnalysis } from "../hooks/useLogoAnalysis";
+import { useTheme } from "../hooks/useTheme";
 
 const fmtDateShort = (ymd) => {
   if (!ymd) return null;
@@ -59,12 +60,24 @@ export function CampaignHeaderV2({
   const end = fmtDateShort(endDate);
   const days = daysBetween(startDate, endDate);
 
-  // Detecta se a logo é predominantemente clara (logo branca/clara em fundo
-  // transparente) ou escura. Caso clara, o logo wall precisa ser escuro pra
-  // dar contraste — caso contrário a logo some no bg-white. Caso escura, o
-  // bg-white tradicional do "logo wall" funciona como sempre.
-  const logoLuminance = useLogoLuminance(logo);
-  const isLightLogo = logoLuminance === "light";
+  // Logo dinâmica entre temas com UMA única imagem
+  // ──────────────────────────────────────────────
+  // O sistema analisa a logo (canvas API) e classifica como:
+  //   • monochrome-light / monochrome-dark → pode ser invertida sem perda
+  //   • colored                            → renderiza como veio (preserva
+  //                                          identidade visual da marca)
+  //
+  // Quando a logo monocromática conflita com o tema (ex: logo branca da
+  // Nintendo no tema light), aplica-se `filter: invert(1)` via CSS — que
+  // funciona em PNG, JPG, SVG, e preserva alpha (transparência fica intacta).
+  //
+  // Logos coloridas (Coca-Cola, Spotify, McDonald's) NUNCA são invertidas:
+  // a marca é a cor, e inverter destruiria a identidade visual.
+  const logoKind = useLogoAnalysis(logo);
+  const [theme] = useTheme();
+  const shouldInvertLogo =
+    (logoKind === "monochrome-light" && theme === "light") ||
+    (logoKind === "monochrome-dark" && theme === "dark");
 
   return (
     <section
@@ -132,55 +145,34 @@ export function CampaignHeaderV2({
         {/* Logo do cliente — img quando o admin fez upload, senão fallback
             texto com inicial estilizada.
 
-            Estratégia: combina LUMINANCE da logo (detectada via canvas)
-            com o TEMA atual, e só aplica fundo "logo wall" quando o
-            contraste natural com o canvas é insuficiente. O resto fica
-            transparente — logo respira no card sem retângulo destoando.
+            Container transparente: a logo flutua direto sobre o card hero
+            (surface-2), sem caixa sólida preta/branca em volta. Funciona
+            porque combinamos com inversão CSS quando necessário.
 
-            Matriz de decisão:
-              ┌──────────────┬──────────────────────┬──────────────────────┐
-              │              │ Tema light           │ Tema dark            │
-              │              │ (canvas claro)       │ (canvas escuro)      │
-              ├──────────────┼──────────────────────┼──────────────────────┤
-              │ Logo escura/ │ bg-white (logo wall  │ bg-transparent       │
-              │ colorida     │ tradicional, preserva│ + filter invert+hue  │
-              │              │ cor de marca)        │ rotate na <img>      │
-              ├──────────────┼──────────────────────┼──────────────────────┤
-              │ Logo clara   │ bg escuro (logo wall │ bg-transparent       │
-              │ (branca)     │ invertido pra logo   │ (canvas dark já dá   │
-              │              │ aparecer)            │ contraste, sem fundo)│
-              └──────────────┴──────────────────────┴──────────────────────┘
+            Inversão automática via filter: invert(1):
+              • Logo monochrome-light em tema light → inverte (vira escura)
+              • Logo monochrome-dark  em tema dark  → inverte (vira clara)
+              • Logo colored                        → renderiza como veio
+              • Logo monochrome em tema compatível  → renderiza como veio
 
-            O filter `invert(1) hue-rotate(180deg)` em logos escuras no
-            dark theme inverte LUMINÂNCIA mas preserva HUE — pattern do
-            Bootstrap dark mode. Logos pretas viram brancas; vermelho da
-            Nintendo fica vermelho mais claro (não vira cyan). */}
+            Padding generoso (px-6 py-4) dá margem pra logo respirar dentro
+            do espaço alocado em vez de encostar nas bordas. Sem upload e
+            sem clientName cai no placeholder textual com fallback de fundo
+            translúcido pra demarcar a área. */}
         {(logo || clientName) && (
           <div
-            className={`hidden md:flex items-center justify-center w-44 h-20 rounded-lg overflow-hidden border transition-colors ${
+            className={`hidden md:flex items-center justify-center w-44 h-20 rounded-lg overflow-hidden transition-colors ${
               logo
-                ? isLightLogo
-                  // Logo clara: fundo escuro APENAS em light theme;
-                  // em dark, transparente (canvas escuro do hero já contrasta).
-                  ? "bg-[#0F1419] border-border-strong px-8 py-5 dark:bg-transparent dark:border-white/10"
-                  // Logo escura/colorida: fundo branco em light;
-                  // em dark, transparente + filter aplicado na <img> abaixo.
-                  : "bg-white border-border px-8 py-5 dark:bg-transparent dark:border-white/10"
-                : "bg-white/[0.03] border-border p-3"
+                ? "px-6 py-4"
+                : "border border-border bg-white/[0.03] p-3"
             }`}
           >
             {logo ? (
               <img
                 src={logo}
                 alt={clientName ? `Logo ${clientName}` : "Logo do cliente"}
-                // filter só pra logos escuras/coloridas em dark theme.
-                // Logos claras já estão certas pro dark — invertê-las
-                // viraria preto sobre canvas escuro = invisível.
-                className={
-                  isLightLogo
-                    ? "max-w-full max-h-full object-contain"
-                    : "max-w-full max-h-full object-contain dark:[filter:invert(1)_hue-rotate(180deg)]"
-                }
+                className="max-w-full max-h-full object-contain transition-[filter] duration-200"
+                style={shouldInvertLogo ? { filter: "invert(1)" } : undefined}
                 loading="lazy"
               />
             ) : (
