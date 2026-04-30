@@ -213,25 +213,29 @@ def aggregate_clients_from_campaigns(campaigns):
             except (ValueError, TypeError):
                 continue
 
-        # Pacing médio (display + video, ativas só)
-        pacing_values = []
-        for c in active:
-            dp = c.get("display_pacing")
-            vp = c.get("video_pacing")
-            # Se ambos existem, considera os dois separadamente na média
-            # (uma campanha com display + video conta 2 pontos, refletindo
-            # que ela tem 2 dimensões de delivery sendo monitoradas).
-            if dp is not None:
-                pacing_values.append(float(dp))
-            if vp is not None:
-                pacing_values.append(float(vp))
-        avg_pacing = round(sum(pacing_values) / len(pacing_values), 1) if pacing_values else None
+        # CTR/VTR/Pacing agregados via Σ numerador / Σ denominador (forma
+        # correta de agregar razões — média de razões infla VTR > 100% e
+        # distorce KPIs de campanhas pequenas). Os campos brutos
+        # (display_clicks, video_impressions, etc.) vêm de query_campaigns_list.
+        # Quando a campanha não tem o bruto (campanha antiga ou sem dado),
+        # ela fica fora do somatório daquela métrica — não polui.
+        sum_d_clicks       = sum(int(c.get("display_clicks",                  0) or 0) for c in active)
+        sum_d_impr         = sum(int(c.get("display_impressions",             0) or 0) for c in active)
+        sum_d_viewable     = sum(int(c.get("display_viewable_impressions",    0) or 0) for c in active)
+        sum_d_expected     = sum(int(c.get("display_expected_impressions",    0) or 0) for c in active)
+        sum_v_completions  = sum(int(c.get("video_viewable_completions",      0) or 0) for c in active)
+        sum_v_impr         = sum(int(c.get("video_impressions",               0) or 0) for c in active)
+        sum_v_expected     = sum(int(c.get("video_expected_completions",      0) or 0) for c in active)
 
-        # CTR/VTR médios (ativas só)
-        ctr_values = [float(c["display_ctr"]) for c in active if c.get("display_ctr") is not None]
-        vtr_values = [float(c["video_vtr"])   for c in active if c.get("video_vtr")   is not None]
-        avg_ctr = round(sum(ctr_values) / len(ctr_values), 2) if ctr_values else None
-        avg_vtr = round(sum(vtr_values) / len(vtr_values), 2) if vtr_values else None
+        avg_ctr        = round(sum_d_clicks      / sum_d_impr      * 100, 2) if sum_d_impr      > 0 else None
+        avg_vtr        = round(sum_v_completions / sum_v_impr      * 100, 2) if sum_v_impr      > 0 else None
+        display_pacing = round(sum_d_viewable    / sum_d_expected  * 100, 1) if sum_d_expected  > 0 else None
+        video_pacing   = round(sum_v_completions / sum_v_expected  * 100, 1) if sum_v_expected  > 0 else None
+
+        # avg_pacing legado: média entre display e video pacings agregados
+        # (mantido pra compatibilidade com consumidores existentes do payload).
+        pacing_parts = [p for p in (display_pacing, video_pacing) if p is not None]
+        avg_pacing = round(sum(pacing_parts) / len(pacing_parts), 1) if pacing_parts else None
 
         # ADMIN-ONLY — eCPM real (cumulativo, todas as campanhas).
         # = SUM(total_cost cru) / SUM(impressions gross) * 1000
@@ -274,6 +278,8 @@ def aggregate_clients_from_campaigns(campaigns):
             "total_campaigns":     len(group),
             "active_campaigns":    len(active),
             "avg_pacing":          avg_pacing,
+            "avg_dsp_pacing":      display_pacing,
+            "avg_vid_pacing":      video_pacing,
             "avg_ctr":             avg_ctr,
             "avg_vtr":             avg_vtr,
             "top_cp_owners":       top_cp,

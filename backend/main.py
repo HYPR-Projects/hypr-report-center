@@ -1812,7 +1812,12 @@ def query_campaigns_list():
         # NÃO alinhei aqui o per-row pacing (campo `pacing` em totals),
         # que é consumido pelo Resumo por mídia + Detalhamento e ainda
         # usa days_with_delivery. Próximo PR.
-        def pacing_calc_calendar(delivered, negotiated, sd, ed):
+        # Retorna o "esperado até hoje" segundo o pacing canônico calendar-based.
+        # delivered/expected × 100 dá a % de pacing — exposta como métrica
+        # calculada no payload. expected também vai cru pro front pra permitir
+        # agregação correta (Σdelivered / Σexpected) por owner/cliente em vez
+        # de média de razões (que distorce por amostra pequena).
+        def pacing_expected_to_date(negotiated, sd, ed):
             if negotiated <= 0 or not sd or not ed:
                 return None
             s = sd.date() if hasattr(sd, "date") else sd
@@ -1821,18 +1826,19 @@ def query_campaigns_list():
             total_days = (e - s).days + 1
             if total_days <= 0:
                 return None
-            # Cap elapsed em total — após o end_date, expected = negotiated
-            # e pacing converge pra delivered/negotiated naturalmente.
             elapsed_days = min(max(0, (today - s).days), total_days)
             if elapsed_days <= 0:
                 return None
-            expected = negotiated / total_days * elapsed_days
-            return round(delivered / expected * 100, 1) if expected > 0 else None
+            return negotiated / total_days * elapsed_days
 
-        display_pacing = pacing_calc_calendar(d_viewable_impr, d_neg, start_date, end_date)
-        video_pacing   = pacing_calc_calendar(v_viewable_comp, v_neg, start_date, end_date)
-        display_ctr    = round(float(r["d_clicks"] or 0) / d_vi * 100, 2) if d_vi > 0 else None
-        video_vtr      = round(v_viewable_comp / v_vi * 100, 2)            if v_vi > 0 else None
+        d_clicks = float(r["d_clicks"] or 0)
+        d_expected = pacing_expected_to_date(d_neg, start_date, end_date)
+        v_expected = pacing_expected_to_date(v_neg, start_date, end_date)
+
+        display_pacing = round(d_viewable_impr / d_expected * 100, 1) if d_expected and d_expected > 0 else None
+        video_pacing   = round(v_viewable_comp  / v_expected * 100, 1) if v_expected and v_expected > 0 else None
+        display_ctr    = round(d_clicks         / d_vi       * 100, 2) if d_vi > 0       else None
+        video_vtr      = round(v_viewable_comp  / v_vi       * 100, 2) if v_vi > 0       else None
 
         entry = {
             "short_token":   r["short_token"],
@@ -1846,6 +1852,19 @@ def query_campaigns_list():
         if video_pacing   is not None: entry["video_pacing"]   = video_pacing
         if display_ctr    is not None: entry["display_ctr"]    = display_ctr
         if video_vtr      is not None: entry["video_vtr"]      = video_vtr
+
+        # Campos brutos pra agregação correta no frontend. CTR/VTR/Pacing
+        # são razões — agregar via "média de razões por campanha" infla VTR
+        # > 100% e distorce KPIs com campanhas pequenas. Frontend deve
+        # sempre fazer Σ numerador / Σ denominador. Esses campos são
+        # admin-gated junto com o resto do payload.
+        if d_vi              > 0: entry["display_impressions"]            = int(d_vi)
+        if d_clicks          > 0: entry["display_clicks"]                 = int(d_clicks)
+        if d_viewable_impr   > 0: entry["display_viewable_impressions"]   = int(d_viewable_impr)
+        if d_expected and d_expected > 0: entry["display_expected_impressions"] = int(d_expected)
+        if v_vi              > 0: entry["video_impressions"]              = int(v_vi)
+        if v_viewable_comp   > 0: entry["video_viewable_completions"]     = int(v_viewable_comp)
+        if v_expected and v_expected > 0: entry["video_expected_completions"]  = int(v_expected)
 
         # ADMIN-ONLY: campos com prefixo `admin_` carregam dado confidencial
         # (custo cru do DSP, antes da margem/over que vai pro cliente).
