@@ -27,6 +27,7 @@ import "../../v2.css";
 import { listCampaigns, listTeamMembers, listClients, getShareId, getCachedShareId } from "../../../lib/api";
 import { getOwnerFilter, setOwnerFilter as persistOwnerFilter } from "../../../shared/prefs";
 import { useTheme } from "../../hooks/useTheme";
+import { normalizeSlug } from "../lib/aggregation";
 
 import HyprReportCenterLogo from "../../../components/HyprReportCenterLogo";
 import NewCampaignModal from "../../../components/modals/NewCampaignModal";
@@ -185,23 +186,51 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
     }));
   }, [sortedCampaigns, layout]);
 
-  // Filtragem de clientes (search + ownerFilter)
+  // Filtragem de clientes (search + ownerFilter + worklist).
+  // Estratégia para owner e worklist: derivar a partir das CAMPANHAS do
+  // cliente, não dos top_*_owners (que só têm os 2 mais frequentes —
+  // perderia owners no 3º lugar pra baixo) nem do active_short_tokens
+  // sozinho (perderia worklist).
   const filteredClients = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const worklistTokens = activeWorklist && worklist?.[activeWorklist]?.tokens;
+    const worklistSet = worklistTokens ? new Set(worklistTokens) : null;
+
+    // Indexa campanhas por slug pra cruzar com tokens/owners do cliente
+    // sem percorrer a lista inteira por cliente.
+    const campaignsBySlug = new Map();
+    for (const camp of campaigns) {
+      const camps = campaignsBySlug.get(normalizeSlug(camp.client_name)) || [];
+      camps.push(camp);
+      campaignsBySlug.set(normalizeSlug(camp.client_name), camps);
+    }
+
     return clients.filter((c) => {
       if (q && !c.display_name?.toLowerCase().includes(q) && !c.slug?.includes(q)) {
         return false;
       }
+      const clientCampaigns = campaignsBySlug.get(c.slug) || [];
+
       if (ownerFilter) {
-        const ownerEmails = new Set([
-          ...(c.top_cp_owners || []).map((o) => o.email),
-          ...(c.top_cs_owners || []).map((o) => o.email),
-        ]);
-        if (!ownerEmails.has(ownerFilter)) return false;
+        // Match completo: passa se QUALQUER campanha do cliente tem o
+        // owner. Não depende mais de top_*_owners (limitado a top 2).
+        const hasOwner = clientCampaigns.some(
+          (camp) => camp.cp_email === ownerFilter || camp.cs_email === ownerFilter
+        );
+        if (!hasOwner) return false;
       }
+
+      if (worklistSet) {
+        // Cliente passa se QUALQUER campanha sua está no bucket ativo.
+        const hasInBucket = clientCampaigns.some(
+          (camp) => camp.short_token && worklistSet.has(camp.short_token)
+        );
+        if (!hasInBucket) return false;
+      }
+
       return true;
     });
-  }, [clients, search, ownerFilter]);
+  }, [clients, campaigns, search, ownerFilter, activeWorklist, worklist]);
 
   // ── Handlers ─────────────────────────────────────────────────────────────
   const handleCopyLink = useCallback(async (campaign) => {
@@ -407,13 +436,28 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
         />
       )}
       {loomModal && (
-        <LoomModal shortToken={loomModal} onClose={() => setLoomModal(null)} theme={legacyModalTheme(isDark)} />
+        <LoomModal
+          shortToken={loomModal}
+          onClose={() => setLoomModal(null)}
+          onSaved={() => setLoomModal(null)}
+          theme={legacyModalTheme(isDark)}
+        />
       )}
       {surveyModal && (
-        <SurveyModal shortToken={surveyModal} onClose={() => setSurveyModal(null)} theme={legacyModalTheme(isDark)} />
+        <SurveyModal
+          shortToken={surveyModal}
+          onClose={() => setSurveyModal(null)}
+          onSaved={() => setSurveyModal(null)}
+          theme={legacyModalTheme(isDark)}
+        />
       )}
       {logoModal && (
-        <LogoModal shortToken={logoModal} onClose={() => setLogoModal(null)} theme={legacyModalTheme(isDark)} />
+        <LogoModal
+          shortToken={logoModal}
+          onClose={() => setLogoModal(null)}
+          onSaved={() => setLogoModal(null)}
+          theme={legacyModalTheme(isDark)}
+        />
       )}
       {ownerModal && (
         <OwnerModal

@@ -5,6 +5,35 @@ import { saveSession } from "../shared/auth";
 import GlobalStyle from "../components/GlobalStyle";
 import HyprReportCenterLogo from "../components/HyprReportCenterLogo";
 
+/**
+ * Decodifica o payload de um JWT (id_token do Google).
+ *
+ * O `atob()` direto sobre o segmento base64url do JWT tem dois bugs:
+ *   1. base64url usa '-' e '_' em vez de '+' e '/' — atob não entende
+ *      esses caracteres, então tokens contendo eles falham.
+ *   2. atob retorna uma string em ISO-8859-1 (Latin-1). Como o payload
+ *      do Google está em UTF-8, nomes com acentos viram mojibake — ex:
+ *      "João" decodifica como "JoÃ£o", "Conceição" como "ConceiÃ§Ã£o".
+ *
+ * Aqui resolvemos os dois: troca base64url → base64 padrão, decodifica,
+ * remonta como sequência de bytes %XX e usa decodeURIComponent pra
+ * interpretar como UTF-8 nativo. É o padrão recomendado pelo MDN.
+ */
+function decodeJwtPayload(token) {
+  const segment = token.split(".")[1];
+  const base64 = segment.replace(/-/g, "+").replace(/_/g, "/");
+  // Padding: base64 sem padding falha em alguns browsers/builds. Adiciona '=' até múltiplo de 4.
+  const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+  const binary = atob(padded);
+  const utf8 = decodeURIComponent(
+    binary
+      .split("")
+      .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+      .join("")
+  );
+  return JSON.parse(utf8);
+}
+
 const LoginScreen = ({ onLogin }) => {
   useEffect(()=>{
     const s=document.createElement("script"); s.src="https://accounts.google.com/gsi/client"; s.async=true;
@@ -12,7 +41,7 @@ const LoginScreen = ({ onLogin }) => {
       window.google?.accounts.id.initialize({
         client_id:GOOGLE_CLIENT_ID,
         callback:(res)=>{
-          const p=JSON.parse(atob(res.credential.split(".")[1]));
+          const p=decodeJwtPayload(res.credential);
           if(p.email?.endsWith("@hypr.mobi")) {
             const user = {name:p.name,email:p.email,picture:p.picture};
             // Persiste user + id_token com TTL de 8h em localStorage para
