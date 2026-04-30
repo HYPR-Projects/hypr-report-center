@@ -145,9 +145,9 @@ export function CampaignHeaderV2({
         {/* Logo do cliente — img quando o admin fez upload, senão fallback
             texto com inicial estilizada.
 
-            Container transparente: a logo flutua direto sobre o card hero
-            (surface-2), sem caixa sólida preta/branca em volta. Funciona
-            porque combinamos com inversão CSS quando necessário.
+            Visual: container com fundo transparente + borda translúcida
+            sutil (border-border/40). Demarca a área do logo de forma
+            minimalista sem virar caixa sólida que destoa do card hero.
 
             Inversão automática via filter: invert(1):
               • Logo monochrome-light em tema light → inverte (vira escura)
@@ -157,14 +157,14 @@ export function CampaignHeaderV2({
 
             Padding generoso (px-6 py-4) dá margem pra logo respirar dentro
             do espaço alocado em vez de encostar nas bordas. Sem upload e
-            sem clientName cai no placeholder textual com fallback de fundo
-            translúcido pra demarcar a área. */}
+            sem clientName cai no placeholder textual com fundo translúcido
+            ligeiramente mais visível pra ancorar a inicial. */}
         {(logo || clientName) && (
           <div
-            className={`hidden md:flex items-center justify-center w-44 h-20 rounded-lg overflow-hidden transition-colors ${
+            className={`hidden md:flex items-center justify-center w-44 h-20 rounded-lg overflow-hidden border transition-colors ${
               logo
-                ? "px-6 py-4"
-                : "border border-border bg-white/[0.03] p-3"
+                ? "border-border/40 px-6 py-4"
+                : "border-border bg-white/[0.03] p-3"
             }`}
           >
             {logo ? (

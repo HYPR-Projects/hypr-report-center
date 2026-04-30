@@ -7,11 +7,12 @@
 //     (vira "monochrome-dark") via CSS filter.
 //
 //   • 'monochrome-dark' — pixels escuros sobre transparente. Ex: Apple
-//     preta, Adidas preta. Pode ser invertida pra ficar clara.
+//     preta, Adidas preta, Nintendo preta (pill preto + texto branco).
+//     Pode ser invertida pra ficar clara.
 //
-//   • 'colored' — logo com cores saturadas (Coca-Cola vermelho, Spotify
-//     verde, McDonald's amarelo). NUNCA inverte — quebra a identidade
-//     visual da marca.
+//   • 'colored' — logo com cores saturadas reais (Coca-Cola vermelho,
+//     Spotify verde, McDonald's amarelo). NUNCA inverte — quebra a
+//     identidade visual da marca.
 //
 // Por que esses 3 buckets
 // ───────────────────────
@@ -24,22 +25,30 @@
 // Algoritmo de classificação
 // ──────────────────────────
 // Carrega a imagem num canvas off-screen, faz sample em grid 8x8 e
-// calcula DUAS métricas em pixels não-transparentes (alpha >= 25):
+// para cada pixel não-transparente (alpha >= 25) calcula:
 //
-//   1. Luminance perceptual (W3C sRGB):
-//      L = 0.299·R + 0.587·G + 0.114·B
+//   • Luminance perceptual (W3C sRGB):
+//       L = 0.299·R + 0.587·G + 0.114·B            (0-255)
 //
-//   2. Saturation HSL:
-//      S = (max - min) / max         se max > 0
-//      Mede o quanto o pixel "tem cor" vs cinza neutro. Pixels mono-
-//      cromáticos (preto, branco, cinza) têm S ≈ 0. Coca-Cola vermelho
-//      tem S ≈ 1.
+//   • Chroma absoluta (NÃO saturation HSL):
+//       C = max(R,G,B) - min(R,G,B)                (0-255)
 //
-// Thresholds calibrados empiricamente:
-//   AVG_SATURATION < 0.18 → monochrome (preto/branco/cinza dominantes)
-//   AVG_LUMINANCE  > 160  → light variant (claro)
-//   AVG_LUMINANCE <= 160  → dark variant (escuro)
-//   AVG_SATURATION >= 0.18 → colored
+//     Por que chroma absoluta e NÃO saturation HSL:
+//     Saturation HSL = (max-min)/max é normalizada e infla absurdamente
+//     pra pixels escuros — RGB(15,25,35) (cinza escuro com leve tinta)
+//     tem sat 0.57, mesmo sendo praticamente cinza ao olho humano. Brand
+//     assets reais raramente usam preto puro #000 — o pill da Nintendo,
+//     por exemplo, é tipicamente algo como #1a1a1f com leve tinta. Com
+//     saturation HSL isso classificaria como "colored" e nunca seria
+//     invertido. Chroma absoluta (max-min) é alinhada com a percepção
+//     humana: RGB(15,25,35) tem chroma 20, claramente não-colorido.
+//
+// Classificação:
+//   1. Pixel é "colorful" se chroma > 40 (~15% do range RGB)
+//   2. Logo é colored se >25% dos pixels não-transparentes são colorful
+//   3. Senão, monochrome — split por luminance:
+//      avg_luminance > 160 → monochrome-light
+//      avg_luminance ≤ 160 → monochrome-dark
 //
 // Sample em grid 8x8 = ~1.5% dos pixels. Suficiente pra caracterizar
 // uma logo sem custo perceptível mesmo em imagem 2000x2000.
@@ -57,10 +66,11 @@ import { useEffect, useState } from "react";
 
 const analysisCache = new Map();
 
-const SATURATION_THRESHOLD = 0.18;
+const CHROMA_THRESHOLD = 40;            // pixels com chroma > 40 são "colorful"
+const COLORFUL_RATIO_THRESHOLD = 0.25;  // logo é colored se >25% dos pixels são colorful
 const LUMINANCE_THRESHOLD = 160;
-const ALPHA_THRESHOLD = 25; // pixels com alpha < 25 ignorados (transparente)
-const SAMPLE_STEP = 8;       // grid 8x8 → ~1.5% dos pixels
+const ALPHA_THRESHOLD = 25;             // pixels com alpha < 25 ignorados (transparente)
+const SAMPLE_STEP = 8;                  // grid 8x8 → ~1.5% dos pixels
 
 export function useLogoAnalysis(src) {
   // Cache hit é resolvido SÍNCRONO via derivação (sem setState no effect):
@@ -97,7 +107,7 @@ export function useLogoAnalysis(src) {
         const data = ctx.getImageData(0, 0, w, h).data;
 
         let totalLum = 0;
-        let totalSat = 0;
+        let colorfulCount = 0;
         let counted = 0;
 
         for (let y = 0; y < h; y += SAMPLE_STEP) {
@@ -113,10 +123,9 @@ export function useLogoAnalysis(src) {
             // Luminance perceptual W3C
             totalLum += 0.299 * r + 0.587 * g + 0.114 * b;
 
-            // Saturation (HSL): chroma normalizado pelo brilho
-            const max = Math.max(r, g, b);
-            const min = Math.min(r, g, b);
-            totalSat += max === 0 ? 0 : (max - min) / max;
+            // Chroma absoluta — quanto o pixel "se afasta" de cinza neutro
+            const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+            if (chroma > CHROMA_THRESHOLD) colorfulCount += 1;
 
             counted += 1;
           }
@@ -130,13 +139,19 @@ export function useLogoAnalysis(src) {
         }
 
         const avgLum = totalLum / counted;
-        const avgSat = totalSat / counted;
+        const colorfulRatio = colorfulCount / counted;
 
         let result;
-        if (avgSat < SATURATION_THRESHOLD) {
-          result = avgLum > LUMINANCE_THRESHOLD ? "monochrome-light" : "monochrome-dark";
-        } else {
+        if (colorfulRatio > COLORFUL_RATIO_THRESHOLD) {
           result = "colored";
+        } else {
+          result = avgLum > LUMINANCE_THRESHOLD ? "monochrome-light" : "monochrome-dark";
+        }
+
+        if (import.meta.env?.DEV) {
+          console.log(
+            `[useLogoAnalysis] avgLum=${avgLum.toFixed(1)} colorfulRatio=${colorfulRatio.toFixed(3)} → ${result}`
+          );
         }
 
         analysisCache.set(src, result);
