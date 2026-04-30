@@ -84,14 +84,26 @@ export default function VideoV2({
       tactic,
     });
 
+    // Normaliza creative_size pra Video: backend retorna "0x0" quando o
+    // DSP não preenche dimensões em criativos de video, mas operacionalmente
+    // é o mesmo formato 16:9 standard. Unifica antes do groupBySize pra
+    // evitar 2 linhas separadas pra mesma coisa na Distribuição por Tamanho.
+    //
+    // Aplicado só pro bySize (e pro extraRows da tabela de formato, mais
+    // abaixo). detailFiltered original é preservado pros outros usos —
+    // KPIs, daily, audience — onde creative_size não importa.
+    const detailNormalized = detailFiltered.map((r) =>
+      r.creative_size === "0x0" ? { ...r, creative_size: "16x9" } : r,
+    );
+
     const daily = groupByDate(detailFiltered, "video_view_100", "viewable_impressions", "vtr");
-    const bySize = groupBySize(detailFiltered, "video_view_100", "viewable_impressions", "vtr");
+    const bySize = groupBySize(detailNormalized, "video_view_100", "viewable_impressions", "vtr");
     const byAudience = groupByAudience(detailAll, "video_view_100", "viewable_impressions", "vtr");
 
-    return { totals, detailAll, detailFiltered, lineOptions, kpis, daily, bySize, byAudience };
+    return { totals, detailAll, detailFiltered, detailNormalized, lineOptions, kpis, daily, bySize, byAudience };
   }, [aggregates, tactic, lines]);
 
-  const { totals, detailFiltered, lineOptions, kpis, daily, bySize, byAudience } = view;
+  const { totals, detailFiltered, detailNormalized, lineOptions, kpis, daily, bySize, byAudience } = view;
 
   // Empty state: a tactic atual não tem entregas. Mantém a toolbar
   // visível pra o usuário poder voltar pra outra tactic — antes
@@ -143,6 +155,7 @@ export default function VideoV2({
           tactic={tactic}
           aggregates={aggregates}
           detailFiltered={detailFiltered}
+          detailNormalized={detailNormalized}
           kpis={kpis}
           daily={daily}
           bySize={bySize}
@@ -162,6 +175,7 @@ function VideoContent({
   tactic,
   aggregates,
   detailFiltered,
+  detailNormalized,
   kpis,
   daily,
   bySize,
@@ -286,7 +300,7 @@ function VideoContent({
           rateKey="vtr"
           rateLabel="VTR"
           rateFormatter={fmtP2}
-          extraRows={detailFiltered}
+          extraRows={detailNormalized}
           mediaType="VIDEO"
         />
       )}
