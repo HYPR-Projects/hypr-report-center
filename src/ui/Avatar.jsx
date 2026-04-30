@@ -62,7 +62,13 @@ export function Avatar({
       className={cn(
         "inline-flex items-center justify-center rounded-full font-bold leading-none",
         "text-white tracking-tight",
-        "ring-2 ring-canvas",   // anel da cor do canvas pra dar separação ao stack
+        // Anel da cor do container elevado pra dar separação no avatar
+        // stack. canvas-elevated é #232F39 em dark e #FFFFFF em light —
+        // ambos casam com o background dos cards onde o Avatar mais
+        // aparece (Card primitive usa bg-surface sobre canvas-elevated
+        // efetivo). Antes era ring-canvas que sumia em light porque
+        // canvas light = #F8F9FA ≈ branco do card.
+        "ring-2 ring-canvas-elevated",
         bgCls,
         txtCls,
         className

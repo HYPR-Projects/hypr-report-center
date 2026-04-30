@@ -122,7 +122,10 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
       className={cn(
         "grid gap-2 items-center px-4 py-2.5 border-b border-border last:border-0",
         "text-[12px] cursor-pointer transition-colors",
-        "hover:bg-signature-soft/40 focus-visible:outline-none focus-visible:bg-signature-soft/60",
+        // hover/focus precisam ser visíveis em LIGHT (onde signature-soft
+        // já tem alpha 0.12 — dividir mais virava ~0.05 invisível).
+        // Usar signature-soft direto dá feedback claro em ambos os temas.
+        "hover:bg-signature-soft focus-visible:outline-none focus-visible:bg-signature-soft",
         GRID
       )}
     >

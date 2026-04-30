@@ -136,6 +136,19 @@
   /* Inset (usado para wells, inputs focados, slots) */
   --shadow-inset: inset 0 1px 2px 0 rgba(0, 0, 0, 0.3);
 
+  /* ═══════════════ GLOWS DE STATUS ═══════════════ */
+  /* Halos coloridos sutis pra status dots — dão peso visual de "ativo"
+   * sem usar cor preenchida (que seria agressiva demais). Usados em
+   * Worklist, ClientCard, CampaignCardV2.
+   *
+   * Tokens semânticos pra serem theme-aware: o RGBA precisa bater com
+   * a cor do --color-X correspondente em cada tema, senão o dot e o
+   * glow ficam de cores diferentes em light. */
+  --shadow-glow-success:   0 0 0 3px rgba(76, 176, 80, 0.18);   /* #4CB050 = success dark */
+  --shadow-glow-warning:   0 0 0 3px rgba(237, 217, 0, 0.20);   /* #EDD900 = warning dark */
+  --shadow-glow-danger:    0 0 0 3px rgba(245, 39, 43, 0.18);   /* #F5272B = danger dark */
+  --shadow-glow-signature: 0 0 0 3px rgba(51, 151, 185, 0.18);  /* #3397B9 = signature dark */
+
   /* ═══════════════ MOTION ═══════════════ */
   /* Durações curtas pra microinterações (hover, focus, press).
    * Mais lentas pra layout shifts (collapse, drawer). */
@@ -280,4 +293,13 @@
   --shadow-lg: 0 10px 30px -5px rgba(15, 20, 25, 0.10);
   --shadow-xl: 0 20px 50px -10px rgba(15, 20, 25, 0.12);
   --shadow-inset: inset 0 1px 2px 0 rgba(15, 20, 25, 0.05);
+
+  /* Glows de status — RGBAs alinhados com as versões light dos
+   * --color-success/warning/danger/signature. Alpha um pouco maior
+   * que dark porque sobre fundo claro precisa de mais peso pra
+   * o halo aparecer com a mesma intensidade percebida. */
+  --shadow-glow-success:   0 0 0 3px rgba(61, 152, 66, 0.22);   /* #3D9842 = success light */
+  --shadow-glow-warning:   0 0 0 3px rgba(184, 165, 0, 0.22);   /* #B8A500 = warning light */
+  --shadow-glow-danger:    0 0 0 3px rgba(216, 32, 30, 0.22);   /* #D8201E = danger light */
+  --shadow-glow-signature: 0 0 0 3px rgba(42, 123, 151, 0.20);  /* #2A7B97 = signature light */
 }
