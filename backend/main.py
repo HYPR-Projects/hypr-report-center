@@ -403,8 +403,9 @@ def report_data(request):
                     400, headers,
                 )
 
-            # 2) Carrega dados da campanha pra popular a sheet
-            payload = _get_report_cached(short_token, force_refresh=False)
+            # 2) Carrega dados da campanha pra popular a sheet.
+            # _get_report_cached retorna tupla (data, was_cached) — só queremos data.
+            payload, _ = _get_report_cached(short_token, force_refresh=False)
             if not payload:
                 return (jsonify({"error": "Campanha não encontrada"}), 404, headers)
             detail_rows  = payload.get("detail") or []
@@ -467,7 +468,8 @@ def report_data(request):
             if not short_token:
                 return (jsonify({"error": "short_token obrigatório"}), 400, headers)
 
-            payload = _get_report_cached(short_token, force_refresh=True)
+            # _get_report_cached retorna tupla (data, was_cached).
+            payload, _ = _get_report_cached(short_token, force_refresh=True)
             if not payload:
                 return (jsonify({"error": "Campanha não encontrada"}), 404, headers)
             detail_rows = payload.get("detail") or []
@@ -494,7 +496,8 @@ def report_data(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
             def _detail_loader(short_token):
-                payload = _get_report_cached(short_token, force_refresh=True)
+                # _get_report_cached retorna tupla (data, was_cached).
+                payload, _ = _get_report_cached(short_token, force_refresh=True)
                 if not payload:
                     return []
                 return payload.get("detail") or []
