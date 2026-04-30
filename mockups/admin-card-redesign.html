@@ -265,36 +265,38 @@
     color: var(--fg-muted); font-weight: 600;
   }
 
-  /* Pacing block (HEROI - sempre presente) */
+  /* Pacing block — duas linhas separadas (DSP / VID) */
   .card-new .pacing-cell {
-    padding: 14px 18px; border-left: 1px solid var(--border);
-    display: flex; flex-direction: column; align-items: flex-start;
-    gap: 6px; min-width: 150px; justify-content: center;
-  }
-  .card-new .pacing-cell .lbl {
-    font-size: 9.5px; letter-spacing: .15em; text-transform: uppercase;
-    color: var(--fg-subtle); font-weight: 700;
-  }
-  .card-new .pacing-cell .pct-line {
-    display: flex; align-items: baseline; gap: 8px;
-  }
-  .card-new .pacing-cell .pct {
-    font-size: 22px; font-weight: 800; line-height: 1;
-    font-variant-numeric: tabular-nums;
-    letter-spacing: -0.02em;
-  }
-  .card-new .pacing-cell .pct.dual { font-size: 16px; }
-  .card-new .pacing-cell .sub {
-    font-size: 10px; color: var(--fg-subtle);
-    font-variant-numeric: tabular-nums;
-  }
-  .card-new .pacing-cell .sub b {
-    color: var(--fg-muted); font-weight: 700;
+    padding: 12px 18px; border-left: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    gap: 8px; min-width: 230px; justify-content: center;
   }
 
-  /* Mini-bar de pacing */
+  /* Cada linha de pacing: LABEL | % | BARRA */
+  .pacing-row {
+    display: grid;
+    grid-template-columns: 38px 56px 1fr;
+    align-items: center;
+    gap: 12px;
+  }
+  .pacing-row .pac-label {
+    font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+    font-weight: 800; color: var(--fg-muted);
+  }
+  .pacing-row .pac-pct {
+    font-size: 17px; font-weight: 800; line-height: 1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    text-align: right;
+  }
+  .pacing-row .pac-empty {
+    font-size: 12px; color: var(--fg-subtle);
+    text-align: right; font-style: italic;
+  }
+
+  /* Mini-bar de pacing — fica ao lado de cada linha */
   .pacing-bar {
-    width: 110px; height: 4px;
+    height: 5px;
     background: var(--surface); border-radius: 999px;
     position: relative; overflow: hidden;
   }
@@ -305,7 +307,11 @@
   }
   .pacing-bar .target {
     position: absolute; top: -2px; bottom: -2px; width: 2px;
-    background: var(--fg-subtle); opacity: .35;
+    background: var(--fg-subtle); opacity: .45;
+  }
+  .pacing-bar.empty {
+    background: transparent;
+    border: 1px dashed var(--border);
   }
 
   /* Quality cell (CTR + VTR) — só ganha cor se fora da meta */
@@ -351,11 +357,23 @@
   }
   .card-new.ended .body { padding: 8px 16px; }
   .card-new.ended .campaign-name { font-size: 13px; font-weight: 600; }
-  .card-new.ended .pacing-cell { padding: 8px 14px; min-width: 110px; }
-  .card-new.ended .pacing-cell .pct { font-size: 14px; }
-  .card-new.ended .pacing-bar { display: none; }
   .card-new.ended .right-rail { padding: 8px 12px; }
   .card-new.ended .ver-action { height: 26px; padding: 0 10px; font-size: 11px; }
+
+  .ended-pacing {
+    padding: 8px 18px;
+    border-left: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+    font-size: 12px;
+    color: var(--fg-muted);
+    min-width: 180px;
+  }
+  .ended-pacing .ended-pac { display: inline-flex; gap: 5px; align-items: baseline; }
+  .ended-pacing .ended-k {
+    font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase;
+    font-weight: 800; color: var(--fg-subtle);
+  }
+  .ended-pacing .sep { color: var(--fg-subtle); opacity: .5; }
 
   /* Comparison label */
   .compare-grid {
@@ -505,27 +523,47 @@
     root.innerHTML = data.map(c => {
       const health = c.ended ? "muted" : classifyHealth(c.dsp, c.vid);
 
-      // Pacing primário: pega o pior dos dois (DSP / VID) — é o que importa pro admin escanear
-      const both = [c.dsp, c.vid].filter(x => x != null);
-      const worstPacing = both.length ? Math.min(...both) : null;
-      const dualPacing = c.dsp != null && c.vid != null;
-
       // Qualidade: cor só se fora do verde
       const ctrCls = c.ctr != null ? ctrClass(c.ctr) : "v-muted";
       const vtrCls = c.vtr != null ? vtrClass(c.vtr) : "v-muted";
       const ctrShown = ctrCls !== "v-success" && c.ctr != null ? ctrCls : "v-muted";
       const vtrShown = vtrCls !== "v-success" && c.vtr != null ? vtrCls : "v-muted";
 
-      // Pacing bar
-      const fillPct = worstPacing == null ? 0 : Math.min(worstPacing, 150);
-      const fillColor = worstPacing == null ? "var(--fg-subtle)"
-        : worstPacing < 90 ? "var(--danger)"
-        : worstPacing < 100 ? "var(--warning)"
-        : worstPacing < 125 ? "var(--success)"
+      // Helper: monta uma linha de pacing (DSP ou VID) com label + número + barra
+      const fillColorFor = (p) => p == null ? "var(--fg-subtle)"
+        : p < 90 ? "var(--danger)"
+        : p < 100 ? "var(--warning)"
+        : p < 125 ? "var(--success)"
         : "var(--signature)";
+      const pacingRow = (label, value) => {
+        if (value == null) {
+          return `
+            <div class="pacing-row">
+              <span class="pac-label">${label}</span>
+              <span class="pac-empty">—</span>
+              <div class="pacing-bar empty"></div>
+            </div>`;
+        }
+        const fillPct = Math.min(value, 150);
+        const tooltip = `${label}: ${value}% do esperado · meta 100%`;
+        return `
+          <div class="pacing-row">
+            <span class="pac-label">${label}</span>
+            <span class="pac-pct ${pacingClass(value)} tnum">${value}%</span>
+            <div class="pacing-bar" title="${tooltip}">
+              <div class="fill" style="width: ${(fillPct/150)*100}%; background: ${fillColorFor(value)};"></div>
+              <div class="target" style="left: ${(100/150)*100}%;"></div>
+            </div>
+          </div>`;
+      };
 
       if (c.ended) {
-        // Linha compacta para encerradas
+        // Linha compacta para encerradas — DSP/VID inline, sem barras
+        const endedPacing = [
+          c.dsp != null ? `<span class="ended-pac"><span class="ended-k">DSP</span> <span class="tnum">${c.dsp}%</span></span>` : "",
+          c.vid != null ? `<span class="ended-pac"><span class="ended-k">VID</span> <span class="tnum">${c.vid}%</span></span>` : "",
+        ].filter(Boolean).join('<span class="sep">·</span>');
+
         return `
           <div class="card-new ended">
             <div class="status-bar"></div>
@@ -541,12 +579,7 @@
                 <span>Encerrada</span>
               </div>
             </div>
-            <div class="pacing-cell">
-              <div class="pct-line">
-                ${c.dsp != null ? `<span class="pct v-muted tnum">${c.dsp}%</span>` : ""}
-                ${c.vid != null ? `<span class="sub"><b>VID</b> ${c.vid}%</span>` : ""}
-              </div>
-            </div>
+            <div class="ended-pacing">${endedPacing}</div>
             <div class="right-rail">
               <button class="ver-action">Histórico
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="m9 18 6-6-6-6"/></svg>
@@ -573,16 +606,8 @@
           </div>
 
           <div class="pacing-cell">
-            <span class="lbl">Pacing</span>
-            <div class="pct-line">
-              ${c.dsp != null ? `<span class="pct ${dualPacing ? 'dual' : ''} ${pacingClass(c.dsp)} tnum">${c.dsp}%</span>` : ""}
-              ${dualPacing ? `<span class="sub"><b>VID</b> <span class="${pacingClass(c.vid)}">${c.vid}%</span></span>` : ""}
-              ${!dualPacing && c.vid != null ? `<span class="pct ${pacingClass(c.vid)} tnum">${c.vid}%</span>` : ""}
-            </div>
-            <div class="pacing-bar" title="${worstPacing}% do esperado · meta 100%">
-              <div class="fill" style="width: ${(fillPct/150)*100}%; background: ${fillColor};"></div>
-              <div class="target" style="left: ${(100/150)*100}%;"></div>
-            </div>
+            ${pacingRow("DSP", c.dsp)}
+            ${pacingRow("VID", c.vid)}
           </div>
 
           <div class="quality-cell">
