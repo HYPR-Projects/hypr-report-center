@@ -13,6 +13,8 @@
 // claro contra canvas. O glow radial vem por inline style (gradient
 // arbitrário, não tem utility direta).
 
+import { useLogoLuminance } from "../hooks/useLogoLuminance";
+
 const fmtDateShort = (ymd) => {
   if (!ymd) return null;
   const [y, m, d] = ymd.split("-").map(Number);
@@ -56,6 +58,13 @@ export function CampaignHeaderV2({
   const start = fmtDateShort(startDate);
   const end = fmtDateShort(endDate);
   const days = daysBetween(startDate, endDate);
+
+  // Detecta se a logo é predominantemente clara (logo branca/clara em fundo
+  // transparente) ou escura. Caso clara, o logo wall precisa ser escuro pra
+  // dar contraste — caso contrário a logo some no bg-white. Caso escura, o
+  // bg-white tradicional do "logo wall" funciona como sempre.
+  const logoLuminance = useLogoLuminance(logo);
+  const isLightLogo = logoLuminance === "light";
 
   return (
     <section
@@ -124,13 +133,16 @@ export function CampaignHeaderV2({
             texto com inicial estilizada. Box dimensionado pra acomodar logos
             horizontais com padding generoso pra respirar.
 
-            Padrão "logo wall" (Stripe / Vercel / Linear): fundo branco
-            sempre, em qualquer tema. Garante legibilidade universal —
-            logos coloridas mantêm a cor de marca (Nintendo vermelho,
-            Spotify verde, etc) e logos monocromáticas escuras já são
-            otimizadas pra fundo claro. Em dark mode, suavizamos a
-            "presença" do branco com box-shadow sutil em vez de tentar
-            inversão automática (que quebra cores de marca).
+            Padrão "logo wall" (Stripe / Vercel / Linear): por padrão fundo
+            branco em qualquer tema. Garante legibilidade pra logos coloridas
+            (Coca-Cola vermelho, Spotify verde, etc) e logos monocromáticas
+            escuras (que já são otimizadas pra fundo claro).
+
+            Exceção: quando a logo é predominantemente CLARA (branca sobre
+            transparente — caso da Nintendo, Apple white, Adidas white),
+            invertemos pra fundo escuro pra não sumir no branco. A detecção
+            é via canvas API (useLogoLuminance) — corre uma vez por logo
+            e fica em cache de módulo.
 
             Padding lateral generoso (px-8 py-5) dá margem pra logo
             respirar dentro do box em vez de encostar nas bordas. */}
@@ -138,7 +150,13 @@ export function CampaignHeaderV2({
           <div
             className={`hidden md:flex items-center justify-center w-44 h-20 rounded-lg overflow-hidden border transition-colors ${
               logo
-                ? "bg-white border-border px-8 py-5 dark:shadow-[0_0_0_1px_rgba(255,255,255,0.04)]"
+                ? isLightLogo
+                  // Logo clara → fundo escuro fixo (independente do tema).
+                  // Cor escolhida é o canvas-deeper do dark theme — escura
+                  // o suficiente pra contrastar com qualquer logo branca
+                  // sem virar buraco preto puro contra o card surface-2.
+                  ? "bg-[#0F1419] border-border-strong px-8 py-5"
+                  : "bg-white border-border px-8 py-5 dark:shadow-[0_0_0_1px_rgba(255,255,255,0.04)]"
                 : "bg-white/[0.03] border-border p-3"
             }`}
           >
