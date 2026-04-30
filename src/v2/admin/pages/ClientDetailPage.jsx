@@ -310,9 +310,30 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
         teamMap={teamMap}
       />
 
-      {loomModal   && <LoomModal   shortToken={loomModal}   onClose={() => setLoomModal(null)}   theme={legacyModalTheme(isDark)} />}
-      {surveyModal && <SurveyModal shortToken={surveyModal} onClose={() => setSurveyModal(null)} theme={legacyModalTheme(isDark)} />}
-      {logoModal   && <LogoModal   shortToken={logoModal}   onClose={() => setLogoModal(null)}   theme={legacyModalTheme(isDark)} />}
+      {loomModal && (
+        <LoomModal
+          shortToken={loomModal}
+          onClose={() => setLoomModal(null)}
+          onSaved={() => setLoomModal(null)}
+          theme={legacyModalTheme(isDark)}
+        />
+      )}
+      {surveyModal && (
+        <SurveyModal
+          shortToken={surveyModal}
+          onClose={() => setSurveyModal(null)}
+          onSaved={() => setSurveyModal(null)}
+          theme={legacyModalTheme(isDark)}
+        />
+      )}
+      {logoModal && (
+        <LogoModal
+          shortToken={logoModal}
+          onClose={() => setLogoModal(null)}
+          onSaved={() => setLogoModal(null)}
+          theme={legacyModalTheme(isDark)}
+        />
+      )}
       {ownerModal  && (
         <OwnerModal
           campaign={ownerModal}
