@@ -72,6 +72,7 @@ JWT_SECRET=$(extract_env "JWT_SECRET")
 TYPEFORM_TOKEN=$(extract_env "TYPEFORM_TOKEN")
 GOOGLE_OAUTH_CLIENT_ID=$(extract_env "GOOGLE_OAUTH_CLIENT_ID")
 GOOGLE_OAUTH_CLIENT_SECRET=$(extract_env "GOOGLE_OAUTH_CLIENT_SECRET")
+CRON_SECRET=$(extract_env "CRON_SECRET")
 
 if [ -z "$JWT_SECRET" ]; then
   echo "✗ JWT_SECRET não encontrado na revisão $ACTIVE_REV. Abortando."
@@ -89,6 +90,11 @@ if [ -n "$GOOGLE_OAUTH_CLIENT_ID" ] && [ -n "$GOOGLE_OAUTH_CLIENT_SECRET" ]; the
 else
   echo "  ⚠ GOOGLE_OAUTH_CLIENT_{ID,SECRET} ausentes — Sheets integration desabilitada"
   echo "    Veja setup_sheets_integration.sh, passo 3."
+fi
+if [ -n "$CRON_SECRET" ]; then
+  echo "  ✓ CRON_SECRET capturado"
+else
+  echo "  ⚠ CRON_SECRET ausente — sync diário do Sheets desabilitado"
 fi
 
 # ── 2. Montar arquivo YAML com todas as envvars ──────────────────────────────
@@ -111,6 +117,9 @@ if [ -n "$GOOGLE_OAUTH_CLIENT_ID" ]; then
 fi
 if [ -n "$GOOGLE_OAUTH_CLIENT_SECRET" ]; then
   echo "GOOGLE_OAUTH_CLIENT_SECRET: '${GOOGLE_OAUTH_CLIENT_SECRET}'" >> "$ENV_FILE"
+fi
+if [ -n "$CRON_SECRET" ]; then
+  echo "CRON_SECRET: '${CRON_SECRET}'" >> "$ENV_FILE"
 fi
 
 # ── 3. Deploy ────────────────────────────────────────────────────────────────

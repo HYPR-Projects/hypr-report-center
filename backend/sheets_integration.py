@@ -394,6 +394,59 @@ def list_expired_integrations() -> List[Dict]:
     return [{"short_token": r["short_token"]} for r in rows]
 
 
+def sync_all_due(detail_loader) -> Dict:
+    """
+    Roda o sync de todas as integrações elegíveis. Chamado pelo cron diário.
+
+    `detail_loader` é um callable `(short_token) -> List[Dict]` que carrega
+    as rows de detail. Injetado por dependency injection pra evitar import
+    circular (módulo sheets_integration não pode importar main).
+
+    Retorna sumário com contagens. Erros individuais não interrompem o loop —
+    cada falha é registrada em last_error/status do registro afetado.
+
+    Esse loop é sequencial de propósito. Cloud Function gen2 com concurrency
+    e múltiplas requisições simultâneas dá pra paralelizar, mas:
+      (1) Sheets API tem quotas per-user (60 writes/min) — paralelizar com
+          mesmo refresh_token não acelera.
+      (2) Volume previsto de integrações (~dezenas) é pequeno.
+      (3) Sequencial é mais fácil de debugar e dá retry granular natural.
+    """
+    summary = {
+        "synced":      0,
+        "revoked":     0,
+        "errors":      0,
+        "paused":      0,
+        "total_active": 0,
+    }
+
+    # Pausa primeiro as expiradas (não tenta sync nelas).
+    for row in list_expired_integrations():
+        try:
+            _update_status(row["short_token"], status="paused")
+            summary["paused"] += 1
+        except Exception as e:
+            print(f"[WARN sheets sync_all_due pause {row['short_token']}] {e}")
+
+    active = list_active_integrations()
+    summary["total_active"] = len(active)
+
+    for integ in active:
+        short_token = integ["short_token"]
+        try:
+            detail_rows = detail_loader(short_token) or []
+            sync_sheet(short_token, detail_rows)
+            summary["synced"] += 1
+        except PermissionError:
+            summary["revoked"] += 1
+            print(f"[INFO sheets sync_all_due] {short_token} revoked")
+        except Exception as e:
+            summary["errors"] += 1
+            print(f"[ERROR sheets sync_all_due {short_token}] {e}")
+
+    return summary
+
+
 # ─── Sheet creation + sync ───────────────────────────────────────────────────
 # Schema das colunas escritas. Replica DataTableV2 do frontend exatamente:
 # se quiser mexer aqui, mexe no frontend também (e vice-versa). Centralizar

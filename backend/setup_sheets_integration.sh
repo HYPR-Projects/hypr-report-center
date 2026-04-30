@@ -35,11 +35,12 @@ echo "▸ Região:  $REGION"
 echo ""
 
 # ── 1. Habilitar APIs ────────────────────────────────────────────────────────
-echo "▸ Habilitando Drive API + Sheets API + KMS API..."
+echo "▸ Habilitando Drive API + Sheets API + KMS API + Cloud Scheduler..."
 gcloud services enable \
   drive.googleapis.com \
   sheets.googleapis.com \
   cloudkms.googleapis.com \
+  cloudscheduler.googleapis.com \
   --project="$PROJECT_ID"
 
 # ── 2. Criar KMS keyring + key ───────────────────────────────────────────────
@@ -100,25 +101,47 @@ PASSOS MANUAIS (não dá via gcloud):
    • Clicar pra abrir, copiar o "Client secret"
    • Vai precisar dele no próximo passo
 
-3. Adicionar Client Secret como envvar do Cloud Run
-   ─────────────────────────────────────────────────
-   No deploy.sh já capturamos JWT_SECRET / TYPEFORM_TOKEN da revisão
-   ativa. O GOOGLE_OAUTH_CLIENT_SECRET segue o mesmo padrão. Antes do
-   primeiro deploy desta feature, rode UMA VEZ:
+3. Adicionar Client Secret + Cron Secret como envvars do Cloud Run
+   ────────────────────────────────────────────────────────────────
+   Antes do primeiro deploy desta feature, rode UMA VEZ:
 
      CLIENT_ID="453955675457-p7bj0e8jt6s83da5teo2var5t97okqk7.apps.googleusercontent.com"
      CLIENT_SECRET="<cole aqui>"
+     CRON_SECRET="$(openssl rand -hex 32)"
+     echo "Salve em local seguro: CRON_SECRET=$CRON_SECRET"
 
      gcloud run services update report-data \
        --region=southamerica-east1 \
-       --update-env-vars="GOOGLE_OAUTH_CLIENT_ID=$CLIENT_ID,GOOGLE_OAUTH_CLIENT_SECRET=$CLIENT_SECRET" \
+       --update-env-vars="GOOGLE_OAUTH_CLIENT_ID=$CLIENT_ID,GOOGLE_OAUTH_CLIENT_SECRET=$CLIENT_SECRET,CRON_SECRET=$CRON_SECRET" \
        --project=site-hypr
 
    A partir daí, deploy.sh captura essas envvars junto com as outras.
+   IMPORTANTE: salve o CRON_SECRET — vai usar no passo 4.
 
-4. Adicionar campo no env-vars-file do deploy.sh
-   ──────────────────────────────────────────────
-   Já foi atualizado — não precisa mexer manualmente.
+4. Criar Cloud Scheduler job pro sync diário
+   ──────────────────────────────────────────
+   Substitua $CRON_SECRET pelo valor gerado no passo 3:
+
+     CF_URL=$(gcloud functions describe report_data \
+       --region=southamerica-east1 \
+       --format="value(serviceConfig.uri)" \
+       --project=site-hypr)
+
+     gcloud scheduler jobs create http sheets-sync-daily \
+       --location=southamerica-east1 \
+       --schedule="0 6 * * *" \
+       --time-zone="America/Sao_Paulo" \
+       --uri="${CF_URL}?action=sheets_sync_all" \
+       --http-method=POST \
+       --headers="X-Cron-Secret=$CRON_SECRET" \
+       --attempt-deadline=540s \
+       --project=site-hypr
+
+   Pra testar imediatamente sem esperar 06:00:
+
+     gcloud scheduler jobs run sheets-sync-daily \
+       --location=southamerica-east1 \
+       --project=site-hypr
 
 ────────────────────────────────────────────────────────────────────────
 EOF
