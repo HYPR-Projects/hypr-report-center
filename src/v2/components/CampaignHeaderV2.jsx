@@ -130,33 +130,42 @@ export function CampaignHeaderV2({
         </div>
 
         {/* Logo do cliente — img quando o admin fez upload, senão fallback
-            texto com inicial estilizada. Box dimensionado pra acomodar logos
-            horizontais com padding generoso pra respirar.
+            texto com inicial estilizada.
 
-            Padrão "logo wall" (Stripe / Vercel / Linear): por padrão fundo
-            branco em qualquer tema. Garante legibilidade pra logos coloridas
-            (Coca-Cola vermelho, Spotify verde, etc) e logos monocromáticas
-            escuras (que já são otimizadas pra fundo claro).
+            Estratégia: combina LUMINANCE da logo (detectada via canvas)
+            com o TEMA atual, e só aplica fundo "logo wall" quando o
+            contraste natural com o canvas é insuficiente. O resto fica
+            transparente — logo respira no card sem retângulo destoando.
 
-            Exceção: quando a logo é predominantemente CLARA (branca sobre
-            transparente — caso da Nintendo, Apple white, Adidas white),
-            invertemos pra fundo escuro pra não sumir no branco. A detecção
-            é via canvas API (useLogoLuminance) — corre uma vez por logo
-            e fica em cache de módulo.
+            Matriz de decisão:
+              ┌──────────────┬──────────────────────┬──────────────────────┐
+              │              │ Tema light           │ Tema dark            │
+              │              │ (canvas claro)       │ (canvas escuro)      │
+              ├──────────────┼──────────────────────┼──────────────────────┤
+              │ Logo escura/ │ bg-white (logo wall  │ bg-transparent       │
+              │ colorida     │ tradicional, preserva│ + filter invert+hue  │
+              │              │ cor de marca)        │ rotate na <img>      │
+              ├──────────────┼──────────────────────┼──────────────────────┤
+              │ Logo clara   │ bg escuro (logo wall │ bg-transparent       │
+              │ (branca)     │ invertido pra logo   │ (canvas dark já dá   │
+              │              │ aparecer)            │ contraste, sem fundo)│
+              └──────────────┴──────────────────────┴──────────────────────┘
 
-            Padding lateral generoso (px-8 py-5) dá margem pra logo
-            respirar dentro do box em vez de encostar nas bordas. */}
+            O filter `invert(1) hue-rotate(180deg)` em logos escuras no
+            dark theme inverte LUMINÂNCIA mas preserva HUE — pattern do
+            Bootstrap dark mode. Logos pretas viram brancas; vermelho da
+            Nintendo fica vermelho mais claro (não vira cyan). */}
         {(logo || clientName) && (
           <div
             className={`hidden md:flex items-center justify-center w-44 h-20 rounded-lg overflow-hidden border transition-colors ${
               logo
                 ? isLightLogo
-                  // Logo clara → fundo escuro fixo (independente do tema).
-                  // Cor escolhida é o canvas-deeper do dark theme — escura
-                  // o suficiente pra contrastar com qualquer logo branca
-                  // sem virar buraco preto puro contra o card surface-2.
-                  ? "bg-[#0F1419] border-border-strong px-8 py-5"
-                  : "bg-white border-border px-8 py-5 dark:shadow-[0_0_0_1px_rgba(255,255,255,0.04)]"
+                  // Logo clara: fundo escuro APENAS em light theme;
+                  // em dark, transparente (canvas escuro do hero já contrasta).
+                  ? "bg-[#0F1419] border-border-strong px-8 py-5 dark:bg-transparent dark:border-white/10"
+                  // Logo escura/colorida: fundo branco em light;
+                  // em dark, transparente + filter aplicado na <img> abaixo.
+                  : "bg-white border-border px-8 py-5 dark:bg-transparent dark:border-white/10"
                 : "bg-white/[0.03] border-border p-3"
             }`}
           >
@@ -164,7 +173,14 @@ export function CampaignHeaderV2({
               <img
                 src={logo}
                 alt={clientName ? `Logo ${clientName}` : "Logo do cliente"}
-                className="max-w-full max-h-full object-contain"
+                // filter só pra logos escuras/coloridas em dark theme.
+                // Logos claras já estão certas pro dark — invertê-las
+                // viraria preto sobre canvas escuro = invisível.
+                className={
+                  isLightLogo
+                    ? "max-w-full max-h-full object-contain"
+                    : "max-w-full max-h-full object-contain dark:[filter:invert(1)_hue-rotate(180deg)]"
+                }
                 loading="lazy"
               />
             ) : (
