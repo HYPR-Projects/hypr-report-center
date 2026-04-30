@@ -409,6 +409,7 @@ def report_data(request):
             if not payload:
                 return (jsonify({"error": "Campanha não encontrada"}), 404, headers)
             detail_rows  = payload.get("detail") or []
+            totals_rows  = payload.get("totals") or []
             campaign     = payload.get("campaign") or {}
             campaign_name = campaign.get("campaign_name") or short_token
             end_date_raw = campaign.get("end_date")
@@ -425,6 +426,7 @@ def report_data(request):
                 refresh_token=refresh_token,
                 member_email=admin_email,
                 detail_rows=detail_rows,
+                totals_rows=totals_rows,
                 campaign_name=campaign_name,
                 end_date=end_date_obj,
             )
@@ -473,8 +475,9 @@ def report_data(request):
             if not payload:
                 return (jsonify({"error": "Campanha não encontrada"}), 404, headers)
             detail_rows = payload.get("detail") or []
+            totals_rows = payload.get("totals") or []
 
-            sheets_integration.sync_sheet(short_token, detail_rows)
+            sheets_integration.sync_sheet(short_token, detail_rows, totals_rows)
 
             # Atualiza payload pra refletir last_synced_at recente
             _cache_invalidate_token(short_token)
@@ -497,10 +500,11 @@ def report_data(request):
         try:
             def _detail_loader(short_token):
                 # _get_report_cached retorna tupla (data, was_cached).
+                # sync_all_due espera (detail, totals).
                 payload, _ = _get_report_cached(short_token, force_refresh=True)
                 if not payload:
-                    return []
-                return payload.get("detail") or []
+                    return ([], [])
+                return (payload.get("detail") or [], payload.get("totals") or [])
 
             summary = sheets_integration.sync_all_due(_detail_loader)
             return (jsonify({"summary": summary}), 200, headers)

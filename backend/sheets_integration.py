@@ -404,9 +404,9 @@ def sync_all_due(detail_loader) -> Dict:
     """
     Roda o sync de todas as integrações elegíveis. Chamado pelo cron diário.
 
-    `detail_loader` é um callable `(short_token) -> List[Dict]` que carrega
-    as rows de detail. Injetado por dependency injection pra evitar import
-    circular (módulo sheets_integration não pode importar main).
+    `detail_loader` é um callable `(short_token) -> (detail_rows, totals_rows)`
+    que carrega as rows necessárias. Injetado por dependency injection pra
+    evitar import circular (módulo sheets_integration não pode importar main).
 
     Retorna sumário com contagens. Erros individuais não interrompem o loop —
     cada falha é registrada em last_error/status do registro afetado.
@@ -440,8 +440,8 @@ def sync_all_due(detail_loader) -> Dict:
     for integ in active:
         short_token = integ["short_token"]
         try:
-            detail_rows = detail_loader(short_token) or []
-            sync_sheet(short_token, detail_rows)
+            detail_rows, totals_rows = detail_loader(short_token)
+            sync_sheet(short_token, detail_rows or [], totals_rows or [])
             summary["synced"] += 1
         except PermissionError:
             summary["revoked"] += 1
@@ -518,11 +518,74 @@ def _build_sheet_payload(detail_rows: List[Dict]) -> List[List]:
     return [header] + body
 
 
+def _enrich_detail_costs(detail_rows: List[Dict], totals_rows: List[Dict]) -> List[Dict]:
+    """
+    Porta de src/shared/enrichDetail.js (frontend) pra Python.
+
+    Por que existe
+    --------------
+    O detail vindo de unified_daily_performance_metrics traz custos brutos
+    da plataforma (DSP) que NÃO batem com o custo efetivo negociado da
+    HYPR. O custo "real" pra exibição vive em campaign_results (totals),
+    agregado por (media_type, tactic_type).
+
+    O frontend distribui esse custo total proporcionalmente entre as
+    rows de detail, usando como peso:
+      - viewable_impressions, pra DISPLAY
+      - video_view_100,         pra VIDEO
+
+    Mantém a soma do detail enriquecido = total exibido no dash.
+    Sem isso, a sheet exibe ~46% menos do que o dash mostra (custos brutos
+    do DSP costumam ser bem menores que custo HYPR negociado).
+
+    Esta função DEVE ficar em sincronia com enrichDetail.js. Se um dia
+    extrair pra serviço único compartilhado, atualizar ambos.
+    """
+    if not detail_rows or not totals_rows:
+        return detail_rows
+
+    # Index totals por (media_type, tactic_type)
+    totals_map = {}
+    for t in totals_rows:
+        key = f"{t.get('media_type')}|{t.get('tactic_type')}"
+        totals_map[key] = t
+
+    # Soma denominadores (vi pra display, v100 pra video) por grupo
+    group_sums = {}
+    for r in detail_rows:
+        key = f"{r.get('media_type')}|{r.get('tactic_type')}"
+        if key not in group_sums:
+            group_sums[key] = {"vi": 0, "v100": 0}
+        group_sums[key]["vi"]   += r.get("viewable_impressions") or 0
+        group_sums[key]["v100"] += r.get("video_view_100")       or 0
+
+    enriched = []
+    for r in detail_rows:
+        key = f"{r.get('media_type')}|{r.get('tactic_type')}"
+        tot = totals_map.get(key)
+        grp = group_sums.get(key)
+        new_row = dict(r)
+        if not tot or not grp:
+            new_row["effective_total_cost"]     = 0
+            new_row["effective_cost_with_over"] = 0
+            enriched.append(new_row)
+            continue
+        is_video = r.get("media_type") == "VIDEO"
+        delivered = (r.get("video_view_100") or 0) if is_video else (r.get("viewable_impressions") or 0)
+        total_delivered = grp["v100"] if is_video else grp["vi"]
+        proportion = (delivered / total_delivered) if total_delivered > 0 else 0
+        new_row["effective_total_cost"]     = round(proportion * (tot.get("effective_total_cost")     or 0), 2)
+        new_row["effective_cost_with_over"] = round(proportion * (tot.get("effective_cost_with_over") or 0), 2)
+        enriched.append(new_row)
+    return enriched
+
+
 def create_sheet_for_campaign(
     short_token: str,
     refresh_token: str,
     member_email: str,
     detail_rows: List[Dict],
+    totals_rows: List[Dict],
     campaign_name: str,
     end_date: Optional[date],
 ) -> Dict:
@@ -530,8 +593,12 @@ def create_sheet_for_campaign(
     Cria uma sheet nova no Drive do membro que ativou (via refresh_token),
     popula com README + Base de Dados, e persiste a integração.
     Retorna dict com spreadsheet_id e spreadsheet_url.
+
+    detail_rows é enriquecido internamente via _enrich_detail_costs(detail, totals)
+    pra reproduzir os mesmos números do dash (que faz o enrich no frontend).
     """
     ensure_table_exists()
+    detail_rows = _enrich_detail_costs(detail_rows, totals_rows)
     access_token = _refresh_access_token(refresh_token)
     sheets_svc   = _build_sheets_client(access_token)
 
@@ -663,12 +730,17 @@ def create_sheet_for_campaign(
 def sync_sheet(
     short_token: str,
     detail_rows: List[Dict],
+    totals_rows: List[Dict],
 ) -> Dict:
     """
     Re-popula a aba Base de Dados de uma sheet existente. Usa refresh_token
     salvo. Atualiza last_synced_at; em caso de erro de auth, marca como
     revoked; outros erros marcam como error.
+
+    detail_rows é enriquecido via _enrich_detail_costs antes da escrita —
+    garante consistência com o dash.
     """
+    detail_rows = _enrich_detail_costs(detail_rows, totals_rows)
     integ = get_integration(short_token)
     if not integ:
         raise ValueError(f"Integração não encontrada para {short_token}")
