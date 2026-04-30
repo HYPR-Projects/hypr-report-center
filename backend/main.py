@@ -26,6 +26,7 @@ import os
 import re
 import json
 import time
+import hmac
 import threading
 import urllib.request
 import urllib.parse
@@ -480,6 +481,29 @@ def report_data(request):
         except Exception as e:
             print(f"[ERROR sheets_sync_now] {e}")
             return (jsonify({"error": f"Erro ao sincronizar: {e}"}), 500, headers)
+
+    # ── Endpoint: sync de TODAS as integrações ativas (cron) ────────────────
+    # Invocado pelo Cloud Scheduler diariamente às 06:00 BRT (configurado
+    # via setup_sheets_integration.sh). Auth via header X-Cron-Secret
+    # comparado com envvar CRON_SECRET — não usa JWT admin porque
+    # Scheduler não tem identidade humana.
+    if request.method == "POST" and request.args.get("action") == "sheets_sync_all":
+        provided  = request.headers.get("X-Cron-Secret", "")
+        expected  = os.environ.get("CRON_SECRET", "")
+        if not expected or not hmac.compare_digest(provided, expected):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            def _detail_loader(short_token):
+                payload = _get_report_cached(short_token, force_refresh=True)
+                if not payload:
+                    return []
+                return payload.get("detail") or []
+
+            summary = sheets_integration.sync_all_due(_detail_loader)
+            return (jsonify({"summary": summary}), 200, headers)
+        except Exception as e:
+            print(f"[ERROR sheets_sync_all] {e}")
+            return (jsonify({"error": "Erro no sync diário"}), 500, headers)
 
     # ── Endpoint: deletar integração (admin) ────────────────────────────────
     # Remove o registro do BQ. NÃO deleta a sheet do Drive — fica como
