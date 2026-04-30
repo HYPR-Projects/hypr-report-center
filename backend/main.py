@@ -412,13 +412,18 @@ def report_data(request):
             totals_rows  = payload.get("totals") or []
             campaign     = payload.get("campaign") or {}
             campaign_name = campaign.get("campaign_name") or short_token
-            end_date_raw = campaign.get("end_date")
-            end_date_obj = None
-            if end_date_raw:
+            client_name   = campaign.get("client_name")
+
+            def _parse_iso_date(v):
+                if not v:
+                    return None
                 try:
-                    end_date_obj = datetime.fromisoformat(str(end_date_raw)[:10]).date()
+                    return datetime.fromisoformat(str(v)[:10]).date()
                 except Exception:
-                    end_date_obj = None
+                    return None
+
+            start_date_obj = _parse_iso_date(campaign.get("start_date"))
+            end_date_obj   = _parse_iso_date(campaign.get("end_date"))
 
             # 3) Cria sheet + persiste
             result = sheets_integration.create_sheet_for_campaign(
@@ -428,6 +433,8 @@ def report_data(request):
                 detail_rows=detail_rows,
                 totals_rows=totals_rows,
                 campaign_name=campaign_name,
+                client_name=client_name,
+                start_date=start_date_obj,
                 end_date=end_date_obj,
             )
 

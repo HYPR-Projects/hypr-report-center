@@ -700,6 +700,61 @@ def _enrich_detail_costs(detail_rows: List[Dict], totals_rows: List[Dict]) -> Li
     return enriched
 
 
+def _format_period(start: Optional[date], end: Optional[date]) -> str:
+    """
+    Formata o período pro título da sheet de forma compacta e legível.
+
+    - Mesmo mês/ano:        "01-30 abr 2026"
+    - Mesmo ano, meses dif: "20 mar - 15 abr 2026"
+    - Anos diferentes:      "20 dez 2025 - 15 jan 2026"
+    - Apenas end:           "até 30 abr 2026"
+    - Apenas start:         "desde 01 abr 2026"
+    - Nenhum:               "" (chamador decide se inclui no título)
+    """
+    months_pt = [
+        "jan", "fev", "mar", "abr", "mai", "jun",
+        "jul", "ago", "set", "out", "nov", "dez",
+    ]
+    if not start and not end:
+        return ""
+    if start and not end:
+        return f"desde {start.day:02d} {months_pt[start.month-1]} {start.year}"
+    if end and not start:
+        return f"até {end.day:02d} {months_pt[end.month-1]} {end.year}"
+    if start.year == end.year and start.month == end.month:
+        return f"{start.day:02d}-{end.day:02d} {months_pt[start.month-1]} {start.year}"
+    if start.year == end.year:
+        return f"{start.day:02d} {months_pt[start.month-1]} - {end.day:02d} {months_pt[end.month-1]} {start.year}"
+    return (
+        f"{start.day:02d} {months_pt[start.month-1]} {start.year} - "
+        f"{end.day:02d} {months_pt[end.month-1]} {end.year}"
+    )
+
+
+def _build_sheet_title(
+    short_token: str,
+    client_name: Optional[str],
+    campaign_name: Optional[str],
+    start_date: Optional[date],
+    end_date: Optional[date],
+) -> str:
+    """
+    Constrói o título no padrão:
+      'HYPR - {Cliente} - {Campanha} - {Período} - {token}'
+    Pula partes vazias pra evitar separadores duplos. Token sempre presente.
+    """
+    parts = ["HYPR"]
+    if client_name:
+        parts.append(client_name.strip())
+    if campaign_name:
+        parts.append(campaign_name.strip())
+    period = _format_period(start_date, end_date)
+    if period:
+        parts.append(period)
+    parts.append(short_token)
+    return " - ".join(parts)
+
+
 def create_sheet_for_campaign(
     short_token: str,
     refresh_token: str,
@@ -707,6 +762,8 @@ def create_sheet_for_campaign(
     detail_rows: List[Dict],
     totals_rows: List[Dict],
     campaign_name: str,
+    client_name: Optional[str],
+    start_date: Optional[date],
     end_date: Optional[date],
 ) -> Dict:
     """
@@ -722,7 +779,13 @@ def create_sheet_for_campaign(
     access_token = _refresh_access_token(refresh_token)
     sheets_svc   = _build_sheets_client(access_token)
 
-    title = f"HYPR Report — {campaign_name or short_token}"
+    title = _build_sheet_title(
+        short_token=short_token,
+        client_name=client_name,
+        campaign_name=campaign_name,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
     # Cria spreadsheet com 2 abas: "README" e "Base de Dados"
     create_body = {
