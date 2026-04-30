@@ -94,14 +94,17 @@ export function formatDateRange(startISO, endISO) {
   const s = new Date(startISO);
   const e = new Date(endISO);
   if (isNaN(s.getTime()) || isNaN(e.getTime())) return "";
-  const sameYear = s.getFullYear() === e.getFullYear();
-  const sd = String(s.getDate()).padStart(2, "0");
-  const sm = String(s.getMonth() + 1).padStart(2, "0");
-  const ed = String(e.getDate()).padStart(2, "0");
-  const em = String(e.getMonth() + 1).padStart(2, "0");
+  // Usa getters UTC porque o backend manda "YYYY-MM-DD" puro, que o JS parseia
+  // como UTC midnight. Em fusos negativos (BRT = UTC-3) os getters locais
+  // jogam a data um dia para trás.
+  const sameYear = s.getUTCFullYear() === e.getUTCFullYear();
+  const sd = String(s.getUTCDate()).padStart(2, "0");
+  const sm = String(s.getUTCMonth() + 1).padStart(2, "0");
+  const ed = String(e.getUTCDate()).padStart(2, "0");
+  const em = String(e.getUTCMonth() + 1).padStart(2, "0");
   if (sameYear) return `${sd}/${sm} → ${ed}/${em}`;
-  const sy = String(s.getFullYear()).slice(-2);
-  const ey = String(e.getFullYear()).slice(-2);
+  const sy = String(s.getUTCFullYear()).slice(-2);
+  const ey = String(e.getUTCFullYear()).slice(-2);
   return `${sd}/${sm}/${sy} → ${ed}/${em}/${ey}`;
 }
 
