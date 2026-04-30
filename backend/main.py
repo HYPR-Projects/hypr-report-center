@@ -31,8 +31,12 @@ from auth import (
 )
 import owners
 import shares
+import clients
 
 bq = bigquery.Client()
+# Injeta o client BQ no módulo clients (evita import circular — clients
+# precisa do bq pra query_client_timeseries mas não pode importar main).
+clients.set_bq_client(bq)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cache em memória — escopo de instância da Cloud Function.
@@ -49,12 +53,17 @@ bq = bigquery.Client()
 #     save_report_owner) limpam o cache do token afetado
 #   - ?refresh=true força bypass de cache na request atual
 # ─────────────────────────────────────────────────────────────────────────────
-_REPORT_CACHE_TTL = 120
-_LIST_CACHE_TTL   = 60
+_REPORT_CACHE_TTL  = 120
+_LIST_CACHE_TTL    = 60
+# View "Por cliente" do menu admin — agregação derivada de query_campaigns_list
+# + 1 query temporal pra sparklines. TTL maior porque (a) não muda dramatica-
+# mente entre minutos, e (b) a sparkline é informação visual, não operacional.
+_CLIENTS_CACHE_TTL = 300
 
-_report_cache = {}     # short_token -> (timestamp, payload)
-_list_cache   = {}     # "all" -> (timestamp, payload)
-_cache_lock   = threading.Lock()
+_report_cache    = {}     # short_token -> (timestamp, payload)
+_list_cache      = {}     # "all" -> (timestamp, payload)
+_clients_cache   = {}     # "all" -> (timestamp, payload)
+_cache_lock      = threading.Lock()
 
 
 def _cache_get(store, key, ttl):
@@ -75,10 +84,15 @@ def _cache_set(store, key, value):
 
 
 def _cache_invalidate_token(short_token):
-    """Remove qualquer entrada de cache associada ao token (report + list)."""
+    """Remove qualquer entrada de cache associada ao token (report + list).
+    Também invalida o cache de clientes — qualquer mutação que afete a
+    lista de campanhas (logo, loom, owner, survey…) potencialmente muda
+    a agregação por cliente (ex: novo owner → top_owners diferente).
+    """
     with _cache_lock:
         _report_cache.pop(short_token, None)
         _list_cache.pop("all", None)
+        _clients_cache.pop("all", None)
 
 
 # Pool reutilizado entre invocações da mesma instância para evitar criar/destruir
@@ -483,6 +497,56 @@ def report_data(request):
         except Exception as e:
             print(f"[ERROR save_report_owner] {e}")
             return (jsonify({"error": str(e)}), 500, headers)
+
+    # ── Endpoint: lista de clientes agregada (admin) ─────────────────────────
+    # View "Por cliente" do menu admin V2. Agrega campanhas em memória pelo
+    # client_name normalizado (LOWER + TRIM + slug-safe) e enriquece cada
+    # cliente com:
+    #   - métricas médias (pacing/CTR/VTR) das campanhas ATIVAS
+    #   - top 2 CPs e CSs por frequência
+    #   - série temporal semanal de viewable_impressions (12 semanas)
+    #   - trend % comparando últimas 4 semanas vs 4 anteriores
+    #   - health derivada de pacing das ativas
+    #
+    # Plus: worklist com 4 buckets de campanhas que precisam de atenção
+    # (pacing crítico, sem owner, encerrando em 7d, reports não vistos).
+    #
+    # Reusa o cache de query_campaigns_list quando válido — sem custo BQ
+    # extra além da query de sparkline (1x por hit).
+    if request.args.get("action") == "list_clients":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            force_refresh = request.args.get("refresh") == "true"
+            cached = None if force_refresh else _cache_get(_clients_cache, "all", _CLIENTS_CACHE_TTL)
+            if cached is not None:
+                return (jsonify({**cached, "_cache": "hit"}), 200, headers)
+
+            # Reusa a lista de campanhas cacheada se houver, senão busca.
+            campaigns = None if force_refresh else _cache_get(_list_cache, "all", _LIST_CACHE_TTL)
+            if campaigns is None:
+                campaigns = query_campaigns_list()
+                _cache_set(_list_cache, "all", campaigns)
+
+            agg = clients.aggregate_clients_from_campaigns(campaigns)
+            worklist = clients.compute_worklist(campaigns)
+
+            # Sparklines + trend (única query BQ extra do endpoint).
+            timeseries = clients.query_client_timeseries(weeks=12)
+            for c in agg:
+                series = timeseries.get(c["slug"], [])
+                if series:
+                    c["sparkline"] = series
+                    trend = clients.compute_trend(series, half=4)
+                    if trend:
+                        c["trend"] = trend
+
+            payload = {"clients": agg, "worklist": worklist}
+            _cache_set(_clients_cache, "all", payload)
+            return (jsonify({**payload, "_cache": "miss"}), 200, headers)
+        except Exception as e:
+            print(f"[ERROR list_clients] {e}")
+            return (jsonify({"error": "Erro ao listar clientes"}), 500, headers)
 
     if request.args.get("list") == "true":
         if not authenticate_admin(request):
