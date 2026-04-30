@@ -10,12 +10,12 @@
 // scanning de top-formatos e comparação direta entre métricas.
 //
 // LAYOUT
-//   ┌──────────────────────────────────────────────────────────────┐
-//   │ FORMATO            ▮▮▮▮▮▮▮▮ SHARE  IMP. VIS.  CTR/VTR  CPM   │
-//   │ 320x480            ▮▮▮▮▮▮   45.2%  1.2M       0.85%    8.21  │
-//   │ 1024x768           ▮▮▮▮     32.1%  856K       0.62%    9.40  │
-//   │ ...                                                           │
-//   └──────────────────────────────────────────────────────────────┘
+//   ┌────────────────────────────────────────────────────────────────────────┐
+//   │ FORMATO        ▮▮▮▮▮▮▮▮ SHARE  IMP. VIS.  CTR/VTR  VIEW/CTR  CUSTO EF. │
+//   │ 320x480        ▮▮▮▮▮▮   45.2%  1.2M       0.85%    72.1%     R$ 850,12 │
+//   │ 1024x768       ▮▮▮▮     32.1%  856K       0.62%    68.4%     R$ 612,34 │
+//   │ ...                                                                     │
+//   └────────────────────────────────────────────────────────────────────────┘
 //
 // API
 //   <FormatBreakdownTableV2
@@ -59,42 +59,56 @@ export function FormatBreakdownTableV2({
   mediaType = "DISPLAY",
   className,
 }) {
-  // Junta cost por chave de agrupamento se extraRows foi passado.
-  // groupBySize/groupByDuration não trazem custo (só count + rate), então
-  // recalculamos aqui pra evitar mudança no shared/aggregations.js.
+  // Junta cost / impressions brutas / clicks por chave de agrupamento se
+  // extraRows foi passado. groupBySize/groupByDuration só trazem 2 campos
+  // (numeratorKey + denomKey). Aqui derivamos campos extra que precisamos
+  // pra Viewability (viewable/impressions) e CTR de Video (clicks/viewable),
+  // sem alterar shared/aggregations.js.
   const enriched = useMemo(() => {
     if (!rows?.length) return [];
 
     const totalDenom = rows.reduce((s, r) => s + (r[denomKey] || 0), 0);
 
-    const costByGroup = {};
+    // Agrega cost + impressions + clicks por grupo a partir das rows brutas
+    const extraByGroup = {};
     if (extraRows?.length) {
+      const detailKey = groupKey === "size" ? "creative_size" : groupKey;
       for (const r of extraRows) {
-        const k = r[groupKey === "size" ? "creative_size" : groupKey] || "N/A";
-        costByGroup[k] = (costByGroup[k] || 0) + (r.effective_total_cost || 0);
+        const k = r[detailKey] || "N/A";
+        if (!extraByGroup[k]) {
+          extraByGroup[k] = { cost: 0, impressions: 0, clicks: 0 };
+        }
+        extraByGroup[k].cost        += r.effective_total_cost || 0;
+        extraByGroup[k].impressions += r.impressions          || 0;
+        extraByGroup[k].clicks      += r.clicks               || 0;
       }
     }
 
     return rows
       .map((r) => {
-        const cost = costByGroup[r[groupKey]] || 0;
-        const cpm =
-          r[denomKey] > 0 ? (cost / r[denomKey]) * 1000 : 0;
-        const cpcv =
-          mediaType === "VIDEO" && r[numeratorKey] > 0
-            ? cost / r[numeratorKey]
-            : 0;
+        const extra = extraByGroup[r[groupKey]] || { cost: 0, impressions: 0, clicks: 0 };
+        const viewable = r[denomKey] || 0;
+        // Viewability = visíveis / total medidas (display only). >70% é
+        // considerado bom em DV360.
+        const viewability = extra.impressions > 0
+          ? (viewable / extra.impressions) * 100
+          : 0;
+        // CTR derivado das clicks brutas — necessário pra Video, onde
+        // numeratorKey = video_view_100 (não clicks).
+        const ctrFromExtra = viewable > 0
+          ? (extra.clicks / viewable) * 100
+          : 0;
         return {
           ...r,
-          share: totalDenom > 0 ? (r[denomKey] / totalDenom) * 100 : 0,
-          cost,
-          cpm,
-          cpcv,
+          share: totalDenom > 0 ? (viewable / totalDenom) * 100 : 0,
+          cost: extra.cost,
+          viewability,
+          ctr_extra: ctrFromExtra,
         };
       })
       .sort((a, b) => b.share - a.share)
       .slice(0, ROW_LIMIT);
-  }, [rows, groupKey, denomKey, numeratorKey, extraRows, mediaType]);
+  }, [rows, groupKey, denomKey, extraRows]);
 
   if (!enriched.length) {
     return (
@@ -129,10 +143,22 @@ export function FormatBreakdownTableV2({
               <Th>{denomLabel}</Th>
               <Th>{numeratorLabel}</Th>
               <Th>{rateLabel}</Th>
+              {/* Última fileira: por mídia.
+                  - Display: Viewability + Custo Ef.
+                  - Video:   CTR + Custo Ef.
+                  Ambas terminam em Custo Efetivo pra fechar com a métrica
+                  financeira mais relevante (substitui o antigo CPM/CPCV
+                  efetivo, que misturava preço com performance). */}
               {mediaType === "DISPLAY" ? (
-                <Th>CPM Ef.</Th>
+                <>
+                  <Th>Viewability</Th>
+                  <Th>Custo Ef.</Th>
+                </>
               ) : (
-                <Th>CPCV Ef.</Th>
+                <>
+                  <Th>CTR</Th>
+                  <Th>Custo Ef.</Th>
+                </>
               )}
             </tr>
           </thead>
@@ -157,15 +183,15 @@ export function FormatBreakdownTableV2({
                 <Td>{fmt(r[numeratorKey])}</Td>
                 <Td>{rateFormatter(r[rateKey])}</Td>
                 {mediaType === "DISPLAY" ? (
-                  <Td accent={r.cpm > 0}>
-                    {r.cpm > 0 ? fmtR(r.cpm) : "—"}
-                  </Td>
+                  <>
+                    <Td>{r.viewability > 0 ? `${r.viewability.toFixed(1)}%` : "—"}</Td>
+                    <Td accent={r.cost > 0}>{r.cost > 0 ? fmtR(r.cost) : "—"}</Td>
+                  </>
                 ) : (
-                  <Td accent={r.cpcv > 0}>
-                    {r.cpcv > 0
-                      ? `R$ ${r.cpcv.toFixed(3).replace(".", ",")}`
-                      : "—"}
-                  </Td>
+                  <>
+                    <Td>{r.ctr_extra > 0 ? `${r.ctr_extra.toFixed(2)}%` : "—"}</Td>
+                    <Td accent={r.cost > 0}>{r.cost > 0 ? fmtR(r.cost) : "—"}</Td>
+                  </>
                 )}
               </tr>
             ))}
