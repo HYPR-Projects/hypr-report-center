@@ -144,12 +144,14 @@
 
   /* ═══════════════ ANIMAÇÕES ═══════════════ */
   /* Tailwind v4 expõe `--animate-*` como utilitárias `animate-*`.
-   * Registramos fade-in/out aqui para Dialog, Tooltip, Popover etc.
-   * Substitui o que vinha do plugin `tailwindcss-animate` no v3. */
+   * Registramos fade/zoom/slide aqui para Dialog, Tooltip, Popover, Drawer
+   * etc. Substitui o que vinha do plugin `tailwindcss-animate` no v3. */
   --animate-fade-in: fade-in 150ms ease-out;
   --animate-fade-out: fade-out 100ms ease-in;
   --animate-zoom-in: zoom-in 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
   --animate-zoom-out: zoom-out 100ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-slide-in-from-right: slide-in-from-right 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-slide-out-to-right:  slide-out-to-right  180ms cubic-bezier(0.4, 0, 1, 1);
 
   @keyframes fade-in {
     from { opacity: 0; }
@@ -166,6 +168,14 @@
   @keyframes zoom-out {
     from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
     to   { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
+  }
+  @keyframes slide-in-from-right {
+    from { transform: translateX(100%); }
+    to   { transform: translateX(0); }
+  }
+  @keyframes slide-out-to-right {
+    from { transform: translateX(0); }
+    to   { transform: translateX(100%); }
   }
 }
 

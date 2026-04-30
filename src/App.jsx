@@ -30,7 +30,8 @@ import { lookupShare } from "./lib/api";
 // Helpers de auth também ficam estáticos por serem usados sincronamente
 // no caminho crítico.
 const LoginScreen          = lazy(() => import("./pages/LoginScreen"));
-const CampaignMenu         = lazy(() => import("./pages/CampaignMenu"));
+const CampaignMenu         = lazy(() => import("./v2/admin/pages/CampaignMenuV2"));
+const ClientDetailPage     = lazy(() => import("./v2/admin/pages/ClientDetailPage"));
 const ClientDashboard      = lazy(() => import("./v2/dashboards/ClientDashboardV2"));
 
 /**
@@ -61,9 +62,26 @@ export default function App() {
   // Restaura sessão admin (8h TTL) e unlock de cliente direto do localStorage
   // para que um refresh não derrube o login.
   const [user, setUser] = useState(() => loadSession()?.user || null);
+
+  // Force re-render on popstate (back/forward + nossa nav client-side
+  // via pushState abaixo). Sem isso, navegar pra /admin/client/:slug
+  // muda a URL mas o React continua renderizando a tela anterior.
+  const [, forceRender] = useState(0);
+  useEffect(() => {
+    const handler = () => forceRender((n) => n + 1);
+    window.addEventListener("popstate", handler);
+    return () => window.removeEventListener("popstate", handler);
+  }, []);
+
   const path = window.location.pathname;
   const isClient = path.startsWith("/report/");
   const clientToken = isClient ? path.replace("/report/", "") : null;
+  // Rota /admin/client/:slug — drilldown do cliente. Único caso de "deep
+  // link" admin com path-param. Não usamos React Router porque o app
+  // tem só duas rotas profundas (esta + /report/) e o overhead da lib
+  // não vale o ganho.
+  const adminClientMatch = path.match(/^\/admin\/client\/([a-z0-9-]+)\/?$/i);
+  const adminClientSlug  = adminClientMatch ? adminClientMatch[1].toLowerCase() : null;
   // Quando o cliente desbloqueia, guardamos o short_token resolvido pelo
   // backend (que pode diferir do `clientToken` da URL no formato novo
   // /report/{share_id}). O state inicial é populado do localStorage para
@@ -207,9 +225,46 @@ export default function App() {
     setUser(null);
   };
 
+  // Navegação client-side leve. Usa history.pushState pra evitar full
+  // reload — drilldown e back ficam instantâneos. Quando React Router
+  // entrar (eventualmente), substitui isso.
+  const goToClient = (slug) => {
+    window.history.pushState({}, "", `/admin/client/${slug}`);
+    // Força re-render do App lendo location.pathname.
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  };
+  const goHome = () => {
+    window.history.pushState({}, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  };
+
+  // Drilldown do cliente. `key={slug}` força remount quando o slug muda
+  // (ex: navegação via back+forward entre dois clientes), zerando state
+  // local e refazendo o fetch — equivalente a setLoading(true) sem ferir
+  // a regra react-hooks/set-state-in-effect.
+  if (adminClientSlug) {
+    return (
+      <Suspense fallback={<RouteSuspense />}>
+        <ClientDetailPage
+          key={adminClientSlug}
+          slug={adminClientSlug}
+          user={user}
+          onLogout={onLogout}
+          onBack={goHome}
+          onOpenReport={onOpenReport}
+        />
+      </Suspense>
+    );
+  }
+
   return (
     <Suspense fallback={<RouteSuspense />}>
-      <CampaignMenu user={user} onLogout={onLogout} onOpenReport={onOpenReport} />
+      <CampaignMenu
+        user={user}
+        onLogout={onLogout}
+        onOpenReport={onOpenReport}
+        onOpenClient={goToClient}
+      />
     </Suspense>
   );
 }

@@ -112,6 +112,75 @@ export async function listCampaigns() {
   }
 }
 
+/**
+ * Lista clientes agregados + worklist para a view "Por cliente" do
+ * menu admin V2.
+ *
+ * Tenta o endpoint nativo `?action=list_clients` (PR-1 do redesign).
+ * Se o backend ainda não tem (404) ou falha (5xx), faz fallback
+ * derivando agregação client-side a partir de `listCampaigns()`. O
+ * fallback não tem sparkline nem trend (essas exigem query temporal
+ * que só o backend faz), mas todo o resto funciona.
+ *
+ * Retorno:
+ *   { clients: [...], worklist: {...}, source: "backend" | "client" }
+ *
+ * O campo `source` permite ao caller mostrar (no DevTools) se está
+ * usando o backend nativo ou caiu no fallback. Útil pra deploys
+ * graduais onde o frontend chega antes da Cloud Function nova.
+ */
+export async function listClients() {
+  // 1ª tentativa — endpoint nativo
+  try {
+    const jwt = await getOrIssueAdminJwt();
+    if (!jwt) throw new Error("no admin jwt");
+    const r = await fetch(`${API_URL}?action=list_clients`, {
+      headers: { ...adminAuthHeaders(jwt) },
+    });
+    if (r.status === 401 || r.status === 403) {
+      try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
+      window.location.reload();
+      return { clients: [], worklist: emptyWorklist(), source: "backend" };
+    }
+    if (r.ok) {
+      const d = await r.json();
+      return {
+        clients:  d.clients  || [],
+        worklist: d.worklist || emptyWorklist(),
+        source:   "backend",
+      };
+    }
+    // qualquer outro status (404 quando deploy do backend ainda não rolou,
+    // 5xx em falhas pontuais) cai no fallback abaixo sem propagar erro.
+  } catch {
+    // erro de rede ou JWT — segue pra fallback
+  }
+
+  // 2ª tentativa — agregação client-side a partir da lista de campanhas
+  try {
+    const campaigns = await listCampaigns();
+    const { aggregateClients, computeWorklist } = await import(
+      "../v2/admin/lib/aggregation.js"
+    );
+    return {
+      clients:  aggregateClients(campaigns),
+      worklist: computeWorklist(campaigns),
+      source:   "client",
+    };
+  } catch {
+    return { clients: [], worklist: emptyWorklist(), source: "client" };
+  }
+}
+
+function emptyWorklist() {
+  return {
+    pacing_critical:    { count: 0, tokens: [] },
+    no_owner:           { count: 0, tokens: [] },
+    ending_soon:        { count: 0, tokens: [] },
+    reports_not_viewed: { count: 0, tokens: [] },
+  };
+}
+
 // ── Team / owners (admin) ────────────────────────────────────────────────────
 
 /**
