@@ -369,7 +369,13 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
             </TabsContent>
 
             <TabsContent value="base">
-              <DetalhamentoV2 data={data} aggregates={aggregates} />
+              <DetalhamentoV2
+                data={data}
+                aggregates={aggregates}
+                token={token}
+                isAdmin={isAdmin}
+                adminJwt={adminJwt}
+              />
             </TabsContent>
 
             <TabsContent value="rmnd">

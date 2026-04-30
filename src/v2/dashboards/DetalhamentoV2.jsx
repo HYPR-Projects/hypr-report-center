@@ -18,10 +18,18 @@
 //   usa o DataTableV2 universal com filter Tudo/Display/Video interno —
 //   útil quando o user quer ver TUDO num lugar só, ou exportar o CSV
 //   completo da campanha.
+//
+// Integração Google Sheets (PR-C sheets)
+//   No topo da tab, SheetsIntegrationCardV2 mostra o estado da integração:
+//   - admin sem integração: botão "Conectar Google Sheets"
+//   - todos com integração ativa: link "Abrir no Google Sheets"
+//   - admin com erro/revogada: banner de reconexão
+//   Cliente sem integração ativa não vê o card.
 
 import { DataTableV2 } from "../components/DataTableV2";
+import SheetsIntegrationCardV2 from "../components/SheetsIntegrationCardV2";
 
-export default function DetalhamentoV2({ data, aggregates }) {
+export default function DetalhamentoV2({ data, aggregates, token, isAdmin, adminJwt }) {
   const camp = data.campaign;
   const { detail } = aggregates;
 
@@ -43,6 +51,12 @@ export default function DetalhamentoV2({ data, aggregates }) {
           filtros pra restringir por mídia ou exporte CSV pra análise externa.
         </p>
       </div>
+      <SheetsIntegrationCardV2
+        token={token}
+        isAdmin={isAdmin}
+        adminJwt={adminJwt}
+        initialIntegration={data?.sheets_integration || null}
+      />
       <DataTableV2 detail={detail} campaignName={camp.campaign_name} />
     </div>
   );
