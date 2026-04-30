@@ -279,7 +279,7 @@ export default function VideoV2({
           <DailyAggregateTableV2
             daily={detailFiltered}
             campaignName={`${camp.campaign_name || "campanha"}_video_${tactic}`}
-            mediaFilter="VIDEO"
+            lockedMedia="VIDEO"
           />
         </CollapsibleSectionV2>
       )}

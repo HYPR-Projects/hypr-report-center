@@ -463,11 +463,13 @@ export function computeAggregates(data, mainRange) {
         impressions: 0,
         viewable_impressions: 0,
         clicks: 0,
+        video_starts: 0,
         video_view_100: 0,
       };
       e.impressions          += Number(r.impressions          || 0);
       e.viewable_impressions += Number(r.viewable_impressions || 0);
       e.clicks               += Number(r.clicks               || 0);
+      e.video_starts         += Number(r.video_starts         || 0);
       e.video_view_100       += Number(r.video_view_100 || r.completions || r.viewable_video_view_100_complete || 0);
       m.set(r.date, e);
     }

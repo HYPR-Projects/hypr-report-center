@@ -1330,6 +1330,7 @@ def query_daily(token):
             SUM(impressions)                        AS impressions,
             SUM(viewable_impressions)               AS viewable_impressions,
             SUM(clicks)                             AS clicks,
+            SUM(viewable_video_starts)              AS video_starts,
             SUM(viewable_video_view_100_complete)   AS video_view_100,
             -- effective_total_cost é acumulado: usar MAX por (date, line) para evitar inflação
             -- Aqui já agrupamos por date+line_name, então MAX = valor daquele dia para aquela linha
@@ -1355,6 +1356,7 @@ def query_daily(token):
             "impressions":          float(r["impressions"]          or 0),
             "viewable_impressions": viewable,
             "clicks":               clicks,
+            "video_starts":         float(r["video_starts"]         or 0),
             "video_view_100":       video_view_100,
             "effective_total_cost": float(r["effective_total_cost"] or 0),
             "ctr": round(ctr, 4),
