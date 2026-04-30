@@ -70,6 +70,8 @@ for e in env:
 
 JWT_SECRET=$(extract_env "JWT_SECRET")
 TYPEFORM_TOKEN=$(extract_env "TYPEFORM_TOKEN")
+GOOGLE_OAUTH_CLIENT_ID=$(extract_env "GOOGLE_OAUTH_CLIENT_ID")
+GOOGLE_OAUTH_CLIENT_SECRET=$(extract_env "GOOGLE_OAUTH_CLIENT_SECRET")
 
 if [ -z "$JWT_SECRET" ]; then
   echo "✗ JWT_SECRET não encontrado na revisão $ACTIVE_REV. Abortando."
@@ -81,6 +83,12 @@ if [ -n "$TYPEFORM_TOKEN" ]; then
   echo "  ✓ TYPEFORM_TOKEN capturado"
 else
   echo "  ⚠ TYPEFORM_TOKEN ausente (proxy de survey pode falhar)"
+fi
+if [ -n "$GOOGLE_OAUTH_CLIENT_ID" ] && [ -n "$GOOGLE_OAUTH_CLIENT_SECRET" ]; then
+  echo "  ✓ GOOGLE_OAUTH_CLIENT_{ID,SECRET} capturados"
+else
+  echo "  ⚠ GOOGLE_OAUTH_CLIENT_{ID,SECRET} ausentes — Sheets integration desabilitada"
+  echo "    Veja setup_sheets_integration.sh, passo 3."
 fi
 
 # ── 2. Montar arquivo YAML com todas as envvars ──────────────────────────────
@@ -97,6 +105,12 @@ EOF
 
 if [ -n "$TYPEFORM_TOKEN" ]; then
   echo "TYPEFORM_TOKEN: '${TYPEFORM_TOKEN}'" >> "$ENV_FILE"
+fi
+if [ -n "$GOOGLE_OAUTH_CLIENT_ID" ]; then
+  echo "GOOGLE_OAUTH_CLIENT_ID: '${GOOGLE_OAUTH_CLIENT_ID}'" >> "$ENV_FILE"
+fi
+if [ -n "$GOOGLE_OAUTH_CLIENT_SECRET" ]; then
+  echo "GOOGLE_OAUTH_CLIENT_SECRET: '${GOOGLE_OAUTH_CLIENT_SECRET}'" >> "$ENV_FILE"
 fi
 
 # ── 3. Deploy ────────────────────────────────────────────────────────────────

@@ -41,6 +41,7 @@ from auth import (
 import owners
 import shares
 import clients
+import sheets_integration
 
 bq = bigquery.Client()
 # Injeta o client BQ no módulo clients (evita import circular — clients
@@ -366,6 +367,138 @@ def report_data(request):
         except Exception as e:
             print(f"[ERROR lookup_share] {e}")
             return (jsonify({"error": "Erro ao buscar share_id"}), 500, headers)
+
+    # ── Endpoint: trocar OAuth code por refresh_token e criar sheet ─────────
+    # Frontend abre popup OAuth via Google Identity Services, captura o
+    # `code` retornado e chama este endpoint com {short_token, code}.
+    # Backend troca o code por tokens (incluindo refresh_token), cria a
+    # spreadsheet no Drive do membro autorizador, popula com a base de
+    # dados e persiste a integração no BQ.
+    if request.method == "POST" and request.args.get("action") == "sheets_create":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        admin_email = admin.get("email") or "unknown"
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            code        = (body.get("code") or "").strip()
+            # ux_mode='popup' do GIS exige redirect_uri='postmessage'.
+            # Mantemos como parâmetro pra deixar o backend agnóstico ao
+            # modo (caso queiramos suportar redirect mode no futuro).
+            redirect_uri = (body.get("redirect_uri") or "postmessage").strip()
+            if not short_token or not code:
+                return (jsonify({"error": "short_token e code são obrigatórios"}), 400, headers)
+
+            # 1) Troca code por tokens
+            tokens = sheets_integration.exchange_code_for_tokens(code, redirect_uri)
+            refresh_token = tokens.get("refresh_token")
+            if not refresh_token:
+                # Google só retorna refresh_token na PRIMEIRA autorização
+                # (subsequentes vêm vazias). Front deve forçar prompt='consent'
+                # via initCodeClient pra garantir refresh_token sempre.
+                return (
+                    jsonify({"error": "refresh_token ausente. Tente novamente — pode ser preciso revogar e reautorizar o app."}),
+                    400, headers,
+                )
+
+            # 2) Carrega dados da campanha pra popular a sheet
+            payload = _get_report_cached(short_token, force_refresh=False)
+            if not payload:
+                return (jsonify({"error": "Campanha não encontrada"}), 404, headers)
+            detail_rows  = payload.get("detail") or []
+            campaign     = payload.get("campaign") or {}
+            campaign_name = campaign.get("campaign_name") or short_token
+            end_date_raw = campaign.get("end_date")
+            end_date_obj = None
+            if end_date_raw:
+                try:
+                    end_date_obj = datetime.fromisoformat(str(end_date_raw)[:10]).date()
+                except Exception:
+                    end_date_obj = None
+
+            # 3) Cria sheet + persiste
+            result = sheets_integration.create_sheet_for_campaign(
+                short_token=short_token,
+                refresh_token=refresh_token,
+                member_email=admin_email,
+                detail_rows=detail_rows,
+                campaign_name=campaign_name,
+                end_date=end_date_obj,
+            )
+
+            # Invalida cache do report pra próxima leitura trazer
+            # spreadsheet_url no payload pública.
+            _cache_invalidate_token(short_token)
+
+            return (jsonify({
+                "status":          "active",
+                "spreadsheet_id":  result["spreadsheet_id"],
+                "spreadsheet_url": result["spreadsheet_url"],
+            }), 200, headers)
+        except Exception as e:
+            print(f"[ERROR sheets_create] {e}")
+            return (jsonify({"error": f"Erro ao criar sheet: {e}"}), 500, headers)
+
+    # ── Endpoint: status da integração (admin vê tudo) ──────────────────────
+    if request.method == "GET" and request.args.get("action") == "sheets_status":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            short_token = (request.args.get("token") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "token obrigatório"}), 400, headers)
+            status = sheets_integration.status_for_response(short_token, is_admin=True)
+            return (jsonify({"integration": status}), 200, headers)
+        except Exception as e:
+            print(f"[ERROR sheets_status] {e}")
+            return (jsonify({"error": "Erro ao buscar status"}), 500, headers)
+
+    # ── Endpoint: sync manual de uma sheet (admin) ──────────────────────────
+    # Útil pra ver o resultado do sync sem esperar o cron diário, e pra
+    # casos onde a campanha tem mudanças importantes mid-day.
+    if request.method == "POST" and request.args.get("action") == "sheets_sync_now":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "short_token obrigatório"}), 400, headers)
+
+            payload = _get_report_cached(short_token, force_refresh=True)
+            if not payload:
+                return (jsonify({"error": "Campanha não encontrada"}), 404, headers)
+            detail_rows = payload.get("detail") or []
+
+            sheets_integration.sync_sheet(short_token, detail_rows)
+
+            # Atualiza payload pra refletir last_synced_at recente
+            _cache_invalidate_token(short_token)
+            status = sheets_integration.status_for_response(short_token, is_admin=True)
+            return (jsonify({"integration": status}), 200, headers)
+        except Exception as e:
+            print(f"[ERROR sheets_sync_now] {e}")
+            return (jsonify({"error": f"Erro ao sincronizar: {e}"}), 500, headers)
+
+    # ── Endpoint: deletar integração (admin) ────────────────────────────────
+    # Remove o registro do BQ. NÃO deleta a sheet do Drive — fica como
+    # registro permanente do que foi entregue ao cliente. Se quiser
+    # recriar do zero, é só clicar "Conectar" de novo.
+    if request.method == "POST" and request.args.get("action") == "sheets_delete":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "short_token obrigatório"}), 400, headers)
+            sheets_integration.delete_integration(short_token)
+            _cache_invalidate_token(short_token)
+            return (jsonify({"status": "deleted"}), 200, headers)
+        except Exception as e:
+            print(f"[ERROR sheets_delete] {e}")
+            return (jsonify({"error": "Erro ao deletar integração"}), 500, headers)
 
     # ── Endpoint: salvar logo ─────────────────────────────────────────────────
     if request.method == "POST" and request.args.get("action") == "save_logo":
@@ -774,6 +907,12 @@ def fetch_campaign_data(short_token):
         "rmnd":   _query_pool.submit(query_upload, short_token, "RMND"),
         "pdooh":  _query_pool.submit(query_upload, short_token, "PDOOH"),
         "survey": _query_pool.submit(query_survey, short_token),
+        # Status da integração com Google Sheets, se existir. Aqui sempre
+        # passamos is_admin=False — o filtro de admin acontece no endpoint
+        # report_data, que enriquece o payload depois de saber se a request
+        # tem JWT admin válido. Esse campo é apenas a "view pública mínima"
+        # (url + status), suficiente pra renderizar o link no client.
+        "sheets_integration": _query_pool.submit(_safe_sheets_status_public, short_token),
     }
 
     campaign_info = fut_campaign.result()
@@ -792,9 +931,19 @@ def fetch_campaign_data(short_token):
         # Front sabe lidar com chaves nulas (logo, loom, survey, rmnd, pdooh).
         # Para daily/detail logamos e retornamos vazio para que a UI mostre
         # "sem dados" em vez de erro 500.
-        nullable = key in ("logo", "loom", "rmnd", "pdooh", "survey")
+        nullable = key in ("logo", "loom", "rmnd", "pdooh", "survey", "sheets_integration")
         result[key] = _safe_future_result(future, key, default=None if nullable else [])
     return result
+
+
+def _safe_sheets_status_public(short_token: str):
+    """Wrapper que isola erros do módulo sheets — campanha não pode quebrar
+    se KMS/BQ tabela ainda não existe (primeira execução pré-setup)."""
+    try:
+        return sheets_integration.status_for_response(short_token, is_admin=False)
+    except Exception as e:
+        print(f"[WARN sheets_integration.status {short_token}] {e}")
+        return None
 
 
 def _safe_future_result(future, label, default):
