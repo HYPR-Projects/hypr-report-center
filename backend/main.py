@@ -1227,18 +1227,28 @@ def query_totals(token, campaign_info):
         else:
             budget_prop = 0.0
 
-        # Entrega esperada para PACING: dias com entrega real
+        # Entrega esperada para PACING (over-detection / CPM efetivo): preserva
+        # `days_with_delivery` no denominador. Esta variável alimenta o cálculo
+        # de `over` (linhas 1248/1259) e `effective_total_cost` (CPM/CPCV
+        # efetivo via `budget_prop`). Mexer aqui afeta rentabilidade e
+        # faturamento — tratado em PR separado.
         expected_for_pacing = (neg / row_total_days * days_with_delivery) if (row_total_days > 0 and days_with_delivery > 0) else 0
-        # Entrega esperada para OVER/CPM: dias decorridos da campanha geral
+        # Entrega esperada para OVER/CPM (display): dias decorridos da campanha geral
         expected_delivered = (neg / total_days * elapsed_days) if (total_days > 0 and elapsed_days > 0) else 0
 
-        # Pacing: entregue vs esperado
+        # Entrega esperada pelo PACING canônico HYPR (calendar-elapsed, com
+        # cap em total_days). Espelha exatamente:
+        #   - frontend `computeMediaPacing` (shared/aggregations.js)
+        #   - backend `pacing_calc_calendar` no `?list=true`
+        # Resultado: a coluna Pacing do Detalhamento e o Resumo por mídia
+        # mostram o MESMO número que a barra Pacing da Visão Geral.
+        pacing_capped_elapsed = min(elapsed_days, total_days) if total_days > 0 else 0
+        pacing_expected = (neg / total_days * pacing_capped_elapsed) if (total_days > 0 and pacing_capped_elapsed > 0) else 0
+
+        # Pacing: entregue vs esperado (fórmula canônica calendar-elapsed)
         # Video usa completions (viewable views 100%), Display usa viewable_impressions
         delivered_for_pacing = completions if is_video else viewable
-        if row_is_ended:
-            pacing = (delivered_for_pacing / neg * 100) if neg > 0 else 0.0
-        else:
-            pacing = (delivered_for_pacing / expected_for_pacing * 100) if expected_for_pacing > 0 else 0.0
+        pacing = (delivered_for_pacing / pacing_expected * 100) if pacing_expected > 0 else 0.0
 
         # CPM/CPCV Efetivo e Rentabilidade
         # Regra: se entregou MAIS que o esperado → CPM cai (rentabilidade positiva)
