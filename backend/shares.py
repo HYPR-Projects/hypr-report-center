@@ -177,6 +177,9 @@ def get_all_share_ids() -> dict[str, str]:
     """
     rows = list(bq.query(sql).result())
     return {r["short_token"]: r["share_id"] for r in rows if r["short_token"]}
+
+
+def get_token_for_share_id(share_id: str) -> str | None:
     """Retorna o short_token associado a um share_id, ou None.
 
     Comparação case-sensitive: share_id é base64url e diferencia case.
