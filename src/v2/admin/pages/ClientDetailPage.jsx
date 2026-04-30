@@ -180,9 +180,9 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
     <div className="min-h-screen w-full bg-canvas text-fg transition-colors">
       {/* Topbar */}
       <header className="sticky top-0 z-30 bg-canvas-elevated border-b border-border">
-        <div className="max-w-[1400px] mx-auto px-6 h-14 flex items-center justify-between">
+        <div className="max-w-[1400px] mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center text-fg">
-            <HyprReportCenterLogo height={20} />
+            <HyprReportCenterLogo height={32} />
           </div>
           <div className="flex items-center gap-3">
             <ThemeToggleV2 />
