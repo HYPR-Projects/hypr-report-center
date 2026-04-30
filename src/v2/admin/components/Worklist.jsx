@@ -24,28 +24,28 @@ const BUCKETS = [
     label: "Pacing crítico",
     sublabel: ">140% ou <75%",
     dotClass: "bg-danger",
-    glowClass: "shadow-[0_0_0_3px_rgba(245,39,43,0.15)]",
+    glowClass: "shadow-[var(--shadow-glow-danger)]",
   },
   {
     key: "no_owner",
     label: "Sem owner",
     sublabel: "atribuir CP/CS",
     dotClass: "bg-warning",
-    glowClass: "shadow-[0_0_0_3px_rgba(237,217,0,0.15)]",
+    glowClass: "shadow-[var(--shadow-glow-warning)]",
   },
   {
     key: "reports_not_viewed",
     label: "Não vistos",
     sublabel: "cliente nunca acessou",
     dotClass: "bg-signature",
-    glowClass: "shadow-[0_0_0_3px_rgba(51,151,185,0.18)]",
+    glowClass: "shadow-[var(--shadow-glow-signature)]",
   },
   {
     key: "ending_soon",
     label: "Encerram em 7d",
     sublabel: "finalizar e faturar",
     dotClass: "bg-success",
-    glowClass: "shadow-[0_0_0_3px_rgba(76,176,80,0.15)]",
+    glowClass: "shadow-[var(--shadow-glow-success)]",
   },
 ];
 

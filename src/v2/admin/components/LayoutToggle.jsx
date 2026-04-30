@@ -49,7 +49,11 @@ export function LayoutToggle({ value, onChange, className }) {
       role="tablist"
       aria-label="Layout"
       className={cn(
-        "inline-flex gap-0.5 p-0.5 rounded-lg bg-surface border border-border",
+        // bg-canvas-deeper é o padrão de "track" do DS — mesma escolha
+        // do SegmentedControlV2 já em uso no dashboard cliente. Em
+        // light fica #F1F3F6 (perceptível contra a página #F8F9FA);
+        // em dark fica #0F1419 (mais escuro que canvas, dá contraste).
+        "inline-flex gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border",
         className
       )}
     >

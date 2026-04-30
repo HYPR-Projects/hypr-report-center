@@ -34,9 +34,9 @@ const HEALTH_DOT = {
 };
 
 const HEALTH_GLOW = {
-  healthy:   "shadow-[0_0_0_3px_rgba(76,176,80,0.15)]",
-  attention: "shadow-[0_0_0_3px_rgba(237,217,0,0.18)]",
-  critical:  "shadow-[0_0_0_3px_rgba(245,39,43,0.15)]",
+  healthy:   "shadow-[var(--shadow-glow-success)]",
+  attention: "shadow-[var(--shadow-glow-warning)]",
+  critical:  "shadow-[var(--shadow-glow-danger)]",
 };
 
 /**
