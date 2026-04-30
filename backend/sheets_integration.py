@@ -887,6 +887,30 @@ def create_sheet_for_campaign(
         except Exception as e:
             print(f"[WARN move sheet to folder {spreadsheet_id}] {e}")
 
+    # Setar permissão "anyone with link can view" — necessário pra o
+    # cliente final abrir o link a partir do report público (ele não
+    # tem account HYPR e não vai ser convidado individualmente).
+    #
+    # Trade-off: qualquer pessoa que descobrir a URL consegue ver.
+    # URL é UUID-like (44 chars random), não enumerable. Mesmo padrão
+    # que "Compartilhar com link" no Drive UI. Aceitável pro caso de
+    # uso (relatórios de campanha já são compartilhados via link
+    # público do dash). Cliente que quiser restringir pode editar
+    # manual no Drive ("Restrito" + adicionar emails específicos).
+    #
+    # Best-effort: se falhar (ex.: política de admin do tenant proíbe
+    # link sharing externo), loga warning e segue. Membro pode
+    # compartilhar manualmente nesse caso.
+    try:
+        drive_svc = _build_drive_client(access_token)
+        drive_svc.permissions().create(
+            fileId=spreadsheet_id,
+            body={"role": "reader", "type": "anyone"},
+            fields="id",
+        ).execute()
+    except Exception as e:
+        print(f"[WARN set anyone-link permission {spreadsheet_id}] {e}")
+
     # Persiste a integração no BQ.
     sync_until = (end_date + timedelta(days=SYNC_GRACE_DAYS)) if end_date else None
     now = datetime.now(timezone.utc)
