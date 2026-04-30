@@ -31,18 +31,24 @@ import {
   formatPacingValue,
   formatPct,
   pacingColorClass,
+  ctrColorClass,
+  vtrColorClass,
   localPartFromEmail,
   slugToDisplay,
 } from "../lib/format";
 
+// 4 níveis de health, espelhando a régua de pacing (ver format.js).
+// Cliente só agrega campanhas ATIVAS, então não precisa de "ended" aqui.
 const HEALTH_DOT = {
-  healthy:   "bg-success",
-  attention: "bg-warning",
-  critical:  "bg-danger",
+  healthy:   "bg-success",     // alguma campanha 100–124%
+  over:      "bg-signature",   // todas as campanhas ≥125%
+  attention: "bg-warning",     // alguma 90–99%
+  critical:  "bg-danger",      // alguma <90%
 };
 
 const HEALTH_GLOW = {
   healthy:   "shadow-[var(--shadow-glow-success)]",
+  over:      "shadow-[var(--shadow-glow-signature)]",
   attention: "shadow-[var(--shadow-glow-warning)]",
   critical:  "shadow-[var(--shadow-glow-danger)]",
 };
@@ -164,8 +170,8 @@ export function ClientCard({ client, onOpen }) {
       {/* Métricas em grid 3-col */}
       <div className="grid grid-cols-3 gap-0 py-2.5 border-y border-border">
         <Metric label="Pacing" value={formatPacingValue(avg_pacing)} colorClass={pacingColorClass(avg_pacing)} />
-        <Metric label="CTR"    value={formatPct(avg_ctr, 2)} colorClass="text-success" border />
-        <Metric label="VTR"    value={formatPct(avg_vtr, 1)} colorClass="text-success" border />
+        <Metric label="CTR"    value={formatPct(avg_ctr, 2)} colorClass={ctrColorClass(avg_ctr)} border />
+        <Metric label="VTR"    value={formatPct(avg_vtr, 1)} colorClass={vtrColorClass(avg_vtr)} border />
       </div>
 
       {/* Footer: owners + tempo */}

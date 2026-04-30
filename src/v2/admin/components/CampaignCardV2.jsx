@@ -24,33 +24,57 @@ import {
   formatPacingValue,
   formatPct,
   pacingColorClass,
+  ctrColorClass,
+  vtrColorClass,
+  isCampaignEnded,
   localPartFromEmail,
 } from "../lib/format";
 
+// 4 níveis de health, cada um espelhando uma faixa da régua de pacing
+// (definida em format.js). Verde e azul são ambos saudáveis — azul
+// sinaliza over-delivery ≥125%. Cinza é fallback (sem dado pra classificar).
 const HEALTH_DOT = {
-  healthy:   "bg-success",
-  attention: "bg-warning",
-  critical:  "bg-danger",
+  healthy:   "bg-success",       // 100–124%
+  over:      "bg-signature",     // ≥125%
+  attention: "bg-warning",       // 90–99%
+  critical:  "bg-danger",        // <90%
+  ended:     "bg-fg-subtle/60",  // campanha encerrada — neutralizada
 };
 
 const HEALTH_GLOW = {
   healthy:   "shadow-[var(--shadow-glow-success)]",
+  over:      "shadow-[var(--shadow-glow-signature)]",
   attention: "shadow-[var(--shadow-glow-warning)]",
   critical:  "shadow-[var(--shadow-glow-danger)]",
+  ended:     "",  // sem glow quando encerrada
 };
 
 /**
- * Classifica health a partir do worst pacing — espelho de aggregation.js.
- * Não-puro pra evitar import circular; mantém alinhado por convenção.
+ * Classifica health a partir do PIOR pacing entre DSP e VID.
+ *
+ * Severidade descendente: critical > attention > healthy > over.
+ * Ou seja: se uma métrica está crítica e a outra over, mostra crítico.
+ * Se uma é "no alvo" (healthy 100–124) e a outra é over (≥125), mostra
+ * a mais conservadora (healthy) — tratamos verde como o estado "neutro
+ * positivo" e azul como destaque, então quando há mistura preferimos
+ * a leitura conservadora.
  */
 function classifyHealth(displayPacing, videoPacing) {
   const cands = [];
   if (displayPacing != null) cands.push(Number(displayPacing));
   if (videoPacing   != null) cands.push(Number(videoPacing));
   if (!cands.length) return null;
-  const worst = cands.reduce((a, b) => (Math.abs(a - 100) > Math.abs(b - 100) ? a : b));
-  if (worst > 140 || worst < 75) return "critical";
-  if (worst > 115 || worst < 85) return "attention";
+
+  const tierOf = (p) => {
+    if (p < 90)  return "critical";
+    if (p < 100) return "attention";
+    if (p < 125) return "healthy";
+    return "over";
+  };
+  // Ordem de prioridade: pior cor ganha
+  const order = ["critical", "attention", "healthy", "over"];
+  const tiers = cands.map(tierOf);
+  for (const t of order) if (tiers.includes(t)) return t;
   return "healthy";
 }
 
@@ -74,16 +98,26 @@ export function CampaignCardV2({
     cs_email,
   } = campaign;
 
-  const health = classifyHealth(display_pacing, video_pacing);
+  const ended  = isCampaignEnded(end_date);
+  const health = ended ? "ended" : classifyHealth(display_pacing, video_pacing);
   const cpName = cp_email ? (teamMap[cp_email] || localPartFromEmail(cp_email)) : null;
   const csName = cs_email ? (teamMap[cs_email] || localPartFromEmail(cs_email)) : null;
+
+  // Encerrada: neutraliza cor condicional dos números (texto cinza,
+  // sem alarmar). Visualmente o card vira "histórico" — operação não
+  // precisa mais agir.
+  const dimColor = "text-fg-subtle";
+  const colorPacing = (p) => (ended ? dimColor : pacingColorClass(p));
+  const colorCtr    = (v) => (ended ? dimColor : ctrColorClass(v));
+  const colorVtr    = (v) => (ended ? dimColor : vtrColorClass(v));
 
   return (
     <Card
       className={cn(
         "px-4 py-3.5 cursor-pointer group",
         "transition-all duration-150",
-        "hover:border-signature/40 hover:bg-surface"
+        "hover:border-signature/40 hover:bg-surface",
+        ended && "opacity-65"
       )}
       onClick={() => onOpen?.(campaign)}
       role="button"
@@ -130,16 +164,16 @@ export function CampaignCardV2({
         {/* Métricas em pills */}
         <div className="hidden md:flex items-center gap-1.5 shrink-0">
           {display_pacing != null && (
-            <MetricPill label="DSP PAC" value={formatPacingValue(display_pacing)} colorClass={pacingColorClass(display_pacing)} />
+            <MetricPill label="DSP PAC" value={formatPacingValue(display_pacing)} colorClass={colorPacing(display_pacing)} />
           )}
           {video_pacing != null && (
-            <MetricPill label="VID PAC" value={formatPacingValue(video_pacing)} colorClass={pacingColorClass(video_pacing)} />
+            <MetricPill label="VID PAC" value={formatPacingValue(video_pacing)} colorClass={colorPacing(video_pacing)} />
           )}
           {display_ctr != null && (
-            <MetricPill label="CTR" value={formatPct(display_ctr, 2)} colorClass="text-success" />
+            <MetricPill label="CTR" value={formatPct(display_ctr, 2)} colorClass={colorCtr(display_ctr)} />
           )}
           {video_vtr != null && (
-            <MetricPill label="VTR" value={formatPct(video_vtr, 1)} colorClass="text-success" />
+            <MetricPill label="VTR" value={formatPct(video_vtr, 1)} colorClass={colorVtr(video_vtr)} />
           )}
         </div>
 

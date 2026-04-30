@@ -24,13 +24,20 @@ import {
   formatPacingValue,
   formatPct,
   pacingColorClass,
+  ctrColorClass,
+  vtrColorClass,
+  isCampaignEnded,
   localPartFromEmail,
 } from "../lib/format";
 
+// 4 tiers de health (ver CampaignCardV2 pra discussão de design); aqui
+// só precisamos dos dots — a Row é compacta e não usa glow.
 const HEALTH_DOT = {
   healthy:   "bg-success",
+  over:      "bg-signature",
   attention: "bg-warning",
   critical:  "bg-danger",
+  ended:     "bg-fg-subtle/60",
 };
 
 function classifyHealth(displayPacing, videoPacing) {
@@ -38,9 +45,16 @@ function classifyHealth(displayPacing, videoPacing) {
   if (displayPacing != null) cands.push(Number(displayPacing));
   if (videoPacing   != null) cands.push(Number(videoPacing));
   if (!cands.length) return null;
-  const worst = cands.reduce((a, b) => (Math.abs(a - 100) > Math.abs(b - 100) ? a : b));
-  if (worst > 140 || worst < 75) return "critical";
-  if (worst > 115 || worst < 85) return "attention";
+
+  const tierOf = (p) => {
+    if (p < 90)  return "critical";
+    if (p < 100) return "attention";
+    if (p < 125) return "healthy";
+    return "over";
+  };
+  const order = ["critical", "attention", "healthy", "over"];
+  const tiers = cands.map(tierOf);
+  for (const t of order) if (tiers.includes(t)) return t;
   return "healthy";
 }
 
@@ -106,9 +120,15 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
     cs_email,
   } = campaign;
 
-  const health = classifyHealth(display_pacing, video_pacing);
+  const ended  = isCampaignEnded(end_date);
+  const health = ended ? "ended" : classifyHealth(display_pacing, video_pacing);
   const cpName = cp_email ? (teamMap[cp_email] || localPartFromEmail(cp_email)) : null;
   const csName = cs_email ? (teamMap[cs_email] || localPartFromEmail(cs_email)) : null;
+
+  const dimColor = "text-fg-subtle";
+  const colorPacing = (p) => (ended ? dimColor : pacingColorClass(p));
+  const colorCtr    = (v) => (ended ? dimColor : ctrColorClass(v));
+  const colorVtr    = (v) => (ended ? dimColor : vtrColorClass(v));
 
   return (
     <div
@@ -126,6 +146,7 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
         // já tem alpha 0.12 — dividir mais virava ~0.05 invisível).
         // Usar signature-soft direto dá feedback claro em ambos os temas.
         "hover:bg-signature-soft focus-visible:outline-none focus-visible:bg-signature-soft",
+        ended && "opacity-65",
         GRID
       )}
     >
@@ -155,22 +176,22 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
       </span>
 
       {/* DSP Pac */}
-      <span className={cn("text-right tabular-nums font-semibold", pacingColorClass(display_pacing))}>
+      <span className={cn("text-right tabular-nums font-semibold", colorPacing(display_pacing))}>
         {display_pacing != null ? formatPacingValue(display_pacing) : <span className="text-fg-disabled">—</span>}
       </span>
 
       {/* Vid Pac */}
-      <span className={cn("text-right tabular-nums font-semibold", pacingColorClass(video_pacing))}>
+      <span className={cn("text-right tabular-nums font-semibold", colorPacing(video_pacing))}>
         {video_pacing != null ? formatPacingValue(video_pacing) : <span className="text-fg-disabled">—</span>}
       </span>
 
       {/* CTR */}
-      <span className="text-right tabular-nums font-semibold text-success">
+      <span className={cn("text-right tabular-nums font-semibold", colorCtr(display_ctr))}>
         {display_ctr != null ? formatPct(display_ctr, 2) : <span className="text-fg-disabled">—</span>}
       </span>
 
       {/* VTR */}
-      <span className="text-right tabular-nums font-semibold text-success">
+      <span className={cn("text-right tabular-nums font-semibold", colorVtr(video_vtr))}>
         {video_vtr != null ? formatPct(video_vtr, 1) : <span className="text-fg-disabled">—</span>}
       </span>
 

@@ -22,7 +22,7 @@ const BUCKETS = [
   {
     key: "pacing_critical",
     label: "Pacing crítico",
-    sublabel: ">140% ou <75%",
+    sublabel: "<90%",
     dotClass: "bg-danger",
     glowClass: "shadow-[var(--shadow-glow-danger)]",
   },

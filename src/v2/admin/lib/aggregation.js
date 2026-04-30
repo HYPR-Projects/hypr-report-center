@@ -57,28 +57,42 @@ function chooseDisplayName(variants) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Health classification (espelho de _classify_pacing_health)
+//
+// Régua nova (4 bandas):
+//   < 90        → critical   (vermelho)
+//   90–99.99    → attention  (amarelo)
+//   100–124.99  → healthy    (verde)
+//   ≥ 125       → over       (azul/signature; ainda saudável)
 // ─────────────────────────────────────────────────────────────────────────────
 function classifyPacing(p) {
   if (p == null) return null;
-  if (p > 140 || p < 75) return "critical";
-  if (p > 115 || p < 85) return "attention";
-  return "healthy";
+  if (p < 90)  return "critical";
+  if (p < 100) return "attention";
+  if (p < 125) return "healthy";
+  return "over";
 }
 
 function aggregateHealth(arr) {
   if (!arr.length) return null;
-  if (arr.includes("critical")) return "critical";
+  if (arr.includes("critical"))  return "critical";
   if (arr.includes("attention")) return "attention";
-  if (arr.includes("healthy")) return "healthy";
+  if (arr.includes("healthy"))   return "healthy";
+  if (arr.includes("over"))      return "over";
   return null;
 }
 
+const PACING_TIER_RANK = { critical: 0, attention: 1, healthy: 2, over: 3 };
+
 function worstPacing(dp, vp) {
+  // Pega o pacing que cai na pior banda (rank crítico=0 < ... < over=3).
+  // Antes usávamos distância de 100 — incompatível com over=saudável.
   const candidates = [];
   if (dp != null) candidates.push(Number(dp));
   if (vp != null) candidates.push(Number(vp));
   if (!candidates.length) return null;
-  return candidates.reduce((a, b) => (Math.abs(a - 100) > Math.abs(b - 100) ? a : b));
+  return candidates.reduce((a, b) =>
+    PACING_TIER_RANK[classifyPacing(a)] <= PACING_TIER_RANK[classifyPacing(b)] ? a : b
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -188,7 +202,9 @@ export function computeWorklist(campaigns) {
     if (!endStr || endStr < todayStr) continue; // só ativas
 
     const worst = worstPacing(c.display_pacing, c.video_pacing);
-    if (worst != null && (worst > 140 || worst < 75)) pacing_critical.push(c.short_token);
+    // Critical = pacing < 90% em qualquer das frentes. Over delivery (≥125%)
+    // saiu do bucket: é saudável pela régua atual.
+    if (classifyPacing(worst) === "critical") pacing_critical.push(c.short_token);
     if (!c.cp_email || !c.cs_email) no_owner.push(c.short_token);
     if (endStr <= horizonStr) ending_soon.push(c.short_token);
   }

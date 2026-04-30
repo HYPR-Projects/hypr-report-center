@@ -117,30 +117,38 @@ def _choose_display_name(variants_with_dates):
 
 def _classify_pacing_health(pacing_pct):
     """
-    Saudável / atenção / crítico baseado em pacing %.
+    Classifica pacing % em uma das 4 faixas operacionais:
+      - critical:  < 90%               (vermelho — entregou abaixo do esperado)
+      - attention: 90% ≤ pacing < 100% (amarelo — em risco de não bater meta)
+      - healthy:   100% ≤ pacing < 125% (verde — dentro do alvo)
+      - over:      ≥ 125%              (azul — over delivery; ainda saudável)
 
-    Definições alinhadas com o que o time de operações da HYPR considera
-    aceitável:
-      - healthy:   85% ≤ pacing ≤ 115%
-      - attention: 115% < pacing ≤ 140%  ou  75% ≤ pacing < 85%
-      - critical:  pacing > 140%  ou  pacing < 75%
+    Verde e azul são ambos estados saudáveis. Azul destaca over delivery
+    relevante (≥125%) que a operação quer ver com cor distinta — não é
+    "ruim", só é "diferente de no alvo".
 
     Pacing é a métrica principal porque CTR/VTR variam por vertical e
     formato; pacing fora da banda saudável quase sempre exige ação.
     """
     if pacing_pct is None:
         return None
-    if pacing_pct > 140 or pacing_pct < 75:
+    if pacing_pct < 90:
         return "critical"
-    if pacing_pct > 115 or pacing_pct < 85:
+    if pacing_pct < 100:
         return "attention"
-    return "healthy"
+    if pacing_pct < 125:
+        return "healthy"
+    return "over"
 
 
 def _aggregate_health(health_list):
     """
     Saúde agregada do cliente: o pior status entre suas campanhas ativas.
     Cliente sem campanhas ativas → None (não aparece no status dot).
+
+    Ordem de severidade (pior → melhor): critical > attention > healthy > over.
+    Verde e azul são ambos saudáveis, mas quando há mistura preferimos a
+    leitura conservadora (verde).
     """
     if not health_list:
         return None
@@ -150,6 +158,8 @@ def _aggregate_health(health_list):
         return "attention"
     if "healthy" in health_list:
         return "healthy"
+    if "over" in health_list:
+        return "over"
     return None
 
 
@@ -267,13 +277,22 @@ def aggregate_clients_from_campaigns(campaigns):
     return out
 
 
+_PACING_TIER_RANK = {"critical": 0, "attention": 1, "healthy": 2, "over": 3}
+
+
 def _worst_pacing(dp, vp):
     """
     Combina pacing display + video em um único valor representativo
-    para health classification: o que está mais distante de 100%.
+    pra health classification: aquele que cai na PIOR banda de health
+    (rank crítico=0 < attention=1 < healthy=2 < over=3).
 
-    Ex: display 105% + video 145% → 145% (mais alarmante)
-        display 78% + video 102%  → 78%
+    Antes usávamos "distância de 100" — não funciona com a régua atual
+    onde over (≥125%) é saudável. Hoje, between display=110 e video=130,
+    o "pior" é display (healthy < over no rank).
+
+    Ex: display 105% + video 145%  → 105% (healthy é mais conservador que over)
+        display 78% + video 102%   → 78%  (critical < healthy)
+        display 130% + video 130%  → 130% (ambos over)
     """
     candidates = []
     if dp is not None:
@@ -282,8 +301,7 @@ def _worst_pacing(dp, vp):
         candidates.append(float(vp))
     if not candidates:
         return None
-    # Mais distante de 100
-    return max(candidates, key=lambda x: abs(x - 100))
+    return min(candidates, key=lambda x: _PACING_TIER_RANK[_classify_pacing_health(x)])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -298,7 +316,7 @@ def compute_worklist(campaigns):
     resultado de query_campaigns_list().
 
     Returns dict com:
-      - pacing_critical: count + tokens (>140% ou <75% em qualquer média)
+      - pacing_critical: count + tokens (pacing < 90% em qualquer média)
       - no_owner: count + tokens (cp_email OU cs_email faltando, em ativas)
       - ending_soon: count + tokens (end_date entre hoje e hoje+7d)
       - reports_not_viewed: placeholder (count=0) — depende de telemetria
@@ -328,9 +346,10 @@ def compute_worklist(campaigns):
         if not token:
             continue
 
-        # Bucket 1: pacing crítico
+        # Bucket 1: pacing crítico — qualquer das frentes (DSP ou VID) < 90%.
+        # Over delivery (≥125%) saiu desta lista: é saudável pela régua atual.
         worst = _worst_pacing(c.get("display_pacing"), c.get("video_pacing"))
-        if worst is not None and (worst > 140 or worst < 75):
+        if _classify_pacing_health(worst) == "critical":
             pacing_critical.append(token)
 
         # Bucket 2: sem owner (CP ou CS faltando)

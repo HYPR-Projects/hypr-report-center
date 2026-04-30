@@ -49,14 +49,59 @@ export function formatPct(value, decimals = 0) {
 }
 
 /**
- * Cor do número de pacing (CSS variable). Mantém alinhado com a
- * classificação de health do backend.
+ * Cores condicionais por métrica.
+ *
+ * Régua única definida pela operação:
+ *   Pacing  (DSP/VID): <90 vermelho · 90–99 amarelo · 100–124 verde · ≥125 azul
+ *   CTR              : <0.50 vermelho · 0.50–0.64 amarelo · ≥0.65 verde
+ *   VTR              : <70 vermelho · 70–79 amarelo · ≥80 verde
+ *
+ * Verde e azul são ambos estados saudáveis; azul sinaliza over-delivery
+ * relevante (≥125%) que merece destaque visual diferente do "no alvo".
+ *
+ * Sem dado → cinza sutil (não polui visualmente).
  */
 export function pacingColorClass(pacing) {
-  if (pacing == null) return "text-fg-subtle";
-  if (pacing > 140 || pacing < 75) return "text-danger";
-  if (pacing > 115 || pacing < 85) return "text-warning";
+  if (pacing == null || isNaN(pacing)) return "text-fg-subtle";
+  if (pacing < 90)  return "text-danger";
+  if (pacing < 100) return "text-warning";
+  if (pacing < 125) return "text-success";
+  return "text-signature";
+}
+
+export function ctrColorClass(ctr) {
+  if (ctr == null || isNaN(ctr)) return "text-fg-subtle";
+  if (ctr < 0.50) return "text-danger";
+  if (ctr < 0.65) return "text-warning";
   return "text-success";
+}
+
+export function vtrColorClass(vtr) {
+  if (vtr == null || isNaN(vtr)) return "text-fg-subtle";
+  if (vtr < 70) return "text-danger";
+  if (vtr < 80) return "text-warning";
+  return "text-success";
+}
+
+/**
+ * Campanha encerrada = data final estritamente menor que hoje (timezone
+ * local do usuário). Usado pra "esmaecer" cards e tirar a cor condicional
+ * — uma vez encerrada, a métrica vira histórico e não precisa mais
+ * alarmar visualmente.
+ *
+ * Aceita YYYY-MM-DD direto do backend. Para evitar o mesmo bug de
+ * timezone que tinha em `formatDateRange`, comparamos via getUTCDate
+ * comparado com a data local de hoje convertida pra UTC midnight.
+ */
+export function isCampaignEnded(endISO) {
+  if (!endISO) return false;
+  const e = new Date(endISO);
+  if (isNaN(e.getTime())) return false;
+  const now = new Date();
+  // Hoje à meia-noite UTC, pra comparar com end_date que veio como
+  // YYYY-MM-DD (UTC midnight). Encerrada se end < hoje.
+  const todayUTC = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  return e.getTime() < todayUTC;
 }
 
 /**

@@ -23,6 +23,8 @@ import {
   formatPacingValue,
   formatPct,
   pacingColorClass,
+  ctrColorClass,
+  vtrColorClass,
   localPartFromEmail,
 } from "../lib/format";
 
@@ -135,8 +137,8 @@ export function CampaignDrawer({
           <div className="grid grid-cols-2 gap-2 mb-5">
             {display_pacing != null && <DrawerStat label="DSP Pacing" value={formatPacingValue(display_pacing)} colorClass={pacingColorClass(display_pacing)} />}
             {video_pacing   != null && <DrawerStat label="VID Pacing" value={formatPacingValue(video_pacing)}   colorClass={pacingColorClass(video_pacing)} />}
-            {display_ctr    != null && <DrawerStat label="CTR"        value={formatPct(display_ctr, 2)} colorClass="text-success" />}
-            {video_vtr      != null && <DrawerStat label="VTR"        value={formatPct(video_vtr, 1)}  colorClass="text-success" />}
+            {display_ctr    != null && <DrawerStat label="CTR"        value={formatPct(display_ctr, 2)} colorClass={ctrColorClass(display_ctr)} />}
+            {video_vtr      != null && <DrawerStat label="VTR"        value={formatPct(video_vtr, 1)}  colorClass={vtrColorClass(video_vtr)} />}
             {(display_pacing == null && video_pacing == null) && (
               <p className="col-span-2 text-xs text-fg-subtle italic">
                 Sem delivery ainda — campanha pode não ter começado.
