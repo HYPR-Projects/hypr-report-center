@@ -275,11 +275,25 @@ export function computeMetricsSummary(campaigns) {
 //   CTR > 0,25%              → 25 pts
 //   VTR > 80%                → 10 pts
 //
-// Score do owner = média do score das campanhas, ponderada por
-// admin_impressions (campanha grande pesa mais — evita distorção
-// por campanha pequenina com sorte). Sem impressões cai pra média simples.
+// Score "raw" do owner = média do score das campanhas, ponderada por
+// admin_impressions (campanha grande pesa mais que pequena).
 //
-// Retorna array ordenado desc por score. Caller resolve email → name.
+// Score "regredido" do owner = aplica Empirical Bayes shrinkage em cima
+// do raw — corrige viés de amostra pequena (ex: 1 campanha perfeita
+// derrotando alguém com 15 boas). Os parâmetros de regressão são
+// CALCULADOS DOS PRÓPRIOS DADOS (parameter-free):
+//
+//   k = σ²_within / σ²_between
+//   score_final = (n × raw + k × média_do_time) / (n + k)
+//
+// Onde σ²_within = variância média entre campanhas DENTRO de cada CS
+// e σ²_between = variância dos scores raw ENTRE os CSs. Quando o time
+// tem alta variância de skill (sinal forte), k fica pequeno e o raw
+// domina. Quando os CSs parecem indistinguíveis (ruído alto), k cresce
+// e tudo regride pra média. É matematicamente ótimo (MMSE).
+//
+// Retorna array ordenado desc por score regredido. raw_score fica
+// disponível pra debug/tooltip.
 // ─────────────────────────────────────────────────────────────────────────────
 function pacingAvg(c) {
   const dp = c.display_pacing != null ? Number(c.display_pacing) : null;
@@ -307,6 +321,42 @@ function scoreCampaign(c) {
   return s;
 }
 
+// Variância amostral (n-1). Retorna 0 se < 2 elementos.
+function variance(arr) {
+  if (!arr || arr.length < 2) return 0;
+  const m = arr.reduce((a, b) => a + b, 0) / arr.length;
+  return arr.reduce((a, x) => a + (x - m) ** 2, 0) / (arr.length - 1);
+}
+
+// Empirical Bayes shrinkage parameter k = σ²_within / σ²_between, estimado
+// dos dados via método dos momentos. Edge cases:
+//   - 1 owner só: sem amostra pra estimar between → k = 0 (sem regressão)
+//   - within = 0 (sem ruído): k = 0 (raw é confiável)
+//   - between ≈ 0 (todos iguais): k grande, força regressão à média
+// Cap em k=50 evita explodir em casos patológicos.
+function computeEBParams(ownersData) {
+  if (!ownersData || ownersData.length < 2) {
+    const teamMean = ownersData?.[0]?.rawScore ?? 0;
+    return { k: 0, teamMean };
+  }
+  const withinVars = ownersData
+    .map((o) => variance(o.campaignScores))
+    .filter((v) => v > 0);
+  const sigma2 = withinVars.length
+    ? withinVars.reduce((a, b) => a + b, 0) / withinVars.length
+    : 0;
+  const ownerMeans = ownersData.map((o) => o.rawScore);
+  const tau2 = variance(ownerMeans);
+  const teamMean = ownerMeans.reduce((a, b) => a + b, 0) / ownerMeans.length;
+
+  let k;
+  if (sigma2 <= 0) k = 0;            // sem ruído entre campanhas — raw é fiel
+  else if (tau2 <= 0.01) k = 50;     // CSs indistinguíveis — força regressão
+  else k = Math.min(50, sigma2 / tau2);
+
+  return { k, teamMean };
+}
+
 export function computeTopPerformers(campaigns, ownerKey = "cs_email") {
   const today = TODAY();
   const active = (campaigns || []).filter(
@@ -321,14 +371,17 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email") {
     byOwner.get(email).push(c);
   }
 
+  const ownersData = []; // pra estimar params do shrinkage depois
   const out = [];
   for (const [email, list] of byOwner.entries()) {
     let scoreSum = 0;
     let weightSum = 0;
     let idealPacing = 0;
+    const campaignScores = [];
 
     for (const c of list) {
       const s = scoreCampaign(c);
+      campaignScores.push(s);
       const w = c.admin_impressions ? Number(c.admin_impressions) : 1;
       scoreSum  += s * w;
       weightSum += w;
@@ -340,11 +393,13 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email") {
     // Métricas exibidas: agregação correta via Σnumerador / Σdenominador
     // sobre as campanhas do owner (ver aggregateMetrics).
     const m = aggregateMetrics(list);
-    const score = weightSum > 0 ? scoreSum / weightSum : 0;
+    const rawScore = weightSum > 0 ? scoreSum / weightSum : 0;
 
+    ownersData.push({ email, rawScore, campaignScores });
     out.push({
       email,
-      score: Math.round(score * 10) / 10,
+      raw_score: Math.round(rawScore * 10) / 10,
+      score: 0, // preenchido depois com o score regredido
       campaign_count: list.length,
       ideal_pacing_count: idealPacing,
       ecpm_avg:   m.ecpm,
@@ -353,6 +408,18 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email") {
       ctr:        m.ctr,
       vtr:        m.vtr,
     });
+  }
+
+  // Empirical Bayes: regride scores pra média do time, com força inversamente
+  // proporcional ao volume de campanhas. CS com poucas campanhas converge
+  // pra média; com muitas, raw domina.
+  const { k, teamMean } = computeEBParams(ownersData);
+  for (let i = 0; i < out.length; i++) {
+    const o = out[i];
+    const raw = ownersData[i].rawScore;
+    const n = o.campaign_count;
+    const smoothed = (n + k) > 0 ? (n * raw + k * teamMean) / (n + k) : raw;
+    o.score = Math.round(smoothed * 10) / 10;
   }
 
   out.sort(

@@ -32,6 +32,18 @@ function tonePacing(value) {
   return "signature";
 }
 
+function toneCtr(value) {
+  if (value == null)  return "muted";
+  if (value >= 0.6)   return "success";
+  if (value >= 0.5)   return "warning";
+  return "danger";
+}
+
+function toneVtr(value) {
+  if (value == null) return "muted";
+  return value >= 80 ? "success" : "danger";
+}
+
 const TONE_CLASS = {
   muted:     "text-fg-subtle",
   danger:    "text-danger",
@@ -125,8 +137,8 @@ export function MetricStrip({ summary, className }) {
         value={formatPct(vid_pacing)}
         tone={tonePacing(vid_pacing)}
       />
-      <MetricCard label="CTR" value={formatPctTwo(ctr)} />
-      <MetricCard label="VTR" value={formatPctTwo(vtr)} />
+      <MetricCard label="CTR" value={formatPctTwo(ctr)} tone={toneCtr(ctr)} />
+      <MetricCard label="VTR" value={formatPctTwo(vtr)} tone={toneVtr(vtr)} />
       <MetricCard
         label="eCPM"
         value={formatBRL(ecpm)}
