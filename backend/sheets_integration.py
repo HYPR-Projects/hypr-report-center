@@ -302,11 +302,22 @@ def _upsert_integration(row: Dict) -> None:
     BigQuery não tem UPSERT nativo em DML simples; MERGE seria overkill
     pra um caso de write-light. Como a tabela é small (1 linha por
     campanha integrada) e operações são raras, esse padrão é OK.
+
+    IMPORTANTE: usa DML INSERT INTO em vez de insert_rows_json.
+    insert_rows_json é streaming insert e mantém linhas em streaming
+    buffer por 30-90min, durante os quais DELETE/UPDATE falham com
+    'would affect rows in the streaming buffer, which is not supported'.
+    DML INSERT vai direto pro storage permanente e permite mutação
+    imediata — necessário aqui porque o user pode criar e deletar
+    integração em janela curta.
     """
     ensure_table_exists()
     short_token = row["short_token"]
+    client = _bq_client()
+
+    # 1) Apaga linha anterior se existir
     delete_sql = f"DELETE FROM `{_table_id()}` WHERE short_token = @short_token"
-    _bq_client().query(
+    client.query(
         delete_sql,
         job_config=bigquery.QueryJobConfig(
             query_parameters=[
@@ -314,9 +325,40 @@ def _upsert_integration(row: Dict) -> None:
             ],
         ),
     ).result()
-    errors = _bq_client().insert_rows_json(_table_id(), [row])
-    if errors:
-        raise RuntimeError(f"BQ insert falhou: {errors}")
+
+    # 2) Insere nova linha via DML
+    insert_sql = f"""
+    INSERT INTO `{_table_id()}` (
+        short_token, spreadsheet_id, spreadsheet_url, created_by_email,
+        refresh_token_enc, created_at, last_synced_at, sync_until,
+        status, last_error
+    ) VALUES (
+        @short_token, @spreadsheet_id, @spreadsheet_url, @created_by_email,
+        @refresh_token_enc, @created_at, @last_synced_at, @sync_until,
+        @status, @last_error
+    )
+    """
+    # refresh_token_enc chega como string base64 (linha de cima); o tipo
+    # da coluna é BYTES. BytesQueryParameter aceita bytes diretamente,
+    # então decodamos o b64 antes de passar.
+    refresh_token_enc_bytes = _b64_to_bytes(row["refresh_token_enc"])
+
+    params = [
+        bigquery.ScalarQueryParameter("short_token",       "STRING",    row["short_token"]),
+        bigquery.ScalarQueryParameter("spreadsheet_id",    "STRING",    row["spreadsheet_id"]),
+        bigquery.ScalarQueryParameter("spreadsheet_url",   "STRING",    row["spreadsheet_url"]),
+        bigquery.ScalarQueryParameter("created_by_email",  "STRING",    row["created_by_email"]),
+        bigquery.ScalarQueryParameter("refresh_token_enc", "BYTES",     refresh_token_enc_bytes),
+        bigquery.ScalarQueryParameter("created_at",        "TIMESTAMP", row["created_at"]),
+        bigquery.ScalarQueryParameter("last_synced_at",    "TIMESTAMP", row["last_synced_at"]),
+        bigquery.ScalarQueryParameter("sync_until",        "DATE",      row["sync_until"]),
+        bigquery.ScalarQueryParameter("status",            "STRING",    row["status"]),
+        bigquery.ScalarQueryParameter("last_error",        "STRING",    row["last_error"]),
+    ]
+    client.query(
+        insert_sql,
+        job_config=bigquery.QueryJobConfig(query_parameters=params),
+    ).result()
 
 
 def _update_status(
