@@ -413,9 +413,19 @@ def _update_status(
     ).result()
 
 
-def delete_integration(short_token: str) -> None:
+def delete_integration(short_token: str, delete_sheet: bool = False) -> Dict:
     """
     Soft delete: marca status='deleted' em vez de DELETE FROM.
+
+    Se delete_sheet=True, também deleta o arquivo do Drive antes do soft
+    delete. Usa o refresh_token salvo pra autenticar — daí a ordem
+    matters: deleta no Drive primeiro (precisa do token decifrado),
+    depois marca a row.
+
+    Retorna dict com 'sheet_deleted' (bool) indicando se a deleção do
+    arquivo no Drive foi efetiva. False quando delete_sheet=False ou
+    quando a deleção falhou (best-effort: não bloqueia o soft delete
+    da row, pra não deixar integração órfã).
 
     Por que soft delete
     -------------------
@@ -434,6 +444,24 @@ def delete_integration(short_token: str) -> None:
     pro mesmo erro.
     """
     ensure_table_exists()
+    sheet_deleted = False
+
+    if delete_sheet:
+        # Pega a row antes de marcar como deleted — precisamos do
+        # refresh_token e spreadsheet_id pra deletar via Drive API.
+        integ = get_integration(short_token)
+        if integ and integ.get("spreadsheet_id"):
+            try:
+                refresh_token = _decrypt(integ["refresh_token_enc"])
+                access_token  = _refresh_access_token(refresh_token)
+                _try_delete_spreadsheet(integ["spreadsheet_id"], access_token)
+                sheet_deleted = True
+            except Exception as e:
+                # Best-effort. Continua o soft delete da row mesmo se a
+                # deleção do arquivo falhou (ex.: file já apagado manual,
+                # token expirado etc.). Logamos pra investigação.
+                print(f"[WARN delete_integration drive {short_token}] {e}")
+
     sql = f"""
     UPDATE `{_table_id()}`
     SET status = 'deleted',
@@ -449,6 +477,7 @@ def delete_integration(short_token: str) -> None:
             ],
         ),
     ).result()
+    return {"sheet_deleted": sheet_deleted}
 
 
 def list_active_integrations() -> List[Dict]:

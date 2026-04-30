@@ -112,6 +112,9 @@ export default function SheetsIntegrationCardV2({
   const [integration, setIntegration] = useState(initialIntegration || null);
   const [busy, setBusy]               = useState(false);
   const [error, setError]             = useState(null);
+  // Estado de confirmação de delete: null = inativo;
+  // objeto = mostrando UI de confirm com flag deleteSheet
+  const [confirmDelete, setConfirmDelete] = useState(null);
 
   // Quando admin loga e o payload trouxe view pública, busca view completa
   // pra ter created_by, last_synced_at, etc.
@@ -174,19 +177,36 @@ export default function SheetsIntegrationCardV2({
     }
   }, [token, adminJwt, integration]);
 
-  const handleDelete = useCallback(async () => {
-    if (!window.confirm("Excluir a integração? A planilha permanece no Drive de quem ativou, mas o sync para. Confirma?")) return;
+  const handleDeleteClick = useCallback(() => {
+    // Abre UI inline de confirmação. Default: NÃO deletar a sheet do Drive
+    // (preserva histórico — comportamento conservador).
     setError(null);
+    setConfirmDelete({ deleteSheet: false });
+  }, []);
+
+  const handleConfirmDelete = useCallback(async () => {
+    if (!confirmDelete) return;
     setBusy(true);
+    setError(null);
     try {
-      await postAdmin("sheets_delete", { short_token: token }, adminJwt);
+      await postAdmin(
+        "sheets_delete",
+        { short_token: token, delete_sheet: confirmDelete.deleteSheet },
+        adminJwt,
+      );
       setIntegration(null);
+      setConfirmDelete(null);
     } catch (e) {
       setError(e.message || "Erro ao excluir");
     } finally {
       setBusy(false);
     }
-  }, [token, adminJwt]);
+  }, [token, adminJwt, confirmDelete]);
+
+  const handleCancelDelete = useCallback(() => {
+    setConfirmDelete(null);
+    setError(null);
+  }, []);
 
   // ── Cliente sem integração ativa: nada renderiza ──────────────────────────
   if (!isAdmin && (!integration || integration.status !== "active")) {
@@ -271,23 +291,66 @@ export default function SheetsIntegrationCardV2({
             </div>
           </div>
           {isAdmin && (
-            <div className="flex items-center gap-2 pt-2 border-t border-border">
-              <button
-                type="button"
-                onClick={handleSyncNow}
-                disabled={busy}
-                className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-muted hover:text-fg hover:border-fg-muted disabled:opacity-50 transition"
-              >
-                {busy ? "Sincronizando..." : "Sincronizar agora"}
-              </button>
-              <button
-                type="button"
-                onClick={handleDelete}
-                disabled={busy}
-                className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-subtle hover:text-fg-muted disabled:opacity-50 transition"
-              >
-                Excluir integração
-              </button>
+            <div className="pt-2 border-t border-border">
+              {confirmDelete ? (
+                <div className="space-y-3">
+                  <div className="text-xs text-fg-muted">
+                    Tem certeza que quer excluir esta integração? O sync diário será interrompido.
+                  </div>
+                  <label className="flex items-start gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={confirmDelete.deleteSheet}
+                      onChange={(e) =>
+                        setConfirmDelete({ deleteSheet: e.target.checked })
+                      }
+                      disabled={busy}
+                      className="mt-0.5 accent-signature"
+                    />
+                    <span className="text-xs text-fg-muted">
+                      <span className="text-fg">Também deletar a planilha do Google Drive.</span>{" "}
+                      Sem isso, o arquivo permanece no Drive de quem ativou.
+                    </span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleConfirmDelete}
+                      disabled={busy}
+                      className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md bg-red-500/15 text-red-300 border border-red-500/30 hover:bg-red-500/25 disabled:opacity-50 transition"
+                    >
+                      {busy ? "Excluindo..." : confirmDelete.deleteSheet ? "Excluir tudo" : "Confirmar exclusão"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCancelDelete}
+                      disabled={busy}
+                      className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-muted hover:text-fg disabled:opacity-50 transition"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSyncNow}
+                    disabled={busy}
+                    className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-muted hover:text-fg hover:border-fg-muted disabled:opacity-50 transition"
+                  >
+                    {busy ? "Sincronizando..." : "Sincronizar agora"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeleteClick}
+                    disabled={busy}
+                    className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-subtle hover:text-fg-muted disabled:opacity-50 transition"
+                  >
+                    Excluir integração
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -331,7 +394,7 @@ export default function SheetsIntegrationCardV2({
             </button>
             <button
               type="button"
-              onClick={handleDelete}
+              onClick={handleDeleteClick}
               disabled={busy}
               className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-subtle hover:text-fg-muted disabled:opacity-50 transition"
             >

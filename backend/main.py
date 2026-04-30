@@ -524,9 +524,13 @@ def report_data(request):
             short_token = (body.get("short_token") or "").strip()
             if not short_token:
                 return (jsonify({"error": "short_token obrigatório"}), 400, headers)
-            sheets_integration.delete_integration(short_token)
+            # Flag opcional: se True, deleta também o arquivo do Drive
+            # (não só o registro). Default False = comportamento histórico
+            # (sheet permanece no Drive como histórico).
+            delete_sheet = bool(body.get("delete_sheet"))
+            result = sheets_integration.delete_integration(short_token, delete_sheet=delete_sheet)
             _cache_invalidate_token(short_token)
-            return (jsonify({"status": "deleted"}), 200, headers)
+            return (jsonify({"status": "deleted", **result}), 200, headers)
         except Exception as e:
             print(f"[ERROR sheets_delete] {e}")
             return (jsonify({"error": "Erro ao deletar integração"}), 500, headers)
