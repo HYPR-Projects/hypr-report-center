@@ -27,7 +27,7 @@ import "../../v2.css";
 import { listCampaigns, listTeamMembers, listClients, getShareId, getCachedShareId } from "../../../lib/api";
 import { getOwnerFilter, setOwnerFilter as persistOwnerFilter } from "../../../shared/prefs";
 import { useTheme } from "../../hooks/useTheme";
-import { normalizeSlug } from "../lib/aggregation";
+import { normalizeSlug, computeMetricsSummary } from "../lib/aggregation";
 
 import HyprReportCenterLogo from "../../../components/HyprReportCenterLogo";
 import NewCampaignModal from "../../../components/modals/NewCampaignModal";
@@ -38,11 +38,13 @@ import OwnerModal from "../../../components/modals/OwnerModal";
 
 import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
+import { cn } from "../../../ui/cn";
 import { ThemeToggleV2 } from "../../components/ThemeToggleV2";
 
 import { LayoutToggle } from "../components/LayoutToggle";
 import { ToolbarV2 } from "../components/ToolbarV2";
-import { Worklist } from "../components/Worklist";
+import { MetricStrip, SecondaryAlerts } from "../components/MetricStrip";
+import { PerformersLayout } from "../components/TopPerformers";
 import { MonthFilterPills } from "../components/MonthFilterPills";
 import { ClientCard } from "../components/ClientCard";
 import { CampaignCardV2 } from "../components/CampaignCardV2";
@@ -56,7 +58,7 @@ const LAYOUT_STORAGE_KEY = "hypr.admin.layout";
 function getInitialLayout() {
   try {
     const v = localStorage.getItem(LAYOUT_STORAGE_KEY);
-    if (v === "month" || v === "client" || v === "list") return v;
+    if (v === "month" || v === "client" || v === "list" || v === "performers") return v;
   } catch { /* ignore */ }
   return "month";
 }
@@ -285,6 +287,9 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   const totalClients = clients.length;
   const totalCampaigns = campaigns.length;
 
+  // KPIs agregados das campanhas ativas — alimenta a MetricStrip do topo.
+  const metricsSummary = useMemo(() => computeMetricsSummary(campaigns), [campaigns]);
+
   // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen w-full bg-canvas text-fg transition-colors">
@@ -336,10 +341,14 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           </Button>
         </div>
 
-        {/* Worklist no topo — só aparece com pelo menos 1 bucket > 0 */}
-        {worklist && hasAnyWorklistItem(worklist) && (
-          <div className="mb-6">
-            <Worklist
+        {/* MetricStrip no topo — KPIs das campanhas ativas em grid de cards
+            bordados leves. Alertas operacionais (críticas, sem owner,
+            encerram em 7d) ficam logo abaixo como pills discretos pra
+            preservar a função de filtro sem competir com os números. */}
+        {!loading && totalCampaigns > 0 && (
+          <div className="mb-8 space-y-4">
+            <MetricStrip summary={metricsSummary} />
+            <SecondaryAlerts
               worklist={worklist}
               activeKey={activeWorklist}
               onSelect={setActiveWorklist}
@@ -356,25 +365,29 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           />
         )}
 
-        {/* Toolbar: layout toggle (linha 1) + search/owner/sort (linha 2) */}
+        {/* Toolbar: layout toggle (linha 1) + search/owner/sort (linha 2).
+            Filtros de busca/owner/sort não aplicam ao layout de performers
+            (é um leaderboard auto-contido com filtro próprio). */}
         <div className="space-y-3 mb-5">
           <div className="flex items-center gap-3">
             <LayoutToggle value={layout} onChange={setLayout} />
             <div className="flex-1" />
           </div>
-          <ToolbarV2
-            search={search}
-            onSearchChange={setSearch}
-            ownerFilter={ownerFilter}
-            onOwnerChange={setOwnerFilter}
-            teamMembers={teamMembers}
-            sortBy={sortBy}
-            onSortByChange={setSortBy}
-            showSortBy={layout !== "client"}
-            searchPlaceholder={
-              layout === "client" ? "Buscar cliente..." : "Buscar cliente, campanha ou token..."
-            }
-          />
+          {layout !== "performers" && (
+            <ToolbarV2
+              search={search}
+              onSearchChange={setSearch}
+              ownerFilter={ownerFilter}
+              onOwnerChange={setOwnerFilter}
+              teamMembers={teamMembers}
+              sortBy={sortBy}
+              onSortByChange={setSortBy}
+              showSortBy={layout !== "client"}
+              searchPlaceholder={
+                layout === "client" ? "Buscar cliente..." : "Buscar cliente, campanha ou token..."
+              }
+            />
+          )}
         </div>
 
         {/* Quick month pills — só no layout 'month' */}
@@ -395,6 +408,8 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           <MonthLayout groups={monthGroups} onOpen={handleOpenDrawer} onOpenReport={onOpenReport} teamMap={teamMap} />
         ) : layout === "client" ? (
           <ClientLayout clients={filteredClients} onOpen={handleOpenClient} />
+        ) : layout === "performers" ? (
+          <PerformersLayout campaigns={campaigns} teamMap={teamMap} />
         ) : (
           <CampaignListV2
             campaigns={sortedCampaigns}
@@ -477,6 +492,33 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
 // ─────────────────────────────────────────────────────────────────────────────
 
 function MonthLayout({ groups, onOpen, onOpenReport, teamMap }) {
+  const currentYM = new Date().toISOString().slice(0, 7);
+
+  // Estado de colapso por chave de mês. Default: meses passados começam
+  // colapsados, mês atual e futuros expandidos. Toggles do user persistem
+  // entre filtros — useEffect só inicializa chaves NOVAS, sem sobrescrever.
+  const [collapsed, setCollapsed] = useState({});
+
+  useEffect(() => {
+    setCollapsed((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const g of groups) {
+        if (g.key === "no-date") continue;
+        if (!(g.key in next)) {
+          next[g.key] = g.key < currentYM;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [groups, currentYM]);
+
+  const toggle = useCallback(
+    (key) => setCollapsed((s) => ({ ...s, [key]: !s[key] })),
+    []
+  );
+
   if (!groups.length) {
     return (
       <div className="rounded-xl border border-border bg-surface p-8 text-center">
@@ -484,31 +526,69 @@ function MonthLayout({ groups, onOpen, onOpenReport, teamMap }) {
       </div>
     );
   }
+
   return (
     <div className="space-y-8">
-      {groups.map((g) => (
-        <section key={g.key}>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-[11px] uppercase tracking-widest font-bold text-fg-muted">
-              {g.label}
-            </h2>
-            <span className="text-[11px] text-fg-subtle">
-              {g.items.length} campanha{g.items.length === 1 ? "" : "s"}
-            </span>
-          </div>
-          <div className="space-y-2">
-            {g.items.map((c) => (
-              <CampaignCardV2
-                key={c.short_token}
-                campaign={c}
-                onOpen={onOpen}
-                onOpenReport={onOpenReport}
-                teamMap={teamMap}
-              />
-            ))}
-          </div>
-        </section>
-      ))}
+      {groups.map((g) => {
+        const canCollapse = g.key !== "no-date";
+        const isCollapsed = canCollapse && !!collapsed[g.key];
+        return (
+          <section key={g.key}>
+            <button
+              type="button"
+              onClick={() => canCollapse && toggle(g.key)}
+              disabled={!canCollapse}
+              aria-expanded={!isCollapsed}
+              className={cn(
+                "w-full flex items-center justify-between mb-3 group rounded",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature/40",
+                canCollapse && "cursor-pointer"
+              )}
+            >
+              <div className="flex items-center gap-2">
+                {canCollapse && (
+                  <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 12 12"
+                    aria-hidden="true"
+                    className={cn(
+                      "text-fg-subtle transition-transform duration-150 group-hover:text-fg",
+                      isCollapsed ? "-rotate-90" : "rotate-0"
+                    )}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <polyline points="3 4.5 6 7.5 9 4.5" />
+                  </svg>
+                )}
+                <h2 className="text-[11px] uppercase tracking-widest font-bold text-fg-muted group-hover:text-fg transition-colors">
+                  {g.label}
+                </h2>
+              </div>
+              <span className="text-[11px] text-fg-subtle">
+                {g.items.length} campanha{g.items.length === 1 ? "" : "s"}
+              </span>
+            </button>
+            {!isCollapsed && (
+              <div className="space-y-2">
+                {g.items.map((c) => (
+                  <CampaignCardV2
+                    key={c.short_token}
+                    campaign={c}
+                    onOpen={onOpen}
+                    onOpenReport={onOpenReport}
+                    teamMap={teamMap}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        );
+      })}
     </div>
   );
 }
@@ -540,7 +620,7 @@ function LoadingState({ layout }) {
       </div>
     );
   }
-  if (layout === "list") {
+  if (layout === "list" || layout === "performers") {
     return (
       <div className="rounded-xl border border-border bg-surface overflow-hidden">
         {Array.from({ length: 8 }).map((_, i) => (
@@ -586,10 +666,6 @@ function ActiveWorklistBanner({ activeKey, count, onClear }) {
       </button>
     </div>
   );
-}
-
-function hasAnyWorklistItem(wl) {
-  return Object.values(wl).some((b) => (b?.count || 0) > 0);
 }
 
 // Modais legacy ainda esperam um objeto modalTheme com 5 keys (modalBg,

@@ -116,24 +116,18 @@ export function aggregateClients(campaigns) {
 
     const active = group.filter((c) => c.end_date && c.end_date.slice(0, 10) >= today);
 
-    // Pacing médio (display + video, ativas só)
-    const pacingValues = [];
-    for (const c of active) {
-      if (c.display_pacing != null) pacingValues.push(Number(c.display_pacing));
-      if (c.video_pacing   != null) pacingValues.push(Number(c.video_pacing));
-    }
-    const avgPacing = pacingValues.length
-      ? Math.round((pacingValues.reduce((a, b) => a + b, 0) / pacingValues.length) * 10) / 10
+    // CTR/VTR/Pacing agregados via Σnumerador / Σdenominador. Espelha
+    // backend/clients.py#aggregate_clients_from_campaigns. Fallback é só
+    // usado quando o endpoint do backend não responde — paridade total.
+    const m = aggregateMetrics(active);
+    const dsp = m.dsp_pacing;
+    const vid = m.vid_pacing;
+    const pacingParts = [dsp, vid].filter((v) => v != null);
+    const avgPacing = pacingParts.length
+      ? Math.round((pacingParts.reduce((a, b) => a + b, 0) / pacingParts.length) * 10) / 10
       : null;
-
-    const ctrValues = active.map((c) => c.display_ctr).filter((v) => v != null).map(Number);
-    const vtrValues = active.map((c) => c.video_vtr  ).filter((v) => v != null).map(Number);
-    const avgCtr = ctrValues.length
-      ? Math.round((ctrValues.reduce((a, b) => a + b, 0) / ctrValues.length) * 100) / 100
-      : null;
-    const avgVtr = vtrValues.length
-      ? Math.round((vtrValues.reduce((a, b) => a + b, 0) / vtrValues.length) * 100) / 100
-      : null;
+    const avgCtr = m.ctr != null ? Math.round(m.ctr * 100) / 100 : null;
+    const avgVtr = m.vtr != null ? Math.round(m.vtr * 100) / 100 : null;
 
     // Top owners por frequência
     const topByEmail = (key, n) => {
@@ -163,6 +157,8 @@ export function aggregateClients(campaigns) {
       total_campaigns: group.length,
       active_campaigns: active.length,
       avg_pacing: avgPacing,
+      avg_dsp_pacing: dsp != null ? Math.round(dsp * 10) / 10 : null,
+      avg_vid_pacing: vid != null ? Math.round(vid * 10) / 10 : null,
       avg_ctr: avgCtr,
       avg_vtr: avgVtr,
       top_cp_owners: topByEmail("cp_email", 2),
@@ -179,6 +175,188 @@ export function aggregateClients(campaigns) {
       b.active_campaigns - a.active_campaigns ||
       b.total_campaigns  - a.total_campaigns  ||
       a.display_name.localeCompare(b.display_name)
+  );
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Métricas globais — KPIs no topo do menu admin
+//
+// Toda razão (CTR, VTR, Pacing, eCPM) é agregada via Σnumerador / Σdenominador.
+// Média de razões infla VTR > 100% e dá peso desproporcional a campanhas
+// pequenas com sorte. Os campos brutos vêm do backend (display_clicks,
+// video_viewable_completions, etc.) quando admin; sem brutos, retorna null.
+//
+// `ecpm_prev` compara cohort: campanhas que ENCERRARAM nos últimos 30
+// dias. Comparação honesta porque o eCPM lifetime delas é final
+// (impressões/custo já não mudam mais), enquanto o eCPM das ativas é
+// running. O delta indica como a nova safra se compara à que saiu.
+// ─────────────────────────────────────────────────────────────────────────────
+function sumField(set, field) {
+  let acc = 0;
+  for (const c of set) {
+    const v = c[field];
+    if (v != null) acc += Number(v) || 0;
+  }
+  return acc;
+}
+
+function meanOfField(set, field) {
+  const xs = [];
+  for (const c of set) {
+    const v = c[field];
+    if (v != null && Number.isFinite(Number(v))) xs.push(Number(v));
+  }
+  return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+}
+
+// Σnumerador / Σdenominador é o jeito correto de agregar razões.
+// Backend admin agora manda os brutos (display_clicks, video_impressions,
+// etc.). ENQUANTO o backend não estiver redeployado, os brutos podem estar
+// ausentes — neste caso caímos pra média simples das %-já-calculadas.
+// Não é correto matematicamente, mas evita "—" na UI durante a transição.
+// Quando todos os clientes do payload tiverem brutos, a fallback nunca dispara.
+function aggregateMetrics(set) {
+  const dClicks    = sumField(set, "display_clicks");
+  const dImpr      = sumField(set, "display_impressions");
+  const dViewable  = sumField(set, "display_viewable_impressions");
+  const dExpected  = sumField(set, "display_expected_impressions");
+  const vCompl     = sumField(set, "video_viewable_completions");
+  const vImpr      = sumField(set, "video_impressions");
+  const vExpected  = sumField(set, "video_expected_completions");
+  const cost       = sumField(set, "admin_total_cost");
+  const impr       = sumField(set, "admin_impressions");
+
+  return {
+    ctr:        dImpr     > 0 ? (dClicks   / dImpr)     * 100  : meanOfField(set, "display_ctr"),
+    vtr:        vImpr     > 0 ? (vCompl    / vImpr)     * 100  : meanOfField(set, "video_vtr"),
+    dsp_pacing: dExpected > 0 ? (dViewable / dExpected) * 100  : meanOfField(set, "display_pacing"),
+    vid_pacing: vExpected > 0 ? (vCompl    / vExpected) * 100  : meanOfField(set, "video_pacing"),
+    ecpm:       impr      > 0 ? (cost      / impr)      * 1000 : null,
+  };
+}
+
+export function computeMetricsSummary(campaigns) {
+  const today = TODAY();
+  const prev30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+
+  const active = (campaigns || []).filter(
+    (c) => c.end_date && c.end_date.slice(0, 10) >= today
+  );
+  const recentlyEnded = (campaigns || []).filter((c) => {
+    const end = c.end_date?.slice(0, 10);
+    return end && end >= prev30 && end < today;
+  });
+
+  const cur  = aggregateMetrics(active);
+  const prev = aggregateMetrics(recentlyEnded);
+
+  return {
+    active_count: active.length,
+    dsp_pacing:   cur.dsp_pacing,
+    vid_pacing:   cur.vid_pacing,
+    ctr:          cur.ctr,
+    vtr:          cur.vtr,
+    ecpm:         cur.ecpm,
+    ecpm_prev:    prev.ecpm,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Top Performers — ranking de CS/CP por performance das campanhas ativas
+//
+// Score por campanha (0–100):
+//   eCPM < R$ 0,70           → 35 pts (mais importante)
+//   Pacing avg em [100, 125] → 30 pts (range ideal). Decai linear fora:
+//                                90→100 e 125→150 dão crédito parcial.
+//   CTR > 0,25%              → 25 pts
+//   VTR > 80%                → 10 pts
+//
+// Score do owner = média do score das campanhas, ponderada por
+// admin_impressions (campanha grande pesa mais — evita distorção
+// por campanha pequenina com sorte). Sem impressões cai pra média simples.
+//
+// Retorna array ordenado desc por score. Caller resolve email → name.
+// ─────────────────────────────────────────────────────────────────────────────
+function pacingAvg(c) {
+  const dp = c.display_pacing != null ? Number(c.display_pacing) : null;
+  const vp = c.video_pacing   != null ? Number(c.video_pacing)   : null;
+  if (dp != null && vp != null) return (dp + vp) / 2;
+  if (dp != null) return dp;
+  if (vp != null) return vp;
+  return null;
+}
+
+function pacingScore(p) {
+  if (p == null) return 0;
+  if (p >= 100 && p <= 125) return 30;
+  if (p >= 90  && p <  100) return 30 * ((p - 90) / 10);
+  if (p >  125 && p <= 150) return 30 * ((150 - p) / 25);
+  return 0;
+}
+
+function scoreCampaign(c) {
+  let s = 0;
+  if (c.admin_ecpm != null && Number(c.admin_ecpm) < 0.70) s += 35;
+  s += pacingScore(pacingAvg(c));
+  if (c.display_ctr != null && Number(c.display_ctr) > 0.25) s += 25;
+  if (c.video_vtr   != null && Number(c.video_vtr)   > 80)   s += 10;
+  return s;
+}
+
+export function computeTopPerformers(campaigns, ownerKey = "cs_email") {
+  const today = TODAY();
+  const active = (campaigns || []).filter(
+    (c) => c.end_date && c.end_date.slice(0, 10) >= today
+  );
+
+  const byOwner = new Map();
+  for (const c of active) {
+    const email = c[ownerKey];
+    if (!email) continue;
+    if (!byOwner.has(email)) byOwner.set(email, []);
+    byOwner.get(email).push(c);
+  }
+
+  const out = [];
+  for (const [email, list] of byOwner.entries()) {
+    let scoreSum = 0;
+    let weightSum = 0;
+    let idealPacing = 0;
+
+    for (const c of list) {
+      const s = scoreCampaign(c);
+      const w = c.admin_impressions ? Number(c.admin_impressions) : 1;
+      scoreSum  += s * w;
+      weightSum += w;
+
+      const p = pacingAvg(c);
+      if (p != null && p >= 100 && p <= 125) idealPacing++;
+    }
+
+    // Métricas exibidas: agregação correta via Σnumerador / Σdenominador
+    // sobre as campanhas do owner (ver aggregateMetrics).
+    const m = aggregateMetrics(list);
+    const score = weightSum > 0 ? scoreSum / weightSum : 0;
+
+    out.push({
+      email,
+      score: Math.round(score * 10) / 10,
+      campaign_count: list.length,
+      ideal_pacing_count: idealPacing,
+      ecpm_avg:   m.ecpm,
+      dsp_pacing: m.dsp_pacing,
+      vid_pacing: m.vid_pacing,
+      ctr:        m.ctr,
+      vtr:        m.vtr,
+    });
+  }
+
+  out.sort(
+    (a, b) =>
+      b.score - a.score ||
+      b.campaign_count - a.campaign_count ||
+      a.email.localeCompare(b.email)
   );
   return out;
 }
