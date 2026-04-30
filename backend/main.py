@@ -13,6 +13,10 @@ Changelog:
     SQL consolidado (5 full scans → 3), enrichments owners/overrides/shares
     rodam em paralelo com a query principal, caches dedicados pra overrides
     e shares (TTL 300s), Cache-Control e Server-Timing nos endpoints da lista
+  - perf(report): TTL 120s→600s, single-flight POR TOKEN (dois CSs no mesmo
+    report = 1 query), query_totals roda perf+checklist em paralelo,
+    query_campaign_info dispara junto com auxiliares (não bloqueia mais),
+    Cache-Control e Server-Timing no endpoint ?token=
 """
 
 import functions_framework
@@ -58,7 +62,7 @@ clients.set_bq_client(bq)
 #     save_report_owner) limpam o cache do token afetado
 #   - ?refresh=true força bypass de cache na request atual
 # ─────────────────────────────────────────────────────────────────────────────
-_REPORT_CACHE_TTL  = 120
+_REPORT_CACHE_TTL  = 600
 # Lista admin: era 60s e estava queimando o usuário em todo cache miss. O menu
 # é aberto, fechado e reaberto várias vezes ao longo do dia — um TTL de 5 min
 # mantém a UX instantânea sem comprometer frescor (mutações de admin já
@@ -160,6 +164,57 @@ def _get_campaigns_list_cached(force_refresh=False):
         data = query_campaigns_list()
         _cache_set(_list_cache, "all", data)
         return data, False  # (data, miss)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Single-flight POR TOKEN para reports.
+#
+# Cenário: dois CSs olhando o mesmo report ao mesmo tempo (frequente — gerente
+# acompanha o que o time abre, ou cliente recebe link e clica antes do CS
+# fechar). Sem coordenação, ambos pagam a query inteira.
+#
+# Diferente do single-flight da lista, aqui usamos um dict de Locks por token
+# em vez de um lock global — duas requests em reports DIFERENTES não devem
+# bloquear uma à outra. O dict de locks é protegido por _token_lock_dict_lock
+# pra evitar race ao criar uma entrada nova.
+# ─────────────────────────────────────────────────────────────────────────────
+_token_locks = {}  # short_token -> threading.Lock
+_token_lock_dict_lock = threading.Lock()
+
+
+def _get_token_lock(short_token):
+    """Devolve o Lock dedicado deste token (cria sob demanda)."""
+    with _token_lock_dict_lock:
+        lock = _token_locks.get(short_token)
+        if lock is None:
+            lock = threading.Lock()
+            _token_locks[short_token] = lock
+        return lock
+
+
+def _get_report_cached(short_token, force_refresh=False):
+    """Wrapper single-flight em torno de fetch_campaign_data().
+
+    Garante que dois requests pro mesmo token resolvem com 1 query.
+    Requests pra tokens diferentes não bloqueiam entre si.
+    """
+    if not force_refresh:
+        cached = _cache_get(_report_cache, short_token, _REPORT_CACHE_TTL)
+        if cached is not None:
+            return cached, True
+
+    lock = _get_token_lock(short_token)
+    with lock:
+        # Double-check
+        if not force_refresh:
+            cached = _cache_get(_report_cache, short_token, _REPORT_CACHE_TTL)
+            if cached is not None:
+                return cached, True
+        data = fetch_campaign_data(short_token)
+        if data is None:
+            return None, False
+        _cache_set(_report_cache, short_token, data)
+        return data, False
 
 
 # Pool reutilizado entre invocações da mesma instância para evitar criar/destruir
@@ -661,17 +716,26 @@ def report_data(request):
         return (jsonify({"error": "Parâmetro 'token' é obrigatório"}), 400, headers)
 
     try:
+        t0 = time.time()
         force_refresh = request.args.get("refresh") == "true"
         if force_refresh:
             _cache_invalidate_token(short_token)
-        cached = _cache_get(_report_cache, short_token, _REPORT_CACHE_TTL)
-        if cached is not None:
-            return (jsonify({**cached, "_cache": "hit"}), 200, headers)
-        data = fetch_campaign_data(short_token)
-        if not data:
+        data, hit = _get_report_cached(short_token, force_refresh=force_refresh)
+        if data is None:
             return (jsonify({"error": "Campanha não encontrada"}), 404, headers)
-        _cache_set(_report_cache, short_token, data)
-        return (jsonify({**data, "_cache": "miss"}), 200, headers)
+        total_ms = int((time.time() - t0) * 1000)
+        resp_headers = {
+            **headers,
+            # Cache no browser por 60s. Reports não mudam intra-sessão (pipeline
+            # roda algumas vezes ao dia), e mutações no admin já invalidam.
+            "Cache-Control": "private, max-age=60",
+            "Server-Timing": f"report;dur={total_ms};desc=\"{'hit' if hit else 'miss'}\"",
+        }
+        return (
+            jsonify({**data, "_cache": "hit" if hit else "miss"}),
+            200,
+            resp_headers,
+        )
     except Exception as e:
         print(f"[ERROR] {e}")
         return (jsonify({"error": "Erro interno ao buscar dados"}), 500, headers)
@@ -682,21 +746,27 @@ def fetch_campaign_data(short_token):
     Busca todos os dados de um report.
 
     Estratégia:
-      1) query_campaign_info bloqueante (precisa de start_date/end_date para
-         alimentar query_totals).
-      2) Se não houver campaign_info, retorna None imediatamente.
-      3) Roda as 8 queries restantes em paralelo (ThreadPoolExecutor).
-         BigQuery client libera GIL no I/O, então threads escalam bem.
+      Apenas `query_totals` depende de `campaign_info` (precisa de start_date/end_date
+      pra cálculo de pacing). Todas as outras queries só precisam do short_token.
+      Então:
+        1) Disparamos campaign_info + 7 queries auxiliares em paralelo.
+        2) Quando campaign_info volta, disparamos totals (que depende dela).
+        3) Esperamos o resto.
 
-    Antes (serial): ~6-10s típico.
-    Depois (paralelo): tempo do pior caso (~1.5-3s, geralmente query_totals).
+      Antes (campaign_info bloqueante): campaign_info → max(8 queries) ≈ 1s + 2s = 3s
+      Depois: max(campaign_info + totals, max(7 outras)) ≈ max(3s, 1.5s) = 3s
+
+      O ganho real em wallclock é o tempo de campaign_info (~0.5-1s) que era pago
+      duas vezes — uma como bloqueante e outra dentro de totals. As queries auxiliares
+      (logo, loom, rmnd, pdooh, survey) são mais leves e terminam antes de totals.
+
+      Se campaign_info retornar None (campanha não existe), cancelamos as auxiliares
+      e retornamos None — auxiliares são fire-and-forget; o ThreadPool continua
+      executando-as mas o resultado é descartado, sem custo perceptível.
     """
-    campaign_info = query_campaign_info(short_token)
-    if not campaign_info:
-        return None
-
-    tasks = {
-        "totals": _query_pool.submit(query_totals, short_token, campaign_info),
+    # Dispara campaign_info + auxiliares simultaneamente
+    fut_campaign = _query_pool.submit(query_campaign_info, short_token)
+    aux_tasks = {
         "daily":  _query_pool.submit(query_daily,  short_token),
         "detail": _query_pool.submit(query_detail, short_token),
         "logo":   _query_pool.submit(query_logo,   short_token),
@@ -706,18 +776,34 @@ def fetch_campaign_data(short_token):
         "survey": _query_pool.submit(query_survey, short_token),
     }
 
+    campaign_info = fut_campaign.result()
+    if not campaign_info:
+        # Auxiliares já em voo; resultado é descartado naturalmente quando os
+        # futures saem de escopo. Custo desprezível pra um caso raro.
+        return None
+
+    # totals é o único que depende de campaign_info — dispara agora
+    fut_totals = _query_pool.submit(query_totals, short_token, campaign_info)
+
     result = {"campaign": campaign_info}
-    for key, future in tasks.items():
-        try:
-            result[key] = future.result()
-        except Exception as e:
-            # Falha em uma query auxiliar não deve derrubar o report inteiro.
-            # Front sabe lidar com chaves nulas (logo, loom, survey, rmnd, pdooh).
-            # Para totals/daily/detail logamos e retornamos vazio para que a UI
-            # mostre "sem dados" em vez de erro 500.
-            print(f"[WARN fetch_campaign_data {key}] {e}")
-            result[key] = None if key in ("logo", "loom", "rmnd", "pdooh", "survey") else []
+    result["totals"] = _safe_future_result(fut_totals, "totals", default=[])
+    for key, future in aux_tasks.items():
+        # Falha em uma query auxiliar não deve derrubar o report inteiro.
+        # Front sabe lidar com chaves nulas (logo, loom, survey, rmnd, pdooh).
+        # Para daily/detail logamos e retornamos vazio para que a UI mostre
+        # "sem dados" em vez de erro 500.
+        nullable = key in ("logo", "loom", "rmnd", "pdooh", "survey")
+        result[key] = _safe_future_result(future, key, default=None if nullable else [])
     return result
+
+
+def _safe_future_result(future, label, default):
+    """Resolve um future logando exceções em vez de propagá-las."""
+    try:
+        return future.result()
+    except Exception as e:
+        print(f"[WARN fetch_campaign_data {label}] {e}")
+        return default
 
 
 def table_ref():
@@ -1032,13 +1118,22 @@ def query_totals(token, campaign_info):
         WHERE short_token = @token
     """
 
-    # unified_daily_performance_metrics está na região US — passar location explícito
+    # unified_daily_performance_metrics está na região US — passar location explícito.
+    # As 2 queries (perf + checklist) são independentes e tocam tabelas diferentes —
+    # rodar em paralelo via _query_pool corta a latência pela metade no caminho
+    # crítico do report (essa função é a query mais pesada de fetch_campaign_data).
     job_config = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("token", "STRING", token)
     ])
 
-    perf_rows  = list(bq.query(sql_perf,      job_config=job_config, location="US").result())
-    check_rows = list(bq.query(sql_checklist, job_config=job_config, location="US").result())
+    fut_perf  = _query_pool.submit(
+        lambda: list(bq.query(sql_perf, job_config=job_config, location="US").result())
+    )
+    fut_check = _query_pool.submit(
+        lambda: list(bq.query(sql_checklist, job_config=job_config, location="US").result())
+    )
+    perf_rows  = fut_perf.result()
+    check_rows = fut_check.result()
 
     if not check_rows:
         return []
