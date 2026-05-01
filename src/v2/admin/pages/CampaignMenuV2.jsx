@@ -422,7 +422,13 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
         {loading ? (
           <LoadingState layout={layout} />
         ) : layout === "month" ? (
-          <MonthLayout groups={monthGroups} onOpen={handleOpenDrawer} onOpenReport={onOpenReport} teamMap={teamMap} />
+          <MonthLayout
+            groups={monthGroups}
+            onOpen={handleOpenDrawer}
+            onOpenReport={onOpenReport}
+            teamMap={teamMap}
+            forceExpanded={!!(search.trim() || ownerFilter || activeWorklist)}
+          />
         ) : layout === "client" ? (
           <ClientLayout clients={filteredClients} onOpen={handleOpenClient} />
         ) : layout === "performers" ? (
@@ -527,22 +533,29 @@ function uniqueClientNames(campaigns) {
 // Sub-componentes
 // ─────────────────────────────────────────────────────────────────────────────
 
-function MonthLayout({ groups, onOpen, onOpenReport, teamMap }) {
+function MonthLayout({ groups, onOpen, onOpenReport, teamMap, forceExpanded = false }) {
   const currentYM = new Date().toISOString().slice(0, 7);
 
   // Estado de colapso por chave de mês. Default: meses passados começam
-  // colapsados, mês atual e futuros expandidos. Toggles do user persistem
-  // entre filtros — useEffect só inicializa chaves NOVAS, sem sobrescrever.
+  // colapsados, mês atual/futuros expandidos, E o mês mais recente da lista
+  // sempre aberto (mesmo se for passado — ex: dia 1 do mês novo, sem dados
+  // ainda no mês corrente). Toggles do user persistem entre filtros —
+  // useEffect só inicializa chaves NOVAS, sem sobrescrever.
   const [collapsed, setCollapsed] = useState({});
 
   useEffect(() => {
     setCollapsed((prev) => {
       const next = { ...prev };
       let changed = false;
+      const mostRecentKey = groups
+        .map((g) => g.key)
+        .filter((k) => k !== "no-date")
+        .sort()
+        .at(-1);
       for (const g of groups) {
         if (g.key === "no-date") continue;
         if (!(g.key in next)) {
-          next[g.key] = g.key < currentYM;
+          next[g.key] = g.key < currentYM && g.key !== mostRecentKey;
           changed = true;
         }
       }
@@ -567,7 +580,7 @@ function MonthLayout({ groups, onOpen, onOpenReport, teamMap }) {
     <div className="space-y-8">
       {groups.map((g) => {
         const canCollapse = g.key !== "no-date";
-        const isCollapsed = canCollapse && !!collapsed[g.key];
+        const isCollapsed = canCollapse && !forceExpanded && !!collapsed[g.key];
         return (
           <section key={g.key}>
             <button
