@@ -108,6 +108,31 @@ function writeTacticToUrl(paramKey, tactic) {
   }
 }
 
+// Merge Reports — `?view=<token>` permite drill-down dentro de um report
+// agregado pra ver dados de um único membro do grupo. Sem view → modo
+// agregado (default quando o token base pertence a um grupo).
+function readViewFromUrl() {
+  if (typeof window === "undefined") return null;
+  try {
+    const v = new URLSearchParams(window.location.search).get("view");
+    return v && v.trim() ? v.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeViewToUrl(view) {
+  if (typeof window === "undefined") return;
+  try {
+    const url = new URL(window.location.href);
+    if (!view) url.searchParams.delete("view");
+    else      url.searchParams.set("view", view);
+    window.history.replaceState({}, "", url.toString());
+  } catch {
+    /* noop */
+  }
+}
+
 // ─── Componente principal ──────────────────────────────────────────────
 
 export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
@@ -122,6 +147,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   const [videoTactic, setVideoTacticState] = useState(() =>
     readTacticFromUrl("video_tactic"),
   );
+  const [view, setViewState] = useState(() => readViewFromUrl());
 
   const [displayLines, setDisplayLines] = useState([]);
   const [videoLines, setVideoLines] = useState([]);
@@ -142,11 +168,18 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     setVideoTacticState(t);
     writeTacticToUrl("video_tactic", t);
   };
+  const setView = (v) => {
+    setViewState(v);
+    writeViewToUrl(v);
+  };
 
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
-    getCampaign(token)
+    // Não chamamos setData(null) aqui — manter o payload anterior durante
+    // o refetch (ex: trocar de visão agregada → Fev) é UX melhor que flash
+    // de skeleton. Os componentes filhos rerenderizam quando `data` chega.
+    getCampaign(token, view ? { view } : undefined)
       .then((d) => {
         if (cancelled) return;
         setData(d);
@@ -159,7 +192,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, view]);
 
   useEffect(() => {
     const onPop = () => {
@@ -167,6 +200,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
       setTabState(readTabFromUrl());
       setDisplayTacticState(readTacticFromUrl("display_tactic"));
       setVideoTacticState(readTacticFromUrl("video_tactic"));
+      setViewState(readViewFromUrl());
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -260,6 +294,9 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
             startDate={camp.start_date}
             endDate={camp.end_date}
             shortToken={camp.short_token || token}
+            mergeMeta={data.merge_meta}
+            currentView={view}
+            onViewChange={setView}
           />
 
           {/* Tabs com filtro de período alinhado à direita */}
@@ -343,6 +380,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 token={token}
                 isAdmin={isAdmin}
                 adminJwt={adminJwt}
+                mergeMeta={data.merge_meta}
               />
             </TabsContent>
 

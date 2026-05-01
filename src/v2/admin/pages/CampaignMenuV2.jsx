@@ -35,6 +35,7 @@ import LoomModal from "../../../components/modals/LoomModal";
 import SurveyModal from "../../../components/modals/SurveyModal";
 import LogoModal from "../../../components/modals/LogoModal";
 import OwnerModal from "../../../components/modals/OwnerModal";
+import MergeModal from "../../../components/modals/MergeModal";
 import AliasesModal from "../../../components/modals/AliasesModal";
 
 import { Button } from "../../../ui/Button";
@@ -88,6 +89,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   const [surveyModal, setSurveyModal]     = useState(null);
   const [logoModal, setLogoModal]         = useState(null);
   const [ownerModal, setOwnerModal]       = useState(null);
+  const [mergeModal, setMergeModal]       = useState(null);
   const [showAliases, setShowAliases]     = useState(false);
 
   // Theme — single source of truth via hook V2 (aplica data-theme no
@@ -271,6 +273,16 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
       )
     );
     setOwnerModal(null);
+  }, []);
+
+  // Após salvar/desfazer merge, refaz a lista para que o backend devolva
+  // os tokens com merge_id atualizado. Mais simples que tentar manter
+  // estado local sincronizado com várias campanhas afetadas (até N tokens
+  // do grupo mudam de uma vez). 1 round-trip extra, aceitável após ação
+  // pouco frequente.
+  const handleMergeSaved = useCallback(() => {
+    setMergeModal(null);
+    listCampaigns().then((camps) => setCampaigns(camps)).catch(() => { /* keep stale */ });
   }, []);
 
   // Após salvar/remover alias, refaz a lista de campanhas pra que o
@@ -462,6 +474,10 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           });
           handleCloseDrawer();
         }}
+        onMerge={(c) => {
+          setMergeModal(c);
+          handleCloseDrawer();
+        }}
         onOpenReport={onOpenReport}
         teamMap={teamMap}
       />
@@ -503,6 +519,14 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           teamMembers={teamMembers}
           onSaved={handleOwnerSaved}
           onClose={() => setOwnerModal(null)}
+          theme={legacyModalTheme(isDark)}
+        />
+      )}
+      {mergeModal && (
+        <MergeModal
+          campaign={mergeModal}
+          onSaved={handleMergeSaved}
+          onClose={() => setMergeModal(null)}
           theme={legacyModalTheme(isDark)}
         />
       )}

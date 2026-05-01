@@ -45,9 +45,17 @@ async function postJson(url, body, extraHeaders = {}) {
  * Busca dados completos de uma campanha pelo short_token.
  * Lança erro em status != 2xx ou se response.campaign for null.
  * Usado pelo ClientDashboard ao carregar /report/:token.
+ *
+ * `options.view` (opcional, string): quando o token base pertence a um
+ * grupo Merge Reports, passar `view` como o short_token de um membro
+ * faz o backend devolver apenas os dados desse membro (drill-down "ver
+ * só fevereiro" dentro do report agregado). Sem `view`, o backend
+ * detecta o grupo e devolve o payload merged com `merge_meta`.
  */
-export async function getCampaign(token) {
-  const r = await fetch(`${API_URL}?token=${encodeURIComponent(token)}`);
+export async function getCampaign(token, options = {}) {
+  const params = new URLSearchParams({ token });
+  if (options.view) params.set("view", options.view);
+  const r = await fetch(`${API_URL}?${params.toString()}`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
   if (!d.campaign) throw new Error("Campanha não encontrada");
@@ -488,4 +496,88 @@ export async function saveUpload({ short_token, type, data_json, adminJwt }) {
     { short_token, type, data_json },
     adminAuthHeaders(adminJwt),
   );
+}
+
+// ── Merge Reports (admin) ────────────────────────────────────────────────────
+// Unifica múltiplos PIs (short_tokens) do mesmo cliente em um único link
+// público. Todas as ações exigem JWT admin. Os endpoints invalidam cache
+// dos tokens afetados no backend; o caller refaz `listCampaigns()` pra
+// pegar o estado atualizado (badges merged, etc).
+
+async function jsonOrError(r, label) {
+  if (r.ok) return r.json();
+  let msg = `HTTP ${r.status}`;
+  try {
+    const d = await r.json();
+    if (d?.error) msg = d.error;
+  } catch { /* keep generic */ }
+  throw new Error(`${label}: ${msg}`);
+}
+
+/** Lista tokens elegíveis para merge com `short_token` (mesmo cliente). */
+export async function listMergeableTokens(short_token) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=list_mergeable_tokens&token=${encodeURIComponent(short_token)}`,
+    { headers: { ...adminAuthHeaders(jwt) } },
+  );
+  const data = await jsonOrError(r, "list_mergeable_tokens");
+  return data.tokens || [];
+}
+
+/** Busca estado completo de um grupo (membros + config). */
+export async function getMergeGroup(merge_id) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=get_merge_group&merge_id=${encodeURIComponent(merge_id)}`,
+    { headers: { ...adminAuthHeaders(jwt) } },
+  );
+  const data = await jsonOrError(r, "get_merge_group");
+  return data.group;
+}
+
+/**
+ * Cria/anexa tokens em um grupo merge. Se nenhum dos `tokens` está em grupo,
+ * cria um novo. Se algum já está, anexa os outros a esse mesmo grupo.
+ *
+ * `rmnd_mode` / `pdooh_mode`: "merge" | "latest" | undefined (default = "merge")
+ */
+export async function mergeTokens({ tokens, rmnd_mode, pdooh_mode }) {
+  const jwt = await getOrIssueAdminJwt();
+  const body = { tokens };
+  if (rmnd_mode  !== undefined) body.rmnd_mode  = rmnd_mode;
+  if (pdooh_mode !== undefined) body.pdooh_mode = pdooh_mode;
+  const r = await postJson(
+    `${API_URL}?action=merge_tokens`,
+    body,
+    adminAuthHeaders(jwt),
+  );
+  const data = await jsonOrError(r, "merge_tokens");
+  return data.group;
+}
+
+/** Remove `short_token` do seu grupo. Se sobrar 1 token, dissolve o grupo. */
+export async function unmergeToken(short_token) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=unmerge_token`,
+    { short_token },
+    adminAuthHeaders(jwt),
+  );
+  return jsonOrError(r, "unmerge_token");
+}
+
+/** Atualiza rmnd_mode / pdooh_mode de um grupo existente. */
+export async function updateMergeSettings({ merge_id, rmnd_mode, pdooh_mode }) {
+  const jwt = await getOrIssueAdminJwt();
+  const body = { merge_id };
+  if (rmnd_mode  !== undefined) body.rmnd_mode  = rmnd_mode;
+  if (pdooh_mode !== undefined) body.pdooh_mode = pdooh_mode;
+  const r = await postJson(
+    `${API_URL}?action=update_merge_settings`,
+    body,
+    adminAuthHeaders(jwt),
+  );
+  const data = await jsonOrError(r, "update_merge_settings");
+  return data.group;
 }

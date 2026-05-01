@@ -43,7 +43,7 @@ import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
 import { DailyAggregateTableV2 } from "../components/DailyAggregateTableV2";
 import { AlcanceFrequenciaV2 } from "../components/AlcanceFrequenciaV2";
 
-export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt }) {
+export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt, mergeMeta = null }) {
   const camp = data.campaign;
   const {
     totalImpressions, totalCusto, totalCustoOver,
@@ -51,6 +51,18 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt 
     isFiltered, budgetProRata, budgetTotal,
     chartDisplay, chartVideo, daily0,
   } = aggregates;
+
+  // Quando o report é merged em visão agregada, o pacing/over reflete
+  // SOMENTE o token ativo (regra de negócio). Anexamos o sufixo " · Mês"
+  // nos labels pra deixar claro qual mês está sendo medido — evita o
+  // usuário ler "PACING DISPLAY 386%" e achar que é da campanha inteira.
+  const activeMemberMonth = (() => {
+    if (!mergeMeta) return null;
+    const active = (mergeMeta.members || []).find((m) => m.is_active);
+    if (!active?.start_date) return null;
+    return formatMonthShortPT(active.start_date);
+  })();
+  const pacingSuffix = activeMemberMonth ? ` · ${activeMemberMonth}` : "";
 
   const hasDisplay = display.length > 0;
   const hasVideo = video.length > 0;
@@ -161,7 +173,7 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt 
             há filtro, ocupa esse slot com Custo+Over como fallback). */}
         {!isFiltered && pacingGeral > 0 ? (
           <KpiCardV2
-            label="Pacing Geral"
+            label={`Pacing Geral${pacingSuffix}`}
             value={
               <span className="inline-flex items-center gap-2 flex-wrap">
                 <span>{fmt(pacingGeral, 1)}%</span>
@@ -169,7 +181,11 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt 
               </span>
             }
             accent={pacingGeral >= 90 && pacingGeral <= 110}
-            hint="Média ponderada de pacing Display + Video pelo budget contratado."
+            hint={
+              activeMemberMonth
+                ? `Pacing do token ativo (${activeMemberMonth}). Investimentos e entregas somam todos os meses; pacing reflete só o mês corrente.`
+                : "Média ponderada de pacing Display + Video pelo budget contratado."
+            }
           />
         ) : (
           <KpiCardV2
@@ -188,7 +204,7 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt 
         <div className={`grid grid-cols-1 gap-3 ${hasDisplay && hasVideo ? "md:grid-cols-2" : ""}`}>
           {hasDisplay && (
             <PacingBarV2
-              label="Pacing Display"
+              label={`Pacing Display${pacingSuffix}`}
               pacing={pacingDisplay}
               budget={(display[0]?.o2o_display_budget || 0) + (display[0]?.ooh_display_budget || 0)}
               cost={display.reduce((s, r) => s + (r.effective_total_cost || 0), 0)}
@@ -196,7 +212,7 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt 
           )}
           {hasVideo && (
             <PacingBarV2
-              label="Pacing Video"
+              label={`Pacing Video${pacingSuffix}`}
               pacing={pacingVideo}
               budget={(video[0]?.o2o_video_budget || 0) + (video[0]?.ooh_video_budget || 0)}
               cost={video.reduce((s, r) => s + (r.effective_total_cost || 0), 0)}
@@ -401,4 +417,17 @@ function CheckIcon({ className }) {
       <polyline points="20 6 9 17 4 12" />
     </svg>
   );
+}
+
+// "2026-02-01" → "Fev 26". Usado no sufixo dos labels de pacing quando
+// o report é mesclado em visão agregada — deixa explícito qual mês o
+// pacing está medindo (token ativo).
+function formatMonthShortPT(ymd) {
+  if (!ymd || typeof ymd !== "string") return null;
+  const [yStr, mStr] = ymd.split("-");
+  const y = Number(yStr);
+  const m = Number(mStr);
+  if (!y || !m) return null;
+  const MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+  return `${MESES[m - 1]} ${String(y).slice(-2)}`;
 }

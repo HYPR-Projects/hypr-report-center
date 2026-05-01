@@ -54,11 +54,21 @@ export function CampaignHeaderV2({
   startDate,
   endDate,
   shortToken, // ex: "UT10QW" — vai no token-badge à direita do meta
+  // ── Merge Reports ────────────────────────────────────────────────────
+  // Quando o report é uma campanha mesclada, `mergeMeta` traz o grupo
+  // (members + active_token). `currentView` reflete a URL `?view=<token>`:
+  //   null → visão agregada (default)
+  //   "<token>" → drill-down em um membro
+  // `onViewChange` recebe o novo valor (null ou short_token).
+  mergeMeta = null,
+  currentView = null,
+  onViewChange,
 }) {
   const status = deriveStatus(startDate, endDate);
   const start = fmtDateShort(startDate);
   const end = fmtDateShort(endDate);
   const days = daysBetween(startDate, endDate);
+  const isMerged = !!mergeMeta;
 
   // Logo dinâmica entre temas com UMA única imagem
   // ──────────────────────────────────────────────
@@ -130,7 +140,7 @@ export function CampaignHeaderV2({
                 <span className="tabular-nums">{days} {days === 1 ? "dia" : "dias"}</span>
               </>
             )}
-            {shortToken && (
+            {shortToken && !isMerged && (
               <>
                 <span className="text-fg-subtle">·</span>
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-signature-soft border border-signature/40 text-signature text-[11px] font-bold tracking-wider">
@@ -139,7 +149,29 @@ export function CampaignHeaderV2({
                 </span>
               </>
             )}
+            {isMerged && (
+              <>
+                <span className="text-fg-subtle">·</span>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-signature-soft border border-signature/40 text-signature text-[11px] font-bold tracking-wider">
+                  <MergeIcon className="size-3" />
+                  {mergeMeta.members.length} reports unificados
+                </span>
+              </>
+            )}
           </div>
+
+          {/* Filtro de visão (Merge Reports) — pills com "Visão agregada"
+              + cada membro. Aparece apenas quando o report é mesclado.
+              Default = agregada. Click em outro pill faz refetch via
+              ?view=<token> e renderiza dados single-token. */}
+          {isMerged && (
+            <MergeViewSwitcher
+              members={mergeMeta.members}
+              activeToken={mergeMeta.active_token}
+              currentView={currentView}
+              onChange={onViewChange}
+            />
+          )}
         </div>
 
         {/* Logo do cliente — img quando o admin fez upload, senão fallback
@@ -215,4 +247,113 @@ function CircleIcon({ className }) {
       <path d="M12 8v4M12 16h.01" />
     </svg>
   );
+}
+
+function MergeIcon({ className }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="6"  cy="6"  r="2.5" />
+      <circle cx="6"  cy="18" r="2.5" />
+      <circle cx="18" cy="12" r="2.5" />
+      <path d="M9 6c4 0 6 2 6 6M9 18c4 0 6-2 6-6" />
+    </svg>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MergeViewSwitcher — pills "Visão agregada" + cada membro do grupo.
+// Default = agregada (currentView === null). Click em outra pill atualiza
+// URL `?view=<token>` e o ClientDashboardV2 refaz a chamada single-token.
+// ─────────────────────────────────────────────────────────────────────────────
+function MergeViewSwitcher({ members, activeToken, currentView, onChange }) {
+  const sortedMembers = [...(members || [])].sort((a, b) =>
+    (a.start_date || "").localeCompare(b.start_date || "")
+  );
+  return (
+    <div className="mt-4 flex items-center gap-1.5 flex-wrap">
+      <ViewPill
+        label="Visão agregada"
+        sublabel="todos os meses"
+        selected={!currentView}
+        onClick={() => onChange?.(null)}
+      />
+      {sortedMembers.map((m) => {
+        const isActive = m.short_token === activeToken;
+        const monthLabel = formatMonthShort(m.start_date);
+        return (
+          <ViewPill
+            key={m.short_token}
+            label={monthLabel || m.short_token}
+            sublabel={
+              <span className="font-mono text-[9px]">{m.short_token}</span>
+            }
+            selected={currentView === m.short_token}
+            badge={isActive ? "atual" : null}
+            onClick={() => onChange?.(m.short_token)}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function ViewPill({ label, sublabel, selected, badge, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        "inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-semibold border transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
+        selected
+          ? "bg-signature text-white border-signature hover:bg-signature-hover"
+          : "bg-surface-2 text-fg-muted border-border hover:text-fg hover:bg-surface-3 hover:border-signature/40",
+      ].join(" ")}
+    >
+      <span>{label}</span>
+      {sublabel && (
+        <span
+          className={
+            selected
+              ? "text-white/70"
+              : "text-fg-subtle"
+          }
+        >
+          {sublabel}
+        </span>
+      )}
+      {badge && (
+        <span
+          className={[
+            "text-[8.5px] uppercase tracking-widest font-bold px-1 py-px rounded",
+            selected
+              ? "bg-white/20 text-white"
+              : "bg-success/15 text-success",
+          ].join(" ")}
+        >
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
+// "2026-02-01" → "Fev 26"
+function formatMonthShort(ymd) {
+  if (!ymd || typeof ymd !== "string") return null;
+  const [yStr, mStr] = ymd.split("-");
+  const y = Number(yStr);
+  const m = Number(mStr);
+  if (!y || !m) return null;
+  const MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+  return `${MESES[m - 1]} ${String(y).slice(-2)}`;
 }

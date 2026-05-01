@@ -118,6 +118,7 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
     video_vtr,
     cp_email,
     cs_email,
+    merge_id,
   } = campaign;
 
   const ended  = isCampaignEnded(end_date);
@@ -166,6 +167,14 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
           <span className="font-mono text-[9.5px] text-fg-subtle tracking-wider px-1 rounded bg-canvas-elevated">
             {short_token}
           </span>
+          {merge_id && (
+            <span
+              className="text-[8.5px] uppercase tracking-widest font-bold text-signature px-1 rounded bg-signature/10"
+              title="Pertence a um grupo de Merge Reports"
+            >
+              merge
+            </span>
+          )}
         </div>
         <p className="text-[11px] text-fg-muted truncate mt-0.5">{campaign_name}</p>
       </div>

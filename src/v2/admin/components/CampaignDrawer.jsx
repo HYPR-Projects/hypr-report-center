@@ -60,6 +60,14 @@ const ICON = {
       <path d="M4 21v-1a8 8 0 0 1 16 0v1" />
     </svg>
   ),
+  merge: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="6"  cy="6"  r="3" />
+      <circle cx="6"  cy="18" r="3" />
+      <circle cx="18" cy="12" r="3" />
+      <path d="M9 6c4 0 6 2 6 6M9 18c4 0 6-2 6-6" />
+    </svg>
+  ),
   external: (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
@@ -83,6 +91,7 @@ export function CampaignDrawer({
   onSurvey,
   onLogo,
   onOwner,
+  onMerge,
   onOpenReport,
   teamMap = {},
 }) {
@@ -106,6 +115,7 @@ export function CampaignDrawer({
     video_vtr,
     cp_email,
     cs_email,
+    merge_id,
   } = campaign;
 
   const cpName = cp_email ? (teamMap[cp_email] || localPartFromEmail(cp_email)) : null;
@@ -122,6 +132,19 @@ export function CampaignDrawer({
       <DrawerContent>
         <DrawerHeader title={client_name} subtitle={`${campaign_name}  ·  ${short_token}`} />
         <DrawerBody>
+          {/* Badge "mesclado" — sinaliza que ações como Loom/Logo/Survey
+              continuam afetando ESTE token, mas o report público mostra
+              dados unificados de todos os membros do grupo. */}
+          {merge_id && (
+            <div className="mb-4 px-3 py-2 rounded-lg bg-signature/8 border border-signature/30 flex items-center gap-2">
+              <span className="text-signature shrink-0">{ICON.merge}</span>
+              <p className="text-xs text-fg-muted leading-snug">
+                <span className="text-fg font-semibold">Mesclado</span> com outros tokens deste cliente.
+                O link do report mostra a visão unificada.
+              </p>
+            </div>
+          )}
+
           {/* Date range */}
           <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-1">
             Período
@@ -177,6 +200,12 @@ export function CampaignDrawer({
               onClick={() => onCopyLink?.(campaign)}
             />
             <ActionButton icon={ICON.owner}  label="Gerenciar owner (CP/CS)" onClick={() => onOwner?.(campaign)} />
+            <ActionButton
+              icon={ICON.merge}
+              label={merge_id ? "Gerenciar merge (mesclado)" : "Mesclar com outros tokens"}
+              variant={merge_id ? "highlight" : "default"}
+              onClick={() => onMerge?.(campaign)}
+            />
             <ActionButton icon={ICON.loom}   label="Adicionar/editar Loom"    onClick={() => onLoom?.(short_token)} />
             <ActionButton icon={ICON.survey} label="Gerenciar Survey"          onClick={() => onSurvey?.(short_token)} />
             <ActionButton icon={ICON.logo}   label="Trocar logo"               onClick={() => onLogo?.(short_token)} />
@@ -238,9 +267,12 @@ function OwnerRow({ role, name, email }) {
 }
 
 const ACTION_VARIANTS = {
-  default: "text-fg hover:bg-surface-strong border-border",
-  success: "text-success border-success/40 bg-success-soft",
-  danger:  "text-danger border-danger/40 bg-danger-soft",
+  default:   "text-fg hover:bg-surface-strong border-border",
+  success:   "text-success border-success/40 bg-success-soft",
+  danger:    "text-danger border-danger/40 bg-danger-soft",
+  // Merge ativo: sinaliza que a campanha está mesclada sem agredir
+  // visualmente (signature soft, não primário) — ainda navega ao clicar.
+  highlight: "text-signature border-signature/40 bg-signature/5 hover:bg-signature/10",
 };
 
 function ActionButton({ icon, label, variant = "default", onClick, disabled }) {

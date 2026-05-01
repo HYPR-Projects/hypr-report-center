@@ -25,6 +25,7 @@ import LoomModal from "../../../components/modals/LoomModal";
 import SurveyModal from "../../../components/modals/SurveyModal";
 import LogoModal from "../../../components/modals/LogoModal";
 import OwnerModal from "../../../components/modals/OwnerModal";
+import MergeModal from "../../../components/modals/MergeModal";
 
 import { Card } from "../../../ui/Card";
 import { Skeleton } from "../../../ui/Skeleton";
@@ -32,6 +33,7 @@ import { ThemeToggleV2 } from "../../components/ThemeToggleV2";
 
 import { ToolbarV2 } from "../components/ToolbarV2";
 import { CampaignCardV2 } from "../components/CampaignCardV2";
+import { MergeGroupCardV2 } from "../components/MergeGroupCardV2";
 import { CampaignDrawer } from "../components/CampaignDrawer";
 import {
   formatPacingValue,
@@ -54,6 +56,7 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
   const [surveyModal, setSurveyModal]       = useState(null);
   const [logoModal, setLogoModal]           = useState(null);
   const [ownerModal, setOwnerModal]         = useState(null);
+  const [mergeModal, setMergeModal]         = useState(null);
 
   // Theme — single source of truth via hook V2 (ver CampaignMenuV2).
   const [theme] = useTheme();
@@ -142,6 +145,45 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
     });
   }, [filtered, sortBy]);
 
+  // Agrupa por merge_id pra renderizar campanhas mescladas dentro de um
+  // único MergeGroupCardV2. Algoritmo:
+  //   1) Itera `sorted` (já com filtro + ordenação aplicados).
+  //   2) Primeira ocorrência de um merge_id vira ponto de inserção do grupo
+  //      na ordem (preserva a posição que esse merge teria pelo critério
+  //      de sort do admin).
+  //   3) Membros adicionais do mesmo merge_id são anexados ao grupo, não
+  //      criam outra entrada na lista — evita duplicação visual.
+  // Resultado: array de items do tipo
+  //   { kind: "single", campaign }                      | sem merge
+  //   { kind: "group",  merge_id, members: Campaign[] } | com merge
+  const groupedItems = useMemo(() => {
+    const out = [];
+    const groupIndex = new Map(); // merge_id -> índice em `out`
+    for (const c of sorted) {
+      if (!c.merge_id) {
+        out.push({ kind: "single", campaign: c });
+        continue;
+      }
+      const existing = groupIndex.get(c.merge_id);
+      if (existing == null) {
+        groupIndex.set(c.merge_id, out.length);
+        out.push({ kind: "group", merge_id: c.merge_id, members: [c] });
+      } else {
+        out[existing].members.push(c);
+      }
+    }
+    // Ordena membros DENTRO de cada grupo por start_date desc — admin lê
+    // o mais recente primeiro (geralmente o ativo) sem precisar saber qual.
+    for (const item of out) {
+      if (item.kind === "group") {
+        item.members.sort((a, b) =>
+          (b.start_date || "").localeCompare(a.start_date || "")
+        );
+      }
+    }
+    return out;
+  }, [sorted]);
+
   // ── Handlers ─────────────────────────────────────────────────────────────
   const handleCopyLink = useCallback(async (campaign) => {
     const token = campaign.short_token;
@@ -175,6 +217,18 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
     );
     setOwnerModal(null);
   }, []);
+
+  // Refaz o fetch após criar/desfazer merge — vários tokens podem ter
+  // mudado de merge_id de uma vez (não dá pra reconciliar local sem
+  // saber o estado novo). Custo: 1 round-trip após ação rara.
+  const handleMergeSaved = useCallback(() => {
+    setMergeModal(null);
+    listCampaigns()
+      .then((camps) => {
+        setCampaigns(camps.filter((c) => normalizeSlug(c.client_name) === slug));
+      })
+      .catch(() => { /* keep stale */ });
+  }, [slug]);
 
   return (
     <div className="min-h-screen w-full bg-canvas text-fg transition-colors">
@@ -268,21 +322,31 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
               <Skeleton key={i} className="h-[88px] rounded-xl" />
             ))}
           </div>
-        ) : sorted.length === 0 ? (
+        ) : groupedItems.length === 0 ? (
           <div className="rounded-xl border border-border bg-surface p-8 text-center">
             <p className="text-sm text-fg-muted">Nenhuma campanha encontrada com os filtros atuais.</p>
           </div>
         ) : (
           <div className="space-y-2">
-            {sorted.map((c) => (
-              <CampaignCardV2
-                key={c.short_token}
-                campaign={c}
-                onOpen={setDrawerCampaign}
-                onOpenReport={onOpenReport}
-                teamMap={teamMap}
-              />
-            ))}
+            {groupedItems.map((item) =>
+              item.kind === "group" ? (
+                <MergeGroupCardV2
+                  key={`merge-${item.merge_id}`}
+                  members={item.members}
+                  onOpen={setDrawerCampaign}
+                  onOpenReport={onOpenReport}
+                  teamMap={teamMap}
+                />
+              ) : (
+                <CampaignCardV2
+                  key={item.campaign.short_token}
+                  campaign={item.campaign}
+                  onOpen={setDrawerCampaign}
+                  onOpenReport={onOpenReport}
+                  teamMap={teamMap}
+                />
+              )
+            )}
           </div>
         )}
       </main>
@@ -304,6 +368,10 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
             cp_email: c.cp_email || "",
             cs_email: c.cs_email || "",
           });
+          setDrawerCampaign(null);
+        }}
+        onMerge={(c) => {
+          setMergeModal(c);
           setDrawerCampaign(null);
         }}
         onOpenReport={onOpenReport}
@@ -340,6 +408,14 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
           teamMembers={teamMembers}
           onSaved={handleOwnerSaved}
           onClose={() => setOwnerModal(null)}
+          theme={legacyModalTheme(isDark)}
+        />
+      )}
+      {mergeModal && (
+        <MergeModal
+          campaign={mergeModal}
+          onSaved={handleMergeSaved}
+          onClose={() => setMergeModal(null)}
           theme={legacyModalTheme(isDark)}
         />
       )}
