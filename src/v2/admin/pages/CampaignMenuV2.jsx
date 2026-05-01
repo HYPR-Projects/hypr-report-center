@@ -17,7 +17,7 @@
 //   - todas as ações (Loom, Survey, Logo, Owner, Link Cliente) — agora
 //     dentro do CampaignDrawer que abre ao clicar no card
 
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 // IMPORT CRÍTICO — sem isso o Tailwind+theme.css não chega no bundle do
 // admin (v2.css é onde @import "tailwindcss" e tokens HYPR vivem). O
 // ClientDashboardV2 já importa em outro chunk lazy, mas o admin é a
@@ -439,7 +439,9 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
             onOpen={handleOpenDrawer}
             onOpenReport={onOpenReport}
             teamMap={teamMap}
-            forceExpanded={!!(search.trim() || ownerFilter || activeWorklist)}
+            filterSignature={[search.trim(), ownerFilter || "", activeWorklist || ""]
+              .filter(Boolean)
+              .join("|")}
           />
         ) : layout === "client" ? (
           <ClientLayout clients={filteredClients} onOpen={handleOpenClient} />
@@ -557,7 +559,7 @@ function uniqueClientNames(campaigns) {
 // Sub-componentes
 // ─────────────────────────────────────────────────────────────────────────────
 
-function MonthLayout({ groups, onOpen, onOpenReport, teamMap, forceExpanded = false }) {
+function MonthLayout({ groups, onOpen, onOpenReport, teamMap, filterSignature = "" }) {
   const currentYM = new Date().toISOString().slice(0, 7);
 
   // Estado de colapso por chave de mês. Default: meses passados começam
@@ -587,17 +589,16 @@ function MonthLayout({ groups, onOpen, onOpenReport, teamMap, forceExpanded = fa
     });
   }, [groups, currentYM]);
 
-  // Quando filtro ATIVA (false → true), zera o estado de colapso uma vez
-  // pra revelar resultados que estavam dentro de meses fechados.
-  // Toggles do user durante o filtro continuam valendo (sem hard override
-  // no render — bug anterior: clicar no header não reagia com filtro ativo).
-  const prevForceExpandedRef = useRef(forceExpanded);
+  // Auto-expand quando o filtro está ATIVO. Dispara em qualquer mudança da
+  // assinatura (search, owner, worklist) — incluindo a transição
+  // inativo→ativo e mudanças entre estados ativos (ex: trocar query).
+  // Se o filtro estiver inativo (signature vazia), preservamos os toggles
+  // do user (defaults do useEffect acima já cobrem o estado inicial).
+  // Toggles durante filtro continuam valendo: o user pode colapsar manual.
+  const isFiltering = !!filterSignature;
   useEffect(() => {
-    if (forceExpanded && !prevForceExpandedRef.current) {
-      setCollapsed({});
-    }
-    prevForceExpandedRef.current = forceExpanded;
-  }, [forceExpanded]);
+    if (isFiltering) setCollapsed({});
+  }, [filterSignature, isFiltering]);
 
   const toggle = useCallback(
     (key) => setCollapsed((s) => ({ ...s, [key]: !s[key] })),
