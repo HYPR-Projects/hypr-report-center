@@ -36,7 +36,6 @@ import SurveyModal from "../../../components/modals/SurveyModal";
 import LogoModal from "../../../components/modals/LogoModal";
 import OwnerModal from "../../../components/modals/OwnerModal";
 import MergeModal from "../../../components/modals/MergeModal";
-import AliasesModal from "../../../components/modals/AliasesModal";
 
 import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
@@ -90,7 +89,6 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   const [logoModal, setLogoModal]         = useState(null);
   const [ownerModal, setOwnerModal]       = useState(null);
   const [mergeModal, setMergeModal]       = useState(null);
-  const [showAliases, setShowAliases]     = useState(false);
 
   // Theme — single source of truth via hook V2 (aplica data-theme no
   // <html>, persiste em localStorage com a key correta 'hypr_theme',
@@ -285,13 +283,6 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
     listCampaigns().then((camps) => setCampaigns(camps)).catch(() => { /* keep stale */ });
   }, []);
 
-  // Após salvar/remover alias, refaz a lista de campanhas pra que o
-  // backend resolva o match novo e devolva owners atualizados. Evita
-  // que o usuário precise recarregar a página inteira.
-  const handleAliasesChanged = useCallback(() => {
-    listCampaigns().then((camps) => setCampaigns(camps)).catch(() => { /* keep stale */ });
-  }, []);
-
   const handleNewCampaignConfirm = useCallback((tokenData) => {
     setCampaigns((prev) =>
       prev.find((c) => c.short_token === tokenData.short_token)
@@ -321,14 +312,6 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
             <HyprReportCenterLogo height={32} />
           </div>
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => setShowAliases(true)}
-              title="Apelidos de cliente — conecta variações de nome ao De-Para"
-              className="text-xs text-fg-muted hover:text-fg px-3 h-8 rounded-md border border-border hover:bg-surface transition-colors flex items-center gap-1.5"
-            >
-              <span aria-hidden>🔗</span>
-              <span className="hidden sm:inline">Apelidos</span>
-            </button>
             <ThemeToggleV2 />
             {user?.picture && (
               <img
@@ -532,27 +515,8 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           theme={legacyModalTheme(isDark)}
         />
       )}
-      {showAliases && (
-        <AliasesModal
-          clientNames={uniqueClientNames(campaigns)}
-          onChanged={handleAliasesChanged}
-          onClose={() => setShowAliases(false)}
-          theme={legacyModalTheme(isDark)}
-        />
-      )}
     </div>
   );
-}
-
-// Lista de client_names únicos pra alimentar o datalist do AliasesModal
-// (autocomplete acelera a digitação tanto do alias quanto do canônico).
-function uniqueClientNames(campaigns) {
-  const seen = new Set();
-  for (const c of campaigns) {
-    const n = (c.client_name || "").trim();
-    if (n) seen.add(n);
-  }
-  return [...seen].sort((a, b) => a.localeCompare(b));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
