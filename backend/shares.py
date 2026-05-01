@@ -249,6 +249,43 @@ def _campaign_exists(short_token: str) -> bool:
     return len(rows) > 0
 
 
+def _password_matches_merge_member(short_token: str, pw_upper: str) -> bool:
+    """Aceita senha de QUALQUER membro do mesmo grupo de merge.
+
+    Justificativa: quando o admin agrupa N tokens de um cliente em 1
+    visão agregada, faz sentido que qualquer senha do grupo libere
+    qualquer link do grupo — o conteúdo exibido é o mesmo (composer
+    delega pro merged automaticamente, ver compose_merged_report).
+
+    Lazy import de `merges` pra evitar ciclo (merges não importa
+    shares; manter assim). 2 queries BQ no caminho de senha errada
+    (rara o suficiente pra não compensar caching dedicado).
+    """
+    if not short_token or not pw_upper:
+        return False
+    try:
+        import merges  # lazy
+    except ImportError:
+        return False
+    try:
+        merge_id = merges.get_merge_id_for_token(short_token)
+        if not merge_id:
+            return False
+        group = merges.get_merge_group(merge_id)
+        if not group:
+            return False
+        for m in group.get("members") or []:
+            st = (m.get("short_token") or "").strip().upper()
+            if st and st == pw_upper:
+                return True
+    except Exception as e:
+        # Falha em consultar merges não deve negar acesso silenciosamente
+        # se a senha direta for válida — mas como esse helper só é
+        # chamado quando a senha direta JÁ falhou, basta rejeitar.
+        print(f"[WARN _password_matches_merge_member {short_token}] {e}")
+    return False
+
+
 def resolve_share(share_id_or_token: str, password: str) -> str | None:
     """Resolve credenciais públicas → short_token. Compatível com legacy.
 
@@ -259,6 +296,11 @@ def resolve_share(share_id_or_token: str, password: str) -> str | None:
          (compatibilidade). Valida que: (a) input == password
          (URL antiga embute a senha no path), e (b) a campanha
          existe na tabela principal.
+
+    Em ambos os caminhos, se a senha NÃO bate com o token do link mas
+    bate com o de QUALQUER outro membro do mesmo grupo de merge, aceita
+    e retorna o token do link (preserva URL original). Isso permite que
+    1 só senha de cliente libere os 2+ links de campanhas agrupadas.
 
     Retorna o short_token canônico (case do banco) se válido,
     senão None. Comparação de senha é case-insensitive — replica
@@ -272,14 +314,23 @@ def resolve_share(share_id_or_token: str, password: str) -> str | None:
     # ─── 1) Caminho novo: share_id ────────────────────────────────────
     short_token = get_token_for_share_id(share_id_or_token)
     if short_token:
-        return short_token if pw_upper == short_token.upper() else None
+        if pw_upper == short_token.upper():
+            return short_token
+        if _password_matches_merge_member(short_token, pw_upper):
+            return short_token
+        return None
 
     # ─── 2) Caminho legacy: URL contém o próprio short_token ─────────
     candidate = share_id_or_token.strip()
     # Heurística: short_tokens são curtos (até ~12 chars) e alfanuméricos.
     # Evita gastar query em strings que claramente são share_ids inválidos.
     if 1 <= len(candidate) <= 12 and candidate.isalnum():
-        if candidate.upper() == pw_upper and _campaign_exists(candidate):
-            return candidate.upper()
+        if not _campaign_exists(candidate):
+            return None
+        cand_upper = candidate.upper()
+        if cand_upper == pw_upper:
+            return cand_upper
+        if _password_matches_merge_member(candidate, pw_upper):
+            return cand_upper
 
     return None
