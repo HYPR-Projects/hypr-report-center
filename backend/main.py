@@ -1415,6 +1415,34 @@ def _safe_future_result(future, label, default):
 _MERGED_REPORT_CACHE_TTL = _REPORT_CACHE_TTL  # mesmo TTL do single-token
 
 
+_MONTHS_PT = [
+    "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
+    "Jul", "Ago", "Set", "Out", "Nov", "Dez",
+]
+
+
+def _format_period_pt_br(start, end):
+    """Label curto pra header de seção em payloads merged.
+
+    Mesmo mês/ano  → "Mar 2026"
+    Mesmo ano      → "Mar–Abr 2026"
+    Anos diferent. → "Dez 2025–Jan 2026"
+    Só um lado     → o que existir
+    Ambos None     → ""
+    """
+    if not start and not end:
+        return ""
+    if start and not end:
+        return f"{_MONTHS_PT[start.month-1]} {start.year}"
+    if end and not start:
+        return f"{_MONTHS_PT[end.month-1]} {end.year}"
+    if start.year == end.year and start.month == end.month:
+        return f"{_MONTHS_PT[start.month-1]} {start.year}"
+    if start.year == end.year:
+        return f"{_MONTHS_PT[start.month-1]}–{_MONTHS_PT[end.month-1]} {start.year}"
+    return f"{_MONTHS_PT[start.month-1]} {start.year}–{_MONTHS_PT[end.month-1]} {end.year}"
+
+
 def _parse_iso_date_safe(v):
     """Converte string ISO ou date/datetime → date. None se inválido."""
     if v is None:
@@ -1743,6 +1771,28 @@ def compose_merged_report(group, force_refresh=False):
         ],
     }
 
+    # Survey: se 1+ membros do grupo têm survey, expõe como shape merged
+    # `{merged: true, items: [{short_token, label, survey: "<json>"}]}`.
+    # O frontend renderiza por seção (1 por mês). Mesmo com tokens que têm
+    # exatamente o MESMO JSON, mantemos um item por token — os Typeforms são
+    # filtrados por período em cada token, então os dados respondidos diferem.
+    survey_items = []
+    for t in members_sorted:
+        sv = per_token[t].get("survey")
+        if not sv:
+            continue
+        camp_t = per_token[t].get("campaign") or {}
+        s_d = _parse_iso_date_safe(camp_t.get("start_date"))
+        e_d = _parse_iso_date_safe(camp_t.get("end_date"))
+        survey_items.append({
+            "short_token": t,
+            "label":       _format_period_pt_br(s_d, e_d) or t,
+            "survey":      sv,
+        })
+    survey_payload = (
+        {"merged": True, "items": survey_items} if survey_items else None
+    )
+
     return {
         "campaign":           composed_campaign,
         "totals":             composed_totals,
@@ -1752,10 +1802,7 @@ def compose_merged_report(group, force_refresh=False):
         "loom":               loom,
         "rmnd":               rmnd,
         "pdooh":              pdooh,
-        # Survey é explicitamente omitido no merged (decisão do usuário).
-        # Quando o filtro do header seleciona um token específico, o frontend
-        # busca dados daquele token via fetch single (caminho intocado).
-        "survey":             None,
+        "survey":             survey_payload,
         "sheets_integration": sheets,
         "merge_meta":         merge_meta,
     }
