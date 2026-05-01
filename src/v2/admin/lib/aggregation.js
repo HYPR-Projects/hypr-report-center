@@ -259,7 +259,9 @@ export function computeMetricsSummary(campaigns) {
     dsp_pacing:   cur.dsp_pacing,
     vid_pacing:   cur.vid_pacing,
     ctr:          cur.ctr,
+    ctr_prev:     prev.ctr,
     vtr:          cur.vtr,
+    vtr_prev:     prev.vtr,
     ecpm:         cur.ecpm,
     ecpm_prev:    prev.ecpm,
   };

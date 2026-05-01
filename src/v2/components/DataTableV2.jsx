@@ -90,7 +90,7 @@ export function DataTableV2({ detail, campaignName }) {
                   "border transition-colors duration-150 cursor-pointer",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
                   active
-                    ? "bg-signature border-signature text-fg"
+                    ? "bg-signature border-signature text-on-signature"
                     : "bg-surface border-border text-fg-muted hover:text-fg hover:border-border-strong",
                 )}
               >

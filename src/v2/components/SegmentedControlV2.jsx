@@ -82,7 +82,7 @@ export function SegmentedControlV2({
               "transition-colors duration-150 cursor-pointer",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
               active
-                ? "bg-signature text-fg shadow-sm"
+                ? "bg-signature text-on-signature shadow-sm"
                 : "text-fg-muted hover:text-fg",
             )}
           >

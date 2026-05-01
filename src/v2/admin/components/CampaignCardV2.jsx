@@ -34,6 +34,7 @@
 import { cn } from "../../../ui/cn";
 import { Card } from "../../../ui/Card";
 import { Avatar } from "../../../ui/Avatar";
+import { TokenChip } from "./TokenChip";
 import {
   formatDateRange,
   formatPacingValue,
@@ -155,9 +156,7 @@ export function CampaignCardV2({
             <h3 className="text-[15px] font-bold text-fg tracking-tight truncate leading-none">
               {client_name}
             </h3>
-            <span className="font-mono text-[10px] text-fg-subtle tracking-wider px-1.5 py-0.5 rounded bg-surface border border-border">
-              {short_token}
-            </span>
+            <TokenChip token={short_token} variant="card" />
             {merge_id && <MergedBadge />}
             {ended && (
               <span className="text-[9px] uppercase tracking-widest font-bold text-fg-subtle">

@@ -19,6 +19,7 @@
 
 import { cn } from "../../../ui/cn";
 import { Avatar } from "../../../ui/Avatar";
+import { TokenChip } from "./TokenChip";
 import {
   formatDateRange,
   formatPacingValue,
@@ -164,9 +165,7 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
       <div className="min-w-0">
         <div className="flex items-center gap-1.5">
           <span className="font-semibold text-fg truncate">{client_name}</span>
-          <span className="font-mono text-[9.5px] text-fg-subtle tracking-wider px-1 rounded bg-canvas-elevated">
-            {short_token}
-          </span>
+          <TokenChip token={short_token} variant="compact" />
           {merge_id && (
             <span
               className="text-[8.5px] uppercase tracking-widest font-bold text-signature px-1 rounded bg-signature/10"

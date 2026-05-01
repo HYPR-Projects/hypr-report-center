@@ -9,9 +9,10 @@
 //   - Video:   Views 100%    (bar) × VTR % (line)
 //
 // Cores
-//   - Bar default: signature (--color-signature)
-//   - Line default: warning (--color-warning) — contraste forte com bar,
-//     destaca a métrica de performance (taxa)
+//   - Bar default: --color-chart-bar (token dedicado, troca por tema)
+//   - Line default: --color-chart-line (token dedicado, troca por tema)
+//   Tokens dedicados (em vez de signature/warning) permitem que light
+//   e dark invertam quem é bar e quem é line sem mexer no resto da UI.
 //
 // Espaçamentos (PR-16 audit visual)
 //   - margin.right: 8 (não 64 — YAxis right tem width próprio que já
@@ -57,8 +58,8 @@ export function DualChartV2({
 
   // Cores default vêm do tema (re-resolvidas quando tema muda). Se
   // caller passou color1/color2 explícito, respeita override.
-  const barColor = color1 || hypr.signature;
-  const lineColor = color2 || hypr.warning;
+  const barColor = color1 || hypr.chartBar || hypr.signature;
+  const lineColor = color2 || hypr.chartLine || hypr.warning;
 
   if (!data?.length) return null;
 

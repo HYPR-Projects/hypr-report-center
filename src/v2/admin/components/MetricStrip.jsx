@@ -74,7 +74,10 @@ function MetricCard({ label, value, tone = "fg", footer }) {
   );
 }
 
-function EcpmDelta({ current, previous }) {
+// Delta vs cohort que encerrou nos últimos 30 dias.
+//   goodDirection="down": queda é bom (eCPM — mais eficiente)
+//   goodDirection="up":   alta é bom (CTR/VTR — performance maior)
+function MetricDelta({ current, previous, goodDirection = "up" }) {
   if (current == null || previous == null || previous <= 0) {
     return (
       <span className="text-[11px] text-fg-subtle whitespace-nowrap">
@@ -85,12 +88,12 @@ function EcpmDelta({ current, previous }) {
   const deltaPct = ((current - previous) / previous) * 100;
   const rounded = Math.round(deltaPct * 10) / 10;
 
-  // Para eCPM: queda = bom (mais eficiente), alta = ruim.
   const isFlat = Math.abs(rounded) < 0.1;
   const isDown = rounded < 0;
+  const isGood = isFlat ? false : goodDirection === "down" ? isDown : !isDown;
   const colorClass = isFlat
     ? "text-fg-subtle"
-    : isDown
+    : isGood
     ? "text-success"
     : "text-danger";
   const arrow = isFlat ? "•" : isDown ? "▼" : "▲";
@@ -112,7 +115,9 @@ export function MetricStrip({ summary, className }) {
     dsp_pacing,
     vid_pacing,
     ctr,
+    ctr_prev,
     vtr,
+    vtr_prev,
     ecpm,
     ecpm_prev,
   } = summary;
@@ -137,12 +142,22 @@ export function MetricStrip({ summary, className }) {
         value={formatPct(vid_pacing)}
         tone={tonePacing(vid_pacing)}
       />
-      <MetricCard label="CTR" value={formatPctTwo(ctr)} tone={toneCtr(ctr)} />
-      <MetricCard label="VTR" value={formatPctTwo(vtr)} tone={toneVtr(vtr)} />
+      <MetricCard
+        label="CTR"
+        value={formatPctTwo(ctr)}
+        tone={toneCtr(ctr)}
+        footer={<MetricDelta current={ctr} previous={ctr_prev} goodDirection="up" />}
+      />
+      <MetricCard
+        label="VTR"
+        value={formatPctTwo(vtr)}
+        tone={toneVtr(vtr)}
+        footer={<MetricDelta current={vtr} previous={vtr_prev} goodDirection="up" />}
+      />
       <MetricCard
         label="eCPM"
         value={formatBRL(ecpm)}
-        footer={<EcpmDelta current={ecpm} previous={ecpm_prev} />}
+        footer={<MetricDelta current={ecpm} previous={ecpm_prev} goodDirection="down" />}
       />
     </div>
   );

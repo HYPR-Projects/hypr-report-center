@@ -83,7 +83,7 @@ export function AudienceFilterV2({ lines, selected, onChange }) {
             </svg>
             <span className="truncate">{triggerLabel}</span>
             {isActive && (
-              <span className="shrink-0 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full bg-signature text-fg text-[10px] font-bold tabular-nums">
+              <span className="shrink-0 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full bg-signature text-on-signature text-[10px] font-bold tabular-nums">
                 {selected.length}
               </span>
             )}

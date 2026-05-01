@@ -27,7 +27,7 @@ const buttonStyles = cva(
     variants: {
       variant: {
         primary:
-          "bg-signature text-fg hover:bg-signature-hover active:bg-signature-hover",
+          "bg-signature text-on-signature hover:bg-signature-hover active:bg-signature-hover",
         secondary:
           "bg-surface-strong text-fg hover:bg-surface border border-border-strong",
         ghost:

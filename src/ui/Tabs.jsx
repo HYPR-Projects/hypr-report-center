@@ -82,7 +82,7 @@ export const TabsTrigger = forwardRef(function TabsTrigger(
           className={cn(
             "ml-0.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1.5",
             "rounded-full text-[10px] font-bold tabular-nums leading-none",
-            badgeVariant === "signature" && "bg-signature text-fg",
+            badgeVariant === "signature" && "bg-signature text-on-signature",
             badgeVariant === "warning" && "bg-warning text-canvas",
             badgeVariant === "neutral" && "bg-surface-strong text-fg",
             badgeVariant === "dot" && "size-1.5 min-w-0 p-0 rounded-full bg-warning",

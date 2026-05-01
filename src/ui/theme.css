@@ -100,6 +100,19 @@
   --color-surface-2: #232F3A;            /* card sólido nível 1 */
   --color-surface-3: #2D3D4F;            /* card sólido nível 2 (emphasis) */
 
+  /* Chart colors — barras e linhas dos charts diários (DualChartV2).
+   * Tokens dedicados pra desacoplar a paleta do chart das cores semânticas
+   * do tema (signature/warning) — permite light e dark trocarem qual cor
+   * é bar e qual é line sem afetar o resto da UI. */
+  --color-chart-bar: #3397B9;            /* bar principal — dark */
+  --color-chart-line: #E5EBF2;           /* line de taxa (CTR/VTR) — dark */
+
+  /* Texto sobre signature sólido (ex: tab ativa, badge, pill).
+   * Não muda por tema — signature é azul escuro nos dois modos, então
+   * branco-off contrasta bem em ambos. Sem este token, light usava
+   * text-fg (#0F1419 quase preto) sobre azul = leitura ruim. */
+  --color-on-signature: #F5F7FA;
+
   /* ═══════════════ TIPOGRAFIA ═══════════════ */
 
   /* Stack de fonte sans (Urbanist + fallbacks). Carregamento dos arquivos
@@ -286,6 +299,12 @@
    * quando aplicado sobre canvas. */
   --color-surface-2: #FFFFFF;
   --color-surface-3: #F1F3F6;
+
+  /* Chart colors — light invert as barras/linhas pra contrastar
+   * com canvas claro: bar vira o canvas dark (#1C262F), line vira
+   * o signature azul. */
+  --color-chart-bar: #1C262F;
+  --color-chart-line: #3397B9;
 
   /* Sombras precisam mais peso em fundo claro */
   --shadow-sm: 0 1px 2px 0 rgba(15, 20, 25, 0.06);
