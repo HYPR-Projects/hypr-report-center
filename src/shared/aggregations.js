@@ -236,66 +236,78 @@ export const computeVideoKpis = ({ rows, detail, tactic }) => {
  *   "Baseado na média diária de entrega até agora, qual % do contrato
  *    a campanha vai entregar até o final?"
  *
- * Equivale matematicamente a:
- *     pacing = delivered / (negotiated × elapsed_calendar / total_days) × 100
+ * Mudança de paradigma (vs versão antiga):
+ *   Antes: usava `camp.start_date` único pra todas as frentes, o que
+ *   penalizava frentes que entraram depois (ex: O2O começa 4 dias após
+ *   Video — pacing aparecia baixo só porque os 4 dias iniciais sem
+ *   entrega contavam no elapsed).
+ *   Agora: cada row contribui com `expected` baseado no SEU próprio
+ *   `actual_start_date`. Frente que ainda não começou contribui 0/0.
  *
- * Após o end_date a fórmula naturalmente convergiria pra delivered/neg
- * (porque elapsed = total), mas pra evitar divisões esquisitas com
- * elapsed > total quando today já passou de end, capamos elapsed em
- * total. Resultado idêntico ao "short-circuit" do legacy, sem o salto
- * não-monotônico que disparava no LAST day.
+ * Fórmula:
+ *     expected = Σ (neg_row × min(elapsed_row, total_row) / total_row)
+ *     pacing   = (Σ delivered_row) / expected × 100
  *
- * Bug latente corrigido (PRINCIPAL):
- *   `contracted_*` e `bonus_*` são DENORMALIZADOS no backend — todas as
- *   linhas de uma mesma campanha carregam os mesmos valores (cada row
- *   tem o2o E ooh contratado da campanha inteira, não só o do tactic
- *   daquela linha). O legacy `computeDisplayPacing` somava esses campos
- *   across rows e DOBRAVA o contrato em campanhas com 2 tactics
- *   (O2O+OOH), fazendo o pacing aparecer como METADE do real.
- *   Ex.: Diageo Johnnie Walker mostrava 12.8% quando o pacing real era
- *   ~28%. Pegamos de `rows[0]` apenas (mesma estratégia que
- *   `computeDisplayKpis` já usa).
+ *   onde por linha r:
+ *     neg_row     = contracted_<tactic>_<media> + bonus_<tactic>_<media>
+ *                   (denormalizado — pegamos só a slice da tactic da row)
+ *     elapsed_row = today - r.actual_start_date  (0 se ainda não começou)
+ *     total_row   = end - r.actual_start_date + 1
+ *
+ * Cap em total_row evita > 100% espúrio após end_date (mesma lógica do
+ * legacy). Frente sem actual_start_date contribui 0 em ambos lados —
+ * não infla nem deflaciona o pacing agregado.
  *
  * @param {Array} rows         totals filtrados por media_type
- * @param {object} camp        data.campaign (start_date, end_date)
+ * @param {object} camp        data.campaign (end_date — start_date só pra fallback)
  * @param {"DISPLAY"|"VIDEO"} mediaType
  * @returns {number} pacing em % (ex.: 87.4 = 87.4%)
  */
 export function computeMediaPacing(rows, camp, mediaType) {
-  if (!rows?.length || !camp?.start_date || !camp?.end_date) return 0;
+  if (!rows?.length || !camp?.end_date) return 0;
 
-  const r0 = rows[0];
   const isVideo = mediaType === "VIDEO";
-
-  const totalNeg = isVideo
-    ? (r0.contracted_o2o_video_completions || 0)
-      + (r0.contracted_ooh_video_completions || 0)
-      + (r0.bonus_o2o_video_completions      || 0)
-      + (r0.bonus_ooh_video_completions      || 0)
-    : (r0.contracted_o2o_display_impressions || 0)
-      + (r0.contracted_ooh_display_impressions || 0)
-      + (r0.bonus_o2o_display_impressions      || 0)
-      + (r0.bonus_ooh_display_impressions      || 0);
-  if (!totalNeg) return 0;
-
-  const delivered = isVideo
-    ? rows.reduce((s, r) => s + (r.viewable_video_view_100_complete || r.completions || 0), 0)
-    : rows.reduce((s, r) => s + (r.viewable_impressions || 0), 0);
-
-  const [sy, sm, sd] = camp.start_date.split("-").map(Number);
   const [ey, em, ed] = camp.end_date.split("-").map(Number);
-  const start = new Date(sy, sm - 1, sd);
-  const end   = new Date(ey, em - 1, ed);
-  const now   = new Date();
+  const end = new Date(ey, em - 1, ed);
+  const now = new Date();
 
-  // total_days inclui ambos os limites (start E end), por isso o +1.
-  // elapsed é capado em total — após o end_date, expected = negotiated
-  // e pacing = delivered/negotiated naturalmente.
-  const total   = (end - start) / 864e5 + 1;
-  const rawElapsed = now < start ? 0 : Math.floor((now - start) / 864e5);
-  const elapsed = Math.min(rawElapsed, total);
-  const expected = totalNeg * (elapsed / total);
-  return expected > 0 ? (delivered / expected) * 100 : 0;
+  // Fallback pra campanha-wide só se a row não tem actual_start_date
+  // (frente ainda não entregou) — nesse caso ela contribui 0 mesmo, mas
+  // garantimos que o parsing não quebra.
+  const parseDate = (iso) => {
+    if (!iso) return null;
+    const [y, m, d] = iso.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  };
+
+  let totalDelivered = 0;
+  let totalExpected  = 0;
+
+  for (const r of rows) {
+    const isO2O = r.tactic_type === "O2O";
+    const negRow = isVideo
+      ? (isO2O ? (r.contracted_o2o_video_completions   || 0) + (r.bonus_o2o_video_completions   || 0)
+               : (r.contracted_ooh_video_completions   || 0) + (r.bonus_ooh_video_completions   || 0))
+      : (isO2O ? (r.contracted_o2o_display_impressions || 0) + (r.bonus_o2o_display_impressions || 0)
+               : (r.contracted_ooh_display_impressions || 0) + (r.bonus_ooh_display_impressions || 0));
+
+    const deliveredRow = isVideo
+      ? (r.viewable_video_view_100_complete || r.completions || 0)
+      : (r.viewable_impressions || 0);
+    totalDelivered += deliveredRow;
+
+    const start = parseDate(r.actual_start_date);
+    if (!start || !negRow) continue; // frente não começou ou sem contrato → não contribui ao expected
+
+    const totalRow   = (end - start) / 864e5 + 1;
+    const rawElapsed = now < start ? 0 : Math.floor((now - start) / 864e5);
+    const elapsedRow = Math.min(rawElapsed, totalRow);
+    if (totalRow > 0 && elapsedRow > 0) {
+      totalExpected += negRow * (elapsedRow / totalRow);
+    }
+  }
+
+  return totalExpected > 0 ? (totalDelivered / totalExpected) * 100 : 0;
 }
 
 

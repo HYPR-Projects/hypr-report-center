@@ -19,8 +19,15 @@
 //   9. DailyAggregateTable   — agregada por dia (mediaFilter="VIDEO")
 //
 // FILTRO DE PERÍODO É GLOBAL (shell ClientDashboardV2).
-// QUIRK PRESERVADA: filtro de detail por tactic via substring no
-//   line_name (convenção HYPR documentada no DisplayV2).
+// FILTRO DE TACTIC: deriva no frontend pra alinhar com o que totals já
+//   faz no backend (`query_totals` tem fallback hardcoded `ELSE 'O2O'`,
+//   `query_detail` tem `ELSE tactic_type` — fallbacks diferentes
+//   geravam mismatch). Lógica:
+//     1. line_name tem `_O2O_`/`_O2O$` (case insensitive) → "O2O"
+//     2. line_name tem `_OOH_`/`_OOH$`                    → "OOH"
+//     3. fallback                                          → "O2O"
+//   Cobre o caso Diageo Johnnie Walker em que video O2O entregava mas
+//   detail vinha sem tactic_type setado, deixando KPIs zerados.
 
 import { useMemo } from "react";
 import {
@@ -48,6 +55,18 @@ const TACTIC_OPTIONS = [
   { value: "OOH", label: "OOH" },
 ];
 
+// Espelha o CASE do `query_totals` no backend: `_O2O_`/`_O2O$` → "O2O",
+// `_OOH_`/`_OOH$` → "OOH", default → "O2O". Sem isso, detail filtraria
+// por `tactic_type` cru, que tem fallback diferente no `query_detail`.
+const O2O_RE = /(?:^|_)O2O(?:_|$)/i;
+const OOH_RE = /(?:^|_)OOH(?:_|$)/i;
+const deriveTactic = (lineName) => {
+  const ln = lineName || "";
+  if (O2O_RE.test(ln)) return "O2O";
+  if (OOH_RE.test(ln)) return "OOH";
+  return "O2O";
+};
+
 // Formatter pra CPCV (3 casas decimais — valores tipicamente < R$ 0,50).
 const fmtCpcv = (v) =>
   typeof v === "number" && v > 0
@@ -69,9 +88,7 @@ export default function VideoV2({
       (r) => r.media_type === "VIDEO" && r.tactic_type === tactic,
     );
     const detailAll = aggregates.detail.filter(
-      (r) =>
-        r.media_type === "VIDEO" &&
-        r.line_name?.toLowerCase().includes(tactic.toLowerCase()),
+      (r) => r.media_type === "VIDEO" && deriveTactic(r.line_name) === tactic,
     );
     const lineOptions = buildLineOptions(detailAll).filter((l) => l !== "ALL");
     const detailFiltered =

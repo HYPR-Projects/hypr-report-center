@@ -20,9 +20,13 @@
 //  10. Detalhamento por linha — collapsible FECHADO
 //
 // FILTRO DE PERÍODO É GLOBAL (shell ClientDashboardV2).
-// QUIRK PRESERVADA: filtro de detail por tactic usa substring no
-//   line_name (`includes(tactic.toLowerCase())`) — convenção HYPR onde
-//   line_name carrega o token "O2O" ou "OOH" como substring.
+// FILTRO DE TACTIC: deriva no frontend pra alinhar com o que totals já
+//   faz no backend (`query_totals` tem fallback hardcoded `ELSE 'O2O'`,
+//   `query_detail` tem `ELSE tactic_type` — fallbacks diferentes
+//   geravam mismatch). Lógica:
+//     1. line_name tem `_O2O_`/`_O2O$` (case insensitive) → "O2O"
+//     2. line_name tem `_OOH_`/`_OOH$`                    → "OOH"
+//     3. fallback                                          → "O2O"
 
 import { useMemo } from "react";
 import {
@@ -52,6 +56,17 @@ const TACTIC_OPTIONS = [
   { value: "OOH", label: "OOH" },
 ];
 
+// Espelha o CASE do `query_totals` no backend: `_O2O_`/`_O2O$` → "O2O",
+// `_OOH_`/`_OOH$` → "OOH", default → "O2O".
+const O2O_RE = /(?:^|_)O2O(?:_|$)/i;
+const OOH_RE = /(?:^|_)OOH(?:_|$)/i;
+const deriveTactic = (lineName) => {
+  const ln = lineName || "";
+  if (O2O_RE.test(ln)) return "O2O";
+  if (OOH_RE.test(ln)) return "OOH";
+  return "O2O";
+};
+
 export default function DisplayV2({
   data,
   aggregates,
@@ -68,9 +83,7 @@ export default function DisplayV2({
       (r) => r.media_type === "DISPLAY" && r.tactic_type === tactic,
     );
     const detailAll = aggregates.detail.filter(
-      (r) =>
-        r.media_type === "DISPLAY" &&
-        r.line_name?.toLowerCase().includes(tactic.toLowerCase()),
+      (r) => r.media_type === "DISPLAY" && deriveTactic(r.line_name) === tactic,
     );
     const lineOptions = buildLineOptions(detailAll).filter((l) => l !== "ALL");
     const detailFiltered =
