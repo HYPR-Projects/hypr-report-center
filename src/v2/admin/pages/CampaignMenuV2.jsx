@@ -17,7 +17,7 @@
 //   - todas as ações (Loom, Survey, Logo, Owner, Link Cliente) — agora
 //     dentro do CampaignDrawer que abre ao clicar no card
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 // IMPORT CRÍTICO — sem isso o Tailwind+theme.css não chega no bundle do
 // admin (v2.css é onde @import "tailwindcss" e tokens HYPR vivem). O
 // ClientDashboardV2 já importa em outro chunk lazy, mas o admin é a
@@ -587,6 +587,18 @@ function MonthLayout({ groups, onOpen, onOpenReport, teamMap, forceExpanded = fa
     });
   }, [groups, currentYM]);
 
+  // Quando filtro ATIVA (false → true), zera o estado de colapso uma vez
+  // pra revelar resultados que estavam dentro de meses fechados.
+  // Toggles do user durante o filtro continuam valendo (sem hard override
+  // no render — bug anterior: clicar no header não reagia com filtro ativo).
+  const prevForceExpandedRef = useRef(forceExpanded);
+  useEffect(() => {
+    if (forceExpanded && !prevForceExpandedRef.current) {
+      setCollapsed({});
+    }
+    prevForceExpandedRef.current = forceExpanded;
+  }, [forceExpanded]);
+
   const toggle = useCallback(
     (key) => setCollapsed((s) => ({ ...s, [key]: !s[key] })),
     []
@@ -604,7 +616,7 @@ function MonthLayout({ groups, onOpen, onOpenReport, teamMap, forceExpanded = fa
     <div className="space-y-8">
       {groups.map((g) => {
         const canCollapse = g.key !== "no-date";
-        const isCollapsed = canCollapse && !forceExpanded && !!collapsed[g.key];
+        const isCollapsed = canCollapse && !!collapsed[g.key];
         return (
           <section key={g.key}>
             <button
