@@ -21,14 +21,27 @@ import SurveyTab from "../../dashboards/SurveyTab";
 import { useTheme } from "../hooks/useTheme";
 import { legacyThemeObj } from "../legacyThemeBridge";
 
-// Heurística pra decidir se um JSON de survey é "renderizável".
-// Caso típico de rejeição: admin abriu o modal e salvou sem preencher,
-// resultando em entries com ctrlUrl/expUrl vazios — o SurveyTab tenta
-// buscar e mostra "URL do Typeform inválida". Em vez de mostrar esse
-// erro pro cliente, escondemos a seção inteira.
+// Espelha backend/_extract_typeform_form_id — aceita URL `typeform.com/to/<id>`
+// ou ID puro alfanumérico de 4-32 chars. Vazio = inválido.
+function extractTypeformFormId(value) {
+  if (!value) return "";
+  const s = String(value).trim();
+  if (!s) return "";
+  const m = s.match(/typeform\.com\/to\/([A-Za-z0-9]+)/i);
+  if (m) return m[1];
+  if (/^[A-Za-z0-9]{4,32}$/.test(s)) return s;
+  return "";
+}
+
+// Decide se um JSON de survey é "renderizável".
+// Caso típico de rejeição: token sem survey contratada — admin pode ter
+// salvo o JSON com placeholders ou strings que não passam na regex de
+// Typeform do backend. Em vez de mostrar "URL do Typeform inválida"
+// pro cliente, escondemos a seção inteira.
 //
-// Modelo legado (CSV pré-Typeform): sem URLs, mas com `questions` —
-// também é renderizável.
+// Regra: pra Typeform, AMBOS ctrlUrl e expUrl precisam ser URLs válidas
+// (lift = exposto vs controle, não dá pra calcular com só um lado).
+// Modelo legado (CSV pré-Typeform): sem URLs, mas com `questions`.
 function isRenderableSurvey(json) {
   if (!json) return false;
   let parsed;
@@ -40,11 +53,10 @@ function isRenderableSurvey(json) {
   if (Array.isArray(parsed)) {
     return parsed.some((q) => {
       if (!q) return false;
-      // Modelo Typeform: precisa de pelo menos uma URL não-vazia
-      const hasTypeformUrls = !!(q.ctrlUrl?.trim() || q.expUrl?.trim());
-      // Modelo legado: tem `questions` array
+      const validTypeform =
+        !!extractTypeformFormId(q.ctrlUrl) && !!extractTypeformFormId(q.expUrl);
       const hasLegacy = Array.isArray(q.questions) && q.questions.length > 0;
-      return hasTypeformUrls || hasLegacy;
+      return validTypeform || hasLegacy;
     });
   }
   // Objeto único (legado puro)
