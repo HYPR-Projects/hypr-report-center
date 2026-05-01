@@ -42,6 +42,7 @@ from auth import (
 import owners
 import shares
 import clients
+import merges
 import sheets_integration
 
 bq = bigquery.Client()
@@ -78,6 +79,7 @@ _LIST_CACHE_TTL    = 300
 _CLIENTS_CACHE_TTL = 300
 
 _report_cache    = {}     # short_token -> (timestamp, payload)
+_merged_report_cache = {} # merge_id -> (timestamp, payload merged)
 _list_cache      = {}     # "all" -> (timestamp, payload)
 _clients_cache   = {}     # "all" -> (timestamp, payload)
 # Caches dos enrichments paralelos de query_campaigns_list. Compartilham TTL
@@ -86,6 +88,7 @@ _clients_cache   = {}     # "all" -> (timestamp, payload)
 _overrides_cache = {}     # "all" -> (timestamp, dict[short_token -> (cp, cs)])
 _aliases_cache   = {}     # "all" -> (timestamp, dict[alias_normalized -> canonical_normalized])
 _shares_cache    = {}     # "all" -> (timestamp, dict[short_token -> share_id])
+_merges_cache    = {}     # "all" -> (timestamp, dict[short_token -> {merge_id, rmnd_mode, pdooh_mode}])
 _cache_lock      = threading.Lock()
 
 
@@ -123,6 +126,13 @@ def _cache_invalidate_token(short_token):
         _overrides_cache.pop("all", None)
         _aliases_cache.pop("all", None)
         _shares_cache.pop("all", None)
+        _merges_cache.pop("all", None)
+        # Merged report cache: drop tudo. Tabela de grupos é pequena, e
+        # qualquer mutação que invalida um token pode tornar stale o
+        # payload merged que o contém. Reidratação custa N fetches já
+        # cacheados em _report_cache (que acabamos de invalidar só do
+        # token afetado — os outros membros continuam quentes).
+        _merged_report_cache.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -865,6 +875,128 @@ def report_data(request):
             print(f"[ERROR delete_alias] {e}")
             return (jsonify({"error": str(e)}), 500, headers)
 
+    # ── Endpoints: Merge Reports (admin) ──────────────────────────────────────
+    # Permite unificar múltiplos short_tokens (PIs mensais) do mesmo cliente
+    # em uma "campanha agregada". Ações administrativas; leitura do payload
+    # merged é feita pelo composer chamado a partir do endpoint público
+    # (`?token=<X>` quando X pertence a um grupo).
+    #
+    #   GET  ?action=list_mergeable_tokens&token=<short_token>     → tokens elegíveis
+    #   GET  ?action=get_merge_group&merge_id=<id>                 → estado do grupo
+    #   POST ?action=merge_tokens   {tokens: [...], rmnd_mode?, pdooh_mode?} → cria/anexa
+    #   POST ?action=unmerge_token  {short_token}                  → remove do grupo
+    #   POST ?action=update_merge_settings {merge_id, rmnd_mode?, pdooh_mode?}
+    #
+    # Qualquer mutação invalida cache de TODOS os tokens do grupo afetado +
+    # cache da lista — pra que o admin menu reflita o badge novo no próximo
+    # refresh, e qualquer report public-facing dos tokens reflita o estado novo.
+
+    if request.method == "GET" and request.args.get("action") == "list_mergeable_tokens":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            short_token = (request.args.get("token") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "token é obrigatório"}), 400, headers)
+            data = merges.list_mergeable_tokens(short_token)
+            return (jsonify({"tokens": data}), 200, headers)
+        except merges.MergeError as e:
+            return (jsonify({"error": str(e)}), e.code, headers)
+        except Exception as e:
+            print(f"[ERROR list_mergeable_tokens] {e}")
+            return (jsonify({"error": "Erro ao listar tokens elegíveis"}), 500, headers)
+
+    if request.method == "GET" and request.args.get("action") == "get_merge_group":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            merge_id = (request.args.get("merge_id") or "").strip()
+            if not merge_id:
+                return (jsonify({"error": "merge_id é obrigatório"}), 400, headers)
+            group = merges.get_merge_group(merge_id)
+            if not group:
+                return (jsonify({"error": "Grupo não encontrado"}), 404, headers)
+            return (jsonify({"group": group}), 200, headers)
+        except Exception as e:
+            print(f"[ERROR get_merge_group] {e}")
+            return (jsonify({"error": "Erro ao buscar grupo"}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "merge_tokens":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            tokens     = body.get("tokens") or []
+            rmnd_mode  = body.get("rmnd_mode")
+            pdooh_mode = body.get("pdooh_mode")
+            if not isinstance(tokens, list):
+                return (jsonify({"error": "tokens deve ser array"}), 400, headers)
+            group = merges.merge_tokens(
+                tokens=tokens,
+                admin_email=admin.get("email", "unknown"),
+                rmnd_mode=rmnd_mode,
+                pdooh_mode=pdooh_mode,
+            )
+            # Invalida cache de cada membro + caches da lista
+            for m in (group.get("members") or []):
+                _cache_invalidate_token(m["short_token"])
+            return (jsonify({"group": group}), 200, headers)
+        except merges.MergeError as e:
+            return (jsonify({"error": str(e)}), e.code, headers)
+        except Exception as e:
+            print(f"[ERROR merge_tokens] {e}")
+            return (jsonify({"error": "Erro ao mergear tokens"}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "unmerge_token":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            result = merges.unmerge_token(short_token, admin.get("email", "unknown"))
+            # Invalida o token removido + os que sobraram (se houver) +
+            # qualquer outro tocado pela dissolução do grupo.
+            for t in (result.get("removed") or []):
+                _cache_invalidate_token(t)
+            # Sempre invalida o token base mesmo se já estava em "removed"
+            _cache_invalidate_token(short_token)
+            return (jsonify({"ok": True, **result}), 200, headers)
+        except merges.MergeError as e:
+            return (jsonify({"error": str(e)}), e.code, headers)
+        except Exception as e:
+            print(f"[ERROR unmerge_token] {e}")
+            return (jsonify({"error": "Erro ao desfazer merge"}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "update_merge_settings":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            merge_id   = (body.get("merge_id") or "").strip()
+            rmnd_mode  = body.get("rmnd_mode")
+            pdooh_mode = body.get("pdooh_mode")
+            if not merge_id:
+                return (jsonify({"error": "merge_id é obrigatório"}), 400, headers)
+            group = merges.update_merge_settings(
+                merge_id=merge_id,
+                admin_email=admin.get("email", "unknown"),
+                rmnd_mode=rmnd_mode,
+                pdooh_mode=pdooh_mode,
+            )
+            for m in (group.get("members") or []):
+                _cache_invalidate_token(m["short_token"])
+            return (jsonify({"group": group}), 200, headers)
+        except merges.MergeError as e:
+            return (jsonify({"error": str(e)}), e.code, headers)
+        except Exception as e:
+            print(f"[ERROR update_merge_settings] {e}")
+            return (jsonify({"error": "Erro ao atualizar settings"}), 500, headers)
+
     # ── Endpoint: lista de clientes agregada (admin) ─────────────────────────
     # View "Por cliente" do menu admin V2. Agrega campanhas em memória pelo
     # client_name normalizado (LOWER + TRIM + slug-safe) e enriquece cada
@@ -965,7 +1097,53 @@ def report_data(request):
         force_refresh = request.args.get("refresh") == "true"
         if force_refresh:
             _cache_invalidate_token(short_token)
-        data, hit = _get_report_cached(short_token, force_refresh=force_refresh)
+
+        # Detecta merge group: se o token pertence a um grupo, e o caller
+        # NÃO pediu visão por-token específica (?view=token), delega ao
+        # composer. Lookup é cacheado (_safe_get_merges, TTL 5min) — custo
+        # zero no warm path.
+        view_param = (request.args.get("view") or "").strip()
+        merges_lookup = _safe_get_merges()
+        merge_info = (
+            merges_lookup.get(short_token)
+            or merges_lookup.get(short_token.upper())
+        )
+        if merge_info and not view_param:
+            merge_id = merge_info["merge_id"]
+            data, hit = _get_merged_report_cached(merge_id, force_refresh=force_refresh)
+            if data is None:
+                return (jsonify({"error": "Grupo merged sem dados"}), 404, headers)
+            total_ms = int((time.time() - t0) * 1000)
+            resp_headers = {
+                **headers,
+                "Cache-Control": "private, max-age=60",
+                "Server-Timing": f"merged;dur={total_ms};desc=\"{'hit' if hit else 'miss'}\"",
+            }
+            return (
+                jsonify({**data, "_cache": "hit" if hit else "miss"}),
+                200,
+                resp_headers,
+            )
+
+        # Caminho single-token (intocado). Se ?view=<token> foi passado e
+        # bate com um membro do grupo OU é o próprio token base, usa esse
+        # como alvo do fetch single — permite deep-link "ver só fevereiro"
+        # de dentro de um report merged.
+        target_token = short_token
+        if view_param and merge_info:
+            members_set = {short_token.upper()}
+            try:
+                group = merges.get_merge_group(merge_info["merge_id"])
+                if group:
+                    for m in group.get("members") or []:
+                        if m.get("short_token"):
+                            members_set.add(m["short_token"].upper())
+            except Exception as e:
+                print(f"[WARN view-resolve get_merge_group] {e}")
+            if view_param.upper() in members_set:
+                target_token = view_param
+
+        data, hit = _get_report_cached(target_token, force_refresh=force_refresh)
         if data is None:
             return (jsonify({"error": "Campanha não encontrada"}), 404, headers)
         total_ms = int((time.time() - t0) * 1000)
@@ -1065,6 +1243,400 @@ def _safe_future_result(future, label, default):
     except Exception as e:
         print(f"[WARN fetch_campaign_data {label}] {e}")
         return default
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Merged Report Composer
+# ─────────────────────────────────────────────────────────────────────────────
+# Quando um short_token pertence a um grupo (registrado em
+# campaign_merge_groups), o endpoint público `?token=X` delega ao composer.
+# `fetch_campaign_data` continua intocado — composer chama N vezes em
+# paralelo (1 por membro do grupo, cada um já cacheado individualmente)
+# e combina o payload pra que o frontend renderize com os mesmos componentes.
+#
+# Regras de agregação (alinhadas com a especificação do usuário):
+#
+#   - Períodos:        start = min(starts), end = max(ends)
+#   - Budget:          SUM(budget_contracted) entre tokens
+#   - Counts/Cost:     SUM (impressões, viewable, clicks, completions, custos)
+#   - Pacing/Over:     valores DO TOKEN ATIVO, sem recalcular
+#                      (rationale: pacing = entrega vs esperado; em campanha
+#                      mergeada, "esperado" só faz sentido pro mês corrente)
+#   - CPM/CPCV efetivo: valores do token ativo (idem)
+#   - Rentabilidade:   token ativo
+#   - daily/detail:    concat (PIs mensais não sobrepõem datas em prática)
+#   - Logo/Loom:       prefere token ativo; fallback pro mais recente não-nulo
+#   - Survey:          omitido em merged
+#   - RMND/PDOOH:      por config do grupo — 'merge' (concat JSON arrays)
+#                      ou 'latest' (token mais recente apenas)
+#   - merge_meta:      novo campo no payload pro frontend renderizar filtro
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MERGED_REPORT_CACHE_TTL = _REPORT_CACHE_TTL  # mesmo TTL do single-token
+
+
+def _parse_iso_date_safe(v):
+    """Converte string ISO ou date/datetime → date. None se inválido."""
+    if v is None:
+        return None
+    if hasattr(v, "date") and not isinstance(v, date):
+        try:
+            return v.date()
+        except Exception:
+            pass
+    if isinstance(v, date):
+        return v
+    if isinstance(v, str):
+        try:
+            return date.fromisoformat(v.split("T")[0][:10])
+        except Exception:
+            return None
+    return None
+
+
+def _pick_active_token(per_token):
+    """Decide qual token é o "ativo" no momento.
+
+    Regra (nessa ordem de prioridade):
+      1. Algum membro com start ≤ hoje ≤ end → escolhe o de maior `start`.
+      2. Algum membro com start futuro → o de menor `start` (próximo a vir).
+      3. Todos passados → o de maior `end`.
+      4. Fallback: primeiro membro do dict.
+
+    Retorna a string short_token. Sempre devolve um valor válido se per_token
+    não estiver vazio.
+    """
+    today = date.today()
+    in_window = []
+    future = []
+    past = []
+    for token, data in per_token.items():
+        camp = (data or {}).get("campaign") or {}
+        sd = _parse_iso_date_safe(camp.get("start_date"))
+        ed = _parse_iso_date_safe(camp.get("end_date"))
+        if sd and ed and sd <= today <= ed:
+            in_window.append((token, sd, ed))
+        elif sd and sd > today:
+            future.append((token, sd, ed))
+        else:
+            past.append((token, sd, ed))
+
+    if in_window:
+        return max(in_window, key=lambda x: x[1])[0]
+    if future:
+        return min(future, key=lambda x: x[1])[0]
+    if past:
+        # `ed` pode ser None — usa date.min como sentinela
+        return max(past, key=lambda x: x[2] or date.min)[0]
+    return next(iter(per_token.keys()))
+
+
+def _compose_totals(per_token, active_token):
+    """Combina linhas de `totals` por (tactic_type, media_type).
+
+    Counts/cost/contracted/bonus → SOMA entre tokens.
+    Pacing/CPM-efetivo/over/rentabilidade/actual_start_date/days_with_delivery
+      → herdados do token ativo (single source of truth para o mês corrente).
+    CTR/VTR/CPC → recalculados a partir das somas.
+    """
+    SUM_FIELDS = (
+        "total_invested",
+        "impressions", "viewable_impressions", "clicks", "completions",
+        "effective_total_cost", "effective_cost_with_over",
+        "o2o_display_budget", "ooh_display_budget",
+        "o2o_video_budget", "ooh_video_budget",
+        "contracted_o2o_display_impressions", "contracted_ooh_display_impressions",
+        "contracted_o2o_video_completions", "contracted_ooh_video_completions",
+        "bonus_o2o_display_impressions", "bonus_ooh_display_impressions",
+        "bonus_o2o_video_completions", "bonus_ooh_video_completions",
+        "viewable_video_view_100_complete",
+    )
+    ACTIVE_FIELDS = (
+        "deal_cpm_amount", "deal_cpcv_amount",
+        "effective_cpm_amount", "effective_cpcv_amount",
+        "pacing", "rentabilidade",
+        "actual_start_date", "days_with_delivery",
+    )
+
+    by_key = {}
+    for token, data in per_token.items():
+        for row in (data.get("totals") or []):
+            key = (row.get("tactic_type"), row.get("media_type"))
+            if key not in by_key:
+                by_key[key] = {
+                    "tactic_type": row.get("tactic_type"),
+                    "media_type":  row.get("media_type"),
+                    **{f: 0.0 for f in SUM_FIELDS},
+                    **{f: None for f in ACTIVE_FIELDS},
+                }
+            for f in SUM_FIELDS:
+                v = row.get(f)
+                if v is not None:
+                    try:
+                        by_key[key][f] += float(v)
+                    except (TypeError, ValueError):
+                        pass
+
+    active_data = per_token.get(active_token) or {}
+    active_by_key = {
+        (r.get("tactic_type"), r.get("media_type")): r
+        for r in (active_data.get("totals") or [])
+    }
+
+    INTEGER_FIELDS = ("impressions", "viewable_impressions", "clicks",
+                      "completions", "viewable_video_view_100_complete",
+                      "contracted_o2o_display_impressions", "contracted_ooh_display_impressions",
+                      "contracted_o2o_video_completions",   "contracted_ooh_video_completions",
+                      "bonus_o2o_display_impressions", "bonus_ooh_display_impressions",
+                      "bonus_o2o_video_completions", "bonus_ooh_video_completions")
+    MONEY_FIELDS = ("total_invested", "effective_total_cost", "effective_cost_with_over",
+                    "o2o_display_budget", "ooh_display_budget",
+                    "o2o_video_budget", "ooh_video_budget")
+
+    result = []
+    for key, agg in by_key.items():
+        active_row = active_by_key.get(key) or {}
+        for f in ACTIVE_FIELDS:
+            agg[f] = active_row.get(f)
+
+        viewable    = agg["viewable_impressions"] or 0
+        clicks      = agg["clicks"]               or 0
+        completions = agg["completions"]          or 0
+        cost        = agg["effective_total_cost"] or 0
+
+        agg["ctr"] = round((clicks      / viewable * 100), 4) if viewable else 0.0
+        agg["vtr"] = round((completions / viewable * 100), 4) if viewable else 0.0
+        agg["cpc"] = round((cost        / clicks),         4) if clicks   else 0.0
+
+        for f in INTEGER_FIELDS:
+            agg[f] = int(round(agg[f] or 0))
+        for f in MONEY_FIELDS:
+            agg[f] = round(agg[f] or 0, 2)
+
+        result.append(agg)
+    return result
+
+
+def _compose_asset_payload(per_token, active_token, mode, key, members_sorted):
+    """Combina data.rmnd ou data.pdooh.
+
+    `mode='latest'` → retorna o payload do MEMBRO MAIS RECENTE (por start_date)
+                      que tenha valor não-nulo. Fallback ativo, depois ordenado.
+    `mode='merge'`  → tenta parsear cada payload como JSON array e concatena.
+                      Se algum membro não parseia, faz log e cai pra latest.
+
+    Retorna a string final (já JSON-encoded) ou None.
+    """
+    raw_by_token = {t: per_token[t].get(key) for t in per_token}
+
+    def latest_non_null():
+        # Active primeiro; depois itera do mais RECENTE pro mais antigo
+        # (members_sorted é asc por start_date, então reversed = desc).
+        if raw_by_token.get(active_token):
+            return raw_by_token[active_token]
+        for t in reversed(members_sorted):
+            if raw_by_token.get(t):
+                return raw_by_token[t]
+        return None
+
+    if mode == "latest":
+        return latest_non_null()
+
+    # mode == 'merge': concatena arrays JSON
+    accumulated = []
+    for t in members_sorted:
+        raw = raw_by_token.get(t)
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(parsed, list):
+                accumulated.extend(parsed)
+            else:
+                # Não é array — não dá pra concat semanticamente.
+                print(f"[WARN _compose_asset_payload {key}] token={t} payload não é array, mode=merge cai pra latest")
+                return latest_non_null()
+        except Exception as e:
+            print(f"[WARN _compose_asset_payload {key}] token={t} parse falhou: {e}; mode=merge cai pra latest")
+            return latest_non_null()
+
+    if not accumulated:
+        return None
+    return json.dumps(accumulated)
+
+
+def compose_merged_report(group, force_refresh=False):
+    """Compõe o payload merged a partir do dict de grupo (vide merges.get_merge_group).
+
+    `force_refresh=True` propaga pra cada `_get_report_cached(token)` por
+    membro — necessário quando o admin pede ?refresh=true num report
+    merged: sem propagação, só o token base seria refrescado e os outros
+    entrariam stale no payload composto.
+
+    Retorna None se nenhum membro do grupo tem dado válido (caso patológico:
+    todos os tokens foram removidos da hub depois do merge).
+    """
+    members = group.get("members") or []
+    if not members:
+        return None
+    tokens = [m["short_token"] for m in members if m.get("short_token")]
+    if not tokens:
+        return None
+
+    # Fetch paralelo — cada um já passa por _get_report_cached (cache warm
+    # entre membros). Usamos _query_pool existente pra não criar pool novo.
+    futures = {
+        t: _query_pool.submit(_get_report_cached, t, force_refresh)
+        for t in tokens
+    }
+    per_token = {}
+    for t in tokens:
+        try:
+            data, _hit = futures[t].result()
+        except Exception as e:
+            print(f"[WARN compose_merged_report] fetch token={t} falhou: {e}")
+            continue
+        if data is not None:
+            per_token[t] = data
+
+    if not per_token:
+        return None
+
+    active_token = _pick_active_token(per_token)
+    active_data  = per_token[active_token]
+
+    # Ordena membros por start_date asc — usado em concat e no merge_meta
+    members_sorted = sorted(
+        per_token.keys(),
+        key=lambda t: _parse_iso_date_safe(
+            (per_token[t].get("campaign") or {}).get("start_date")
+        ) or date.min,
+    )
+
+    # Período + budget agregado
+    starts = [
+        _parse_iso_date_safe((d.get("campaign") or {}).get("start_date"))
+        for d in per_token.values()
+    ]
+    ends = [
+        _parse_iso_date_safe((d.get("campaign") or {}).get("end_date"))
+        for d in per_token.values()
+    ]
+    earliest_start = min((s for s in starts if s), default=None)
+    latest_end     = max((e for e in ends   if e), default=None)
+    summed_budget  = sum(
+        float((d.get("campaign") or {}).get("budget_contracted") or 0)
+        for d in per_token.values()
+    )
+
+    active_camp = active_data.get("campaign") or {}
+    composed_campaign = {
+        # Mantém o short_token do ativo — comments/loom/logo apontam pra ele
+        "short_token":       active_camp.get("short_token") or active_token,
+        "client_name":       active_camp.get("client_name"),
+        "campaign_name":     active_camp.get("campaign_name"),
+        "start_date":        earliest_start.isoformat() if earliest_start else active_camp.get("start_date"),
+        "end_date":          latest_end.isoformat()     if latest_end     else active_camp.get("end_date"),
+        "budget_contracted": round(summed_budget, 2),
+        "cpm_negociado":     active_camp.get("cpm_negociado",  0),
+        "cpcv_negociado":    active_camp.get("cpcv_negociado", 0),
+        "updated_at":        max(
+            ((d.get("campaign") or {}).get("updated_at") or "") for d in per_token.values()
+        ) or active_camp.get("updated_at"),
+    }
+
+    # Concat daily + detail (PIs sequenciais → datas não sobrepõem em prática;
+    # se sobrepuserem, o frontend agrupa por data e media_type via aggregations.js)
+    composed_daily  = []
+    composed_detail = []
+    for t in members_sorted:
+        composed_daily.extend(per_token[t].get("daily")  or [])
+        composed_detail.extend(per_token[t].get("detail") or [])
+
+    composed_totals = _compose_totals(per_token, active_token)
+
+    # Logo/Loom — prefere ativo; fallback ordem reversa (mais recente primeiro)
+    def first_non_null(field):
+        if active_data.get(field):
+            return active_data[field]
+        for t in reversed(members_sorted):
+            v = per_token[t].get(field)
+            if v:
+                return v
+        return None
+
+    logo = first_non_null("logo")
+    loom = first_non_null("loom")
+
+    rmnd_mode  = group.get("rmnd_mode")  or merges.DEFAULT_ASSET_MODE
+    pdooh_mode = group.get("pdooh_mode") or merges.DEFAULT_ASSET_MODE
+    rmnd  = _compose_asset_payload(per_token, active_token, rmnd_mode,  "rmnd",  members_sorted)
+    pdooh = _compose_asset_payload(per_token, active_token, pdooh_mode, "pdooh", members_sorted)
+
+    # Sheets integration: ativo (per-token estado de upload de planilha)
+    sheets = active_data.get("sheets_integration")
+
+    merge_meta = {
+        "merge_id":     group["merge_id"],
+        "active_token": active_token,
+        "rmnd_mode":    rmnd_mode,
+        "pdooh_mode":   pdooh_mode,
+        "members": [
+            {
+                "short_token":   t,
+                "campaign_name": (per_token[t].get("campaign") or {}).get("campaign_name"),
+                "start_date":    (per_token[t].get("campaign") or {}).get("start_date"),
+                "end_date":      (per_token[t].get("campaign") or {}).get("end_date"),
+                "is_active":     t == active_token,
+            }
+            for t in members_sorted
+        ],
+    }
+
+    return {
+        "campaign":           composed_campaign,
+        "totals":             composed_totals,
+        "daily":              composed_daily,
+        "detail":             composed_detail,
+        "logo":               logo,
+        "loom":               loom,
+        "rmnd":               rmnd,
+        "pdooh":              pdooh,
+        # Survey é explicitamente omitido no merged (decisão do usuário).
+        # Quando o filtro do header seleciona um token específico, o frontend
+        # busca dados daquele token via fetch single (caminho intocado).
+        "survey":             None,
+        "sheets_integration": sheets,
+        "merge_meta":         merge_meta,
+    }
+
+
+def _get_merged_report_cached(merge_id, force_refresh=False):
+    """Wrapper de cache + single-flight em torno de compose_merged_report.
+
+    Reusa o dict de locks por token (vivo em _token_locks) sob a chave do
+    merge_id — N admins abrindo o mesmo report merged não disparam N composições.
+    """
+    if not force_refresh:
+        cached = _cache_get(_merged_report_cache, merge_id, _MERGED_REPORT_CACHE_TTL)
+        if cached is not None:
+            return cached, True
+
+    lock = _get_token_lock(f"__merged__:{merge_id}")
+    with lock:
+        if not force_refresh:
+            cached = _cache_get(_merged_report_cache, merge_id, _MERGED_REPORT_CACHE_TTL)
+            if cached is not None:
+                return cached, True
+
+        group = merges.get_merge_group(merge_id)
+        if not group:
+            return None, False
+        data = compose_merged_report(group, force_refresh=force_refresh)
+        if data is None:
+            return None, False
+        _cache_set(_merged_report_cache, merge_id, data)
+        return data, False
 
 
 def table_ref():
@@ -1839,12 +2411,14 @@ def query_campaigns_list():
     fut_overrides= _query_pool.submit(_safe_get_overrides)
     fut_aliases  = _query_pool.submit(_safe_get_aliases)
     fut_shares   = _query_pool.submit(_safe_get_all_share_ids)
+    fut_merges   = _query_pool.submit(_safe_get_merges)
 
     rows           = fut_query.result()
     lookup_owners  = fut_owners.result()
     overrides_map  = fut_overrides.result()
     aliases_map    = fut_aliases.result()
     share_ids_map  = fut_shares.result()
+    merges_map     = fut_merges.result()
 
     result = []
     for r in rows:
@@ -1991,6 +2565,15 @@ def query_campaigns_list():
         if sid:
             c["share_id"] = sid
 
+    # Merge groups (Merge Reports). Token sem grupo fica sem campos extra —
+    # frontend faz `if (campaign.merge_id)` pra renderizar badge "merged".
+    for c in result:
+        info = merges_map.get(c["short_token"])
+        if info:
+            c["merge_id"]   = info["merge_id"]
+            c["rmnd_mode"]  = info["rmnd_mode"]
+            c["pdooh_mode"] = info["pdooh_mode"]
+
     return result
 
 
@@ -2064,6 +2647,28 @@ def _safe_get_all_share_ids():
         data = {}
     _cache_set(_shares_cache, "all", data)
     return data
+
+
+def _safe_get_merges():
+    """Wrapper resiliente + cacheado pro lookup de grupos de merge.
+
+    Tabela `campaign_merge_groups` é pequena (poucos grupos × poucos tokens).
+    Mesmo padrão de overrides/shares: full scan + cache atrelado ao TTL da
+    lista. Falha em dict vazio — campanhas continuam aparecendo, só não
+    enriquecidas com merge_id.
+    """
+    cached = _cache_get(_merges_cache, "all", _LIST_CACHE_TTL)
+    if cached is not None:
+        return cached
+    try:
+        data = merges.get_all_merge_groups_lookup()
+    except Exception as e:
+        print(f"[WARN _safe_get_merges] {e}")
+        data = {}
+    _cache_set(_merges_cache, "all", data)
+    return data
+
+
 def query_upload(short_token, upload_type):
     from google.cloud import bigquery as bq2
     table_name = "rmnd_data" if upload_type == "RMND" else "pdooh_data"
