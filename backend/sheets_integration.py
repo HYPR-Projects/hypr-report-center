@@ -801,6 +801,27 @@ def _annotate_merge_rows(
     return out
 
 
+def _sort_merge_rows_by_date(rows: List[Dict]) -> List[Dict]:
+    """Ordena rows da sheet merged por data ascendente — sem isso a
+    concatenação fica na ordem dos tokens (created_at no grupo), o que
+    quebra a leitura cronológica esperada pelo cliente.
+
+    Tiebreaker: `_short_token` pra estabilidade (rows do mesmo dia
+    aparecem agrupadas por mês). Datas faltando vão pro final."""
+    def _key(r):
+        d = r.get("date")
+        # date / datetime sortam direto; strings ISO sortam corretamente
+        # quando o formato é YYYY-MM-DD ou YYYY-MM-DDT...
+        if isinstance(d, (date, datetime)):
+            sort_d = d.isoformat()
+        elif isinstance(d, str):
+            sort_d = d
+        else:
+            sort_d = "9999-99-99"  # vazias por último
+        return (sort_d, r.get("_short_token") or "")
+    return sorted(rows, key=_key)
+
+
 def _enrich_detail_costs(detail_rows: List[Dict], totals_rows: List[Dict]) -> List[Dict]:
     """
     Porta de src/shared/enrichDetail.js (frontend) pra Python.
@@ -1156,6 +1177,7 @@ def create_sheet_for_merge(
         earliest_start=earliest_start,
         latest_end=latest_end,
     )
+    annotated_rows = _sort_merge_rows_by_date(annotated_rows)
     payload = _build_sheet_payload(annotated_rows, merged=True)
     spreadsheet_id, spreadsheet_url = _create_spreadsheet_with_payload(
         title=title, payload=payload, access_token=access_token,
@@ -1295,6 +1317,7 @@ def sync_merge_sheet(merge_id: str, members: List[Dict]) -> Dict:
         annotated_rows.extend(_annotate_merge_rows(
             st, detail, m.get("start_date"), m.get("end_date"),
         ))
+    annotated_rows = _sort_merge_rows_by_date(annotated_rows)
     payload = _build_sheet_payload(annotated_rows, merged=True)
 
     _write_base_de_dados(sheets_svc, integ["spreadsheet_id"], payload,
