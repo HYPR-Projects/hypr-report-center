@@ -138,6 +138,10 @@ function writeViewToUrl(view) {
 export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  // `refreshing` cobre qualquer refetch após a 1ª carga (troca de view,
+  // troca de token sem reload, etc). Renderiza barra fina de progresso
+  // sem mexer no skeleton inicial — UX de "algo tá vindo" sem flash.
+  const [refreshing, setRefreshing] = useState(false);
 
   const [mainRange, setMainRangeState] = useState(() => readRangeFromUrl());
   const [tab, setTabState] = useState(() => readTabFromUrl());
@@ -178,7 +182,8 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     let cancelled = false;
     // Não chamamos setData(null) aqui — manter o payload anterior durante
     // o refetch (ex: trocar de visão agregada → Fev) é UX melhor que flash
-    // de skeleton. Os componentes filhos rerenderizam quando `data` chega.
+    // de skeleton. Em vez disso, sinalizamos `refreshing=true` pra TopProgressBar.
+    setRefreshing(true);
     getCampaign(token, view ? { view } : undefined)
       .then((d) => {
         if (cancelled) return;
@@ -188,6 +193,10 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
       .catch((e) => {
         if (cancelled) return;
         setError(e?.message || "Erro ao carregar dados");
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setRefreshing(false);
       });
     return () => {
       cancelled = true;
@@ -281,6 +290,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   return (
     <TooltipProvider delayDuration={200}>
       <div className="min-h-screen bg-canvas text-fg font-sans">
+        <TopProgressBar visible={refreshing} />
         <TopBarV2
           updatedAtLabel="Atualizado agora"
           onShare={handleShare}
@@ -631,5 +641,28 @@ function ClipboardIcon() {
       <line x1="9" y1="12" x2="15" y2="12" />
       <line x1="9" y1="16" x2="13" y2="16" />
     </svg>
+  );
+}
+
+// ─── TopProgressBar ────────────────────────────────────────────────────
+//
+// Barra fina (2px) fixa no topo da viewport, indeterminate animation
+// signature-cor. Aparece só durante refetch (troca de view/token sem
+// reload). Não intrusiva — mantém o conteúdo anterior visível enquanto
+// sinaliza progresso.
+//
+// `visible` controla via classes em vez de unmount: assim, quando o
+// fetch é instantâneo (cache hit), o user vê um pequeno flash e depois
+// some — feedback consistente sem flicker.
+function TopProgressBar({ visible }) {
+  return (
+    <div
+      aria-hidden={!visible}
+      className={`fixed top-0 left-0 right-0 z-[60] h-[2px] overflow-hidden pointer-events-none transition-opacity duration-150 ${
+        visible ? "opacity-100" : "opacity-0"
+      }`}
+    >
+      <div className="topbar-progress-stripe absolute inset-y-0 w-1/3 bg-signature" />
+    </div>
   );
 }

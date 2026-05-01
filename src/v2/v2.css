@@ -46,3 +46,20 @@
  * Uso: `<div className="bg-white dark:bg-white/5" />`
  */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* ───────────────────────────────────────────────────────────
+ * TopProgressBar — barra de refetch (ClientDashboardV2)
+ * ───────────────────────────────────────────────────────────
+ * Stripe signature de 33% de largura desliza horizontalmente em
+ * loop. Indeterminate animation — não tenta refletir progresso
+ * real (que não temos via fetch normal). Easing linear pra manter
+ * ritmo constante; 1.2s rápido o suficiente pra parecer responsivo
+ * sem distrair.
+ */
+@keyframes topbar-progress-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%);  }
+}
+.topbar-progress-stripe {
+  animation: topbar-progress-slide 1.2s linear infinite;
+}
