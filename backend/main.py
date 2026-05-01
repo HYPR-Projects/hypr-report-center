@@ -1498,13 +1498,16 @@ def query_totals(token, campaign_info):
         expected_delivered = (neg / total_days * elapsed_days) if (total_days > 0 and elapsed_days > 0) else 0
 
         # Entrega esperada pelo PACING canônico HYPR (calendar-elapsed, com
-        # cap em total_days). Espelha exatamente:
+        # cap em row_total_days). Usa `actual_start_date` da frente em vez
+        # de campaign.start_date — frente que entra depois (ex: O2O começa
+        # 4 dias após Video) é medida vs seu próprio período, não punida
+        # pelos dias em que ainda nem tinha rodado. Espelha exatamente:
         #   - frontend `computeMediaPacing` (shared/aggregations.js)
         #   - backend `pacing_calc_calendar` no `?list=true`
         # Resultado: a coluna Pacing do Detalhamento e o Resumo por mídia
         # mostram o MESMO número que a barra Pacing da Visão Geral.
-        pacing_capped_elapsed = min(elapsed_days, total_days) if total_days > 0 else 0
-        pacing_expected = (neg / total_days * pacing_capped_elapsed) if (total_days > 0 and pacing_capped_elapsed > 0) else 0
+        pacing_capped_elapsed = min(row_elapsed_days, row_total_days) if row_total_days > 0 else 0
+        pacing_expected = (neg / row_total_days * pacing_capped_elapsed) if (row_total_days > 0 and pacing_capped_elapsed > 0) else 0
 
         # Pacing: entregue vs esperado (fórmula canônica calendar-elapsed)
         # Video usa completions (viewable views 100%), Display usa viewable_impressions
@@ -1565,6 +1568,12 @@ def query_totals(token, campaign_info):
             "vtr":           round(vtr,   4),
             "pacing":        round(pacing, 4),
             "rentabilidade": round(rentab, 4),
+            # Frente-level (para frontend recompor pacing agregado da Visão
+            # Geral usando actual_start por linha em vez de campanha-wide).
+            # `actual_start_date` é ISO yyyy-mm-dd ou None se a frente ainda
+            # não entregou nada.
+            "actual_start_date":   actual_start.isoformat() if actual_start else None,
+            "days_with_delivery":  days_with_delivery,
             "o2o_display_budget":                  round(o2o_display_budget, 4),
             "ooh_display_budget":                  round(ooh_display_budget, 4),
             "o2o_video_budget":                    round(o2o_video_budget,   4),
