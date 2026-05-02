@@ -220,35 +220,25 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt,
         </div>
       )}
 
-      {/* ─── 2.5 Curva cumulativa de delivery (real × esperado) ─────────
+      {/* ─── 2.5 Curva de pacing acumulado (real × 100% no alvo) ───────
           Complementar às barras de pacing acima: enquanto a barra é um
-          snapshot do ritmo atual, este chart mostra a curva ao longo do
-          tempo, evidenciando tendências (recuperação após sub-delivery
-          inicial, plateau de over, etc). Só renderiza quando sem filtro
-          de período (faz sentido olhar a campanha inteira). */}
+          snapshot do ritmo atual, este chart mostra a curva de pacing
+          ao longo do tempo. No último tick (hoje), o valor real bate
+          com o KPI Pacing Geral. Só renderiza quando sem filtro de
+          período (faz sentido olhar a campanha inteira). */}
       {!isFiltered && daily0 && daily0.length > 0 && (
         <CumulativePacingChartV2
           daily={daily0}
-          contracted={
-            display.reduce(
-              (s, r) =>
-                s +
-                (r.contracted_o2o_display_impressions || 0) +
-                (r.contracted_ooh_display_impressions || 0) +
-                (r.bonus_o2o_display_impressions || 0) +
-                (r.bonus_ooh_display_impressions || 0),
-              0,
-            ) +
-            video.reduce(
-              (s, r) =>
-                s +
-                (r.contracted_o2o_video_impressions || 0) +
-                (r.contracted_ooh_video_impressions || 0) +
-                (r.bonus_o2o_video_impressions || 0) +
-                (r.bonus_ooh_video_impressions || 0),
-              0,
-            )
+          contractedDisplay={
+            (display[0]?.contracted_o2o_display_impressions || 0) + (display[0]?.bonus_o2o_display_impressions || 0)
+          + (display[0]?.contracted_ooh_display_impressions || 0) + (display[0]?.bonus_ooh_display_impressions || 0)
           }
+          contractedVideo={
+            (video[0]?.contracted_o2o_video_completions || 0) + (video[0]?.bonus_o2o_video_completions || 0)
+          + (video[0]?.contracted_ooh_video_completions || 0) + (video[0]?.bonus_ooh_video_completions || 0)
+          }
+          budgetDisplay={(display[0]?.o2o_display_budget || 0) + (display[0]?.ooh_display_budget || 0)}
+          budgetVideo={(video[0]?.o2o_video_budget || 0) + (video[0]?.ooh_video_budget || 0)}
           startDate={camp.start_date}
           endDate={camp.end_date}
         />
