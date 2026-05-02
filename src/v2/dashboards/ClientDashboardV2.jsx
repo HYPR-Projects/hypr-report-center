@@ -133,6 +133,14 @@ function writeViewToUrl(view) {
   }
 }
 
+// Estilo visual das tabs secundárias (RMND, PDOOH, Loom, Survey) — peso
+// menor que as core. text-xs (12px vs sm 14px), font-medium (500 vs
+// semibold 600), cor text-fg-subtle (mais apagada que muted).
+// data-[state=active]:text-fg do componente base continua valendo no
+// estado ativo.
+const SECONDARY_TAB_CLASS =
+  "text-xs font-medium text-fg-subtle hover:text-fg-muted";
+
 // ─── Componente principal ──────────────────────────────────────────────
 
 export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
@@ -267,13 +275,6 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   const showSurvey = isAdmin || hasSurvey;
   const hasAnySecondary = showRmnd || showPdooh || showLoom || showSurvey;
 
-  // Estilo visual das tabs secundárias — peso menor que as core.
-  // text-xs (12px vs sm 14px), font-medium (500 vs semibold 600), cor
-  // text-fg-subtle (mais apagada que muted). data-[state=active]:text-fg
-  // do componente base continua valendo no estado ativo.
-  const secondaryTabClass =
-    "text-xs font-medium text-fg-subtle hover:text-fg-muted";
-
   // Se deep-link aponta pra tab secundária que esse user não vê (cliente
   // sem dado cadastrado), downgrade pra overview no render — evita tela
   // vazia sem trigger ativo no menu. URL pode ficar momentaneamente fora
@@ -337,7 +338,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                   <TabsTrigger
                     value="rmnd"
                     iconLeft={<ShoppingCartIcon />}
-                    className={secondaryTabClass}
+                    className={SECONDARY_TAB_CLASS}
                   >
                     RMND
                   </TabsTrigger>
@@ -346,7 +347,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                   <TabsTrigger
                     value="pdooh"
                     iconLeft={<MapPinIcon />}
-                    className={secondaryTabClass}
+                    className={SECONDARY_TAB_CLASS}
                   >
                     PDOOH
                   </TabsTrigger>
@@ -355,7 +356,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                   <TabsTrigger
                     value="loom"
                     iconLeft={<FilmIcon />}
-                    className={secondaryTabClass}
+                    className={SECONDARY_TAB_CLASS}
                   >
                     Video Loom
                   </TabsTrigger>
@@ -364,7 +365,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                   <TabsTrigger
                     value="survey"
                     iconLeft={<ClipboardIcon />}
-                    className={secondaryTabClass}
+                    className={SECONDARY_TAB_CLASS}
                   >
                     Survey
                   </TabsTrigger>

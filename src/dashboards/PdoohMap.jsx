@@ -1,12 +1,12 @@
 import { useEffect, useRef } from "react";
 import { C } from "../shared/theme";
-import { useleaflet } from "../shared/useLeaflet";
+import { useLeaflet } from "../shared/useLeaflet";
 
 const PdoohMap = ({ points }) => {
   const mapRef = useRef(null);
   const instanceRef = useRef(null);
   const heatRef = useRef(null);
-  const L = useleaflet();
+  const L = useLeaflet();
 
     useEffect(()=>{
   if (!L || !mapRef.current) return;

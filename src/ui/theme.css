@@ -11,15 +11,13 @@
  *   from-signature, to-signature, etc.
  *
  * ──────────────────────────────────────────────────────────────────────
- * SINCRONIZAÇÃO COM tokens.js
+ * CORES EM JS (recharts, SVG dinâmico)
  * ──────────────────────────────────────────────────────────────────────
- * Algumas cores também precisam estar disponíveis em JS (recharts,
- * SVG dinâmico, lógica de cor condicional). Esses valores estão
- * espelhados em src/shared/tokens.js. Se mudar uma cor aqui, mude lá.
- *
- * No longo prazo, vale considerar gerar tokens.js automaticamente a
- * partir deste arquivo, mas o set é pequeno (~20 tokens) e raramente
- * muda — manutenção manual é aceitável.
+ * Quando um chart precisa de cor como string literal (ex: <Bar fill={...} />),
+ * o consumidor lê as CSS vars deste arquivo via getComputedStyle através
+ * dos hooks `useThemeColors` / `useChartNeutral` em src/v2/hooks/. Esse
+ * caminho é theme-aware (atualiza automaticamente quando o user troca
+ * dark/light) — não há mais um espelho JS estático pra manter em sync.
  *
  * ──────────────────────────────────────────────────────────────────────
  * MODOS DARK / LIGHT

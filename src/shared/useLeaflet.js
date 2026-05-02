@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 
-export const useleaflet = () => {
+export const useLeaflet = () => {
   const [lib, setLib] = useState(null);
   useEffect(()=>{
     if (window.L) { setLib(window.L); return; }
