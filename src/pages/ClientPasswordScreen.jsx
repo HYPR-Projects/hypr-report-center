@@ -83,6 +83,7 @@ const ClientPasswordScreen = ({ token, onUnlock }) => {
         <div style={{display:"flex",justifyContent:"center",marginBottom:36,color:"#FFFFFF"}}><HyprReportCenterLogo height={32}/></div>
         <p style={{color:"rgba(229,235,242,0.7)",fontSize:13,marginBottom:32,lineHeight:1.7,fontWeight:400}}>Insira o código de acesso fornecido<br/>pela equipe HYPR para visualizar o report.</p>
         <input
+          aria-label="Código de acesso"
           value={pw}
           onChange={e=>setPw(e.target.value.toUpperCase())}
           onKeyDown={e=>e.key==="Enter"&&!loading&&submit()}

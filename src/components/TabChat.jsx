@@ -69,7 +69,7 @@ const TabChat = ({ token, tabName, author, adminJwt, theme }) => {
   return(
     <div style={{marginTop:32,border:`1px solid ${tc_bdr}`,borderRadius:12,overflow:"hidden"}}>
       <div style={{background:tc_bg2,padding:"12px 16px",borderBottom:`1px solid ${tc_bdr}`,display:"flex",alignItems:"center",gap:8}}>
-        <span style={{fontSize:14}}>💬</span>
+        <span aria-hidden="true" style={{fontSize:14}}>💬</span>
         <span style={{fontSize:13,fontWeight:600,color:tc_txt}}>Conversa</span>
         {messages.length>0&&<span style={{fontSize:11,color:tc_mut}}>· {messages.length} mensagem{messages.length>1?"s":""}</span>}
       </div>

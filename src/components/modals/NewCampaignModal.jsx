@@ -95,11 +95,12 @@ const NewCampaignModal = ({ onClose, onConfirm, theme }) => {
 
       {!tokenData ? (
         <>
-          <label style={{ fontSize: 12, color: muted, textTransform: "uppercase", letterSpacing: 1 }}>
+          <label htmlFor="ncm-short-token" style={{ fontSize: 12, color: muted, textTransform: "uppercase", letterSpacing: 1 }}>
             Short Token
           </label>
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
             <input
+              id="ncm-short-token"
               value={newToken}
               onChange={e => setNewToken(e.target.value.toUpperCase())}
               onKeyDown={e => e.key === "Enter" && handleCheckToken()}
@@ -154,7 +155,7 @@ const NewCampaignModal = ({ onClose, onConfirm, theme }) => {
             </div>
             {logoPreview ? (
               <div style={{ display: "flex", alignItems: "center", gap: 12, background: inputBg, borderRadius: 8, padding: 12 }}>
-                <img src={logoPreview} style={{ height: 40, objectFit: "contain", maxWidth: 120 }}/>
+                <img src={logoPreview} alt="Preview da logo" style={{ height: 40, objectFit: "contain", maxWidth: 120 }}/>
                 <span style={{ fontSize: 12, color: muted, flex: 1 }}>Logo carregado</span>
                 <button
                   onClick={() => { setLogoPreview(null); }}
@@ -169,7 +170,7 @@ const NewCampaignModal = ({ onClose, onConfirm, theme }) => {
                   style={{ display: "none" }}
                   onChange={handleLogoFile}
                 />
-                <span style={{ fontSize: 20 }}>🖼️</span>
+                <span aria-hidden="true" style={{ fontSize: 20 }}>🖼️</span>
                 <span style={{ fontSize: 13, color: muted }}>Clique para inserir logo PNG</span>
               </label>
             )}

@@ -96,7 +96,7 @@ const LogoModal = ({ shortToken, onClose, onSaved, theme }) => {
         }}
       >
         <input type="file" accept="image/png,image/jpeg,image/svg+xml,.svg" style={{ display: "none" }} onChange={handleFile} />
-        <span style={{ fontSize: 20 }}>📁</span>
+        <span aria-hidden="true" style={{ fontSize: 20 }}>📁</span>
         <span style={{ fontSize: 13, color: muted }}>
           {file ? file.name : "Clique para selecionar imagem"}
         </span>
