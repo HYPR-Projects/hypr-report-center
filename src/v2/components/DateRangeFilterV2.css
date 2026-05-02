@@ -84,7 +84,7 @@
 .rdp-hypr .rdp-button_previous,
 .rdp-hypr .rdp-button_next {
   color: var(--color-fg-muted);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 .rdp-hypr .rdp-button_previous:hover:not([disabled]),
