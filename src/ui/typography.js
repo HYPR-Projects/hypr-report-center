@@ -50,6 +50,7 @@ import "@fontsource/urbanist/400.css";  // regular
 import "@fontsource/urbanist/500.css";  // medium
 import "@fontsource/urbanist/600.css";  // semibold
 import "@fontsource/urbanist/700.css";  // bold
+import "@fontsource/urbanist/800.css";  // extrabold (modais admin + KpiCard + heroes)
 
 // Stack completo com fallbacks. Ordem dos fallbacks (em caso da Urbanist
 // falhar em carregar):

@@ -1,8 +1,10 @@
 import { C } from "../shared/theme";
 
+// Urbanist self-hosted (pesos 400-800) é carregada em src/main.jsx via
+// src/ui/typography. Antes este componente injetava @import url(Google
+// Fonts), render-blocking no path crítico de Login e ClientPasswordScreen.
 const GlobalStyle = () => (
   <style>{`
-    @import url('https://fonts.googleapis.com/css2?family=Urbanist:wght@300;400;500;600;700;800;900&display=swap');
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
     html,body,#root{width:100%;min-height:100vh;}
     body{font-family:'Urbanist',sans-serif;background:${C.dark};color:${C.white};min-height:100vh;}
