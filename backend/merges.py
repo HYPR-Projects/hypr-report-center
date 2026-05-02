@@ -48,12 +48,12 @@ módulo é puramente aditivo — `fetch_campaign_data` não muda.
 """
 
 import os
-import re
 import secrets
 import threading
-import unicodedata
 
 from google.cloud import bigquery
+
+import clients
 
 bq = bigquery.Client()
 
@@ -127,22 +127,6 @@ def ensure_table_exists() -> None:
         """
         bq.query(sql).result()
         _table_ensured = True
-
-
-# ─── Normalização de client_name (paridade com clients.normalize_client_slug)
-# Usada APENAS na validação "tokens do mesmo cliente". Espelha o slug do
-# admin pra que "L'Oréal" e "LOREAL" sejam aceitos como mesmo cliente.
-_NORM_NON_ALNUM = re.compile(r"[^a-z0-9]+")
-
-
-def _normalize_client(name: str) -> str:
-    if not name:
-        return ""
-    s = name.strip().lower()
-    s = unicodedata.normalize("NFKD", s)
-    s = "".join(c for c in s if not unicodedata.combining(c))
-    s = _NORM_NON_ALNUM.sub("-", s).strip("-")
-    return s
 
 
 def _validate_mode(mode: str | None, label: str) -> str:
@@ -364,9 +348,9 @@ def merge_tokens(
         )
 
     canonical_client = metadata[clean_tokens[0]] or ""
-    canonical_slug   = _normalize_client(canonical_client)
+    canonical_slug   = clients.normalize_client_slug(canonical_client)
     for t in clean_tokens[1:]:
-        if _normalize_client(metadata[t] or "") != canonical_slug:
+        if clients.normalize_client_slug(metadata[t] or "") != canonical_slug:
             raise ClientMismatchError(
                 "Todos os tokens devem ser do mesmo cliente. "
                 f"Encontrado '{metadata[t]}' vs '{canonical_client}'."
@@ -593,14 +577,14 @@ def list_mergeable_tokens(short_token: str) -> list[dict]:
     base_meta = _fetch_tokens_metadata([short_token])
     if short_token.upper() not in base_meta:
         raise TokenNotFoundError(f"Token base não encontrado: {short_token}")
-    base_client_slug = _normalize_client(base_meta[short_token.upper()] or "")
+    base_client_slug = clients.normalize_client_slug(base_meta[short_token.upper()] or "")
     if not base_client_slug:
         return []
 
     # 2) Pega todos os tokens do mesmo cliente. Normalização igual ao
-    # _normalize_client mas em SQL: lower + remove acentos não dá em BQ
-    # standard sem JS UDF — então fazemos LOWER + REGEX_REPLACE pra
-    # aproximar e refinamos em Python.
+    # clients.normalize_client_slug mas em SQL: lower + remove acentos
+    # não dá em BQ standard sem JS UDF — então fazemos LOWER +
+    # REGEX_REPLACE pra aproximar e refinamos em Python.
     sql = f"""
         SELECT
             short_token,
@@ -621,7 +605,7 @@ def list_mergeable_tokens(short_token: str) -> list[dict]:
 
     same_client = [
         r for r in rows
-        if _normalize_client(r["client_name"] or "") == base_client_slug
+        if clients.normalize_client_slug(r["client_name"] or "") == base_client_slug
     ]
 
     # 3) Quais já estão em algum grupo, e qual?
