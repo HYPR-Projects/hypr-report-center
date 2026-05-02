@@ -204,7 +204,7 @@ export function CampaignHeaderV2({
                 alt={clientName ? `Logo ${clientName}` : "Logo do cliente"}
                 className="max-w-full max-h-full object-contain transition-[filter] duration-200"
                 style={shouldInvertLogo ? { filter: "invert(1)" } : undefined}
-                loading="lazy"
+                loading="eager"
               />
             ) : (
               <span className="text-fg-muted font-semibold text-sm tracking-wide truncate">
