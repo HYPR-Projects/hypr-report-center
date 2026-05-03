@@ -30,6 +30,7 @@ import {
   isCampaignEnded,
   localPartFromEmail,
 } from "../lib/format";
+import { schedulePrefetch, cancelPrefetch } from "../../../lib/prefetchReport";
 
 // 4 tiers de health (ver CampaignCardV2 pra discussão de design); aqui
 // só precisamos dos dots — a Row é compacta e não usa glow.
@@ -141,6 +142,9 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
         if (e.key === "Enter") onOpen?.(campaign);
         if (e.key === "ArrowRight") onOpenReport?.(short_token);
       }}
+      onMouseEnter={() => schedulePrefetch(short_token)}
+      onMouseLeave={() => cancelPrefetch(short_token)}
+      onFocus={() => schedulePrefetch(short_token)}
       className={cn(
         "grid gap-2 items-center px-4 py-2.5 border-b border-border last:border-0",
         "text-[12px] cursor-pointer transition-colors",

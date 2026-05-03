@@ -28,6 +28,8 @@ import re
 import json
 import time
 import hmac
+import hashlib
+import gzip
 import threading
 import urllib.request
 import urllib.parse
@@ -297,6 +299,113 @@ def cors_headers(origin, methods="GET, OPTIONS"):
             "Access-Control-Allow-Headers": "Content-Type, Authorization",
         }
     return {}
+
+
+def _etag_normalize(value):
+    """Extrai a parte opaca de um ETag pra weak comparison.
+
+    `W/"abc"` → `abc`
+    `"abc"`   → `abc`
+    `abc`     → `abc` (defensivo, alguns proxies removem aspas)
+    """
+    v = (value or "").strip()
+    if v.startswith("W/"):
+        v = v[2:].strip()
+    return v.strip('"')
+
+
+def _maybe_gzip(body_str, request, headers):
+    """Comprime body via gzip se o cliente aceita (Accept-Encoding).
+
+    Cloud Functions Gen2 / Cloud Run NÃO faz compressão automática —
+    é responsabilidade da função. Sem isso, payloads grandes (139KB do
+    list=true) trafegam crus pra qualquer cliente.
+
+    Atualiza `headers` in-place com `Content-Encoding: gzip` e adiciona
+    `Vary: Accept-Encoding` (pra qualquer CDN saber que respostas variam
+    por esse header — sem isso, um cliente sem gzip pegaria a versão
+    comprimida do cache).
+
+    compresslevel=6 é o sweet spot da stdlib gzip: ~85% redução em JSON
+    com latência de ~5ms num payload de 140KB. Levels 7-9 economizam
+    1-2% extra com 2-3x mais tempo de CPU — não vale.
+
+    Retorna bytes (encoded body, gzipped or não).
+    """
+    body_bytes = body_str.encode("utf-8") if isinstance(body_str, str) else body_str
+
+    accept = (request.headers.get("Accept-Encoding") or "").lower()
+    if "gzip" not in accept:
+        return body_bytes
+
+    headers["Content-Encoding"] = "gzip"
+    existing_vary = headers.get("Vary", "").strip()
+    if "accept-encoding" not in existing_vary.lower():
+        headers["Vary"] = (existing_vary + ", " + "Accept-Encoding").lstrip(", ")
+    return gzip.compress(body_bytes, compresslevel=6)
+
+
+def _etag_response(payload, request, extra_headers=None):
+    """Resposta JSON com suporte a ETag/304.
+
+    Calcula um weak ETag a partir do payload serializado. Se o request
+    tem `If-None-Match` que bate, devolve 304 (sem body) economizando
+    transferência. Senão, devolve 200 com `ETag` no header pra que o
+    browser revalide nas próximas requests.
+
+    Por que weak (`W/`)?
+      O ETag não é byte-exact (semantic equivalence basta). Mudanças
+      irrelevantes no JSON (ordem de chaves, espaçamento) não devem
+      forçar miss.
+
+    Comparação tolerante:
+      RFC 7232 §2.3.2 — weak comparison ignora prefixo W/ e considera
+      apenas a parte opaca. Implementamos assim porque entre browser e
+      Cloud Run pode passar load balancer/proxy que normaliza o header
+      (remove W/, troca aspas). Comparação por igualdade estrita falha
+      em prod mesmo quando os ETags semanticamente batem.
+
+      Suporta também múltiplos ETags no If-None-Match (RFC permite
+      `"a", W/"b"`) e o wildcard `*`.
+
+    Returns: tupla (body_str_or_empty, status, headers) compatível com
+    o retorno padrão do Flask/GCF.
+    """
+    # ETag é hash do CONTEÚDO ESSENCIAL — `_cache` é metadata sobre
+    # quem serviu (hit/miss interno do backend), muda entre requests
+    # idênticas e contaminaria o hash. Sem esse strip, o ETag nunca
+    # bate em revalidação.
+    etag_payload = {k: v for k, v in payload.items() if k != "_cache"}
+    etag_body = json.dumps(etag_payload, separators=(",", ":"), default=str, ensure_ascii=False)
+    digest = hashlib.sha256(etag_body.encode("utf-8")).hexdigest()[:16]
+    etag = f'W/"{digest}"'
+    etag_opaque = digest
+
+    inm_raw = (request.headers.get("If-None-Match") or "").strip()
+    headers = dict(extra_headers or {})
+    headers["ETag"] = etag
+
+    matched = False
+    if inm_raw == "*":
+        matched = True
+    elif inm_raw:
+        # Aceita lista separada por vírgula. Cada token é normalizado e
+        # comparado contra a parte opaca do nosso ETag.
+        for token in inm_raw.split(","):
+            if _etag_normalize(token) == etag_opaque:
+                matched = True
+                break
+
+    if matched:
+        # Browser tem cópia fresca. 304 vazio + headers — economiza o
+        # payload inteiro. ~80% dos hits no warm path do menu admin.
+        return ("", 304, headers)
+
+    # Body completo (com `_cache`) só vai no 200. No 304 não tem body.
+    body = json.dumps(payload, separators=(",", ":"), default=str, ensure_ascii=False)
+    headers["Content-Type"] = "application/json; charset=utf-8"
+    body = _maybe_gzip(body, request, headers)
+    return (body, 200, headers)
 
 
 @functions_framework.http
@@ -1167,7 +1276,7 @@ def report_data(request):
             if cached is not None:
                 resp_headers = {**headers, "Cache-Control": "private, max-age=30"}
                 resp_headers["Server-Timing"] = f"total;dur={int((time.time()-t0)*1000)};desc=\"hit\""
-                return (jsonify({**cached, "_cache": "hit"}), 200, resp_headers)
+                return _etag_response({**cached, "_cache": "hit"}, request, resp_headers)
 
             # Reusa o cache de campanhas via single-flight (evita query duplicada
             # quando esta request chega em paralelo com ?list=true).
@@ -1203,7 +1312,7 @@ def report_data(request):
                     f"agg;dur={agg_ms},timeseries;dur={ts_ms},total;dur={total_ms}"
                 ),
             }
-            return (jsonify({**payload, "_cache": "miss"}), 200, resp_headers)
+            return _etag_response({**payload, "_cache": "miss"}, request, resp_headers)
         except Exception as e:
             logger.error(f"[ERROR list_clients] {e}")
             return (jsonify({"error": "Erro ao listar clientes"}), 500, headers)
@@ -1224,9 +1333,12 @@ def report_data(request):
                 "Cache-Control": "private, max-age=30",
                 "Server-Timing": f"list;dur={total_ms};desc=\"{'hit' if hit else 'miss'}\"",
             }
-            return (
-                jsonify({"campaigns": campaigns, "_cache": "hit" if hit else "miss"}),
-                200,
+            # ETag/304: depois do max-age expirar, browser revalida. Se o
+            # payload não mudou (caso comum dado TTL backend de 5min), ETag
+            # bate e devolvemos 304 vazio em vez de 139KB.
+            return _etag_response(
+                {"campaigns": campaigns, "_cache": "hit" if hit else "miss"},
+                request,
                 resp_headers,
             )
         except Exception as e:

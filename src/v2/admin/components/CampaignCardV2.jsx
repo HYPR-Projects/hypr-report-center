@@ -47,6 +47,7 @@ import {
   isCampaignEnded,
   localPartFromEmail,
 } from "../lib/format";
+import { schedulePrefetch, cancelPrefetch } from "../../../lib/prefetchReport";
 
 // Mapas health → classe de cor. Mesma régua de format.js (pacing tiers),
 // reaproveitada pra stripe lateral e fill da barra de pacing.
@@ -136,6 +137,12 @@ export function CampaignCardV2({
           onOpen?.(campaign);
         }
       }}
+      // Prefetch do report quando o cursor entra no card. O gap natural
+      // entre hover e click (~200-400ms) cobre o RTT do fetch e deixa
+      // a abertura do report instantânea quando o user clica.
+      onMouseEnter={() => schedulePrefetch(short_token)}
+      onMouseLeave={() => cancelPrefetch(short_token)}
+      onFocus={() => schedulePrefetch(short_token)}
     >
       {/* Stripe lateral de status — substitui o dot, escala em scan rápido */}
       {health && (

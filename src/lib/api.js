@@ -80,44 +80,50 @@ export async function checkCampaignToken(token) {
 
 /**
  * Lista todas as campanhas (admin only). Faz dedupe por short_token.
- * Em falha, retorna [] — mesmo comportamento defensivo do CampaignMenu.fetchList.
  *
- * Se o id_token do Google estiver expirado (TTL ~1h), o backend rejeita
- * com 401. Nesse caso limpa a sessão e recarrega pra UI mandar o usuário
- * pra tela de login em vez de mostrar "0 campanhas" silenciosamente.
+ * Contrato de erro
+ * ----------------
+ * - Sucesso (200): retorna array (pode ser vazio se backend devolveu
+ *   `{campaigns: []}`).
+ * - 401/403: dispara `window.location.reload()` pra reabrir login e
+ *   lança `Error("admin session expired")` — caller pode ignorar pois
+ *   a página vai recarregar.
+ * - Qualquer outro erro (5xx, rede, JSON malformado): **lança**.
+ *   Versões antigas retornavam `[]` silenciosamente, o que mascarava
+ *   falhas como "lista realmente vazia" e gerava o bug de "0 campanhas"
+ *   após blip de rede. Agora callers têm que tratar — o pattern
+ *   recomendado é stale-while-revalidate via `persistedCache`.
  */
 export async function listCampaigns() {
-  try {
-    const jwt = await getOrIssueAdminJwt();
-    const r = await fetch(`${API_URL}?list=true`, {
-      headers: { ...adminAuthHeaders(jwt) },
-    });
-    if (r.status === 401 || r.status === 403) {
-      // Token expirou no meio da sessão. Limpa e recarrega pra reabrir login.
-      try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
-      window.location.reload();
-      return [];
-    }
-    const d = await r.json();
-    const raw = d.campaigns || [];
-    const seen = new Set();
-    const filtered = raw.filter(c => {
-      if (seen.has(c.short_token)) return false;
-      seen.add(c.short_token);
-      return true;
-    });
-    // Pré-popula cache local de share_ids com o que vem no payload
-    // (Frente 2 — backend agora devolve share_id no ?list=true). Resultado:
-    // clicks em "Link Cliente" são instantâneos desde o primeiro,
-    // em qualquer device e qualquer sessão. Campanhas sem share_id ainda
-    // criado caem no fallback on-demand do `getShareId`.
-    for (const c of filtered) {
-      if (c.share_id) setCachedShareId(c.short_token, c.share_id);
-    }
-    return filtered;
-  } catch {
-    return [];
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(`${API_URL}?list=true`, {
+    headers: { ...adminAuthHeaders(jwt) },
+  });
+  if (r.status === 401 || r.status === 403) {
+    try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
+    window.location.reload();
+    throw new Error("admin session expired");
   }
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  if (!Array.isArray(d?.campaigns)) {
+    throw new Error("malformed response: campaigns missing");
+  }
+  const seen = new Set();
+  const filtered = d.campaigns.filter(c => {
+    if (seen.has(c.short_token)) return false;
+    seen.add(c.short_token);
+    return true;
+  });
+  // Pré-popula cache local de share_ids com o que vem no payload
+  // (Frente 2 — backend agora devolve share_id no ?list=true). Resultado:
+  // clicks em "Link Cliente" são instantâneos desde o primeiro,
+  // em qualquer device e qualquer sessão. Campanhas sem share_id ainda
+  // criado caem no fallback on-demand do `getShareId`.
+  for (const c of filtered) {
+    if (c.share_id) setCachedShareId(c.short_token, c.share_id);
+  }
+  return filtered;
 }
 
 /**
@@ -130,15 +136,16 @@ export async function listCampaigns() {
  * fallback não tem sparkline nem trend (essas exigem query temporal
  * que só o backend faz), mas todo o resto funciona.
  *
- * Retorno:
+ * Retorno em sucesso:
  *   { clients: [...], worklist: {...}, source: "backend" | "client" }
  *
- * O campo `source` permite ao caller mostrar (no DevTools) se está
- * usando o backend nativo ou caiu no fallback. Útil pra deploys
- * graduais onde o frontend chega antes da Cloud Function nova.
+ * Contrato de erro: lança quando ambos endpoint nativo E fallback
+ * falham. Caller deve tratar (recomendado: stale-while-revalidate).
+ * 401/403 dispara reload do mesmo jeito que `listCampaigns`.
  */
 export async function listClients() {
   // 1ª tentativa — endpoint nativo
+  let backendErr = null;
   try {
     const jwt = await getOrIssueAdminJwt();
     if (!jwt) throw new Error("no admin jwt");
@@ -148,7 +155,7 @@ export async function listClients() {
     if (r.status === 401 || r.status === 403) {
       try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
       window.location.reload();
-      return { clients: [], worklist: emptyWorklist(), source: "backend" };
+      throw new Error("admin session expired");
     }
     if (r.ok) {
       const d = await r.json();
@@ -158,26 +165,28 @@ export async function listClients() {
         source:   "backend",
       };
     }
-    // qualquer outro status (404 quando deploy do backend ainda não rolou,
-    // 5xx em falhas pontuais) cai no fallback abaixo sem propagar erro.
-  } catch {
-    // erro de rede ou JWT — segue pra fallback
+    backendErr = new Error(`HTTP ${r.status}`);
+  } catch (e) {
+    backendErr = e;
   }
 
-  // 2ª tentativa — agregação client-side a partir da lista de campanhas
-  try {
-    const campaigns = await listCampaigns();
-    const { aggregateClients, computeWorklist } = await import(
-      "../v2/admin/lib/aggregation.js"
-    );
-    return {
-      clients:  aggregateClients(campaigns),
-      worklist: computeWorklist(campaigns),
-      source:   "client",
-    };
-  } catch {
-    return { clients: [], worklist: emptyWorklist(), source: "client" };
+  // 2ª tentativa — agregação client-side a partir da lista de campanhas.
+  // listCampaigns agora lança em falha real, então um throw aqui é
+  // legítimo: ambos endpoints estão fora.
+  const campaigns = await listCampaigns();
+  const { aggregateClients, computeWorklist } = await import(
+    "../v2/admin/lib/aggregation.js"
+  );
+  // Log do erro do backend nativo pra DevTools — útil em deploy gradual,
+  // não polui UX.
+  if (backendErr) {
+    console.warn("[listClients] fallback to client-side aggregation:", backendErr.message);
   }
+  return {
+    clients:  aggregateClients(campaigns),
+    worklist: computeWorklist(campaigns),
+    source:   "client",
+  };
 }
 
 function emptyWorklist() {
@@ -193,22 +202,25 @@ function emptyWorklist() {
 
 /**
  * Lista membros do time (CPs e CSs) lidos da planilha de De-Para.
- * Falha silenciosa: retorna { cps: [], css: [] } se backend não tem o endpoint
- * ainda (rollout) ou se JWT indisponível.
+ *
+ * Lança em erros reais (rede, 5xx, parse). Se o JWT não está disponível
+ * (sessão admin nunca iniciou), retorna `{ cps: [], css: [] }` — caso
+ * legítimo durante o boot da app, não é falha.
  */
 export async function listTeamMembers() {
-  try {
-    const jwt = await getOrIssueAdminJwt();
-    if (!jwt) return { cps: [], css: [] };
-    const r = await fetch(`${API_URL}?action=list_team_members`, {
-      headers: { ...adminAuthHeaders(jwt) },
-    });
-    if (!r.ok) return { cps: [], css: [] };
-    const d = await r.json();
-    return { cps: d.cps || [], css: d.css || [] };
-  } catch {
-    return { cps: [], css: [] };
+  const jwt = await getOrIssueAdminJwt();
+  if (!jwt) return { cps: [], css: [] };
+  const r = await fetch(`${API_URL}?action=list_team_members`, {
+    headers: { ...adminAuthHeaders(jwt) },
+  });
+  if (r.status === 401 || r.status === 403) {
+    try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
+    window.location.reload();
+    throw new Error("admin session expired");
   }
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  return { cps: d.cps || [], css: d.css || [] };
 }
 
 /**

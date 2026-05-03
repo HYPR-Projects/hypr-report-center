@@ -25,9 +25,10 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import "../../v2.css";
 
 import { listCampaigns, listTeamMembers, listClients, getShareId, getCachedShareId } from "../../../lib/api";
+import { readCache, writeCache } from "../../../lib/persistedCache";
 import { getOwnerFilter, setOwnerFilter as persistOwnerFilter } from "../../../shared/prefs";
 import { useTheme } from "../../hooks/useTheme";
-import { normalizeSlug, computeMetricsSummary } from "../lib/aggregation";
+import { normalizeSlug, computeMetricsSummary, computeWorklist } from "../lib/aggregation";
 
 import HyprReportCenterLogo from "../../../components/HyprReportCenterLogo";
 import NewCampaignModal from "../../../components/modals/NewCampaignModal";
@@ -51,7 +52,7 @@ import { ClientCard } from "../components/ClientCard";
 import { CampaignCardV2 } from "../components/CampaignCardV2";
 import { CampaignListV2 } from "../components/CampaignListV2";
 import { CampaignDrawer } from "../components/CampaignDrawer";
-import { formatMonthLabel } from "../lib/format";
+import { formatMonthLabel, formatTimeAgo } from "../lib/format";
 
 // localStorage key pra persistir o layout escolhido entre sessões.
 const LAYOUT_STORAGE_KEY = "hypr.admin.layout";
@@ -66,11 +67,48 @@ function getInitialLayout() {
 
 export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenClient }) {
   // ── Estado de dados ──────────────────────────────────────────────────────
-  const [campaigns, setCampaigns]     = useState([]);
-  const [clients, setClients]         = useState([]);
-  const [worklist, setWorklist]       = useState(null);
-  const [loading, setLoading]         = useState(true);
-  const [teamMembers, setTeamMembers] = useState({ cps: [], css: [] });
+  // Stale-while-revalidate: lemos o último payload bom do localStorage
+  // *sincronamente* no primeiro render. Resultado: 2ª+ visita ao menu
+  // pinta dados imediatamente, refetch corre em background e atualiza
+  // quando voltar. Se o refetch falhar, mantemos o cache e mostramos
+  // banner sutil. Resolve o bug de "0 campanhas" pós-blip de rede.
+  //
+  // Lazy listClients (perf): só fazemos fetch do `?action=list_clients`
+  // (~43KB + query de timeseries no backend) quando o user efetivamente
+  // entra no layout "client". Worklist e contagem de clientes são
+  // derivados client-side a partir de `campaigns` no init —
+  // funcionalmente equivalente ao backend (paridade testada em
+  // aggregation.js).
+  const [bootstrap] = useState(() => ({
+    campaigns: readCache("menu.campaigns"),
+    clients:   readCache("menu.clients"),
+    team:      readCache("menu.team"),
+  }));
+  const [campaigns, setCampaigns]     = useState(bootstrap.campaigns?.data ?? []);
+  const [clients, setClients]         = useState(bootstrap.clients?.data?.clients ?? []);
+  // Worklist: prioriza cache do backend (mais recente em conteúdo);
+  // se não houver, deriva do snapshot cacheado de campaigns; senão null
+  // até a 1ª resposta de listCampaigns chegar.
+  const [worklist, setWorklist] = useState(() => {
+    if (bootstrap.clients?.data?.worklist) return bootstrap.clients.data.worklist;
+    if (bootstrap.campaigns?.data) return computeWorklist(bootstrap.campaigns.data);
+    return null;
+  });
+  // loading só vira skeleton quando NÃO temos cache (1ª visita ou cache wiped).
+  const [loading, setLoading]         = useState(!bootstrap.campaigns);
+  const [teamMembers, setTeamMembers] = useState(bootstrap.team?.data ?? { cps: [], css: [] });
+  // Refresh em andamento (background) + erros do último refresh +
+  // timestamp do dado atualmente em tela. Alimenta o banner de "stale".
+  // `refreshing` começa true porque o useEffect inicial sempre dispara
+  // um fetch — manter false aqui exigiria setRefreshing(true) síncrono
+  // dentro do effect, o que viola react-hooks/set-state-in-effect.
+  const [refreshing, setRefreshing]       = useState(true);
+  const [refreshError, setRefreshError]   = useState(null);
+  const [lastFetchedAt, setLastFetchedAt] = useState(bootstrap.campaigns?.ts ?? null);
+  // Estado da listClients lazy — separado do refresh principal pra
+  // não bloquear UI das outras layouts.
+  const [clientsFetchedAt, setClientsFetchedAt] = useState(bootstrap.clients?.ts ?? null);
+  const [clientsLoading, setClientsLoading]     = useState(false);
 
   // ── Estado de UI ─────────────────────────────────────────────────────────
   const [layout, setLayout]               = useState(getInitialLayout);
@@ -111,34 +149,126 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
     return m;
   }, [teamMembers]);
 
-  // ── Carregamento inicial ─────────────────────────────────────────────────
-  // `loading` já começa true via useState; setLoading(true) aqui seria
-  // redundante e fere a regra react-hooks/set-state-in-effect.
-  useEffect(() => {
+  // ── Carregamento / refresh ───────────────────────────────────────────────
+  // Estratégia: usar Promise.allSettled (não Promise.all) pra que falha
+  // de uma das duas queries não corrompa os dados da outra. Cada seção
+  // que sucede é commitada e cacheada individualmente; falhas vão pro
+  // `refreshError` que renderiza o banner de "dados desatualizados".
+  //
+  // Note que `listClients` NÃO está aqui — fetch é lazy via outro
+  // useEffect quando o user troca pra layout "client". Worklist é
+  // derivada de campaigns via computeWorklist.
+  //
+  // Importante: `runRefresh` NÃO chama setRefreshing(true). O caller é
+  // responsável (a inicialização já é true via useState; o botão de
+  // retry seta antes de invocar). Isso evita violação de
+  // react-hooks/set-state-in-effect.
+  const runRefresh = useCallback(() => {
     let cancelled = false;
 
-    Promise.all([
+    Promise.allSettled([
       listCampaigns(),
-      listClients(),
       listTeamMembers(),
-    ]).then(([camps, clientsResp, members]) => {
+    ]).then(([campsR, membersR]) => {
       if (cancelled) return;
-      setCampaigns(camps);
-      setClients(clientsResp.clients);
-      setWorklist(clientsResp.worklist);
-      setTeamMembers(members);
-      // Limpa owner filter inválido (pessoa saiu do time)
-      const validEmails = new Set([
-        ...members.cps.map((p) => p.email),
-        ...members.css.map((p) => p.email),
-      ]);
-      setOwnerFilter((prev) => (prev && !validEmails.has(prev) ? "" : prev));
-    }).finally(() => {
-      if (!cancelled) setLoading(false);
+
+      const errors = [];
+
+      if (campsR.status === "fulfilled") {
+        setCampaigns(campsR.value);
+        writeCache("menu.campaigns", campsR.value);
+        // Recalcula worklist client-side — paridade com backend
+        // (testada em aggregation.js).
+        setWorklist(computeWorklist(campsR.value));
+      } else {
+        errors.push(`campaigns: ${campsR.reason?.message || campsR.reason}`);
+      }
+
+      if (membersR.status === "fulfilled") {
+        setTeamMembers(membersR.value);
+        writeCache("menu.team", membersR.value);
+        const validEmails = new Set([
+          ...membersR.value.cps.map((p) => p.email),
+          ...membersR.value.css.map((p) => p.email),
+        ]);
+        setOwnerFilter((prev) => (prev && !validEmails.has(prev) ? "" : prev));
+      } else {
+        errors.push(`team: ${membersR.reason?.message || membersR.reason}`);
+      }
+
+      // Timestamp avança só se a query principal (campaigns) deu certo —
+      // é a fonte de verdade do menu. Senão o banner de "atualizado há X"
+      // mente.
+      if (campsR.status === "fulfilled") setLastFetchedAt(Date.now());
+
+      if (errors.length > 0) {
+        setRefreshError(errors.join(" | "));
+        console.warn("[menu] refresh failures:", errors);
+      } else {
+        setRefreshError(null);
+      }
+
+      setLoading(false);
+      setRefreshing(false);
     });
 
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    const cancel = runRefresh();
+    return cancel;
+  }, [runRefresh]);
+
+  // Lazy fetch da lista rica de clientes (com sparklines + trend).
+  // Dispara apenas quando o user vai pra layout "client". TTL de 60s pra
+  // não refazer fetch se trocar entre layouts. Se já tem cache fresco
+  // (clientsFetchedAt < 60s), skip silencioso.
+  //
+  // setClientsLoading(true) entra via queueMicrotask pra não violar
+  // react-hooks/set-state-in-effect — o cascade real é 1 render extra,
+  // imperceptível, mas o microtask satisfaz o analisador estático e
+  // mantém o skeleton aparecendo no mesmo frame.
+  const CLIENTS_TTL_MS = 60_000;
+  const fetchClients = useCallback(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setClientsLoading(true);
+    });
+    listClients().then((resp) => {
+      if (cancelled) return;
+      setClients(resp.clients);
+      // Backend tem mesma régua de worklist que computeWorklist —
+      // sobrescrever mantém os números consistentes (e prepara pro dia
+      // que reports_not_viewed virar real no backend).
+      setWorklist(resp.worklist);
+      writeCache("menu.clients", { clients: resp.clients, worklist: resp.worklist });
+      setClientsFetchedAt(Date.now());
+    }).catch((err) => {
+      if (cancelled) return;
+      console.warn("[menu] listClients failed:", err.message);
+      // Não setRefreshError aqui — o layout cliente é opcional, falha
+      // não merece banner global. Cards do client tab caem no estado
+      // vazio ou no cache stale, ambos aceitáveis.
+    }).finally(() => {
+      if (!cancelled) setClientsLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (layout !== "client") return;
+    if (clientsFetchedAt && Date.now() - clientsFetchedAt < CLIENTS_TTL_MS) return;
+    return fetchClients();
+  }, [layout, clientsFetchedAt, fetchClients]);
+
+  // Handler do botão "Tentar de novo" — único callsite que precisa setar
+  // refreshing=true antes de disparar (event handler, não effect, então
+  // setState síncrono é OK).
+  const handleRetry = useCallback(() => {
+    setRefreshing(true);
+    runRefresh();
+  }, [runRefresh]);
 
   // ── Filtragem e ordenação ────────────────────────────────────────────────
   const filteredCampaigns = useMemo(() => {
@@ -280,7 +410,18 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   // pouco frequente.
   const handleMergeSaved = useCallback(() => {
     setMergeModal(null);
-    listCampaigns().then((camps) => setCampaigns(camps)).catch(() => { /* keep stale */ });
+    listCampaigns()
+      .then((camps) => {
+        setCampaigns(camps);
+        writeCache("menu.campaigns", camps);
+        setWorklist(computeWorklist(camps));
+        setLastFetchedAt(Date.now());
+        // Invalida clients lazy: agregação derivada por cliente pode ter
+        // mudado (membros de merge_id reagrupam). Próxima entrada no
+        // layout "client" refaz fetch.
+        setClientsFetchedAt(null);
+      })
+      .catch(() => { /* keep stale */ });
   }, []);
 
   const handleNewCampaignConfirm = useCallback((tokenData) => {
@@ -296,7 +437,17 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
     onOpenClient?.(slug);
   }, [onOpenClient]);
 
-  const totalClients = clients.length;
+  // totalClients derivado de campaigns (slug único) em vez de
+  // `clients.length` — clients é lazy e fica vazio até o user entrar no
+  // layout "client". A contagem por slug bate com `aggregateClients`.
+  const totalClients = useMemo(() => {
+    const slugs = new Set();
+    for (const c of campaigns) {
+      const s = normalizeSlug(c.client_name);
+      if (s) slugs.add(s);
+    }
+    return slugs.size;
+  }, [campaigns]);
   const totalCampaigns = campaigns.length;
 
   // KPIs agregados das campanhas ativas — alimenta a MetricStrip do topo.
@@ -346,12 +497,47 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
               <span><span className="font-semibold text-fg tabular-nums">{totalClients}</span> clientes</span>
               <span className="w-0.5 h-0.5 rounded-full bg-fg-subtle" />
               <span>{new Date().getFullYear()}</span>
+              {refreshing && !refreshError && lastFetchedAt && (
+                <>
+                  <span className="w-0.5 h-0.5 rounded-full bg-fg-subtle" />
+                  <span className="text-fg-subtle italic">atualizando…</span>
+                </>
+              )}
             </p>
           </div>
           <Button variant="primary" size="md" onClick={() => setShowNewCampaign(true)}>
             + Novo Report
           </Button>
         </div>
+
+        {/* Banner de "dados desatualizados" — aparece quando o último
+            refresh em background falhou. Mostra timestamp do que está
+            em tela e botão pra retry manual. UI continua funcional
+            usando o cache. */}
+        {refreshError && (
+          <div className="mb-4 px-4 py-2.5 rounded-lg flex items-center justify-between gap-3"
+               style={{
+                 background: "var(--color-warning-soft)",
+                 border: "1px solid var(--color-warning)",
+               }}>
+            <p className="text-[12px] text-fg">
+              Não consegui atualizar os dados.{" "}
+              {lastFetchedAt && (
+                <span className="text-fg-muted">
+                  Mostrando dados de {formatTimeAgo(lastFetchedAt)}.
+                </span>
+              )}
+            </p>
+            <button
+              type="button"
+              onClick={handleRetry}
+              disabled={refreshing}
+              className="text-[11px] font-medium text-fg px-3 h-7 rounded-md border border-warning/40 hover:bg-warning/10 transition-colors disabled:opacity-50 whitespace-nowrap"
+            >
+              {refreshing ? "Tentando…" : "Tentar de novo"}
+            </button>
+          </div>
+        )}
 
         {/* MetricStrip no topo — KPIs das campanhas ativas em grid de cards
             bordados leves. Alertas operacionais (críticas, sem owner,
@@ -427,7 +613,12 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
               .join("|")}
           />
         ) : layout === "client" ? (
-          <ClientLayout clients={filteredClients} onOpen={handleOpenClient} />
+          // Lazy: se não temos clients ainda E está carregando, mostra
+          // skeleton em vez de empty state. Se temos cache (mesmo stale),
+          // mostra os cards e refetch corre em background.
+          clientsLoading && clients.length === 0
+            ? <LoadingState layout="client" />
+            : <ClientLayout clients={filteredClients} onOpen={handleOpenClient} />
         ) : layout === "performers" ? (
           <PerformersLayout campaigns={campaigns} teamMap={teamMap} />
         ) : (

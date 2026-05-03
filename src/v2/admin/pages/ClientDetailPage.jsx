@@ -17,6 +17,7 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import "../../v2.css";
 
 import { listCampaigns, listTeamMembers, getShareId, getCachedShareId } from "../../../lib/api";
+import { readCache, writeCache } from "../../../lib/persistedCache";
 import { useTheme } from "../../hooks/useTheme";
 import { normalizeSlug } from "../lib/aggregation";
 
@@ -38,14 +39,34 @@ import { CampaignDrawer } from "../components/CampaignDrawer";
 import {
   formatPacingValue,
   formatPct,
+  formatTimeAgo,
   pacingColorClass,
   slugToDisplay,
 } from "../lib/format";
 
 export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenReport }) {
-  const [campaigns, setCampaigns]     = useState([]);
-  const [loading, setLoading]         = useState(true);
-  const [teamMembers, setTeamMembers] = useState({ cps: [], css: [] });
+  // Stale-while-revalidate via mesmas keys do menu (`menu.campaigns` /
+  // `menu.team`). Não há prejuízo em compartilhar — o payload é idêntico,
+  // ClientDetailPage apenas filtra por slug. Quando o user navega
+  // Menu → ClientDetail, os dados aparecem instantaneamente vindos do
+  // cache populado lá.
+  const [bootstrap] = useState(() => ({
+    campaigns: readCache("menu.campaigns"),
+    team:      readCache("menu.team"),
+  }));
+  // Filtra cache por slug no init pra render imediato sem flicker.
+  const [campaigns, setCampaigns] = useState(() => {
+    const cached = bootstrap.campaigns?.data ?? [];
+    return cached.filter((c) => normalizeSlug(c.client_name) === slug);
+  });
+  const [loading, setLoading]         = useState(!bootstrap.campaigns);
+  const [teamMembers, setTeamMembers] = useState(bootstrap.team?.data ?? { cps: [], css: [] });
+  // Init refreshing=true: o useEffect inicial sempre dispara um fetch.
+  // Manter false aqui exigiria setRefreshing(true) síncrono dentro do
+  // effect, o que viola react-hooks/set-state-in-effect.
+  const [refreshing, setRefreshing]       = useState(true);
+  const [refreshError, setRefreshError]   = useState(null);
+  const [lastFetchedAt, setLastFetchedAt] = useState(bootstrap.campaigns?.ts ?? null);
   const [search, setSearch]           = useState("");
   const [ownerFilter, setOwnerFilter] = useState("");
   const [sortBy, setSortBy]           = useState("month");
@@ -69,24 +90,61 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
     return m;
   }, [teamMembers]);
 
-  // ── Carregamento ─────────────────────────────────────────────────────────
-  // `loading` já começa true. Quando slug muda, o componente é remontado
-  // via `key={slug}` no App.jsx — então useState volta ao default e
-  // não precisamos chamar setLoading(true) aqui (que feriria a regra
-  // react-hooks/set-state-in-effect).
-  useEffect(() => {
+  // ── Carregamento / refresh ───────────────────────────────────────────────
+  // Mesmo padrão do CampaignMenuV2: Promise.allSettled pra falha de uma
+  // não corromper a outra; cache atualizado apenas em sucesso por seção;
+  // banner sutil quando refresh em background falha. Caller (useEffect ou
+  // handleRetry) é responsável por setRefreshing(true) — runRefresh não
+  // mexe nisso pra não violar react-hooks/set-state-in-effect.
+  const runRefresh = useCallback(() => {
     let cancelled = false;
-    Promise.all([listCampaigns(), listTeamMembers()]).then(([camps, members]) => {
+
+    Promise.allSettled([listCampaigns(), listTeamMembers()]).then(([campsR, membersR]) => {
       if (cancelled) return;
-      // Filtra só as campanhas desse cliente (slug normalizado)
-      const filtered = camps.filter((c) => normalizeSlug(c.client_name) === slug);
-      setCampaigns(filtered);
-      setTeamMembers(members);
-    }).finally(() => {
-      if (!cancelled) setLoading(false);
+
+      const errors = [];
+
+      if (campsR.status === "fulfilled") {
+        // Persiste o payload completo no cache compartilhado (mesma key do
+        // menu) — beneficia navegação cross-page. Filtra por slug ao salvar
+        // localmente.
+        writeCache("menu.campaigns", campsR.value);
+        setCampaigns(campsR.value.filter((c) => normalizeSlug(c.client_name) === slug));
+        setLastFetchedAt(Date.now());
+      } else {
+        errors.push(`campaigns: ${campsR.reason?.message || campsR.reason}`);
+      }
+
+      if (membersR.status === "fulfilled") {
+        setTeamMembers(membersR.value);
+        writeCache("menu.team", membersR.value);
+      } else {
+        errors.push(`team: ${membersR.reason?.message || membersR.reason}`);
+      }
+
+      if (errors.length > 0) {
+        setRefreshError(errors.join(" | "));
+        console.warn("[client-detail] refresh failures:", errors);
+      } else {
+        setRefreshError(null);
+      }
+
+      setLoading(false);
+      setRefreshing(false);
     });
+
     return () => { cancelled = true; };
   }, [slug]);
+
+  useEffect(() => {
+    const cancel = runRefresh();
+    return cancel;
+  }, [runRefresh]);
+
+  const handleRetry = useCallback(() => {
+    setRefreshing(true);
+    runRefresh();
+  }, [runRefresh]);
 
   // Display name (mais frequente)
   const displayName = useMemo(() => {
@@ -225,7 +283,9 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
     setMergeModal(null);
     listCampaigns()
       .then((camps) => {
+        writeCache("menu.campaigns", camps);
         setCampaigns(camps.filter((c) => normalizeSlug(c.client_name) === slug));
+        setLastFetchedAt(Date.now());
       })
       .catch(() => { /* keep stale */ });
   }, [slug]);
@@ -280,9 +340,41 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
                   <span className="font-semibold text-success tabular-nums">{kpis.activeCampaigns} rodando agora</span>
                 </>
               )}
+              {refreshing && !refreshError && lastFetchedAt && (
+                <>
+                  {" · "}
+                  <span className="text-fg-subtle italic">atualizando…</span>
+                </>
+              )}
             </p>
           </div>
         </div>
+
+        {/* Banner de "dados desatualizados" — refresh em background falhou. */}
+        {refreshError && (
+          <div className="mb-4 px-4 py-2.5 rounded-lg flex items-center justify-between gap-3"
+               style={{
+                 background: "var(--color-warning-soft)",
+                 border: "1px solid var(--color-warning)",
+               }}>
+            <p className="text-[12px] text-fg">
+              Não consegui atualizar os dados.{" "}
+              {lastFetchedAt && (
+                <span className="text-fg-muted">
+                  Mostrando dados de {formatTimeAgo(lastFetchedAt)}.
+                </span>
+              )}
+            </p>
+            <button
+              type="button"
+              onClick={handleRetry}
+              disabled={refreshing}
+              className="text-[11px] font-medium text-fg px-3 h-7 rounded-md border border-warning/40 hover:bg-warning/10 transition-colors disabled:opacity-50 whitespace-nowrap"
+            >
+              {refreshing ? "Tentando…" : "Tentar de novo"}
+            </button>
+          </div>
+        )}
 
         {/* KPIs */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
