@@ -4,6 +4,7 @@ import { useXlsx } from "../shared/useXlsx";
 import { saveUpload } from "../lib/api";
 import RmndDashboard from "./RmndDashboard";
 import PdoohDashboard from "./PdoohDashboard";
+import { toast } from "../lib/toast";
 
 const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true }) => {
   const XLSX       = useXlsx();
@@ -47,8 +48,13 @@ const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true 
         type,
         data_json: JSON.stringify(parsed),
         adminJwt,
-      }).catch(e=>console.warn("Erro ao salvar upload",e));
-    } catch(err){alert("Erro ao ler arquivo: "+err.message);}
+      })
+        .then(() => toast.success(`Base ${type} de ${token} salva`))
+        .catch((e) => {
+          console.warn("Erro ao salvar upload", e);
+          toast.error(`Erro ao salvar base ${type} no servidor`);
+        });
+    } catch(err){toast.error("Erro ao ler arquivo: "+err.message);}
     finally{setLoading(false);}
   };
 

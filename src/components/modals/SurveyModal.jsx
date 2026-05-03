@@ -7,6 +7,7 @@ import {
   fetchTypeformFormMeta,
 } from "../../lib/api";
 import ModalShell from "./ModalShell";
+import { toast } from "../../lib/toast";
 
 /**
  * Modal pra configurar surveys (controle vs. exposto) via API do Typeform.
@@ -301,7 +302,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
     // Validação
     for (const [i, b] of blocks.entries()) {
       if (!b.nome.trim()) {
-        alert(`Pergunta ${i + 1}: preencha o nome.`);
+        toast.error(`Pergunta ${i + 1}: preencha o nome.`);
         return;
       }
       // Cada form deve ter conteúdo (formId em list, URL válida em manual)
@@ -309,20 +310,20 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
         f.mode === "list" ? !!f.formId : !!extractFormId(f.url),
       );
       if (!formsOk) {
-        alert(`Pergunta ${i + 1}: selecione (ou cole URL de) os 2 forms do par.`);
+        toast.error(`Pergunta ${i + 1}: selecione (ou cole URL de) os 2 forms do par.`);
         return;
       }
       // Cada form precisa ter grupo definido (auto ou override)
       const groups = b.forms.map((f) => getFormGroup(f, formsById));
       if (groups.some((g) => g == null)) {
-        alert(`Pergunta ${i + 1}: defina manualmente o grupo (Controle/Exposto) dos forms sem padrão de nome.`);
+        toast.error(`Pergunta ${i + 1}: defina o grupo (Controle/Exposto) dos forms sem padrão de nome.`);
         return;
       }
       // Os 2 forms devem ter grupos diferentes (1 ctrl + 1 exp)
       const ctrl = b.forms.find((f) => getFormGroup(f, formsById) === "controle");
       const exp  = b.forms.find((f) => getFormGroup(f, formsById) === "exposto");
       if (!ctrl || !exp) {
-        alert(`Pergunta ${i + 1}: o par precisa ter 1 form Controle e 1 Exposto. Ajuste os grupos via "trocar".`);
+        toast.error(`Pergunta ${i + 1}: o par precisa ter 1 form Controle e 1 Exposto. Ajuste via "trocar".`);
         return;
       }
     }
@@ -384,9 +385,10 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
         short_token: shortToken,
         survey_data: JSON.stringify(payload),
       });
+      toast.success(`Survey de ${shortToken} salvo`);
       if (onSaved) onSaved();
     } catch {
-      alert("Erro ao salvar survey.");
+      toast.error("Erro ao salvar survey.");
     } finally {
       setSaving(false);
     }

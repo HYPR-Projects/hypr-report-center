@@ -3,6 +3,7 @@ import { C } from "../../shared/theme";
 import { checkCampaignToken, saveLogo as saveLogoApi, getShareId } from "../../lib/api";
 import Spinner from "../Spinner";
 import ModalShell from "./ModalShell";
+import { toast } from "../../lib/toast";
 
 /**
  * Modal "+ Novo Report" — fluxo de duas etapas:
@@ -56,10 +57,10 @@ const NewCampaignModal = ({ onClose, onConfirm, theme }) => {
         // privacidade na URL.
         getShareId(d.campaign.short_token).then(setShareId).catch(() => setShareId(null));
       } else {
-        alert("Token não encontrado.");
+        toast.error("Token não encontrado.");
       }
     } catch {
-      alert("Erro ao buscar token.");
+      toast.error("Erro ao buscar token.");
     } finally {
       setChecking(false);
     }
@@ -72,8 +73,10 @@ const NewCampaignModal = ({ onClose, onConfirm, theme }) => {
         await saveLogoApi({ short_token: tokenData.short_token, logo_base64: logoPreview });
       } catch (e) {
         console.warn("Erro ao salvar logo", e);
+        toast.error("Falha ao salvar logo (campanha criada mesmo assim).");
       }
     }
+    toast.success(`Report ${tokenData.short_token} criado`);
     if (onConfirm) onConfirm(tokenData);
     reset();
   };

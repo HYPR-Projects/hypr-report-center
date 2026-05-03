@@ -5,6 +5,7 @@ import { compressImageFile } from "../../shared/imageCompress";
 import { useLogoAnalysis } from "../../v2/hooks/useLogoAnalysis";
 import { useTheme } from "../../v2/hooks/useTheme";
 import ModalShell from "./ModalShell";
+import { toast } from "../../lib/toast";
 
 /**
  * LogoModal — upload de logo PNG, JPG ou SVG de uma campanha.
@@ -77,7 +78,7 @@ const LogoModal = ({ shortToken, onClose, onSaved, theme }) => {
     // pegar arquivos arrastados ou com mime type inconsistente.
     const allowed = ["image/png", "image/jpeg", "image/jpg", "image/svg+xml"];
     if (f.type && !allowed.includes(f.type) && !f.name.toLowerCase().endsWith(".svg")) {
-      alert("Formato não suportado. Use PNG, JPG ou SVG.");
+      toast.error("Formato não suportado. Use PNG, JPG ou SVG.");
       e.target.value = "";
       return;
     }
@@ -88,7 +89,7 @@ const LogoModal = ({ shortToken, onClose, onSaved, theme }) => {
       setFile(f);
       setPreview(compressed);
     } catch (err) {
-      alert(err.message || "Falha ao processar imagem");
+      toast.error(err.message || "Falha ao processar imagem");
       e.target.value = "";
     }
   };
@@ -98,7 +99,7 @@ const LogoModal = ({ shortToken, onClose, onSaved, theme }) => {
     try {
       const base64 = await getLogo({ short_token: sourceToken });
       if (!base64) {
-        alert("Não foi possível carregar esse logo.");
+        toast.error("Não foi possível carregar esse logo.");
         return;
       }
       setFile(null); // não é upload de arquivo novo
@@ -113,11 +114,11 @@ const LogoModal = ({ shortToken, onClose, onSaved, theme }) => {
     setSaving(true);
     try {
       await saveLogoApi({ short_token: shortToken, logo_base64: preview });
-      alert("Logo salvo com sucesso!");
+      toast.success(`Logo de ${shortToken} salvo`);
       setFile(null); setPreview(null);
       if (onSaved) onSaved();
     } catch {
-      alert("Erro ao salvar logo.");
+      toast.error("Erro ao salvar logo.");
     } finally {
       setSaving(false);
     }

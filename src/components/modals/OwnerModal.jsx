@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { C } from "../../shared/theme";
 import { saveReportOwner } from "../../lib/api";
 import ModalShell from "./ModalShell";
+import { toast } from "../../lib/toast";
 
 /**
  * OwnerModal — admin define quem é dono (CP/CS) de uma campanha.
@@ -46,8 +47,9 @@ const OwnerModal = ({ campaign, onClose, onSaved, teamMembers, theme }) => {
         cp_email: cpEmail || null,
         cs_email: csEmail || null,
       });
+      toast.success(`Owners de ${campaign.short_token} atualizados`);
     } catch (e) {
-      alert("Erro ao salvar owner: " + e.message);
+      toast.error("Erro ao salvar owner: " + e.message);
     } finally {
       setSaving(false);
     }

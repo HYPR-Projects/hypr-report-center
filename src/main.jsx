@@ -8,6 +8,7 @@ import './ui/typography'
 import App from './App.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 import GlobalProgressBar from './components/GlobalProgressBar.jsx'
+import { ToastContainer } from './components/Toast.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -17,6 +18,10 @@ createRoot(document.getElementById('root')).render(
         * trocas de rota sem desmontar. */}
       <GlobalProgressBar />
       <App />
+      {/* Toast container — captura toast.success()/error() de qualquer
+        * lugar do app via singleton. Fica fora do <App /> pelo mesmo
+        * motivo da progress bar (sobrevive a trocas de rota). */}
+      <ToastContainer />
     </ErrorBoundary>
   </StrictMode>,
 )

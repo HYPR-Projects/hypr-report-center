@@ -39,6 +39,7 @@ import {
   updateMergeSettings,
 } from "../../lib/api";
 import ModalShell from "./ModalShell";
+import { toast } from "../../lib/toast";
 import { formatDateRange } from "../../v2/admin/lib/format";
 
 const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
@@ -144,9 +145,10 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
           });
         }
       }
+      toast.success("Agrupamento salvo");
       onSaved?.();
     } catch (e) {
-      alert("Erro ao salvar merge: " + (e.message || e));
+      toast.error("Erro ao salvar agrupamento: " + (e.message || e));
     } finally {
       setSaving(false);
     }
@@ -171,9 +173,10 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
         ...candidates.filter((c) => c.already_in_group).map((c) => c.short_token),
       ];
       await Promise.all(memberTokens.map((t) => unmergeToken(t).catch(() => null)));
+      toast.success("Agrupamento desfeito");
       onSaved?.();
     } catch (e) {
-      alert("Erro ao desfazer grupo: " + (e.message || e));
+      toast.error("Erro ao desfazer agrupamento: " + (e.message || e));
     } finally {
       setSaving(false);
     }

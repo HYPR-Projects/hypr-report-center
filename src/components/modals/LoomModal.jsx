@@ -2,6 +2,7 @@ import { useState } from "react";
 import { C } from "../../shared/theme";
 import { saveLoom as saveLoomApi } from "../../lib/api";
 import ModalShell from "./ModalShell";
+import { toast } from "../../lib/toast";
 
 /**
  * LoomModal — adiciona link Loom a uma campanha.
@@ -29,11 +30,11 @@ const LoomModal = ({ shortToken, onClose, onSaved, theme }) => {
     setSaving(true);
     try {
       await saveLoomApi({ short_token: shortToken, loom_url: loomUrl.trim() });
-      alert("Loom salvo com sucesso!");
+      toast.success(`Loom de ${shortToken} salvo`);
       setLoomUrl("");
       if (onSaved) onSaved();
     } catch {
-      alert("Erro ao salvar Loom.");
+      toast.error("Erro ao salvar Loom.");
     } finally {
       setSaving(false);
     }
