@@ -122,33 +122,40 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
 
   // Lazy-fetch da meta de cada form selecionado em modo list. Precisamos
   // disso pra oferecer dropdown de linhas (marca-foco) só quando o form é
-  // matrix. Usamos um Set ref pra rastrear ids já em fetch (in-flight) sem
-  // precisar do metaById no array de deps — incluí-lo causa o cleanup do
-  // effect rodar a cada setMetaById e cancelar o fetch antes dele resolver
-  // (loop "loading eterno").
+  // matrix/choice. Estratégia:
+  //
+  // - metaByIdRef sempre reflete o último metaById renderizado, pra
+  //   leitura síncrona dentro do effect (sem precisar do estado nas deps,
+  //   que causa loop quando setState dispara).
+  // - inflightIdsRef rastreia ids em fetch ativo, pra evitar duplo-fetch
+  //   quando o effect re-executa (incluindo o double-invoke do StrictMode).
+  // - missing é calculado SÍNCRONO antes de setState. Não dá pra computar
+  //   dentro do updater functional porque o updater roda no próximo
+  //   render, não imediatamente — leitura via closure ficaria stale.
+  const metaByIdRef = useRef(metaById);
+  useEffect(() => { metaByIdRef.current = metaById; });
   const inflightIdsRef = useRef(new Set());
+
   useEffect(() => {
     const idsNeeded = new Set();
     for (const b of blocks) {
       if (b.ctrlMode === "list" && b.ctrlFormId) idsNeeded.add(b.ctrlFormId);
       if (b.expMode === "list" && b.expFormId) idsNeeded.add(b.expFormId);
     }
-    // Filtra usando functional setState pra ler metaById atual sem dep.
-    let missing = [];
+    const current = metaByIdRef.current;
+    const missing = [...idsNeeded].filter(
+      (id) => !current.has(id) && !inflightIdsRef.current.has(id),
+    );
+    if (missing.length === 0) return;
+
+    for (const id of missing) inflightIdsRef.current.add(id);
     setMetaById((prev) => {
-      missing = [...idsNeeded].filter(
-        (id) => !prev.has(id) && !inflightIdsRef.current.has(id),
-      );
-      if (missing.length === 0) return prev;
       const next = new Map(prev);
       for (const id of missing) {
         next.set(id, { loading: true, type: null, rows: [] });
-        inflightIdsRef.current.add(id);
       }
       return next;
     });
-
-    if (missing.length === 0) return;
 
     (async () => {
       const results = await Promise.all(
