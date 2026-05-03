@@ -58,7 +58,7 @@ function PillButton({ active, label, count, onClick }) {
       type="button"
       onClick={onClick}
       className={cn(
-        "inline-flex items-center gap-2 h-8 px-3.5 rounded-full",
+        "inline-flex items-center gap-2 h-8 px-3.5 rounded-full cursor-pointer",
         "text-xs font-medium transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
         active

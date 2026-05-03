@@ -193,7 +193,7 @@ export function SecondaryAlerts({ worklist, activeKey, onSelect, className }) {
               onClick={() => onSelect?.(isActive ? null : s.key)}
               aria-pressed={isActive}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1",
+                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 cursor-pointer",
                 "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature/40",
                 isActive
                   ? "bg-surface-strong text-fg border border-border"

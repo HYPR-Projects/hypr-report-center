@@ -63,3 +63,10 @@
 .topbar-progress-stripe {
   animation: topbar-progress-slide 1.2s linear infinite;
 }
+/* Respeita prefers-reduced-motion: para o stripe mas mantém a barra
+ * (opacidade) visível pra ainda sinalizar atividade. */
+@media (prefers-reduced-motion: reduce) {
+  .topbar-progress-stripe {
+    animation: none;
+  }
+}

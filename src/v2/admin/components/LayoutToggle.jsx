@@ -9,6 +9,7 @@
 // dashboard cliente, mas com 3 opções em vez de 2 e ícones inline.
 
 import { cn } from "../../../ui/cn";
+import { useSlidingThumb } from "../../../ui/useSlidingThumb";
 
 const OPTIONS = [
   {
@@ -54,8 +55,15 @@ const OPTIONS = [
 ];
 
 export function LayoutToggle({ value, onChange, className }) {
+  const activeIndex = Math.max(0, OPTIONS.findIndex((o) => o.value === value));
+  const { containerRef, setItemRef, thumbStyle } = useSlidingThumb(
+    activeIndex,
+    OPTIONS.length,
+  );
+
   return (
     <div
+      ref={containerRef}
       role="tablist"
       aria-label="Layout"
       className={cn(
@@ -63,27 +71,37 @@ export function LayoutToggle({ value, onChange, className }) {
         // do SegmentedControlV2 já em uso no dashboard cliente. Em
         // light fica #F1F3F6 (perceptível contra a página #F8F9FA);
         // em dark fica #0F1419 (mais escuro que canvas, dá contraste).
-        "inline-flex gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border",
+        "relative inline-flex gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border",
+        "motion-reduce:[&_[data-thumb]]:!transition-none",
         className
       )}
     >
-      {OPTIONS.map((opt) => {
+      {/* Thumb deslizante por trás do botão ativo. Largura/posição
+        * medidas via useSlidingThumb. */}
+      <span
+        data-thumb
+        aria-hidden="true"
+        className="absolute top-0.5 left-0 h-7 rounded-md bg-canvas-elevated shadow-sm pointer-events-none"
+        style={thumbStyle}
+      />
+      {OPTIONS.map((opt, idx) => {
         const active = value === opt.value;
         return (
           <button
             key={opt.value}
+            ref={setItemRef(idx)}
             role="tab"
             type="button"
             aria-selected={active}
             onClick={() => onChange(opt.value)}
             className={cn(
-              "inline-flex items-center gap-1.5 px-3 h-7 rounded-md",
+              "relative z-10 inline-flex items-center gap-1.5 px-3 h-7 rounded-md cursor-pointer",
               "text-xs font-medium",
               "transition-colors duration-150",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
               active
-                ? "bg-canvas-elevated text-fg shadow-sm"
-                : "text-fg-muted hover:text-fg hover:bg-surface-strong"
+                ? "text-fg"
+                : "text-fg-muted hover:text-fg"
             )}
           >
             <span className="shrink-0">{opt.icon}</span>

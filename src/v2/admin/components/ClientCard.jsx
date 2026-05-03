@@ -110,8 +110,8 @@ export function ClientCard({ client, onOpen }) {
     <Card
       className={cn(
         "relative overflow-hidden p-5 cursor-pointer group",
-        "border-border hover:border-signature/40",
-        "transition-all duration-150 hover:-translate-y-0.5",
+        "border-border hover:border-signature/40 hover:bg-surface",
+        "transition-[border-color,background-color,box-shadow] duration-150",
         "hover:shadow-[0_4px_14px_rgba(0,0,0,0.06)]"
       )}
       onClick={() => onOpen?.(slug)}

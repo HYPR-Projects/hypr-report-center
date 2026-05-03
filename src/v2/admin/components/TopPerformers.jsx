@@ -293,7 +293,7 @@ function RoleToggle({ value, onChange }) {
             aria-selected={active}
             onClick={() => onChange(opt.value)}
             className={cn(
-              "inline-flex items-center px-3 h-7 rounded-md",
+              "inline-flex items-center px-3 h-7 rounded-md cursor-pointer",
               "text-xs font-medium",
               "transition-colors duration-150",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",

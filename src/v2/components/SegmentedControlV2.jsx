@@ -31,6 +31,7 @@
 
 import { useRef } from "react";
 import { cn } from "../../ui/cn";
+import { useSlidingThumb } from "../../ui/useSlidingThumb";
 
 export function SegmentedControlV2({
   label,
@@ -39,8 +40,18 @@ export function SegmentedControlV2({
   onChange,
   className,
 }) {
-  // Refs dos botões pra mover foco em ←/→
-  const refs = useRef([]);
+  const activeIndex = Math.max(0, options.findIndex((o) => o.value === value));
+  const { containerRef, setItemRef, thumbStyle } = useSlidingThumb(
+    activeIndex,
+    options.length,
+  );
+  // Refs locais pra mover foco em ←/→ — o setItemRef do hook só guarda
+  // pra medir, não dá acesso ao DOM aqui.
+  const focusRefs = useRef([]);
+  const setRef = (idx) => (el) => {
+    focusRefs.current[idx] = el;
+    setItemRef(idx)(el);
+  };
 
   const onKeyDown = (e, idx) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
@@ -49,25 +60,38 @@ export function SegmentedControlV2({
     const next = (idx + dir + options.length) % options.length;
     onChange(options[next].value);
     // Move o foco pro próximo radio (consistente com pattern WAI-ARIA)
-    refs.current[next]?.focus();
+    focusRefs.current[next]?.focus();
   };
 
   return (
     <div
+      ref={containerRef}
       role="radiogroup"
       aria-label={label}
       className={cn(
-        "inline-flex items-center gap-1 p-1",
+        "relative inline-flex items-center gap-1 p-1",
         "rounded-lg bg-canvas-deeper border border-border",
+        // Quando o usuário pediu reduced-motion, o thumb não desliza.
+        // (a transition é forçada pra none direto no style abaixo.)
+        "motion-reduce:[&_[data-thumb]]:!transition-none",
         className,
       )}
     >
+      {/* Thumb deslizante: fica atrás dos botões, herda largura/posição
+        * do botão ativo via useSlidingThumb. shadow-sm + bg matchando
+        * o estado ativo do design original. */}
+      <span
+        data-thumb
+        aria-hidden="true"
+        className="absolute top-1 left-0 h-8 rounded-md bg-signature shadow-sm pointer-events-none"
+        style={thumbStyle}
+      />
       {options.map((opt, idx) => {
         const active = opt.value === value;
         return (
           <button
             key={opt.value}
-            ref={(el) => (refs.current[idx] = el)}
+            ref={setRef(idx)}
             type="button"
             role="radio"
             aria-checked={active}
@@ -77,12 +101,12 @@ export function SegmentedControlV2({
             onClick={() => onChange(opt.value)}
             onKeyDown={(e) => onKeyDown(e, idx)}
             className={cn(
-              "inline-flex items-center justify-center whitespace-nowrap",
+              "relative z-10 inline-flex items-center justify-center whitespace-nowrap",
               "px-4 h-8 rounded-md text-xs font-semibold",
               "transition-colors duration-150 cursor-pointer",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
               active
-                ? "bg-signature text-on-signature shadow-sm"
+                ? "text-on-signature"
                 : "text-fg-muted hover:text-fg",
             )}
           >

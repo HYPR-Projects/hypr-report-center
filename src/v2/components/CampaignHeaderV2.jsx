@@ -312,7 +312,7 @@ function ViewPill({ label, sublabel, selected, badge, onClick }) {
       type="button"
       onClick={onClick}
       className={[
-        "inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-semibold border transition-colors",
+        "inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-semibold border transition-colors cursor-pointer",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
         selected
           ? "bg-signature text-white border-signature hover:bg-signature-hover"

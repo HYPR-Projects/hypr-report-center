@@ -30,6 +30,7 @@ import "../../ui/typography";
 import { getCampaign } from "../../lib/api";
 import { gaPageView } from "../../shared/analytics";
 import { computeAggregates } from "../../shared/aggregations";
+import { useLoadingTask } from "../../shared/loading";
 import {
   readRangeFromUrl,
   writeRangeToUrl,
@@ -150,6 +151,10 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   // troca de token sem reload, etc). Renderiza barra fina de progresso
   // sem mexer no skeleton inicial — UX de "algo tá vindo" sem flash.
   const [refreshing, setRefreshing] = useState(false);
+
+  // 1ª carga (sem `data` ainda) e refetches em background entram no
+  // contador global → barrinha no topo só aparece se demorar > 200ms.
+  useLoadingTask((!data && !error) || refreshing);
 
   const [mainRange, setMainRangeState] = useState(() => readRangeFromUrl());
   const [tab, setTabState] = useState(() => readTabFromUrl());
@@ -291,7 +296,9 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   return (
     <TooltipProvider delayDuration={200}>
       <div className="min-h-screen bg-canvas text-fg font-sans">
-        <TopProgressBar visible={refreshing} />
+        {/* Barra de progresso vem do GlobalProgressBar (montado no main.jsx),
+          * alimentada via useLoadingTask acima. O TopProgressBar local virou
+          * redundante. */}
         <TopBarV2
           updatedAtLabel="Atualizado agora"
           onShare={handleShare}

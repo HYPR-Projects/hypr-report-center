@@ -255,7 +255,7 @@ export function CampaignCardV2({
               onOpenReport?.(short_token);
             }}
             className={cn(
-              "inline-flex items-center justify-center gap-1 h-8 px-3 rounded-md text-xs font-semibold",
+              "inline-flex items-center justify-center gap-1 h-8 px-3 rounded-md text-xs font-semibold cursor-pointer",
               "min-w-[108px] transition-colors",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
               ended

@@ -26,7 +26,18 @@ import "../../v2.css";
 
 import { listCampaigns, listTeamMembers, listClients, getShareId, getCachedShareId } from "../../../lib/api";
 import { readCache, writeCache } from "../../../lib/persistedCache";
-import { getOwnerFilter, setOwnerFilter as persistOwnerFilter } from "../../../shared/prefs";
+import {
+  getOwnerFilter, setOwnerFilter as persistOwnerFilter,
+  getSortBy as getSortByPref, setSortBy as setSortByPref,
+  getSortDir as getSortDirPref, setSortDir as setSortDirPref,
+} from "../../../shared/prefs";
+import {
+  CAMPAIGN_SORT_OPTIONS, CAMPAIGN_SORT_DEFAULT, CAMPAIGN_SORT_FIELDS, compareCampaigns,
+  CLIENT_SORT_OPTIONS,   CLIENT_SORT_DEFAULT,   CLIENT_SORT_FIELDS,   compareClients,
+  getDefaultDirection,
+} from "../lib/sort";
+import { createOwnerMatcher } from "../lib/ownerFilter";
+import { useLoadingTask } from "../../../shared/loading";
 import { useTheme } from "../../hooks/useTheme";
 import { normalizeSlug, computeMetricsSummary, computeWorklist } from "../lib/aggregation";
 
@@ -52,7 +63,7 @@ import { ClientCard } from "../components/ClientCard";
 import { CampaignCardV2 } from "../components/CampaignCardV2";
 import { CampaignListV2 } from "../components/CampaignListV2";
 import { CampaignDrawer } from "../components/CampaignDrawer";
-import { formatMonthLabel, formatTimeAgo } from "../lib/format";
+import { formatMonthLabel } from "../lib/format";
 
 // localStorage key pra persistir o layout escolhido entre sessões.
 const LAYOUT_STORAGE_KEY = "hypr.admin.layout";
@@ -110,12 +121,31 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   const [clientsFetchedAt, setClientsFetchedAt] = useState(bootstrap.clients?.ts ?? null);
   const [clientsLoading, setClientsLoading]     = useState(false);
 
+  // Cold load (sem cache) entra no contador global → barrinha no topo
+  // só aparece se demorar > 200ms. Refresh em background (SWR) e fetch
+  // de listClients NÃO entram aqui de propósito: dados são atualizados
+  // 1x/dia às 6h, então o revalidate em mount é silencioso.
+  useLoadingTask(loading);
+
   // ── Estado de UI ─────────────────────────────────────────────────────────
   const [layout, setLayout]               = useState(getInitialLayout);
   const [search, setSearch]               = useState("");
   const [ownerFilter, setOwnerFilter]     = useState(() => getOwnerFilter());
   const [activeMonth, setActiveMonth]     = useState(null);
-  const [sortBy, setSortBy]               = useState("month");
+  // Sort por escopo — campanhas e clientes têm conjuntos diferentes de
+  // opções, e cada um persiste campo + direção separados.
+  //
+  // O `validate*` filtra valores stale do localStorage (ex: usuário voltou
+  // depois da refatoração que renomeou "ecpm_desc" → field "ecpm" + dir
+  // "desc"). Sem ele, sort silenciosamente vira default e o user vê algo
+  // diferente do que tinha selecionado.
+  const validateCampaignSort = (v) => CAMPAIGN_SORT_FIELDS.has(v) ? v : CAMPAIGN_SORT_DEFAULT;
+  const validateClientSort   = (v) => CLIENT_SORT_FIELDS.has(v)   ? v : CLIENT_SORT_DEFAULT;
+
+  const [campaignsSortBy,  setCampaignsSortBy]  = useState(() => validateCampaignSort(getSortByPref("campaigns", CAMPAIGN_SORT_DEFAULT)));
+  const [campaignsSortDir, setCampaignsSortDir] = useState(() => getSortDirPref("campaigns", getDefaultDirection(CAMPAIGN_SORT_DEFAULT)));
+  const [clientsSortBy,    setClientsSortBy]    = useState(() => validateClientSort(getSortByPref("clients",   CLIENT_SORT_DEFAULT)));
+  const [clientsSortDir,   setClientsSortDir]   = useState(() => getSortDirPref("clients",   getDefaultDirection(CLIENT_SORT_DEFAULT)));
   const [activeWorklist, setActiveWorklist] = useState(null);
   const [drawerCampaign, setDrawerCampaign] = useState(null);
   const [copied, setCopied]               = useState(null);
@@ -137,6 +167,27 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
 
   // Persistência
   useEffect(() => { persistOwnerFilter(ownerFilter); }, [ownerFilter]);
+  useEffect(() => { setSortByPref ("campaigns", campaignsSortBy);  }, [campaignsSortBy]);
+  useEffect(() => { setSortDirPref("campaigns", campaignsSortDir); }, [campaignsSortDir]);
+  useEffect(() => { setSortByPref ("clients",   clientsSortBy);    }, [clientsSortBy]);
+  useEffect(() => { setSortDirPref("clients",   clientsSortDir);   }, [clientsSortDir]);
+
+  // Handlers que setam campo + aplicam direção default daquele campo.
+  // User pode flipar direção depois pelo botão de toggle.
+  const handleCampaignsSortByChange = useCallback((field) => {
+    setCampaignsSortBy(field);
+    setCampaignsSortDir(getDefaultDirection(field));
+  }, []);
+  const handleClientsSortByChange = useCallback((field) => {
+    setClientsSortBy(field);
+    setClientsSortDir(getDefaultDirection(field));
+  }, []);
+  const toggleCampaignsSortDir = useCallback(() => {
+    setCampaignsSortDir((d) => (d === "asc" ? "desc" : "asc"));
+  }, []);
+  const toggleClientsSortDir = useCallback(() => {
+    setClientsSortDir((d) => (d === "asc" ? "desc" : "asc"));
+  }, []);
   useEffect(() => {
     try { localStorage.setItem(LAYOUT_STORAGE_KEY, layout); } catch { /* ignore */ }
   }, [layout]);
@@ -191,7 +242,9 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           ...membersR.value.cps.map((p) => p.email),
           ...membersR.value.css.map((p) => p.email),
         ]);
-        setOwnerFilter((prev) => (prev && !validEmails.has(prev) ? "" : prev));
+        // Filtra emails que sumiram do team (ex: pessoa removida da planilha).
+        // Mantém os ainda válidos pra não derrubar a seleção do user inteira.
+        setOwnerFilter((prev) => prev.filter((email) => validEmails.has(email)));
       } else {
         errors.push(`team: ${membersR.reason?.message || membersR.reason}`);
       }
@@ -262,15 +315,14 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
     return fetchClients();
   }, [layout, clientsFetchedAt, fetchClients]);
 
-  // Handler do botão "Tentar de novo" — único callsite que precisa setar
-  // refreshing=true antes de disparar (event handler, não effect, então
-  // setState síncrono é OK).
-  const handleRetry = useCallback(() => {
-    setRefreshing(true);
-    runRefresh();
-  }, [runRefresh]);
-
   // ── Filtragem e ordenação ────────────────────────────────────────────────
+  // Matcher de owners memoizado: split CP/CS feito uma vez por mudança de
+  // ownerFilter ou teamMembers, não por campanha.
+  const ownerMatcher = useMemo(
+    () => createOwnerMatcher(ownerFilter, teamMembers),
+    [ownerFilter, teamMembers]
+  );
+
   const filteredCampaigns = useMemo(() => {
     const q = search.trim().toLowerCase();
     const isTokenQuery = /[-]/.test(search.trim()) || /^[A-Z0-9]{4,8}$/.test(search.trim());
@@ -288,37 +340,44 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
         (isTokenQuery && c.short_token?.toLowerCase().includes(q));
       const matchMonth = !activeMonth ||
         (c.start_date && c.start_date.slice(0, 7) === activeMonth);
-      const matchOwner = !ownerFilter ||
-        c.cp_email === ownerFilter ||
-        c.cs_email === ownerFilter;
+      // Multi-owner: AND entre papéis (CP + CS), OR dentro do mesmo papel.
+      // Ver `createOwnerMatcher` em ../lib/ownerFilter.js pra detalhes.
+      const matchOwner = ownerMatcher(c);
       return matchSearch && matchMonth && matchOwner;
     });
-  }, [campaigns, search, activeMonth, ownerFilter, activeWorklist, worklist]);
+  }, [campaigns, search, activeMonth, ownerMatcher, activeWorklist, worklist]);
 
   const sortedCampaigns = useMemo(() => {
-    return [...filteredCampaigns].sort((a, b) => {
-      if (sortBy === "alpha")      return (a.client_name || "").localeCompare(b.client_name || "");
-      if (sortBy === "start_date") return (a.start_date  || "").localeCompare(b.start_date  || "");
-      // month: newest first
-      return (b.start_date || "").localeCompare(a.start_date || "");
-    });
-  }, [filteredCampaigns, sortBy]);
+    return [...filteredCampaigns].sort(compareCampaigns(campaignsSortBy, campaignsSortDir));
+  }, [filteredCampaigns, campaignsSortBy, campaignsSortDir]);
 
-  // Agrupamento por mês (apenas layout=month)
+  // Agrupamento por mês (apenas layout=month).
+  //
+  // Sort se aplica DENTRO de cada grupo, não entre grupos. Os meses ficam
+  // sempre em ordem cronológica decrescente (mais recente primeiro), porque
+  // sortar grupos por "Maior ECPM" embaralharia os meses (mês com a campanha
+  // de maior ECPM viraria o 1º grupo) — confuso pro user. Layout=list é o
+  // lugar pra ver tudo ordenado globalmente.
   const monthGroups = useMemo(() => {
     if (layout !== "month") return [];
     const acc = new Map();
-    for (const c of sortedCampaigns) {
+    for (const c of filteredCampaigns) {
       const m = c.start_date?.slice(0, 7) || "no-date";
       if (!acc.has(m)) acc.set(m, []);
       acc.get(m).push(c);
     }
-    return [...acc.entries()].map(([key, items]) => ({
-      key,
-      label: key === "no-date" ? "Sem data" : formatMonthLabel(key),
-      items,
+    const monthsSorted = [...acc.keys()].sort((a, b) => {
+      if (a === "no-date") return 1;
+      if (b === "no-date") return -1;
+      return b.localeCompare(a);
+    });
+    const cmp = compareCampaigns(campaignsSortBy, campaignsSortDir);
+    return monthsSorted.map((m) => ({
+      key: m,
+      label: m === "no-date" ? "Sem data" : formatMonthLabel(m),
+      items: [...acc.get(m)].sort(cmp),
     }));
-  }, [sortedCampaigns, layout]);
+  }, [filteredCampaigns, layout, campaignsSortBy, campaignsSortDir]);
 
   // Filtragem de clientes (search + ownerFilter + worklist).
   // Estratégia para owner e worklist: derivar a partir das CAMPANHAS do
@@ -345,12 +404,10 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
       }
       const clientCampaigns = campaignsBySlug.get(c.slug) || [];
 
-      if (ownerFilter) {
-        // Match completo: passa se QUALQUER campanha do cliente tem o
-        // owner. Não depende mais de top_*_owners (limitado a top 2).
-        const hasOwner = clientCampaigns.some(
-          (camp) => camp.cp_email === ownerFilter || camp.cs_email === ownerFilter
-        );
+      if (ownerFilter.length > 0) {
+        // Cliente passa se QUALQUER campanha sua bate com a regra do
+        // ownerMatcher (AND entre papéis, OR dentro do mesmo papel).
+        const hasOwner = clientCampaigns.some(ownerMatcher);
         if (!hasOwner) return false;
       }
 
@@ -364,7 +421,11 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
 
       return true;
     });
-  }, [clients, campaigns, search, ownerFilter, activeWorklist, worklist]);
+  }, [clients, campaigns, search, ownerFilter, ownerMatcher, activeWorklist, worklist]);
+
+  const sortedClients = useMemo(() => {
+    return [...filteredClients].sort(compareClients(clientsSortBy, clientsSortDir));
+  }, [filteredClients, clientsSortBy, clientsSortDir]);
 
   // ── Handlers ─────────────────────────────────────────────────────────────
   const handleCopyLink = useCallback(async (campaign) => {
@@ -497,47 +558,12 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
               <span><span className="font-semibold text-fg tabular-nums">{totalClients}</span> clientes</span>
               <span className="w-0.5 h-0.5 rounded-full bg-fg-subtle" />
               <span>{new Date().getFullYear()}</span>
-              {refreshing && !refreshError && lastFetchedAt && (
-                <>
-                  <span className="w-0.5 h-0.5 rounded-full bg-fg-subtle" />
-                  <span className="text-fg-subtle italic">atualizando…</span>
-                </>
-              )}
             </p>
           </div>
           <Button variant="primary" size="md" onClick={() => setShowNewCampaign(true)}>
             + Novo Report
           </Button>
         </div>
-
-        {/* Banner de "dados desatualizados" — aparece quando o último
-            refresh em background falhou. Mostra timestamp do que está
-            em tela e botão pra retry manual. UI continua funcional
-            usando o cache. */}
-        {refreshError && (
-          <div className="mb-4 px-4 py-2.5 rounded-lg flex items-center justify-between gap-3"
-               style={{
-                 background: "var(--color-warning-soft)",
-                 border: "1px solid var(--color-warning)",
-               }}>
-            <p className="text-[12px] text-fg">
-              Não consegui atualizar os dados.{" "}
-              {lastFetchedAt && (
-                <span className="text-fg-muted">
-                  Mostrando dados de {formatTimeAgo(lastFetchedAt)}.
-                </span>
-              )}
-            </p>
-            <button
-              type="button"
-              onClick={handleRetry}
-              disabled={refreshing}
-              className="text-[11px] font-medium text-fg px-3 h-7 rounded-md border border-warning/40 hover:bg-warning/10 transition-colors disabled:opacity-50 whitespace-nowrap"
-            >
-              {refreshing ? "Tentando…" : "Tentar de novo"}
-            </button>
-          </div>
-        )}
 
         {/* MetricStrip no topo — KPIs das campanhas ativas em grid de cards
             bordados leves. Alertas operacionais (críticas, sem owner,
@@ -578,9 +604,11 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
               ownerFilter={ownerFilter}
               onOwnerChange={setOwnerFilter}
               teamMembers={teamMembers}
-              sortBy={sortBy}
-              onSortByChange={setSortBy}
-              showSortBy={layout !== "client"}
+              sortBy={layout === "client" ? clientsSortBy : campaignsSortBy}
+              onSortByChange={layout === "client" ? handleClientsSortByChange : handleCampaignsSortByChange}
+              sortDir={layout === "client" ? clientsSortDir : campaignsSortDir}
+              onSortDirToggle={layout === "client" ? toggleClientsSortDir : toggleCampaignsSortDir}
+              sortOptions={layout === "client" ? CLIENT_SORT_OPTIONS : CAMPAIGN_SORT_OPTIONS}
               searchPlaceholder={
                 layout === "client" ? "Buscar cliente..." : "Buscar cliente, campanha ou token..."
               }
@@ -608,7 +636,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
             onOpen={handleOpenDrawer}
             onOpenReport={onOpenReport}
             teamMap={teamMap}
-            filterSignature={[search.trim(), ownerFilter || "", activeWorklist || ""]
+            filterSignature={[search.trim(), ownerFilter.join(","), activeWorklist || ""]
               .filter(Boolean)
               .join("|")}
           />
@@ -618,7 +646,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           // mostra os cards e refetch corre em background.
           clientsLoading && clients.length === 0
             ? <LoadingState layout="client" />
-            : <ClientLayout clients={filteredClients} onOpen={handleOpenClient} />
+            : <ClientLayout clients={sortedClients} onOpen={handleOpenClient} />
         ) : layout === "performers" ? (
           <PerformersLayout campaigns={campaigns} teamMap={teamMap} />
         ) : (

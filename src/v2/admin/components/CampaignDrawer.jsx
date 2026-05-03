@@ -282,7 +282,7 @@ function ActionButton({ icon, label, variant = "default", onClick, disabled }) {
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg",
+        "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer",
         "text-sm font-medium border transition-colors",
         "disabled:opacity-60 disabled:cursor-not-allowed",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",

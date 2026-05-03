@@ -223,7 +223,7 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
             <button
               onClick={onClose}
               aria-label="Fechar"
-              className="shrink-0 w-8 h-8 -mr-2 -mt-1 rounded-md text-fg-subtle hover:text-fg hover:bg-surface flex items-center justify-center transition-colors"
+              className="shrink-0 w-8 h-8 -mr-2 -mt-1 rounded-md text-fg-subtle hover:text-fg hover:bg-surface flex items-center justify-center transition-colors cursor-pointer"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
                 <path d="M18 6 6 18M6 6l12 12" />
@@ -313,7 +313,7 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
                 <button
                   type="button"
                   onClick={() => setShowAdvanced((v) => !v)}
-                  className="flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] font-bold text-fg-subtle hover:text-fg-muted transition-colors"
+                  className="flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] font-bold text-fg-subtle hover:text-fg-muted transition-colors cursor-pointer"
                 >
                   <svg
                     width="10"
@@ -354,7 +354,7 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
               type="button"
               onClick={handleDissolveGroup}
               disabled={saving || loading}
-              className="text-xs font-semibold px-3 h-9 rounded-md text-danger border border-danger/30 hover:bg-danger-soft hover:border-danger/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="text-xs font-semibold px-3 h-9 rounded-md text-danger border border-danger/30 hover:bg-danger-soft hover:border-danger/50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Desfazer grupo
             </button>
@@ -364,7 +364,7 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
               type="button"
               onClick={onClose}
               disabled={saving}
-              className="text-xs font-semibold px-4 h-9 rounded-md text-fg-muted border border-border hover:text-fg hover:bg-surface transition-colors disabled:opacity-50"
+              className="text-xs font-semibold px-4 h-9 rounded-md text-fg-muted border border-border hover:text-fg hover:bg-surface transition-colors cursor-pointer disabled:opacity-50"
             >
               Cancelar
             </button>
@@ -372,7 +372,7 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
               type="button"
               onClick={handleSave}
               disabled={saving || !hasChanges || loading}
-              className="text-xs font-bold px-4 h-9 rounded-md bg-signature text-white hover:bg-signature-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="text-xs font-bold px-4 h-9 rounded-md bg-signature text-white hover:bg-signature-hover transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {saving
                 ? "Salvando…"

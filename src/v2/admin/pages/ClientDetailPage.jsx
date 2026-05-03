@@ -20,6 +20,7 @@ import { listCampaigns, listTeamMembers, getShareId, getCachedShareId } from "..
 import { readCache, writeCache } from "../../../lib/persistedCache";
 import { useTheme } from "../../hooks/useTheme";
 import { normalizeSlug } from "../lib/aggregation";
+import { createOwnerMatcher } from "../lib/ownerFilter";
 
 import HyprReportCenterLogo from "../../../components/HyprReportCenterLogo";
 import LoomModal from "../../../components/modals/LoomModal";
@@ -68,7 +69,7 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
   const [refreshError, setRefreshError]   = useState(null);
   const [lastFetchedAt, setLastFetchedAt] = useState(bootstrap.campaigns?.ts ?? null);
   const [search, setSearch]           = useState("");
-  const [ownerFilter, setOwnerFilter] = useState("");
+  const [ownerFilter, setOwnerFilter] = useState([]);
   const [sortBy, setSortBy]           = useState("month");
 
   const [drawerCampaign, setDrawerCampaign] = useState(null);
@@ -183,17 +184,23 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
   }, [campaigns]);
 
   // Filtragem
+  // Matcher de owners: AND entre papéis (CP+CS), OR dentro do mesmo papel.
+  // Memoizado fora do filter pra split CP/CS rodar 1x por mudança, não por
+  // campanha. Detalhes em ../lib/ownerFilter.js.
+  const ownerMatcher = useMemo(
+    () => createOwnerMatcher(ownerFilter, teamMembers),
+    [ownerFilter, teamMembers]
+  );
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return campaigns.filter((c) => {
       const matchSearch = !q ||
         c.campaign_name?.toLowerCase().includes(q) ||
         c.short_token?.toLowerCase().includes(q);
-      const matchOwner = !ownerFilter ||
-        c.cp_email === ownerFilter || c.cs_email === ownerFilter;
-      return matchSearch && matchOwner;
+      return matchSearch && ownerMatcher(c);
     });
-  }, [campaigns, search, ownerFilter]);
+  }, [campaigns, search, ownerMatcher]);
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {

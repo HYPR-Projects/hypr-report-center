@@ -277,7 +277,7 @@ export default function SheetsIntegrationCardV2({
             type="button"
             onClick={handleConnect}
             disabled={busy}
-            className="shrink-0 inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-signature text-canvas hover:opacity-90 disabled:opacity-50 transition"
+            className="shrink-0 inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-signature text-canvas hover:opacity-90 disabled:opacity-50 transition cursor-pointer"
           >
             {busy
               ? "Conectando..."
@@ -335,7 +335,7 @@ export default function SheetsIntegrationCardV2({
                 href={integration.spreadsheet_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-signature text-canvas hover:opacity-90 transition"
+                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-signature text-canvas hover:opacity-90 transition cursor-pointer"
               >
                 Abrir no Google Sheets
               </a>
@@ -368,7 +368,7 @@ export default function SheetsIntegrationCardV2({
                       type="button"
                       onClick={handleConfirmDelete}
                       disabled={busy}
-                      className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md bg-red-500/15 text-red-300 border border-red-500/30 hover:bg-red-500/25 disabled:opacity-50 transition"
+                      className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md bg-red-500/15 text-red-300 border border-red-500/30 hover:bg-red-500/25 disabled:opacity-50 transition cursor-pointer"
                     >
                       {busy ? "Excluindo..." : confirmDelete.deleteSheet ? "Excluir tudo" : "Confirmar exclusão"}
                     </button>
@@ -376,7 +376,7 @@ export default function SheetsIntegrationCardV2({
                       type="button"
                       onClick={handleCancelDelete}
                       disabled={busy}
-                      className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-muted hover:text-fg disabled:opacity-50 transition"
+                      className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-muted hover:text-fg disabled:opacity-50 transition cursor-pointer"
                     >
                       Cancelar
                     </button>
@@ -388,7 +388,7 @@ export default function SheetsIntegrationCardV2({
                     type="button"
                     onClick={handleSyncNow}
                     disabled={busy}
-                    className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-muted hover:text-fg hover:border-fg-muted disabled:opacity-50 transition"
+                    className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-muted hover:text-fg hover:border-fg-muted disabled:opacity-50 transition cursor-pointer"
                   >
                     {busy ? "Sincronizando..." : "Sincronizar agora"}
                   </button>
@@ -396,7 +396,7 @@ export default function SheetsIntegrationCardV2({
                     type="button"
                     onClick={handleDeleteClick}
                     disabled={busy}
-                    className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-subtle hover:text-fg-muted disabled:opacity-50 transition"
+                    className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-subtle hover:text-fg-muted disabled:opacity-50 transition cursor-pointer"
                   >
                     Excluir integração
                   </button>
@@ -439,7 +439,7 @@ export default function SheetsIntegrationCardV2({
               type="button"
               onClick={handleConnect}
               disabled={busy}
-              className="px-3 py-1.5 text-[11px] font-semibold rounded-md bg-signature text-canvas hover:opacity-90 disabled:opacity-50 transition"
+              className="px-3 py-1.5 text-[11px] font-semibold rounded-md bg-signature text-canvas hover:opacity-90 disabled:opacity-50 transition cursor-pointer"
             >
               {busy ? "..." : "Reconectar"}
             </button>
@@ -447,7 +447,7 @@ export default function SheetsIntegrationCardV2({
               type="button"
               onClick={handleDeleteClick}
               disabled={busy}
-              className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-subtle hover:text-fg-muted disabled:opacity-50 transition"
+              className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-subtle hover:text-fg-muted disabled:opacity-50 transition cursor-pointer"
             >
               Excluir
             </button>

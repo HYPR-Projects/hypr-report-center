@@ -18,8 +18,11 @@ const buttonStyles = cva(
   [
     "inline-flex items-center justify-center gap-2",
     "font-semibold whitespace-nowrap select-none",
-    "transition-colors duration-150",
+    "transition-[background-color,filter] duration-150",
     "disabled:opacity-50 disabled:cursor-not-allowed",
+    // Press feedback consistente em todos os variants — ligeiro escurecimento
+    // ao apertar, sem translate ou scale (mais natural em desktop).
+    "active:brightness-95 motion-reduce:active:brightness-100",
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
     "cursor-pointer",
   ],
@@ -27,7 +30,7 @@ const buttonStyles = cva(
     variants: {
       variant: {
         primary:
-          "bg-signature text-on-signature hover:bg-signature-hover active:bg-signature-hover",
+          "bg-signature text-on-signature hover:bg-signature-hover",
         secondary:
           "bg-surface-strong text-fg hover:bg-surface border border-border-strong",
         ghost:
