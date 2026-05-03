@@ -121,25 +121,35 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
   const usageMap = useMemo(() => buildUsageMap(blocks), [blocks]);
 
   // Lazy-fetch da meta de cada form selecionado em modo list. Precisamos
-  // disso pra oferecer dropdown de linhas (marca-foco) só quando o form
-  // é matrix. Roda sempre que algum formId muda; ignora os já cacheados.
+  // disso pra oferecer dropdown de linhas (marca-foco) só quando o form é
+  // matrix. Usamos um Set ref pra rastrear ids já em fetch (in-flight) sem
+  // precisar do metaById no array de deps — incluí-lo causa o cleanup do
+  // effect rodar a cada setMetaById e cancelar o fetch antes dele resolver
+  // (loop "loading eterno").
+  const inflightIdsRef = useRef(new Set());
   useEffect(() => {
     const idsNeeded = new Set();
     for (const b of blocks) {
       if (b.ctrlMode === "list" && b.ctrlFormId) idsNeeded.add(b.ctrlFormId);
       if (b.expMode === "list" && b.expFormId) idsNeeded.add(b.expFormId);
     }
-    const missing = [...idsNeeded].filter((id) => !metaById.has(id));
-    if (missing.length === 0) return;
-
-    // Marca como loading antes de fetchar — evita flicker e re-disparos.
+    // Filtra usando functional setState pra ler metaById atual sem dep.
+    let missing = [];
     setMetaById((prev) => {
+      missing = [...idsNeeded].filter(
+        (id) => !prev.has(id) && !inflightIdsRef.current.has(id),
+      );
+      if (missing.length === 0) return prev;
       const next = new Map(prev);
-      for (const id of missing) next.set(id, { loading: true, type: null, rows: [] });
+      for (const id of missing) {
+        next.set(id, { loading: true, type: null, rows: [] });
+        inflightIdsRef.current.add(id);
+      }
       return next;
     });
 
-    let cancelled = false;
+    if (missing.length === 0) return;
+
     (async () => {
       const results = await Promise.all(
         missing.map(async (id) => {
@@ -151,15 +161,16 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
           }
         }),
       );
-      if (cancelled) return;
       setMetaById((prev) => {
         const next = new Map(prev);
-        for (const [id, val] of results) next.set(id, val);
+        for (const [id, val] of results) {
+          next.set(id, val);
+          inflightIdsRef.current.delete(id);
+        }
         return next;
       });
     })();
-    return () => { cancelled = true; };
-  }, [blocks, metaById]);
+  }, [blocks]);
 
   // ── Bootstrap: carrega config existente + lista de forms em paralelo ─────
   useEffect(() => {
