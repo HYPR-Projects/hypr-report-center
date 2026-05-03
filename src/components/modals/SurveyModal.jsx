@@ -53,6 +53,42 @@ function extractFormId(value) {
 // Helper de label legível pra slot
 const slotLabel = (s) => (s === "ctrl" ? "Controle" : "Exposto");
 
+// Heurística leve: identifica grupo (controle/exposto) pelo sufixo do nome.
+// Convenção HYPR: forms terminam em "_Controle" ou "_Exposto" (case-insens).
+// Forms fora dessa convenção devolvem null e não disparam nenhuma sinalização.
+const GROUP_SUFFIX_RE = /_(controle|exposto)\s*$/i;
+function parseGroupFromName(title) {
+  if (!title) return null;
+  const m = String(title).match(GROUP_SUFFIX_RE);
+  return m ? m[1].toLowerCase() : null;
+}
+
+// Mapeamento ctrl/exp ↔ controle/exposto. ctrl=controle, exp=exposto.
+const slotExpectedGroup = (slot) => (slot === "ctrl" ? "controle" : "exposto");
+
+// Acha o "irmão" de um form trocando _Controle ↔ _Exposto no nome,
+// preservando a capitalização. Devolve o form encontrado ou null.
+function findPartnerForm(formId, formsById, forms) {
+  if (!formId) return null;
+  const f = formsById.get(formId);
+  if (!f) return null;
+  const m = (f.title || "").match(GROUP_SUFFIX_RE);
+  if (!m) return null;
+  const isUpper = m[1] === m[1].toUpperCase();
+  const isCap = m[1][0] === m[1][0].toUpperCase();
+  const swap = m[1].toLowerCase() === "controle" ? "Exposto" : "Controle";
+  const swapped = isUpper ? swap.toUpperCase() : isCap ? swap : swap.toLowerCase();
+  const partnerTitle = f.title.replace(GROUP_SUFFIX_RE, `_${swapped}`);
+  // Match exato primeiro (preserva case), depois case-insensitive
+  return (
+    forms.find((x) => x.id !== formId && x.title === partnerTitle) ||
+    forms.find(
+      (x) => x.id !== formId && (x.title || "").toLowerCase() === partnerTitle.toLowerCase(),
+    ) ||
+    null
+  );
+}
+
 // Constrói mapa formId → [{blockIdx, slot}] varrendo todos os blocos.
 // Usado pra detectar duplicatas no dropdown e na hora de salvar.
 function buildUsageMap(blocks) {
@@ -447,6 +483,20 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
               usageMap={usageMap}
               currentBlockIdx={idx}
               currentSlot="ctrl"
+              suggestion={
+                // Sugestão de irmão: aparece se este slot está vazio E o slot
+                // oposto tem form selecionado E o irmão (com sufixo trocado)
+                // existe na lista. Não aparece se o irmão já foi escolhido em
+                // outro bloco (evita poluir com par já em uso).
+                block.ctrlMode === "list" && !block.ctrlFormId && block.expFormId
+                  ? (() => {
+                      const partner = findPartnerForm(block.expFormId, formsById, forms);
+                      if (!partner) return null;
+                      const used = usageMap.get(partner.id) || [];
+                      return used.length === 0 ? partner : null;
+                    })()
+                  : null
+              }
               onChange={(patch) => updateBlock(idx, {
                 ctrlMode: patch.mode ?? block.ctrlMode,
                 ctrlFormId: patch.formId ?? (patch.mode === "manual" ? "" : block.ctrlFormId),
@@ -468,6 +518,16 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
               usageMap={usageMap}
               currentBlockIdx={idx}
               currentSlot="exp"
+              suggestion={
+                block.expMode === "list" && !block.expFormId && block.ctrlFormId
+                  ? (() => {
+                      const partner = findPartnerForm(block.ctrlFormId, formsById, forms);
+                      if (!partner) return null;
+                      const used = usageMap.get(partner.id) || [];
+                      return used.length === 0 ? partner : null;
+                    })()
+                  : null
+              }
               onChange={(patch) => updateBlock(idx, {
                 expMode: patch.mode ?? block.expMode,
                 expFormId: patch.formId ?? (patch.mode === "manual" ? "" : block.expFormId),
@@ -603,6 +663,7 @@ function FormPicker({
   usageMap,
   currentBlockIdx,
   currentSlot,
+  suggestion,           // form sugerido pra preencher este slot (irmão do par)
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -622,6 +683,10 @@ function FormPicker({
   const ownConflicts = mode === "list"
     ? conflictsFor(formId, currentBlockIdx, currentSlot, usageMap)
     : [];
+  // Inferência de grupo do form selecionado e checagem contra slot esperado
+  const selectedGroup = selected ? parseGroupFromName(selected.title) : null;
+  const expectedGroup = slotExpectedGroup(currentSlot);
+  const groupMismatch = selectedGroup && selectedGroup !== expectedGroup;
 
   // Limite de render: sem busca, mostra só os 100 mais recentes (a lista vem
   // ordenada por last_updated_at desc do backend). Com 1900 forms no workspace,
@@ -704,6 +769,38 @@ function FormPicker({
     <div ref={wrapRef} style={{ position: "relative" }}>
       {labelRow}
 
+      {/* Sugestão de par detectado — só aparece se slot vazio E parte foi
+          selecionada no slot oposto E o irmão existe na lista */}
+      {!selected && suggestion && (
+        <button
+          type="button"
+          onClick={() => onChange({ formId: suggestion.id })}
+          title={`Usar ${suggestion.title}`}
+          style={{
+            width: "100%",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "7px 10px",
+            marginBottom: 6,
+            background: `${C.blue}10`,
+            border: `1px dashed ${C.blue}60`,
+            borderRadius: 7,
+            color: C.blue,
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: "pointer",
+            textAlign: "left",
+          }}
+        >
+          <span aria-hidden style={{ fontSize: 12 }}>💡</span>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+            par detectado: <span style={{ fontWeight: 700 }}>{suggestion.title}</span>
+          </span>
+          <span style={{ fontWeight: 700, flexShrink: 0 }}>usar →</span>
+        </button>
+      )}
+
       {/* Botão / chip de seleção */}
       <button
         onClick={() => !disabled && setOpen((o) => !o)}
@@ -761,6 +858,25 @@ function FormPicker({
         </div>
       )}
 
+      {groupMismatch && (
+        <div
+          style={{
+            marginTop: 6,
+            fontSize: 11,
+            color: "#FFB95E",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <span>⚠</span>
+          <span>
+            esse form parece ser de <strong>{slotLabel(selectedGroup === "controle" ? "ctrl" : "exp")}</strong>,
+            mas está no slot de <strong>{slotLabel(currentSlot)}</strong>
+          </span>
+        </div>
+      )}
+
       {open && (
         <div
           style={{
@@ -808,6 +924,8 @@ function FormPicker({
                       ? `já em P${conflicts[0].blockIdx + 1} · ${slotLabel(conflicts[0].slot)}`
                       : `em uso em ${conflicts.length} slots`)
                   : null;
+                const itemGroup = parseGroupFromName(f.title);
+                const groupBadgeOff = itemGroup && itemGroup !== expectedGroup;
                 return (
                   <button
                     key={f.id}
@@ -830,11 +948,36 @@ function FormPicker({
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
-                      gap: 12,
+                      gap: 10,
                       borderBottom: `1px solid ${modalBdr}40`,
                       opacity: hasConflict ? 0.55 : 1,
                     }}
                   >
+                    {itemGroup ? (
+                      <span
+                        style={{
+                          flexShrink: 0,
+                          width: 18,
+                          height: 18,
+                          borderRadius: 4,
+                          fontSize: 10,
+                          fontWeight: 700,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          background: itemGroup === "controle" ? "#27AE6020" : `${C.blue}20`,
+                          color: itemGroup === "controle" ? "#27AE60" : C.blue,
+                          border: `1px solid ${itemGroup === "controle" ? "#27AE60" : C.blue}40`,
+                          opacity: groupBadgeOff ? 0.5 : 1,
+                        }}
+                        aria-label={itemGroup === "controle" ? "Controle" : "Exposto"}
+                        title={itemGroup === "controle" ? "Controle" : "Exposto"}
+                      >
+                        {itemGroup === "controle" ? "C" : "E"}
+                      </span>
+                    ) : (
+                      <span style={{ flexShrink: 0, width: 18 }} aria-hidden />
+                    )}
                     <span
                       style={{
                         fontSize: 13,
