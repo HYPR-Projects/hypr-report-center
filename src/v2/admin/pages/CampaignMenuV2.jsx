@@ -547,9 +547,19 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
       {/* ── Topbar ──────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-30 bg-canvas-elevated border-b border-border">
         <div className="max-w-[1400px] mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center text-fg">
+          <button
+            type="button"
+            onClick={() => {
+              setLayout("month");
+              setActiveWorklist(null);
+              if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+            }}
+            className="flex items-center text-fg cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas-elevated"
+            aria-label="Voltar para visão por mês"
+            title="Voltar para visão por mês"
+          >
             <HyprReportCenterLogo height={32} />
-          </div>
+          </button>
           <div className="flex items-center gap-3">
             <ThemeToggleV2 />
             {user?.picture && (
