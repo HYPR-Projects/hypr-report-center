@@ -67,6 +67,10 @@ export function DualChartV2({
   // bar size adaptativa — fica fino em datasets grandes, gordinho em
   // pequenos. Mesma fórmula do Legacy.
   const barSize = Math.min(32, Math.max(8, Math.floor(600 / data.length)));
+  // padding lateral adaptativo — datasets curtos (2-3 pontos) precisam
+  // de respiro grande pra não colar nas bordas; datasets longos viram
+  // padding mínimo pra não desperdiçar espaço útil.
+  const xPad = Math.max(24, Math.min(64, Math.floor(600 / data.length)));
 
   return (
     <div>
@@ -86,7 +90,7 @@ export function DualChartV2({
             tickFormatter={(v) => (isDate ? String(v).slice(5) : String(v))}
             interval="preserveStartEnd"
             minTickGap={24}
-            padding={{ left: 16, right: 16 }}
+            padding={{ left: xPad, right: xPad }}
           />
           <YAxis
             yAxisId="left"

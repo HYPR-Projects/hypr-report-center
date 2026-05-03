@@ -429,6 +429,36 @@ export async function saveSurvey({ short_token, survey_data }) {
 }
 
 /**
+ * Busca a configuração salva de survey de uma campanha. Devolve o JSON
+ * cru (string) ou null se nunca foi configurado. Usado pelo SurveyModal
+ * pra entrar em modo de edição.
+ */
+export async function getSurvey({ short_token }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=get_survey&short_token=${encodeURIComponent(short_token)}`,
+    { headers: adminAuthHeaders(jwt) },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json().catch(() => ({}));
+  return d?.survey_data ?? null;
+}
+
+/**
+ * Lista forms do Typeform na pasta "Survey" (últimos 120 dias). Cacheado
+ * server-side por 5min. Devolve { forms: [{id, title, last_updated_at,
+ * display_url}], scope: "workspace"|"account", count }.
+ */
+export async function listTypeformForms({ refresh = false } = {}) {
+  const jwt = await getOrIssueAdminJwt();
+  const url = `${API_URL}?action=typeform_list_forms${refresh ? "&refresh=true" : ""}`;
+  const r = await fetch(url, { headers: adminAuthHeaders(jwt) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  return d;
+}
+
+/**
  * Proxy do Typeform para evitar CORS. Caller (SurveyTab) recebe o JSON cru
  * com formato { type: "choice"|"matrix", ... }. Lança em status != 2xx.
  */

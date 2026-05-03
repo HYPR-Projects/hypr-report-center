@@ -35,7 +35,7 @@ import urllib.request
 import urllib.parse
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from auth import (
     authenticate_admin,
@@ -94,6 +94,11 @@ _overrides_cache = {}     # "all" -> (timestamp, dict[short_token -> (cp, cs)])
 _aliases_cache   = {}     # "all" -> (timestamp, dict[alias_normalized -> canonical_normalized])
 _shares_cache    = {}     # "all" -> (timestamp, dict[short_token -> share_id])
 _merges_cache    = {}     # "all" -> (timestamp, dict[short_token -> {merge_id, rmnd_mode, pdooh_mode}])
+# Cache da listagem de forms do Typeform — evita estourar rate-limit em cada
+# abertura do SurveyModal (admin abre o modal várias vezes editando blocos).
+# TTL curto (5min) porque o admin pode estar criando um form novo e querendo
+# vê-lo no dropdown sem esperar muito.
+_typeform_forms_cache = {} # "all" -> (timestamp, list[{id,title,last_updated_at,_links}])
 _cache_lock      = threading.Lock()
 
 
@@ -841,6 +846,67 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR save_loom] {e}")
             return (jsonify({"error": "Erro ao salvar loom"}), 500, headers)
+
+    # ── Endpoint: buscar configuração do survey ──────────────────────────────
+    # GET admin-only. Devolve o JSON cru salvo via save_survey, ou null se
+    # ainda não existe. Usado pelo SurveyModal pra entrar em modo de edição
+    # (pré-preenchendo blocos com a config existente).
+    if request.method == "GET" and request.args.get("action") == "get_survey":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        short_token = request.args.get("short_token", "").strip()
+        if not short_token:
+            return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+        try:
+            survey_data = query_survey(short_token)
+            return (jsonify({"survey_data": survey_data}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR get_survey] {e}")
+            return (jsonify({"error": "Erro ao buscar survey"}), 500, headers)
+
+    # ── Endpoint: listar forms do Typeform da pasta "Survey" ─────────────────
+    # GET admin-only. Devolve lista de forms (id, title, last_updated_at)
+    # filtrada por workspace e janela de 120d. Cacheado 5min em memória —
+    # várias aberturas do modal não estouram rate-limit do Typeform.
+    # Aceita ?refresh=true pra invalidar e re-buscar.
+    if request.method == "GET" and request.args.get("action") == "typeform_list_forms":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        TYPEFORM_TOKEN = os.environ.get("TYPEFORM_TOKEN", "")
+        if not TYPEFORM_TOKEN:
+            return (jsonify({"error": "TYPEFORM_TOKEN não configurado"}), 500, headers)
+        force_refresh = request.args.get("refresh", "").lower() == "true"
+        if force_refresh:
+            with _cache_lock:
+                _typeform_forms_cache.pop("all", None)
+        cached = _cache_get(_typeform_forms_cache, "all", _TYPEFORM_LIST_TTL)
+        if cached is not None:
+            return (jsonify(cached), 200, headers)
+        try:
+            workspace_id = _resolve_survey_workspace_id(TYPEFORM_TOKEN)
+            forms = _fetch_recent_typeform_forms(
+                TYPEFORM_TOKEN,
+                workspace_id=workspace_id,
+                days=120,
+            )
+            payload = {
+                "forms": forms,
+                "workspace_id": workspace_id,
+                "scope": "workspace" if workspace_id else "account",
+                "count": len(forms),
+            }
+            _cache_set(_typeform_forms_cache, "all", payload)
+            return (jsonify(payload), 200, headers)
+        except urllib.error.HTTPError as e:
+            logger.error(f"[ERROR typeform_list_forms] HTTP {e.code}: {e.reason}")
+            msg = {
+                401: "TYPEFORM_TOKEN inválido ou expirado",
+                403: "Sem permissão para listar forms",
+            }.get(e.code, f"Erro Typeform: HTTP {e.code}")
+            return (jsonify({"error": msg}), 502, headers)
+        except Exception as e:
+            logger.error(f"[ERROR typeform_list_forms] {e}")
+            return (jsonify({"error": str(e)}), 502, headers)
 
     # ── Endpoint: salvar survey ──────────────────────────────────────────────
     if request.method == "POST" and request.args.get("action") == "save_survey":
@@ -3204,6 +3270,122 @@ def _fetch_typeform_form_def(form_id, token):
 
     walk(data.get("fields") or [])
     return field_to_row
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Typeform — listagem de forms do workspace "Surveys"
+#
+# A API do Typeform expõe `GET /forms?workspace_id=...` paginado. Não há
+# filtro server-side por data, então fazemos client-side por last_updated_at.
+#
+# Resolução do workspace alvo:
+#   1. Se TYPEFORM_SURVEYS_WORKSPACE_ID estiver setado, usa direto.
+#   2. Senão, lista todos workspaces e procura um chamado "Survey" / "Surveys"
+#      (case-insensitive). Cobre 95% dos casos sem precisar de config extra.
+#   3. Senão, devolve forms de todos os workspaces (degradação graceful — admin
+#      pode buscar pelo título via input do modal).
+# ─────────────────────────────────────────────────────────────────────────────
+_TYPEFORM_LIST_TTL = 300  # 5 min — listagem muda pouco no horizonte de uma sessão
+
+
+def _fetch_typeform_workspaces(token):
+    """Lista todos os workspaces da conta. Pagina internamente."""
+    out = []
+    page = 1
+    while True:
+        url = f"https://api.typeform.com/workspaces?page={page}&page_size=200"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        items = data.get("items", [])
+        out.extend(items)
+        if len(items) < 200 or page >= int(data.get("page_count", 1)):
+            break
+        page += 1
+    return out
+
+
+def _resolve_survey_workspace_id(token):
+    """Devolve workspace_id alvo, ou string vazia se não conseguir resolver."""
+    explicit = os.environ.get("TYPEFORM_SURVEYS_WORKSPACE_ID", "").strip()
+    if explicit:
+        return explicit
+    try:
+        for ws in _fetch_typeform_workspaces(token):
+            name = (ws.get("name") or "").strip().lower()
+            if name in ("survey", "surveys", "pasta survey"):
+                return ws.get("id", "")
+    except Exception as e:
+        logger.warning(f"[WARN _resolve_survey_workspace_id] {e}")
+    return ""
+
+
+def _parse_typeform_ts(raw):
+    """Parse ISO 8601 com 'Z' (Typeform retorna assim). Devolve datetime
+    naive em UTC, ou None se não der parse. Python 3.11+ aceita Z, mas
+    normalizamos pra +00:00 por segurança."""
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _fetch_recent_typeform_forms(token, workspace_id="", days=120, hard_cap=600):
+    """Lista forms recentes do workspace, parando assim que sair da janela.
+
+    Otimização crucial: a API do Typeform retorna `/forms` ordenado por
+    `last_updated_at` desc por default. Em workspaces grandes (ex: 1900+
+    forms) seria absurdo paginar tudo só pra filtrar 100 recentes — então
+    paramos assim que vemos uma página em que TODOS os forms já estão
+    fora da janela. `hard_cap` é só uma trava extra contra loop infinito.
+
+    Devolve payload enxuto: [{id, title, last_updated_at, display_url}]
+    ordenado por last_updated_at desc.
+    """
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    fresh = []  # [(ts, payload)]
+    page = 1
+
+    while len(fresh) < hard_cap:
+        params = f"page={page}&page_size=200"
+        if workspace_id:
+            params += f"&workspace_id={urllib.parse.quote(workspace_id)}"
+        url = f"https://api.typeform.com/forms?{params}"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+
+        items = data.get("items", [])
+        if not items:
+            break
+
+        page_had_fresh = False
+        for f in items:
+            ts = _parse_typeform_ts(f.get("last_updated_at") or f.get("created_at"))
+            if ts and ts >= cutoff and f.get("id"):
+                page_had_fresh = True
+                fresh.append((ts, {
+                    "id": f.get("id"),
+                    "title": f.get("title") or "(sem título)",
+                    "last_updated_at": f.get("last_updated_at") or f.get("created_at"),
+                    "display_url": (f.get("_links") or {}).get("display") or "",
+                }))
+
+        # Se a página inteira ficou fora da janela, paramos. Como o Typeform
+        # ordena por last_updated_at desc, todas as próximas serão ainda
+        # mais antigas.
+        if not page_had_fresh:
+            break
+
+        # Se a página veio incompleta, não há mais páginas.
+        if len(items) < 200 or page >= int(data.get("page_count", 1)):
+            break
+        page += 1
+
+    fresh.sort(key=lambda x: x[0], reverse=True)
+    return [x[1] for x in fresh]
 
 
 def _process_typeform_items(items, field_to_row=None):
