@@ -94,6 +94,29 @@ export function getScoreNDaysAgo(snapshots, role, email, n) {
 }
 
 /**
+ * Lê o snapshot ANTERIOR mais recente (não inclui hoje). Útil pra delta
+ * "vs último snapshot" — quando o user não abre o app todo dia, o
+ * comparativo fluctua mas sempre mostra "diferença desde a última visita".
+ *
+ * Retorna `{ score, daysAgo }` ou null se não há snapshot anterior dentro
+ * da janela de MAX_DAYS. `daysAgo` ajuda a UI a mostrar contexto ("vs 3d
+ * atrás" quando o gap é grande).
+ */
+export function getPreviousScore(snapshots, role, email) {
+  if (!snapshots) return null;
+  const today = localDateStr();
+  // Itera dias 1 → MAX_DAYS (mais recente primeiro). Para no primeiro
+  // dia que tem snapshot do owner.
+  for (let n = 1; n <= MAX_DAYS; n++) {
+    const date = daysAgoStr(n);
+    if (date >= today) continue; // sanity guard
+    const v = snapshots[date]?.[role]?.[email];
+    if (Number.isFinite(v)) return { score: v, daysAgo: n };
+  }
+  return null;
+}
+
+/**
  * Lê todos os snapshots crus (pra debug/futuro gráfico).
  */
 export function loadSnapshots() {

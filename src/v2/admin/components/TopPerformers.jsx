@@ -27,7 +27,7 @@ import { useState, useMemo, useEffect } from "react";
 import { cn } from "../../../ui/cn";
 import { formatBRL } from "../lib/format";
 import { computeTopPerformers } from "../lib/aggregation";
-import { saveDailySnapshot, getScoreNDaysAgo, loadSnapshots } from "../lib/scoreSnapshots";
+import { saveDailySnapshot, getPreviousScore, loadSnapshots } from "../lib/scoreSnapshots";
 import { PerformerDrawer } from "./PerformerDrawer";
 
 function localPartFromEmail(email) {
@@ -118,13 +118,15 @@ function MicroMetric({ label, value, tone = "fg" }) {
 }
 
 function ScoreDelta({ current, previous }) {
-  if (current == null || previous == null) return null;
-  const delta = current - previous;
+  if (current == null || !previous) return null;
+  const delta = current - previous.score;
   const rounded = Math.round(delta * 10) / 10;
+  // Label adapta ao gap: "vs ontem" se daysAgo=1, "vs Xd" se maior.
+  const label = previous.daysAgo === 1 ? "vs ontem" : `vs ${previous.daysAgo}d`;
   if (Math.abs(rounded) < 0.1) {
     return (
       <span className="text-[10px] text-fg-subtle font-medium tabular-nums whitespace-nowrap">
-        ▬ vs 7d
+        ▬ {label}
       </span>
     );
   }
@@ -134,7 +136,7 @@ function ScoreDelta({ current, previous }) {
       "text-[10px] font-semibold tabular-nums whitespace-nowrap",
       isUp ? "text-success" : "text-danger"
     )}>
-      {isUp ? "▲" : "▼"} {Math.abs(rounded).toFixed(1)} <span className="text-fg-subtle font-normal">vs 7d</span>
+      {isUp ? "▲" : "▼"} {Math.abs(rounded).toFixed(1)} <span className="text-fg-subtle font-normal">{label}</span>
     </span>
   );
 }
@@ -273,7 +275,7 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
               rank={i + 1}
               performer={p}
               displayName={teamMap[p.email]}
-              scorePrev={getScoreNDaysAgo(snapshots, role, p.email, 7)}
+              scorePrev={getPreviousScore(snapshots, role, p.email)}
               onClick={() => setSelected(p.email)}
             />
           ))}
