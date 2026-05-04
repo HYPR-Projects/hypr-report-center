@@ -43,14 +43,84 @@ function extractFormId(value) {
   return "";
 }
 
-// Heurística leve: identifica grupo (controle/exposto) pelo sufixo do nome.
-// Convenção HYPR: forms terminam em "_Controle" ou "_Exposto" (case-insens).
-// Forms fora dessa convenção devolvem null e exigem definição manual.
-const GROUP_SUFFIX_RE = /_(controle|exposto)\s*$/i;
+// Detecta o grupo (controle/exposto) tokenizando o nome do form e casando
+// cada token contra aliases conhecidos + Levenshtein. Robusto contra:
+//  - posição (sufixo, prefixo, meio): "..._Controle_Abr26" funciona
+//  - typos: "Cotrole", "Expsto", "Controlle"
+//  - variantes: "Control", "Exposed", "Expuesto"
+//  - acentos e caixa
+const GROUP_ALIASES = {
+  controle: ["controle", "control", "ctrl", "kontrol", "controlado"],
+  exposto: ["exposto", "exposed", "exposta", "expuesto", "expose", "expostos"],
+};
+
+// Tokeniza: NFD pra tirar acento, lowercase, separa por _ - espaço.
+function normalizeAndTokenize(title) {
+  return String(title || "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .split(/[_\-\s]+/)
+    .filter(Boolean);
+}
+
+// Distância de Levenshtein. Strings curtas (< 32 chars) — barato.
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  const al = a.length;
+  const bl = b.length;
+  if (!al) return bl;
+  if (!bl) return al;
+  let prev = new Array(bl + 1);
+  let cur = new Array(bl + 1);
+  for (let j = 0; j <= bl; j++) prev[j] = j;
+  for (let i = 1; i <= al; i++) {
+    cur[0] = i;
+    for (let j = 1; j <= bl; j++) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      cur[j] = Math.min(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    [prev, cur] = [cur, prev];
+  }
+  return prev[bl];
+}
+
+// Classifica 1 token. Retorna "controle" / "exposto" / null.
+// Igualdade exata + Levenshtein. Tolerância proporcional ao tamanho do
+// alias, no máximo 2. Tokens curtos (< 4 chars) só casam por igualdade
+// exata pra evitar falso positivo (ex: "ctrl" contra qualquer 4-letras).
+function classifyToken(token) {
+  if (!token) return null;
+  let best = null;
+  let bestScore = Infinity;
+  for (const group of Object.keys(GROUP_ALIASES)) {
+    for (const alias of GROUP_ALIASES[group]) {
+      if (token === alias) return group;
+      if (token.length < 4 || alias.length < 4) continue;
+      // Tolerância apertada: só aceita 2 edits em aliases longos (>= 9 chars,
+      // ex: "controlado"). Pra aliases de 7-8 chars (controle, exposto,
+      // control, exposed) só 1 edit — evita casar "centro" ou "contrato".
+      const tol = alias.length >= 9 ? 2 : 1;
+      const d = levenshtein(token, alias);
+      if (d <= tol && d < bestScore) { best = group; bestScore = d; }
+    }
+  }
+  return best;
+}
+
+// Casa o nome inteiro: percorre tokens e devolve o primeiro match com
+// o índice do token (pra reconstruir o par trocando só esse token).
+function matchGroupInTitle(title) {
+  const tokens = normalizeAndTokenize(title);
+  for (let i = 0; i < tokens.length; i++) {
+    const g = classifyToken(tokens[i]);
+    if (g) return { group: g, tokenIdx: i, tokens };
+  }
+  return null;
+}
+
 function parseGroupFromName(title) {
-  if (!title) return null;
-  const m = String(title).match(GROUP_SUFFIX_RE);
-  return m ? m[1].toLowerCase() : null;
+  return matchGroupInTitle(title)?.group || null;
 }
 
 // Devolve o grupo "efetivo" de um form do bloco. Prioriza override explícito
@@ -76,26 +146,39 @@ function getFormGroup(form, formsById) {
 
 const groupLabel = (g) => (g === "controle" ? "Controle" : g === "exposto" ? "Exposto" : "");
 
-// Acha o "irmão" de um form trocando _Controle ↔ _Exposto no nome,
-// preservando a capitalização. Devolve o form encontrado ou null.
+// Acha o "irmão" do form: procura outro form com os MESMOS tokens (exceto
+// o token de grupo) e grupo oposto. Tolera diferença de 1 token nos demais
+// pra absorver typo no sufixo de data, etc.
 function findPartnerForm(formId, formsById, forms) {
   if (!formId) return null;
   const f = formsById.get(formId);
   if (!f) return null;
-  const m = (f.title || "").match(GROUP_SUFFIX_RE);
-  if (!m) return null;
-  const isUpper = m[1] === m[1].toUpperCase();
-  const isCap = m[1][0] === m[1][0].toUpperCase();
-  const swap = m[1].toLowerCase() === "controle" ? "Exposto" : "Controle";
-  const swapped = isUpper ? swap.toUpperCase() : isCap ? swap : swap.toLowerCase();
-  const partnerTitle = f.title.replace(GROUP_SUFFIX_RE, `_${swapped}`);
-  return (
-    forms.find((x) => x.id !== formId && x.title === partnerTitle) ||
-    forms.find(
-      (x) => x.id !== formId && (x.title || "").toLowerCase() === partnerTitle.toLowerCase(),
-    ) ||
-    null
-  );
+  const myMatch = matchGroupInTitle(f.title || "");
+  if (!myMatch) return null;
+  const targetGroup = myMatch.group === "controle" ? "exposto" : "controle";
+  const myRest = myMatch.tokens.filter((_, i) => i !== myMatch.tokenIdx);
+
+  let best = null;
+  let bestMismatches = Infinity;
+  for (const cand of forms) {
+    if (cand.id === formId) continue;
+    const cm = matchGroupInTitle(cand.title || "");
+    if (!cm || cm.group !== targetGroup) continue;
+    const candRest = cm.tokens.filter((_, i) => i !== cm.tokenIdx);
+    if (Math.abs(candRest.length - myRest.length) > 1) continue;
+
+    const len = Math.max(myRest.length, candRest.length);
+    let mismatches = 0;
+    for (let i = 0; i < len; i++) {
+      if (myRest[i] !== candRest[i]) mismatches++;
+    }
+    if (mismatches < bestMismatches) {
+      best = cand;
+      bestMismatches = mismatches;
+      if (mismatches === 0) break;
+    }
+  }
+  return bestMismatches <= 1 ? best : null;
 }
 
 // Constrói mapa formId → [{blockIdx, formIdx, group}] varrendo blocos.
