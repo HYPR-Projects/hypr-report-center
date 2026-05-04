@@ -4,18 +4,26 @@ import { fetchTypeformViaProxy } from "../lib/api";
 import Spinner from "../components/Spinner";
 import TabChat from "../components/TabChat";
 import SurveyChart from "./SurveyChart";
+import DateRangeFilter from "../components/DateRangeFilter";
+import { ymd } from "../shared/dateFilter";
 
 const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
   const [questions,setQuestions]=useState(null);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState(null);
+  // Filtro de data — admin-only. Não persiste em URL nem afeta visão do
+  // cliente; é apenas instrumento de inspeção. Range = {from: Date, to: Date}.
+  const [adminRange,setAdminRange]=useState(null);
 
   // Busca respostas agregadas via proxy do backend. Resposta pode vir em
   // dois formatos:
   //   { type: "choice", counts: {label: n}, total: N }
   //   { type: "matrix", rows: {row: {counts, total}}, total: N }
   // Devolve o objeto cru pro caller decidir como agregar.
-  const fetchTypeformData = (url) => fetchTypeformViaProxy(url);
+  const rangeParam = isAdmin && adminRange?.from && adminRange?.to
+    ? { from: ymd(adminRange.from), to: ymd(adminRange.to) }
+    : null;
+  const fetchTypeformData = (url) => fetchTypeformViaProxy(url, rangeParam);
 
   useEffect(()=>{
     let cancelled=false;
@@ -79,7 +87,9 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
     };
     load();
     return()=>{cancelled=true;};
-  },[surveyJson]);
+  // adminRange entra na chave: quando admin troca o filtro, refetcha tudo.
+  // Não-admin nunca seta adminRange, então o efeito é estável.
+  },[surveyJson,adminRange?.from,adminRange?.to,isAdmin]);
 
   const bgCard=theme?.bg2||C.dark2;
   const bgInner=theme?.bg||C.dark;
@@ -322,8 +332,67 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
   if(error)return<div style={{color:"#E74C3C",textAlign:"center",padding:40}}>{error}</div>;
   if(!questions)return null;
 
+  // Totais visíveis ao admin (somente quando há perguntas Typeform).
+  // Soma os totais de cada pergunta — caller pega total único independente
+  // do tipo (choice/matrix/legacy).
+  const adminTotals = isAdmin && questions
+    ? questions.reduce((acc,q)=>{
+        if(q.legacy) return acc;
+        return {
+          ctrl: acc.ctrl + (q.control_total||0),
+          exp:  acc.exp  + (q.exposed_total||0),
+        };
+      },{ctrl:0,exp:0})
+    : null;
+  const isDarkTheme = (theme?.bg || C.dark) === C.dark;
+
   return(
     <div>
+      {isAdmin && (
+        <div style={{
+          display:"flex",
+          alignItems:"center",
+          gap:12,
+          flexWrap:"wrap",
+          marginBottom:14,
+          padding:"10px 14px",
+          background:bgCard,
+          border:`1px dashed ${C.blue}55`,
+          borderRadius:10,
+        }}>
+          <div style={{display:"flex",alignItems:"center",gap:8,flex:"0 0 auto"}}>
+            <span style={{
+              fontSize:10,
+              fontWeight:700,
+              letterSpacing:1.2,
+              textTransform:"uppercase",
+              color:C.blue,
+              background:`${C.blue}18`,
+              padding:"3px 8px",
+              borderRadius:999,
+              border:`1px solid ${C.blue}40`,
+            }}>Admin</span>
+            <span style={{fontSize:12.5,color:mt}}>
+              Filtro de período aplicado às respostas do Typeform.{" "}
+              <span style={{color:txt,fontWeight:600}}>Não afeta a visão do cliente.</span>
+            </span>
+          </div>
+          <div style={{flex:1}}/>
+          <div style={{display:"flex",alignItems:"center",gap:14}}>
+            {adminTotals && (
+              <div style={{display:"flex",gap:14,fontSize:12,color:mt}}>
+                <span><span style={{color:txt,fontWeight:700}}>{adminTotals.ctrl.toLocaleString("pt-BR")}</span> ctrl</span>
+                <span><span style={{color:txt,fontWeight:700}}>{adminTotals.exp.toLocaleString("pt-BR")}</span> exp</span>
+              </div>
+            )}
+            <DateRangeFilter
+              value={adminRange}
+              onChange={setAdminRange}
+              isDark={isDarkTheme}
+            />
+          </div>
+        </div>
+      )}
       <div style={{display:"flex",gap:24,flexWrap:"wrap",marginBottom:24,padding:"12px 16px",background:bgCard,borderRadius:10,border:`1px solid ${bdr}`}}>
         <div style={{display:"flex",gap:8,alignItems:"flex-start"}}>
           <div style={{width:12,height:12,borderRadius:2,background:"#E5EBF2",flexShrink:0,marginTop:2}}/>
@@ -343,8 +412,24 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
       {questions.map((q,i)=>(
         <div key={i} style={{marginBottom:28}}>
           {!q.legacy&&(
-            <div style={{fontSize:13,fontWeight:700,color:C.blue,textTransform:"uppercase",letterSpacing:1.5,marginBottom:12,paddingBottom:8,borderBottom:`1px solid ${bdr}`}}>
-              {q.nome||`Pergunta ${i+1}`}
+            <div style={{
+              display:"flex",
+              alignItems:"baseline",
+              justifyContent:"space-between",
+              gap:12,
+              marginBottom:12,
+              paddingBottom:8,
+              borderBottom:`1px solid ${bdr}`,
+            }}>
+              <div style={{fontSize:13,fontWeight:700,color:C.blue,textTransform:"uppercase",letterSpacing:1.5}}>
+                {q.nome||`Pergunta ${i+1}`}
+              </div>
+              {isAdmin && (
+                <div style={{fontSize:11,color:mt,whiteSpace:"nowrap"}}>
+                  <span style={{color:txt,fontWeight:600}}>{(q.control_total||0).toLocaleString("pt-BR")}</span> ctrl ·{" "}
+                  <span style={{color:txt,fontWeight:600}}>{(q.exposed_total||0).toLocaleString("pt-BR")}</span> exp
+                </div>
+              )}
             </div>
           )}
           {q.legacy

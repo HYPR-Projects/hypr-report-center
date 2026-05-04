@@ -477,10 +477,16 @@ export async function fetchTypeformFormMeta(formId, { refresh = false } = {}) {
 /**
  * Proxy do Typeform para evitar CORS. Caller (SurveyTab) recebe o JSON cru
  * com formato { type: "choice"|"matrix", ... }. Lança em status != 2xx.
+ *
+ * `range` (opcional, admin-only no front): { from: "YYYY-MM-DD", to: "YYYY-MM-DD" }.
+ * Quando presente, filtra respostas pelo período via `since`/`until` da API
+ * do Typeform — afeta contagens e lifts retornados.
  */
-export async function fetchTypeformViaProxy(formUrl) {
-  const url = `${API_URL}?action=typeform_proxy&form_url=${encodeURIComponent(formUrl)}`;
-  const r = await fetch(url);
+export async function fetchTypeformViaProxy(formUrl, range = null) {
+  const params = new URLSearchParams({ action: "typeform_proxy", form_url: formUrl });
+  if (range?.from) params.set("date_from", range.from);
+  if (range?.to)   params.set("date_to",   range.to);
+  const r = await fetch(`${API_URL}?${params.toString()}`);
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
   return data;
