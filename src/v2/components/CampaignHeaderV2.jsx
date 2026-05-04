@@ -192,9 +192,9 @@ export function CampaignHeaderV2({
             do espaço alocado em vez de encostar nas bordas. */}
         {(logo || clientName) && (
           <div
-            className={`hidden md:flex items-center justify-center w-44 h-20 rounded-lg overflow-hidden transition-colors ${
+            className={`hidden md:flex items-center justify-center w-44 h-24 rounded-lg overflow-hidden transition-colors ${
               logo
-                ? "px-6 py-4"
+                ? "px-4 py-2"
                 : "border border-border bg-white/[0.03] p-3"
             }`}
           >
