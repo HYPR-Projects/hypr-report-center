@@ -339,15 +339,14 @@ function pacingScore(p) {
   return 0;
 }
 
-// Score de uma campanha (0–100). Avalia cada métrica POR FORMATO
-// (Display vs Video) com thresholds próprios, e pondera os pontos pelo
-// share de impressões da campanha em cada formato.
+// Breakdown completo do score de uma campanha. Retorna pts atuais e máximos
+// por categoria, pesos por mídia, e diagnósticos textuais ordenados por
+// impacto (perda em pts). Usado pelo PerformerDrawer pra explicar onde
+// cada CS está perdendo pontos.
 //
-// Por que ponderar por formato:
-//   - Display e Video têm benchmarks naturalmente diferentes (CTR de
-//     Display típico ~0,3%; Video raramente passa de 0,5%).
-//   - Aplicar o mesmo threshold pra ambos castiga campanhas de Video
-//     ou as de mix, mesmo quando estão performando bem pro próprio formato.
+// Avalia cada métrica POR FORMATO (Display vs Video) com thresholds
+// próprios — Display e Video têm benchmarks naturalmente diferentes
+// (CTR de Display ~0,3% típico; Video raramente passa de 0,5%).
 //
 // Thresholds por formato:
 //   eCPM    Display < R$ 0,70 (30 pts) | Video < R$ 2,00 (30 pts)
@@ -355,38 +354,48 @@ function pacingScore(p) {
 //   VTR     Video   > 80%     (10 pts) — exclusivo de Video
 //   Pacing  100–125% gradiente         (35 pts) — vale pros dois
 //
-// Pesos (w_dsp / w_vid) = % de viewable_impressions da campanha em cada
-// mídia. Campanha 80% Display + 20% Video tem w_dsp=0,8 e w_vid=0,2;
-// um overdelivery em Video pesa só 20% no score, não 50% como antes.
+// Pesos (wDsp/wVid) = share de viewable_impressions em cada mídia.
+// Campanha 80% Display + 20% Video tem wDsp=0,8 e wVid=0,2.
 //
-// VTR é exclusivo de Video — em campanhas só-Display contribui 0
-// estruturalmente. Aceito o teto de ~90 pra só-Display porque VTR não
-// tem equivalente estrutural em Display, e a maioria das campanhas tem mix.
-function scoreCampaign(c) {
+// VTR é exclusivo de Video — em campanhas só-Display max_vtr=0 (não
+// penaliza estruturalmente; o "teto realista" é menor que 100).
+function scoreCampaignDetailed(c) {
   const dImpr = Number(c.display_impressions || 0);
   const vImpr = Number(c.video_impressions   || 0);
   const totalImpr = dImpr + vImpr;
-  if (totalImpr === 0) return 0;
+
+  const empty = {
+    total: 0,
+    pacing: 0, ecpm: 0, ctr: 0, vtr: 0,
+    max_total: 0, max_pacing: 0, max_ecpm: 0, max_ctr: 0, max_vtr: 0,
+    weights: { dsp: 0, vid: 0 },
+    diagnostics: [],
+  };
+  if (totalImpr === 0) return empty;
 
   const wDsp = dImpr / totalImpr;
   const wVid = vImpr / totalImpr;
 
-  // Pacing por mídia (35 pts)
+  // ── Pacing (35 pts) ──────────────────────────────────────────
   const dPacingPts = c.display_pacing != null ? pacingScore(Number(c.display_pacing)) : null;
   const vPacingPts = c.video_pacing   != null ? pacingScore(Number(c.video_pacing))   : null;
   let pacingPts = 0;
+  let maxPacing = 35;
   if (dPacingPts != null && vPacingPts != null) {
     pacingPts = dPacingPts * wDsp + vPacingPts * wVid;
   } else if (dPacingPts != null) {
     pacingPts = dPacingPts;
   } else if (vPacingPts != null) {
     pacingPts = vPacingPts;
+  } else {
+    maxPacing = 0;
   }
 
-  // eCPM por mídia (30 pts) — Display < 0,70 | Video < 2,00
+  // ── eCPM (30 pts) — Display < 0,70 | Video < 2,00 ───────────
   const dEcpm = c.display_ecpm != null ? Number(c.display_ecpm) : null;
   const vEcpm = c.video_ecpm   != null ? Number(c.video_ecpm)   : null;
   let ecpmPts = 0;
+  let maxEcpm = 30;
   if (dEcpm != null && vEcpm != null) {
     ecpmPts = (dEcpm < 0.70 ? 30 : 0) * wDsp + (vEcpm < 2.00 ? 30 : 0) * wVid;
   } else if (dEcpm != null) {
@@ -394,33 +403,95 @@ function scoreCampaign(c) {
   } else if (vEcpm != null) {
     ecpmPts = vEcpm < 2.00 ? 30 : 0;
   } else if (c.admin_ecpm != null) {
-    // Fallback: sem split por mídia disponível (dado mais antigo, antes do
-    // backend expor display_ecpm/video_ecpm). Usa threshold do mix dominante.
+    // Fallback: sem split por mídia (dado mais antigo). Usa threshold do mix dominante.
     const ecpm = Number(c.admin_ecpm);
     const threshold = wVid > wDsp ? 2.00 : 0.70;
     ecpmPts = ecpm < threshold ? 30 : 0;
+  } else {
+    maxEcpm = 0;
   }
 
-  // CTR por mídia (25 pts) — Display > 0,6% | Video > 0,3%
+  // ── CTR (25 pts) — Display > 0,6% | Video > 0,3% ────────────
   const dCtr = c.display_ctr != null ? Number(c.display_ctr) : null;
   const vCtr = c.video_ctr   != null ? Number(c.video_ctr)   : null;
   let ctrPts = 0;
+  let maxCtr = 25;
   if (dCtr != null && vCtr != null) {
     ctrPts = (dCtr > 0.6 ? 25 : 0) * wDsp + (vCtr > 0.3 ? 25 : 0) * wVid;
   } else if (dCtr != null) {
     ctrPts = dCtr > 0.6 ? 25 : 0;
   } else if (vCtr != null) {
     ctrPts = vCtr > 0.3 ? 25 : 0;
+  } else {
+    maxCtr = 0;
   }
 
-  // VTR (10 pts) — só Video; ponderado por wVid pra não premiar campanhas
-  // mistas além do que o share de Video justifica.
-  const vtrPts = c.video_vtr != null && Number(c.video_vtr) > 80
-    ? 10 * wVid
-    : 0;
+  // ── VTR (10 pts × wVid) — só Video ──────────────────────────
+  const vtrHasData = c.video_vtr != null;
+  const vtrPts = vtrHasData && Number(c.video_vtr) > 80 ? 10 * wVid : 0;
+  const maxVtr = vtrHasData ? 10 * wVid : 0;
 
-  return pacingPts + ecpmPts + ctrPts + vtrPts;
+  // ── Diagnostics: razões da perda, ordenadas por impacto ─────
+  const diagnostics = [];
+  if (maxPacing > 0 && pacingPts < maxPacing - 0.5) {
+    const reasons = [];
+    if (c.display_pacing != null && wDsp > 0) {
+      const dp = Number(c.display_pacing);
+      if (dp < 90)       reasons.push(`Display ${dp.toFixed(0)}% (under)`);
+      else if (dp > 150) reasons.push(`Display ${dp.toFixed(0)}% (over)`);
+      else if (dp < 100) reasons.push(`Display ${dp.toFixed(0)}% (sub-ideal)`);
+      else if (dp > 125) reasons.push(`Display ${dp.toFixed(0)}% (acima do ideal)`);
+    }
+    if (c.video_pacing != null && wVid > 0) {
+      const vp = Number(c.video_pacing);
+      if (vp < 90)       reasons.push(`Video ${vp.toFixed(0)}% (under)`);
+      else if (vp > 150) reasons.push(`Video ${vp.toFixed(0)}% (over)`);
+      else if (vp < 100) reasons.push(`Video ${vp.toFixed(0)}% (sub-ideal)`);
+      else if (vp > 125) reasons.push(`Video ${vp.toFixed(0)}% (acima do ideal)`);
+    }
+    if (reasons.length) {
+      diagnostics.push({ category: "pacing", lost: maxPacing - pacingPts, reason: reasons.join(" · ") });
+    }
+  }
+  if (maxEcpm > 0 && ecpmPts < maxEcpm - 0.5) {
+    const reasons = [];
+    if (dEcpm != null && wDsp > 0 && dEcpm >= 0.70) reasons.push(`Display eCPM R$ ${dEcpm.toFixed(2)} (≥ R$ 0,70)`);
+    if (vEcpm != null && wVid > 0 && vEcpm >= 2.00) reasons.push(`Video eCPM R$ ${vEcpm.toFixed(2)} (≥ R$ 2,00)`);
+    if (!reasons.length && c.admin_ecpm != null) {
+      const ecpm = Number(c.admin_ecpm);
+      const threshold = wVid > wDsp ? 2.00 : 0.70;
+      if (ecpm >= threshold) reasons.push(`eCPM R$ ${ecpm.toFixed(2)} (≥ R$ ${threshold.toFixed(2)})`);
+    }
+    if (reasons.length) {
+      diagnostics.push({ category: "ecpm", lost: maxEcpm - ecpmPts, reason: reasons.join(" · ") });
+    }
+  }
+  if (maxCtr > 0 && ctrPts < maxCtr - 0.5) {
+    const reasons = [];
+    if (dCtr != null && wDsp > 0 && dCtr <= 0.6) reasons.push(`Display CTR ${dCtr.toFixed(2)}% (≤ 0,6%)`);
+    if (vCtr != null && wVid > 0 && vCtr <= 0.3) reasons.push(`Video CTR ${vCtr.toFixed(2)}% (≤ 0,3%)`);
+    if (reasons.length) {
+      diagnostics.push({ category: "ctr", lost: maxCtr - ctrPts, reason: reasons.join(" · ") });
+    }
+  }
+  if (maxVtr > 0.5 && vtrPts < maxVtr - 0.5 && vtrHasData) {
+    const vtr = Number(c.video_vtr);
+    if (vtr <= 80) {
+      diagnostics.push({ category: "vtr", lost: maxVtr - vtrPts, reason: `VTR ${vtr.toFixed(1)}% (≤ 80%)` });
+    }
+  }
+  diagnostics.sort((a, b) => b.lost - a.lost);
+
+  return {
+    total: pacingPts + ecpmPts + ctrPts + vtrPts,
+    pacing: pacingPts, ecpm: ecpmPts, ctr: ctrPts, vtr: vtrPts,
+    max_total: maxPacing + maxEcpm + maxCtr + maxVtr,
+    max_pacing: maxPacing, max_ecpm: maxEcpm, max_ctr: maxCtr, max_vtr: maxVtr,
+    weights: { dsp: wDsp, vid: wVid },
+    diagnostics,
+  };
 }
+
 
 // Variância amostral (n-1). Retorna 0 se < 2 elementos.
 function variance(arr) {
@@ -479,17 +550,42 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email") {
     let weightSum = 0;
     let idealPacing = 0;
     const campaignScores = [];
+    const campaignDetails = []; // {campaign, breakdown, weight, potential}
+
+    // Acumuladores ponderados por categoria pro breakdown agregado do CS.
+    let pacingPtsSum = 0, ecpmPtsSum = 0, ctrPtsSum = 0, vtrPtsSum = 0;
+    let maxPacingSum = 0, maxEcpmSum = 0, maxCtrSum = 0, maxVtrSum = 0;
 
     for (const c of list) {
-      const s = scoreCampaign(c);
-      campaignScores.push(s);
+      const detailed = scoreCampaignDetailed(c);
+      campaignScores.push(detailed.total);
       const w = c.admin_impressions ? Number(c.admin_impressions) : 1;
-      scoreSum  += s * w;
+      scoreSum  += detailed.total * w;
       weightSum += w;
+
+      pacingPtsSum += detailed.pacing * w;
+      ecpmPtsSum   += detailed.ecpm   * w;
+      ctrPtsSum    += detailed.ctr    * w;
+      vtrPtsSum    += detailed.vtr    * w;
+      maxPacingSum += detailed.max_pacing * w;
+      maxEcpmSum   += detailed.max_ecpm   * w;
+      maxCtrSum    += detailed.max_ctr    * w;
+      maxVtrSum    += detailed.max_vtr    * w;
+
+      campaignDetails.push({ campaign: c, breakdown: detailed, weight: w });
 
       const p = pacingAvg(c);
       if (p != null && p >= 100 && p <= 125) idealPacing++;
     }
+
+    // Potential: pontos não-ganhos × share de impressões da campanha no
+    // total do owner. Campanha grande com gap grande tem maior alavancagem.
+    // Ordena desc — primeiras são "onde vale mais a pena focar".
+    for (const cd of campaignDetails) {
+      const gap = cd.breakdown.max_total - cd.breakdown.total;
+      cd.potential = weightSum > 0 ? gap * (cd.weight / weightSum) : 0;
+    }
+    campaignDetails.sort((a, b) => b.potential - a.potential);
 
     // Métricas exibidas: agregação correta via Σnumerador / Σdenominador
     // sobre as campanhas do owner (ver aggregateMetrics).
@@ -508,6 +604,19 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email") {
       vid_pacing: m.vid_pacing,
       ctr:        m.ctr,
       vtr:        m.vtr,
+      // Breakdown agregado por categoria (pts médios ponderados / max realista).
+      breakdown: weightSum > 0 ? {
+        pacing_pts: pacingPtsSum / weightSum,
+        ecpm_pts:   ecpmPtsSum   / weightSum,
+        ctr_pts:    ctrPtsSum    / weightSum,
+        vtr_pts:    vtrPtsSum    / weightSum,
+        max_pacing: maxPacingSum / weightSum,
+        max_ecpm:   maxEcpmSum   / weightSum,
+        max_ctr:    maxCtrSum    / weightSum,
+        max_vtr:    maxVtrSum    / weightSum,
+      } : null,
+      // Lista de campanhas ordenada por potencial de ganho desc.
+      campaigns: campaignDetails,
     });
   }
 
@@ -522,6 +631,18 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email") {
     const smoothed = (n + k) > 0 ? (n * raw + k * teamMean) / (n + k) : raw;
     o.score = Math.round(smoothed * 10) / 10;
   }
+
+  // Team avg por categoria: média dos breakdowns ponderados de cada CS.
+  // Anexado em cada performer pra simplificar API (Drawer recebe o performer
+  // e já tem tudo que precisa pra exibir o "vs time").
+  const valid = out.filter((o) => o.breakdown);
+  const teamAvg = valid.length > 0 ? {
+    pacing_pts: valid.reduce((a, o) => a + o.breakdown.pacing_pts, 0) / valid.length,
+    ecpm_pts:   valid.reduce((a, o) => a + o.breakdown.ecpm_pts,   0) / valid.length,
+    ctr_pts:    valid.reduce((a, o) => a + o.breakdown.ctr_pts,    0) / valid.length,
+    vtr_pts:    valid.reduce((a, o) => a + o.breakdown.vtr_pts,    0) / valid.length,
+  } : null;
+  for (const o of out) o.team_avg = teamAvg;
 
   out.sort(
     (a, b) =>

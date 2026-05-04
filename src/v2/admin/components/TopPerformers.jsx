@@ -26,6 +26,7 @@ import { cn } from "../../../ui/cn";
 import { formatBRL } from "../lib/format";
 import { computeTopPerformers } from "../lib/aggregation";
 import { saveDailySnapshot, getScoreNDaysAgo, loadSnapshots } from "../lib/scoreSnapshots";
+import { PerformerDrawer } from "./PerformerDrawer";
 
 function localPartFromEmail(email) {
   if (!email) return "";
@@ -136,7 +137,7 @@ function ScoreDelta({ current, previous }) {
   );
 }
 
-function PerformerRow({ rank, performer, displayName, scorePrev }) {
+function PerformerRow({ rank, performer, displayName, scorePrev, onClick }) {
   const {
     email, score, campaign_count, ideal_pacing_count,
     dsp_pacing, vid_pacing, ctr, vtr, ecpm_avg,
@@ -146,7 +147,13 @@ function PerformerRow({ rank, performer, displayName, scorePrev }) {
   const initials = initialsFor(name);
 
   return (
-    <div className="flex items-center gap-4 px-4 py-4 rounded-lg hover:bg-canvas-deeper transition-colors border-t border-border/40 first:border-t-0">
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick?.(); } }}
+      className="flex items-center gap-4 px-4 py-4 rounded-lg hover:bg-canvas-deeper transition-colors border-t border-border/40 first:border-t-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1"
+    >
       <span className="text-[11px] font-bold text-fg-subtle tabular-nums w-5 text-center flex-shrink-0">
         {rank}
       </span>
@@ -200,13 +207,19 @@ function PerformerRow({ rank, performer, displayName, scorePrev }) {
   );
 }
 
-export function PerformersLayout({ campaigns, teamMap = {} }) {
+export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
   const [role, setRole] = useState("cs");
   const [snapshots, setSnapshots] = useState(() => loadSnapshots());
+  const [selected, setSelected] = useState(null); // performer email selecionado
 
   const performers = useMemo(
     () => computeTopPerformers(campaigns, role === "cs" ? "cs_email" : "cp_email"),
     [campaigns, role]
+  );
+
+  const selectedPerformer = useMemo(
+    () => (selected ? performers.find((p) => p.email === selected) : null),
+    [selected, performers]
   );
 
   // Salva snapshot diário 1x por dia por role na primeira vez que os
@@ -259,10 +272,18 @@ export function PerformersLayout({ campaigns, teamMap = {} }) {
               performer={p}
               displayName={teamMap[p.email]}
               scorePrev={getScoreNDaysAgo(snapshots, role, p.email, 7)}
+              onClick={() => setSelected(p.email)}
             />
           ))}
         </div>
       )}
+
+      <PerformerDrawer
+        performer={selectedPerformer}
+        displayName={selectedPerformer ? teamMap[selectedPerformer.email] : null}
+        onOpenReport={onOpenReport}
+        onClose={() => setSelected(null)}
+      />
 
       {/* Legenda */}
       <p className="text-[11px] text-fg-subtle px-1 leading-relaxed">

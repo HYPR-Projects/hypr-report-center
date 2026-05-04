@@ -685,7 +685,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
             ? <LoadingState layout="client" />
             : <ClientLayout clients={enrichedClients} onOpen={handleOpenClient} />
         ) : layout === "performers" ? (
-          <PerformersLayout campaigns={campaigns} teamMap={teamMap} />
+          <PerformersLayout campaigns={campaigns} teamMap={teamMap} onOpenReport={onOpenReport} />
         ) : (
           <CampaignListV2
             campaigns={sortedCampaigns}
