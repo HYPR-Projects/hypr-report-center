@@ -5,8 +5,8 @@
 // com métricas agregadas completas em cada linha.
 //
 // Score (0–100) vem de aggregation.js#computeTopPerformers e pondera:
-//   eCPM < R$ 0,35 (40 pts) · Pacing 100–125 (30 pts) ·
-//   VTR > 80 (15 pts) · CTR > 0,25 (15 pts).
+//   eCPM < R$ 0,70 (30 pts) · Pacing 100–125 (35 pts) ·
+//   CTR > 0,6 (25 pts) · VTR > 80 (10 pts).
 //
 // Cada linha exibe:
 //   - rank · avatar (iniciais) · nome
@@ -261,8 +261,8 @@ export function PerformersLayout({ campaigns, teamMap = {} }) {
 
       {/* Legenda */}
       <p className="text-[11px] text-fg-subtle px-1 leading-relaxed">
-        Score (0–100) · eCPM &lt; R$ 0,70 (35 pts) · Pacing 100–125% (30 pts)
-        · CTR &gt; 0,25% (25 pts) · VTR &gt; 80% (10 pts) · ponderado por
+        Score (0–100) · eCPM &lt; R$ 0,70 (30 pts) · Pacing 100–125% (35 pts)
+        · CTR &gt; 0,6% (25 pts) · VTR &gt; 80% (10 pts) · ponderado por
         impressões e regredido à média do time via Empirical Bayes —
         CSs com poucas campanhas convergem pra média do time pra evitar
         viés de amostra pequena. Métricas (Pacing/CTR/VTR/eCPM) são

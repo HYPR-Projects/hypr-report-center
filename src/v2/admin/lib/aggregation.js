@@ -328,18 +328,18 @@ function pacingAvg(c) {
 
 function pacingScore(p) {
   if (p == null) return 0;
-  if (p >= 100 && p <= 125) return 30;
-  if (p >= 90  && p <  100) return 30 * ((p - 90) / 10);
-  if (p >  125 && p <= 150) return 30 * ((150 - p) / 25);
+  if (p >= 100 && p <= 125) return 35;
+  if (p >= 90  && p <  100) return 35 * ((p - 90) / 10);
+  if (p >  125 && p <= 150) return 35 * ((150 - p) / 25);
   return 0;
 }
 
 function scoreCampaign(c) {
   let s = 0;
-  if (c.admin_ecpm != null && Number(c.admin_ecpm) < 0.70) s += 35;
+  if (c.admin_ecpm != null && Number(c.admin_ecpm) < 0.70) s += 30;
   s += pacingScore(pacingAvg(c));
-  if (c.display_ctr != null && Number(c.display_ctr) > 0.25) s += 25;
-  if (c.video_vtr   != null && Number(c.video_vtr)   > 80)   s += 10;
+  if (c.display_ctr != null && Number(c.display_ctr) > 0.6) s += 25;
+  if (c.video_vtr   != null && Number(c.video_vtr)   > 80)  s += 10;
   return s;
 }
 
