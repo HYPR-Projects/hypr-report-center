@@ -55,6 +55,20 @@ const ICON = {
       <path d="m21 15-5-5L5 21" />
     </svg>
   ),
+  rmnd: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="9" cy="21" r="1" />
+      <circle cx="20" cy="21" r="1" />
+      <path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6" />
+    </svg>
+  ),
+  pdooh: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="4" width="20" height="14" rx="2" />
+      <path d="M2 9h20" />
+      <path d="M8 18v3M16 18v3M6 21h12" />
+    </svg>
+  ),
   owner: (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="8" r="4" />
@@ -91,6 +105,8 @@ export function CampaignDrawer({
   onLoom,
   onSurvey,
   onLogo,
+  onRmnd,
+  onPdooh,
   onOwner,
   onMerge,
   onAbsChange,         // chamado após admin salvar override de ABS — pai refaz lista
@@ -233,6 +249,8 @@ export function CampaignDrawer({
             <ActionButton icon={ICON.loom}   label="Adicionar/editar Loom"    onClick={() => onLoom?.(short_token)} />
             <ActionButton icon={ICON.survey} label="Gerenciar Survey"          onClick={() => onSurvey?.(short_token)} />
             <ActionButton icon={ICON.logo}   label="Trocar logo"               onClick={() => onLogo?.(short_token)} />
+            <ActionButton icon={ICON.rmnd}   label="Gerenciar RMND (Amazon Ads)" onClick={() => onRmnd?.(short_token)} />
+            <ActionButton icon={ICON.pdooh}  label="Gerenciar PDOOH"            onClick={() => onPdooh?.(short_token)} />
           </div>
         </DrawerBody>
 

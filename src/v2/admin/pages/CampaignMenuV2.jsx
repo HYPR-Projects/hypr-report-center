@@ -48,6 +48,9 @@ import SurveyModal from "../../../components/modals/SurveyModal";
 import LogoModal from "../../../components/modals/LogoModal";
 import OwnerModal from "../../../components/modals/OwnerModal";
 import MergeModal from "../../../components/modals/MergeModal";
+import RmndUploadModal from "../../../components/modals/RmndUploadModal";
+import SimpleUploadModal from "../../../components/modals/SimpleUploadModal";
+import { getOrIssueAdminJwt } from "../../../shared/auth";
 
 import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
@@ -158,6 +161,9 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   const [logoModal, setLogoModal]         = useState(null);
   const [ownerModal, setOwnerModal]       = useState(null);
   const [mergeModal, setMergeModal]       = useState(null);
+  const [rmndModal, setRmndModal]         = useState(null);
+  const [pdoohModal, setPdoohModal]       = useState(null);
+  const [adminJwtForUploads, setAdminJwtForUploads] = useState(null);
 
   // Theme — single source of truth via hook V2 (aplica data-theme no
   // <html>, persiste em localStorage com a key correta 'hypr_theme',
@@ -735,6 +741,16 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
         onLoom={(t) => { setLoomModal(t); handleCloseDrawer(); }}
         onSurvey={(t) => { setSurveyModal(t); handleCloseDrawer(); }}
         onLogo={(t) => { setLogoModal(t); handleCloseDrawer(); }}
+        onRmnd={async (t) => {
+          handleCloseDrawer();
+          try { setAdminJwtForUploads(await getOrIssueAdminJwt()); } catch { /* fallback: modal usa cookie */ }
+          setRmndModal(t);
+        }}
+        onPdooh={async (t) => {
+          handleCloseDrawer();
+          try { setAdminJwtForUploads(await getOrIssueAdminJwt()); } catch { /* fallback: modal usa cookie */ }
+          setPdoohModal(t);
+        }}
         onOwner={(c) => {
           setOwnerModal({
             short_token: c.short_token,
@@ -799,6 +815,26 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           onSaved={handleMergeSaved}
           onClose={() => setMergeModal(null)}
           theme={legacyModalTheme(isDark)}
+        />
+      )}
+      {rmndModal && (
+        <RmndUploadModal
+          shortToken={rmndModal}
+          adminJwt={adminJwtForUploads}
+          onClose={() => setRmndModal(null)}
+          onSaved={() => setRmndModal(null)}
+          theme={legacyModalTheme(isDark)}
+        />
+      )}
+      {pdoohModal && (
+        <SimpleUploadModal
+          shortToken={pdoohModal}
+          type="PDOOH"
+          adminJwt={adminJwtForUploads}
+          onClose={() => setPdoohModal(null)}
+          onSaved={() => setPdoohModal(null)}
+          theme={legacyModalTheme(isDark)}
+          description="Suba o relatório PDOOH (.csv ou .xlsx) para "
         />
       )}
     </div>
