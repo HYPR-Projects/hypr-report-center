@@ -99,9 +99,14 @@ export async function checkCampaignToken(token) {
  *   após blip de rede. Agora callers têm que tratar — o pattern
  *   recomendado é stale-while-revalidate via `persistedCache`.
  */
-export async function listCampaigns() {
+export async function listCampaigns({ refresh = false } = {}) {
   const jwt = await getOrIssueAdminJwt();
-  const r = await fetch(`${API_URL}?list=true`, {
+  // ?refresh=true bypassa o cache server (`_get_campaigns_list_cached` no
+  // backend) e evita o HTTP cache do navegador (URL diferente de `?list=true`
+  // sozinho). Usado por mutações que precisam ver efeito imediato (ex.
+  // toggle de ABS no CampaignDrawer).
+  const url = refresh ? `${API_URL}?list=true&refresh=true` : `${API_URL}?list=true`;
+  const r = await fetch(url, {
     headers: { ...adminAuthHeaders(jwt) },
   });
   if (r.status === 401 || r.status === 403) {

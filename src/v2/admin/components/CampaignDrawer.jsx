@@ -93,6 +93,7 @@ export function CampaignDrawer({
   onLogo,
   onOwner,
   onMerge,
+  onAbsChange,         // chamado após admin salvar override de ABS — pai refaz lista
   onOpenReport,
   teamMap = {},
 }) {
@@ -185,7 +186,11 @@ export function CampaignDrawer({
               onChange — backend já invalida o _list_cache, então só precisa
               forçar re-render. */}
           <div className="mb-5">
-            <AbsToggle shortToken={short_token} autoDetected={autoDetected} />
+            <AbsToggle
+              shortToken={short_token}
+              autoDetected={autoDetected}
+              onChange={onAbsChange}
+            />
           </div>
 
           {/* Owners */}

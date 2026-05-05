@@ -512,6 +512,22 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
       .catch(() => { /* keep stale */ });
   }, []);
 
+  // Após toggle de ABS no drawer, refaz a lista pra pegar `display_has_abs`
+  // / `video_has_abs` atualizados — backend já invalidou cache, mas frontend
+  // tem cópia local em `campaigns`. Usa refresh=true pra bypass de HTTP cache
+  // (ETag/max-age) também. Top Performers re-deriva score automaticamente
+  // do novo array.
+  const handleAbsSaved = useCallback(() => {
+    listCampaigns({ refresh: true })
+      .then((camps) => {
+        setCampaigns(camps);
+        writeCache("menu.campaigns", camps);
+        setLastFetchedAt(Date.now());
+        setClientsFetchedAt(null);
+      })
+      .catch(() => { /* keep stale — toggle já mostrou "Salvo" */ });
+  }, []);
+
   const handleNewCampaignConfirm = useCallback((tokenData) => {
     setCampaigns((prev) =>
       prev.find((c) => c.short_token === tokenData.short_token)
@@ -732,6 +748,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           setMergeModal(c);
           handleCloseDrawer();
         }}
+        onAbsChange={handleAbsSaved}
         onOpenReport={onOpenReport}
         teamMap={teamMap}
       />

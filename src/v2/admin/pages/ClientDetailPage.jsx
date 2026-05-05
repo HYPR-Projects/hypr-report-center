@@ -332,6 +332,19 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
       .catch(() => { /* keep stale */ });
   }, [slug]);
 
+  // Após toggle de ABS no drawer, refaz a lista (com refresh=true) pra
+  // pegar `display_has_abs` / `video_has_abs` atualizados — o badge ABS
+  // e o score do Top Performers dependem dessa flag.
+  const handleAbsSaved = useCallback(() => {
+    listCampaigns({ refresh: true })
+      .then((camps) => {
+        writeCache("menu.campaigns", camps);
+        setCampaigns(camps.filter((c) => normalizeSlug(c.client_name) === slug));
+        setLastFetchedAt(Date.now());
+      })
+      .catch(() => { /* keep stale */ });
+  }, [slug]);
+
   return (
     <div className="min-h-screen w-full bg-canvas text-fg transition-colors">
       {/* Topbar */}
@@ -523,6 +536,7 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
           setMergeModal(c);
           setDrawerCampaign(null);
         }}
+        onAbsChange={handleAbsSaved}
         onOpenReport={onOpenReport}
         teamMap={teamMap}
       />
