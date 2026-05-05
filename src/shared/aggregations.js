@@ -113,13 +113,37 @@ export const groupBySize = (rows, numeratorKey, denomKey, rateKey) =>
   }));
 
 /**
- * Agrega rows por `creative_name`. Mesma forma de `groupBySize` — soma
- * numerador/denominador e calcula a taxa final. Usado na tabela
- * "Distribuição por Criativo" das abas Display/Video.
+ * Deriva o identificador da "linha criativa" a partir de `creative_name`,
+ * removendo o token de `creative_size` da própria row. A intenção é que
+ * variantes do mesmo criativo em formatos diferentes (ex: BLACK-320X50,
+ * BLACK-300X600) colapsem em uma única linha criativa ("BLACK"), em vez
+ * de espelhar a quebra "Por Formato". Usa lookarounds de dígito pra
+ * evitar match dentro de números maiores (ex: "300x250" dentro de
+ * "1300x250"). Se size não estiver presente no nome, devolve o nome cru
+ * — comportamento idêntico ao agrupamento original, sem regressão.
+ */
+export const getCreativeLineKey = (row) => {
+  const name = row.creative_name || "N/A";
+  const size = row.creative_size;
+  if (!size || name === "N/A") return name;
+  const escaped = String(size).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(?<!\\d)${escaped}(?!\\d)`, "gi");
+  const cleaned = name
+    .replace(re, "")
+    .replace(/[-_| ]{2,}/g, "_")
+    .replace(/^[-_| ]+|[-_| ]+$/g, "");
+  return cleaned || name;
+};
+
+/**
+ * Agrega rows pela "linha criativa" (creative_name menos o creative_size
+ * da própria row — ver `getCreativeLineKey`). Mesma forma de `groupBySize`
+ * — soma numerador/denominador e calcula a taxa final. Usado na tabela
+ * "Distribuição por Linha Criativa" das abas Display/Video.
  */
 export const groupByCreativeName = (rows, numeratorKey, denomKey, rateKey) =>
   Object.values(rows.reduce((acc, r) => {
-    const k = r.creative_name || "N/A";
+    const k = getCreativeLineKey(r);
     if (!acc[k]) acc[k] = { creative_name: k, [denomKey]: 0, [numeratorKey]: 0 };
     acc[k][denomKey]      += r[denomKey]      || 0;
     acc[k][numeratorKey]  += r[numeratorKey]  || 0;

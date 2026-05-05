@@ -63,6 +63,7 @@ export function FormatBreakdownTableV2({
   getDetailGroupKey = null, // (row) => key — sobrepõe heurística default
   mediaType = "DISPLAY",
   itemNoun = "formato", // singular — pluralização automática com "s"
+  itemNounPlural = null, // override do plural quando "+s" não basta (ex: "linhas criativas")
   className,
 }) {
   // Junta cost / impressions brutas / clicks por chave de agrupamento se
@@ -141,7 +142,7 @@ export function FormatBreakdownTableV2({
           Distribuição por {groupLabel}
         </div>
         <div className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">
-          {enriched.length} {enriched.length === 1 ? itemNoun : `${itemNoun}s`}
+          {enriched.length} {enriched.length === 1 ? itemNoun : (itemNounPlural || `${itemNoun}s`)}
         </div>
       </div>
 

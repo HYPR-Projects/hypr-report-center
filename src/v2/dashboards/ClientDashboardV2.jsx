@@ -205,6 +205,8 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
 
   const [displayLines, setDisplayLines] = useState([]);
   const [videoLines, setVideoLines] = useState([]);
+  const [displayCreativeLines, setDisplayCreativeLines] = useState([]);
+  const [videoCreativeLines, setVideoCreativeLines] = useState([]);
 
   // setMainRange aceita opcionalmente o presetId que originou esse range.
   // Click em preset → passa o id; ajuste no calendar → passa null (custom).
@@ -514,6 +516,8 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 setTactic={setDisplayTactic}
                 lines={displayLines}
                 setLines={setDisplayLines}
+                creativeLines={displayCreativeLines}
+                setCreativeLines={setDisplayCreativeLines}
               />
             </TabsContent>
 
@@ -525,6 +529,8 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 setTactic={setVideoTactic}
                 lines={videoLines}
                 setLines={setVideoLines}
+                creativeLines={videoCreativeLines}
+                setCreativeLines={setVideoCreativeLines}
               />
             </TabsContent>
 

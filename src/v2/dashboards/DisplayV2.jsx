@@ -36,6 +36,7 @@ import {
   groupByDate,
   groupBySize,
   groupByCreativeName,
+  getCreativeLineKey,
   groupByAudience,
 } from "../../shared/aggregations";
 import { fmt, fmtP, fmtP2, fmtR } from "../../shared/format";
@@ -43,6 +44,7 @@ import { fmt, fmtP, fmtP2, fmtR } from "../../shared/format";
 import { Button } from "../../ui/Button";
 
 import { AudienceFilterV2 } from "../components/AudienceFilterV2";
+import { CreativeLineFilterV2 } from "../components/CreativeLineFilterV2";
 import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
 import { ComparisonCardV2 } from "../components/ComparisonCardV2";
 import { DailyAggregateTableV2 } from "../components/DailyAggregateTableV2";
@@ -75,10 +77,18 @@ export default function DisplayV2({
   setTactic,
   lines,
   setLines,
+  creativeLines,
+  setCreativeLines,
 }) {
   const camp = data.campaign;
 
-  // Derivações por tactic + filtro de audiência. Mesma quirk Legacy.
+  // Derivações por tactic + filtros (audiência ∧ linha criativa). Combinam
+  // como AND: row passa se line_name está em `lines` (ou `lines` vazio) E
+  // a chave de linha criativa está em `creativeLines` (ou `creativeLines`
+  // vazio). Opções dos dois filtros vêm de `detailAll` (independentes
+  // entre si) — mesmo padrão do `lineOptions` original. byAudience
+  // continua sobre detailAll cru pra preservar a visão de todas
+  // audiências (mesma quirk Legacy do filtro original).
   const view = useMemo(() => {
     const totals = aggregates.totals.filter(
       (r) => r.media_type === "DISPLAY" && r.tactic_type === tactic,
@@ -87,10 +97,14 @@ export default function DisplayV2({
       (r) => r.media_type === "DISPLAY" && deriveTactic(r.line_name) === tactic,
     );
     const lineOptions = buildLineOptions(detailAll).filter((l) => l !== "ALL");
-    const detailFiltered =
-      lines.length === 0
-        ? detailAll
-        : detailAll.filter((r) => lines.includes(r.line_name));
+    const creativeLineOptions = [
+      ...new Set(detailAll.map(getCreativeLineKey).filter(Boolean)),
+    ].sort();
+    const detailFiltered = detailAll.filter((r) => {
+      if (lines.length > 0 && !lines.includes(r.line_name)) return false;
+      if (creativeLines.length > 0 && !creativeLines.includes(getCreativeLineKey(r))) return false;
+      return true;
+    });
 
     const kpis = computeDisplayKpis({
       rows: totals,
@@ -105,10 +119,10 @@ export default function DisplayV2({
     const byCreative = groupByCreativeName(detailFiltered, "clicks", "viewable_impressions", "ctr");
     const byAudience = groupByAudience(detailAll, "clicks", "viewable_impressions", "ctr");
 
-    return { totals, detailAll, detailFiltered, lineOptions, kpis, daily, bySize, byCreative, byAudience };
-  }, [aggregates, tactic, lines, camp]);
+    return { totals, detailAll, detailFiltered, lineOptions, creativeLineOptions, kpis, daily, bySize, byCreative, byAudience };
+  }, [aggregates, tactic, lines, creativeLines, camp]);
 
-  const { totals, detailAll, detailFiltered, lineOptions, kpis, daily, bySize, byCreative, byAudience } = view;
+  const { totals, detailAll, detailFiltered, lineOptions, creativeLineOptions, kpis, daily, bySize, byCreative, byAudience } = view;
 
   // Empty state: a tactic atual não tem entregas. Antes a gente fazia
   // early return aqui sem renderizar a toolbar — o usuário ficava preso
@@ -140,14 +154,22 @@ export default function DisplayV2({
           onChange={(t) => {
             setTactic(t);
             setLines([]);
+            setCreativeLines([]);
           }}
         />
         {!isEmpty && (
-          <AudienceFilterV2
-            lines={lineOptions}
-            selected={lines}
-            onChange={setLines}
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <CreativeLineFilterV2
+              lines={creativeLineOptions}
+              selected={creativeLines}
+              onChange={setCreativeLines}
+            />
+            <AudienceFilterV2
+              lines={lineOptions}
+              selected={lines}
+              onChange={setLines}
+            />
+          </div>
         )}
       </div>
 
@@ -323,13 +345,14 @@ function DisplayContent({
         />
       )}
 
-      {/* ─── 7b. Tabela "Por Criativo" (creative_name) ────────────────── */}
+      {/* ─── 7b. Tabela "Por Linha Criativa" (creative_name menos o size) ─ */}
       {byCreative.length > 0 && (
         <FormatBreakdownTableV2
           rows={byCreative}
           groupKey="creative_name"
-          groupLabel="Criativo"
-          itemNoun="criativo"
+          groupLabel="Linha Criativa"
+          itemNoun="linha criativa"
+          itemNounPlural="linhas criativas"
           denomKey="viewable_impressions"
           denomLabel="Imp. Visíveis"
           numeratorKey="clicks"
@@ -338,7 +361,7 @@ function DisplayContent({
           rateLabel="CTR"
           rateFormatter={fmtP2}
           extraRows={detailFiltered}
-          getDetailGroupKey={(r) => r.creative_name || "N/A"}
+          getDetailGroupKey={getCreativeLineKey}
           mediaType="DISPLAY"
         />
       )}
