@@ -18,6 +18,7 @@ import { Drawer, DrawerContent, DrawerHeader, DrawerBody, DrawerFooter } from ".
 import { Button } from "../../../ui/Button";
 import { cn } from "../../../ui/cn";
 import { Avatar } from "../../../ui/Avatar";
+import { AbsToggle } from "./AbsToggle";
 import {
   formatDateRange,
   formatPacingValue,
@@ -116,7 +117,16 @@ export function CampaignDrawer({
     cp_email,
     cs_email,
     merge_id,
+    display_has_abs,
+    video_has_abs,
   } = campaign;
+
+  // Sinal automático veio do BQ pela CTE abs_signals (DV360 fee + Xandr DV/IAS
+  // + override). Se já está true, é porque sistema detectou OU override já
+  // está marcado — em ambos os casos o toggle deve aparecer ON. Mas o admin
+  // só consegue *editar* quando é override (sinal automático ou ausência).
+  // O AbsToggle bate em get_abs_override pra distinguir.
+  const autoDetected = !!(display_has_abs || video_has_abs);
 
   const cpName = cp_email ? (teamMap[cp_email] || localPartFromEmail(cp_email)) : null;
   const csName = cs_email ? (teamMap[cs_email] || localPartFromEmail(cs_email)) : null;
@@ -167,6 +177,15 @@ export function CampaignDrawer({
                 Sem delivery ainda — campanha pode não ter começado.
               </p>
             )}
+          </div>
+
+          {/* Brand Safety pre-bid (ABS) — toggle pra cobrir casos onde o sinal
+              automático do BQ não detecta (Xandr Curate em open exchange, etc).
+              Refetch da lista admin é responsabilidade do componente pai via
+              onChange — backend já invalida o _list_cache, então só precisa
+              forçar re-render. */}
+          <div className="mb-5">
+            <AbsToggle shortToken={short_token} autoDetected={autoDetected} />
           </div>
 
           {/* Owners */}

@@ -420,6 +420,37 @@ export async function saveLoom({ short_token, loom_url }) {
   );
 }
 
+// ── Brand Safety pre-bid override (admin) ───────────────────────────────────
+
+/**
+ * Lê o override manual de ABS de uma campanha. Retorna { has_abs, updated_by }
+ * se admin marcou explicitamente, ou null se nunca foi configurado.
+ *
+ * Não distingue entre "automático off" e "auto on" — o caller cruza com o
+ * payload de /api/admin/campaigns?list=true (campos display_has_abs/video_has_abs)
+ * pra decidir se mostra o toggle como auto-detectado (desabilitado) ou
+ * editável.
+ */
+export async function getAbsOverride({ short_token }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=get_abs_override&short_token=${encodeURIComponent(short_token)}`,
+    { headers: adminAuthHeaders(jwt) },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json().catch(() => ({}));
+  return d?.override ?? null;
+}
+
+export async function saveAbsOverride({ short_token, has_abs }) {
+  const jwt = await getOrIssueAdminJwt();
+  return postJson(
+    `${API_URL}?action=save_abs_override`,
+    { short_token, has_abs },
+    adminAuthHeaders(jwt),
+  );
+}
+
 // ── Survey (admin) ───────────────────────────────────────────────────────────
 
 /**

@@ -831,6 +831,45 @@ def report_data(request):
             logger.error(f"[ERROR get_logo] {e}")
             return (jsonify({"error": "Erro ao buscar logo"}), 500, headers)
 
+    # ── Endpoint: ler override de ABS (Brand Safety pre-bid) ────────────────
+    # Devolve {has_abs, source} onde source é "auto" (sinal do BQ via
+    # query_campaigns_list — se já detectado, override é redundante),
+    # "override" (admin marcou explicitamente) ou "none" (não detectado e
+    # sem override). Frontend usa pra decidir entre toggle ativo/desabilitado.
+    if request.method == "GET" and request.args.get("action") == "get_abs_override":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        short_token = request.args.get("short_token", "").strip()
+        if not short_token:
+            return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+        try:
+            override = query_abs_override(short_token)
+            return (jsonify({"override": override}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR get_abs_override] {e}")
+            return (jsonify({"error": "Erro ao buscar override de ABS"}), 500, headers)
+
+    # ── Endpoint: salvar override de ABS ────────────────────────────────────
+    if request.method == "POST" and request.args.get("action") == "save_abs_override":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            has_abs     = bool(body.get("has_abs"))
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            save_abs_override(short_token, has_abs, updated_by=admin.get("email"))
+            # _cache_invalidate_token já derruba _list_cache + _clients_cache —
+            # próxima request da lista admin re-lê do BQ com o override aplicado
+            # na CTE abs_signals e o badge ABS / score atualiza.
+            _cache_invalidate_token(short_token)
+            return (jsonify({"ok": True}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR save_abs_override] {e}")
+            return (jsonify({"error": "Erro ao salvar override de ABS"}), 500, headers)
+
     # ── Endpoint: salvar link Loom ───────────────────────────────────────────
     if request.method == "POST" and request.args.get("action") == "save_loom":
         if not authenticate_admin(request):
@@ -2357,6 +2396,57 @@ def query_loom(short_token: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Brand Safety pre-bid (ABS) override — admin marca quando o sinal automático
+# do BQ não detecta. Tabela `campaign_abs_overrides` é OR-merged com os sinais
+# automáticos (DV360 doubleverify_pre_bid_fee + Xandr data_provider DV/IAS) na
+# CTE `abs_signals` de query_campaigns_list. Granularidade: por short_token,
+# binária (cobre Display e Video juntos — DV ABS / IAS aplicam por campanha
+# inteira na prática).
+# ─────────────────────────────────────────────────────────────────────────────
+def save_abs_override(short_token: str, has_abs: bool, updated_by: str | None = None):
+    """UPSERT do override de ABS na tabela campaign_abs_overrides (atômico via MERGE)."""
+    table_id = f"{PROJECT_ID}.{DATASET_ASSETS}.campaign_abs_overrides"
+    sql = f"""
+        MERGE `{table_id}` T
+        USING (SELECT @token AS short_token) S
+        ON T.short_token = S.short_token
+        WHEN MATCHED THEN
+            UPDATE SET has_abs = @has_abs, updated_at = CURRENT_TIMESTAMP(), updated_by = @updated_by
+        WHEN NOT MATCHED THEN
+            INSERT (short_token, has_abs, updated_at, updated_by)
+            VALUES (@token, @has_abs, CURRENT_TIMESTAMP(), @updated_by)
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("token",      "STRING", short_token),
+            bigquery.ScalarQueryParameter("has_abs",    "BOOL",   has_abs),
+            bigquery.ScalarQueryParameter("updated_by", "STRING", updated_by),
+        ]
+    )
+    bq.query(sql, job_config=job_config).result()
+
+
+def query_abs_override(short_token: str):
+    """Retorna {has_abs, updated_by} do override do token, ou None se não existe."""
+    sql = f"""
+        SELECT has_abs, updated_by
+        FROM `{PROJECT_ID}.{DATASET_ASSETS}.campaign_abs_overrides`
+        WHERE short_token = @token
+        LIMIT 1
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("token", "STRING", short_token)]
+    )
+    try:
+        rows = list(bq.query(sql, job_config=job_config).result())
+        if rows:
+            return {"has_abs": bool(rows[0]["has_abs"]), "updated_by": rows[0]["updated_by"]}
+    except Exception as e:
+        logger.warning(f"[WARN query_abs_override] {e}")
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Survey — salvar e buscar
 # ─────────────────────────────────────────────────────────────────────────────
 def save_survey(short_token: str, survey_data: str):
@@ -3008,17 +3098,24 @@ def query_campaigns_list():
               AND UPPER(line_name) NOT LIKE '%SURVEY%'
             GROUP BY short_token
         ),
-        -- Brand Safety pre-bid (ABS) detection por mídia, cobrindo DV360 e Xandr.
-        -- Critério "qualquer linha" — uma campanha pode misturar linhas com e
-        -- sem ABS, e cada mídia (Display/Video) é avaliada independente.
+        -- Brand Safety pre-bid (ABS) detection por mídia, cobrindo DV360, Xandr
+        -- e override manual. Critério "qualquer linha" — uma campanha pode
+        -- misturar linhas com e sem ABS, e cada mídia (Display/Video) é
+        -- avaliada independente.
         --
         -- DV360: `doubleverify_pre_bid_fee_advertiser_currency` > 0 quando a
         --   line item passou por filtro pre-bid da DV (Authentic Brand
         --   Suitability é a feature pre-bid).
         -- Xandr: `xandr_daily_costs.data_provider_name` IN (DV, IAS) quando
         --   o trafficking contratou um vendor de pre-bid pra aquela line.
-        --   Validamos: das 1550 LIs com esse sinal, 0 têm "_NO-ABS_" no
-        --   line_item_name — convenção interna que marca ausência de ABS.
+        --   Cobre só ~11% das LIs Xandr (xandr_daily_costs é tabela parcial
+        --   de fees externos — Xandr Curate em open exchange / RON não
+        --   aparece). O override manual cobre o restante.
+        -- Override manual (campaign_abs_overrides): admin marca via UI no
+        --   CampaignDrawer quando sabe que a campanha tem ABS mas o sinal
+        --   automático não detectou. Granularidade por short_token (cobre
+        --   Display + Video da campanha inteira). Editado pelo endpoint
+        --   `?action=save_abs_override`.
         --
         -- Mapping line_item_id → short_token vem de unified_daily_performance_metrics
         -- (que tem ambos nativamente, pra DV360 e Xandr).
@@ -3048,6 +3145,17 @@ def query_campaigns_list():
             ) m ON CAST(c.line_item_id AS STRING) = m.line_item_id
             WHERE c.data_provider_name IN ('DOUBLEVERIFY', 'INTEGRAL AD SCIENCE - WEB')
             GROUP BY m.short_token, p.media_type
+
+            UNION ALL
+
+            -- Override manual: gera 1 row pra DISPLAY e 1 pra VIDEO quando o
+            -- admin marcou has_abs=TRUE, garantindo que ambas as flags por
+            -- mídia (display_has_abs / video_has_abs) virem TRUE depois do
+            -- agregado em campaign_abs.
+            SELECT short_token, m AS media_type
+            FROM `site-hypr.prod_assets.campaign_abs_overrides`,
+                 UNNEST(['DISPLAY', 'VIDEO']) AS m
+            WHERE has_abs = TRUE
         ),
         campaign_abs AS (
             SELECT
