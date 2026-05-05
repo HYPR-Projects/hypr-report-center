@@ -10,10 +10,22 @@
 // EMBED LOOM
 //   URL pública (compartilhamento): https://www.loom.com/share/{id}
 //   URL embed (iframe):              https://www.loom.com/embed/{id}
-//   Reescrita feita inline pra manter contrato simples no caller — só
-//   passa loomUrl que já vem do backend, e a transformação é local.
+//   `parseLoomEmbedUrl` valida o domínio e extrai o id — se vier qualquer
+//   coisa que não bata com loom.com/(share|embed)/{id}, devolve null e o
+//   tab mostra placeholder de URL inválida em vez de embeddar URL crua
+//   (admin já registrou caso onde foi salvo o link do próprio report,
+//   resultando em dashboard renderizando recursivo dentro do iframe).
 
 import { Card } from "../../ui/Card";
+
+const LOOM_URL_RE = /^https?:\/\/(?:www\.)?loom\.com\/(?:share|embed)\/([a-zA-Z0-9]+)/i;
+
+function parseLoomEmbedUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== "string") return null;
+  const match = rawUrl.trim().match(LOOM_URL_RE);
+  if (!match) return null;
+  return `https://www.loom.com/embed/${match[1]}`;
+}
 
 export default function LoomV2({ loomUrl }) {
   // Sem vídeo cadastrado — placeholder explicativo
@@ -31,10 +43,26 @@ export default function LoomV2({ loomUrl }) {
     );
   }
 
-  const embedUrl = loomUrl.replace(
-    "https://www.loom.com/share/",
-    "https://www.loom.com/embed/",
-  );
+  const embedUrl = parseLoomEmbedUrl(loomUrl);
+
+  // URL cadastrada não é do Loom — mostra placeholder em vez de embeddar
+  // URL arbitrária (ver comentário no topo do arquivo).
+  if (!embedUrl) {
+    return (
+      <div className="flex flex-col items-center justify-center text-center py-20">
+        <FilmIcon className="size-12 text-fg-subtle mb-4" />
+        <h3 className="text-base font-semibold text-fg mb-2">
+          Link do Loom inválido
+        </h3>
+        <p className="text-sm text-fg-muted max-w-md">
+          A URL cadastrada não parece ser de um vídeo do Loom. Esperado:
+          <span className="block mt-1 font-mono text-[11px] text-fg-subtle">
+            https://www.loom.com/share/&lt;id&gt;
+          </span>
+        </p>
+      </div>
+    );
+  }
 
   return (
     <Card className="overflow-hidden bg-canvas-deeper border-border">
