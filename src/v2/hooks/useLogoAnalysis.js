@@ -1,6 +1,6 @@
 // src/v2/hooks/useLogoAnalysis.js
 //
-// Analisa uma logo (data URL ou URL) e classifica em uma de 3 categorias:
+// Analisa uma logo (data URL ou URL) e classifica em uma de 4 categorias:
 //
 //   • 'monochrome-light' — pixels claros sobre transparente. Ex: Nintendo
 //     branca, Apple white, Adidas white. Pode ser invertida sem perda
@@ -10,17 +10,22 @@
 //     preta, Adidas preta, Nintendo preta (pill preto + texto branco).
 //     Pode ser invertida pra ficar clara.
 //
-//   • 'colored' — logo com cores saturadas reais (Coca-Cola vermelho,
-//     Spotify verde, McDonald's amarelo). NUNCA inverte — quebra a
-//     identidade visual da marca.
+//   • 'colored' — logo com cores saturadas e luminância OK. Ex: Coca-Cola
+//     vermelho, Spotify verde, McDonald's amarelo. Renderiza como veio em
+//     ambos os temas — a cor é a marca.
 //
-// Por que esses 3 buckets
-// ───────────────────────
-// O sistema usa a classificação pra decidir se aplica `filter: invert(1)`
-// quando o tema visual conflita com a logo:
-//   tema light + logo monochrome-light  → inverte (logo vira escura)
-//   tema dark  + logo monochrome-dark   → inverte (logo vira clara)
-//   logo colored                         → SEMPRE renderiza como veio
+//   • 'colored-dark' — logo colorida MAS escura (ex: Eudora roxo escuro).
+//     Em tema dark perde contraste contra fundo escuro. Recebe boost
+//     `filter: brightness(1.7) contrast(1.1)` em dark — clareia preservando
+//     a cor da marca em vez de inverter pra silhueta branca.
+//
+// Por que esses buckets
+// ─────────────────────
+// O sistema usa a classificação pra decidir o filter CSS aplicado:
+//   tema light + monochrome-light  → invert(1)   (logo vira escura)
+//   tema dark  + monochrome-dark   → invert(1)   (logo vira clara)
+//   tema dark  + colored-dark      → brightness  (clareia mantendo cor)
+//   restante                        → sem filter (renderiza como veio)
 //
 // Algoritmo de classificação
 // ──────────────────────────
@@ -45,7 +50,9 @@
 //
 // Classificação:
 //   1. Pixel é "colorful" se chroma > 40 (~15% do range RGB)
-//   2. Logo é colored se >25% dos pixels não-transparentes são colorful
+//   2. Se >25% dos pixels não-transparentes são colorful → colored:
+//      avg_luminance < 90 → 'colored-dark' (precisa boost em dark theme)
+//      avg_luminance ≥ 90 → 'colored' (visível em ambos os temas)
 //   3. Senão, monochrome — split por luminance:
 //      avg_luminance > 160 → monochrome-light
 //      avg_luminance ≤ 160 → monochrome-dark
@@ -58,9 +65,9 @@
 //
 // Retorna
 // ───────
-//   'monochrome-light' | 'monochrome-dark' | 'colored' | null
+//   'monochrome-light' | 'monochrome-dark' | 'colored' | 'colored-dark' | null
 //   null = ainda calculando OU falha de carregamento. Caller deve
-//          tratar como "não inverter" (preserva comportamento legado).
+//          tratar como "não aplicar filter" (preserva comportamento legado).
 
 import { useEffect, useState } from "react";
 
@@ -68,7 +75,8 @@ const analysisCache = new Map();
 
 const CHROMA_THRESHOLD = 40;            // pixels com chroma > 40 são "colorful"
 const COLORFUL_RATIO_THRESHOLD = 0.25;  // logo é colored se >25% dos pixels são colorful
-const LUMINANCE_THRESHOLD = 160;
+const LUMINANCE_THRESHOLD = 160;        // monochrome split: > 160 → light; ≤ → dark
+const COLORED_DARK_LUMINANCE = 90;      // colored com avgLum < 90 → colored-dark (precisa boost em dark theme)
 const ALPHA_THRESHOLD = 25;             // pixels com alpha < 25 ignorados (transparente)
 const SAMPLE_STEP = 8;                  // grid 8x8 → ~1.5% dos pixels
 
@@ -143,7 +151,10 @@ export function useLogoAnalysis(src) {
 
         let result;
         if (colorfulRatio > COLORFUL_RATIO_THRESHOLD) {
-          result = "colored";
+          // Colored: ainda separa entre "ok em ambos os temas" e "escuro
+          // demais pra dark" pra que o caller possa aplicar boost só quando
+          // necessário (ex: roxo escuro Eudora).
+          result = avgLum < COLORED_DARK_LUMINANCE ? "colored-dark" : "colored";
         } else {
           result = avgLum > LUMINANCE_THRESHOLD ? "monochrome-light" : "monochrome-dark";
         }

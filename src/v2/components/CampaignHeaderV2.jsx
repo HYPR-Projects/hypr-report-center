@@ -72,22 +72,28 @@ export function CampaignHeaderV2({
 
   // Logo dinâmica entre temas com UMA única imagem
   // ──────────────────────────────────────────────
-  // O sistema analisa a logo (canvas API) e classifica como:
-  //   • monochrome-light / monochrome-dark → pode ser invertida sem perda
-  //   • colored                            → renderiza como veio (preserva
-  //                                          identidade visual da marca)
+  // O sistema analisa a logo (canvas API) e classifica em 4 buckets:
+  //   • monochrome-light / monochrome-dark → invert quando tema conflita
+  //   • colored                            → renderiza como veio
+  //   • colored-dark                       → boost em dark (clareia
+  //                                          mantendo cor — ex: roxo Eudora)
   //
-  // Quando a logo monocromática conflita com o tema (ex: logo branca da
-  // Nintendo no tema light), aplica-se `filter: invert(1)` via CSS — que
-  // funciona em PNG, JPG, SVG, e preserva alpha (transparência fica intacta).
-  //
-  // Logos coloridas (Coca-Cola, Spotify, McDonald's) NUNCA são invertidas:
-  // a marca é a cor, e inverter destruiria a identidade visual.
+  // Filters CSS aplicados (PNG/JPG/SVG; alpha preservado):
+  //   - invert(1)                  → monochrome contrário ao tema
+  //   - brightness(1.7) contrast() → colored-dark em dark theme. Não inverte
+  //     (silhueta branca destruiria identidade); clareia o roxo/marrom/etc
+  //     pra ficar visível contra fundo escuro mantendo a cor da marca.
   const logoKind = useLogoAnalysis(logo);
   const [theme] = useTheme();
   const shouldInvertLogo =
     (logoKind === "monochrome-light" && theme === "light") ||
     (logoKind === "monochrome-dark" && theme === "dark");
+  const shouldBoostLogo = logoKind === "colored-dark" && theme === "dark";
+  const logoFilter = shouldInvertLogo
+    ? "invert(1)"
+    : shouldBoostLogo
+      ? "brightness(1.7) contrast(1.1)"
+      : undefined;
 
   return (
     <section
@@ -182,11 +188,11 @@ export function CampaignHeaderV2({
             o asset da marca falar por si. Sem upload, mostra placeholder
             textual com fundo translúcido + borda pra ancorar a inicial.
 
-            Inversão automática via filter: invert(1):
-              • Logo monochrome-light em tema light → inverte (vira escura)
-              • Logo monochrome-dark  em tema dark  → inverte (vira clara)
-              • Logo colored                        → renderiza como veio
-              • Logo monochrome em tema compatível  → renderiza como veio
+            Filter automático em conflito visual:
+              • Logo monochrome-light em tema light → invert(1) (vira escura)
+              • Logo monochrome-dark  em tema dark  → invert(1) (vira clara)
+              • Logo colored-dark     em tema dark  → brightness(1.7) (clareia)
+              • Restante                            → renderiza como veio
 
             Padding generoso (px-6 py-4) dá margem pra logo respirar dentro
             do espaço alocado em vez de encostar nas bordas. */}
@@ -203,7 +209,7 @@ export function CampaignHeaderV2({
                 src={logo}
                 alt={clientName ? `Logo ${clientName}` : "Logo do cliente"}
                 className="max-w-full max-h-full object-contain transition-[filter] duration-200"
-                style={shouldInvertLogo ? { filter: "invert(1)" } : undefined}
+                style={logoFilter ? { filter: logoFilter } : undefined}
                 loading="eager"
               />
             ) : (
