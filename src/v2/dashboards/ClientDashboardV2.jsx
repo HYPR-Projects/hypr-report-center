@@ -375,18 +375,33 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   const showSurvey = isAdmin || hasSurvey;
   const hasAnySecondary = showRmnd || showPdooh || showLoom || showSurvey;
 
-  // Display/Video também escondem pro cliente quando a campanha não tem a
-  // mídia no contrato — evita a aba ficar visível só pra mostrar "Não há
-  // entrega Video O2O nesta campanha". Admin sempre vê (pode estar
-  // configurando uma campanha que ainda não começou a entregar).
+  // Display/Video escondem pra todos (cliente + admin) quando a campanha
+  // NÃO tem nem contrato nem entrega da mídia. Regra: se há valor
+  // contratado (contracted_*_display_impressions, contracted_*_video_completions
+  // ou bonus_*) > 0, mostra mesmo sem entrega ainda (campanha recém-lançada).
+  // Se não tem contrato e não tem entrega, esconde — não faz sentido pro
+  // cliente ver uma aba que sempre vai estar vazia, nem pro admin (não tem
+  // o que configurar nessa aba; setup é via admin panel, não pelo dashboard).
   //
-  // Baseado em `data.totals` cru (não em `aggregates.display/.video` que é
-  // filtrado pelo mainRange) — assim filtrar período sem entrega não some
-  // com a aba. Mesma lógica de `hasRmnd = !!data.rmnd` acima.
-  const hasDisplay = (data.totals || []).some((r) => r.media_type === "DISPLAY");
-  const hasVideo = (data.totals || []).some((r) => r.media_type === "VIDEO");
-  const showDisplay = isAdmin || hasDisplay;
-  const showVideo = isAdmin || hasVideo;
+  // Contracts são denormalizados em todas as rows de totals (lidos via
+  // totals[0]), então qualquer row de qualquer mídia carrega o contrato
+  // de todas. Quando totals está totalmente vazio, hasContract degrada pra
+  // false — caso de campanha brand-new sem delivery em nada (raro).
+  const t0 = (data.totals || [])[0] || {};
+  const hasDisplayContract =
+    (t0.contracted_o2o_display_impressions || 0) > 0 ||
+    (t0.contracted_ooh_display_impressions || 0) > 0 ||
+    (t0.bonus_o2o_display_impressions || 0) > 0 ||
+    (t0.bonus_ooh_display_impressions || 0) > 0;
+  const hasVideoContract =
+    (t0.contracted_o2o_video_completions || 0) > 0 ||
+    (t0.contracted_ooh_video_completions || 0) > 0 ||
+    (t0.bonus_o2o_video_completions || 0) > 0 ||
+    (t0.bonus_ooh_video_completions || 0) > 0;
+  const hasDisplayDelivery = (data.totals || []).some((r) => r.media_type === "DISPLAY");
+  const hasVideoDelivery = (data.totals || []).some((r) => r.media_type === "VIDEO");
+  const showDisplay = hasDisplayContract || hasDisplayDelivery;
+  const showVideo = hasVideoContract || hasVideoDelivery;
 
   // Se deep-link aponta pra tab que esse user não vê (cliente sem dado
   // cadastrado), downgrade pra overview no render — evita tela vazia

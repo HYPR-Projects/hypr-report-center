@@ -82,6 +82,35 @@ export default function DisplayV2({
 }) {
   const camp = data.campaign;
 
+  // Tactics disponíveis: O2O e OOH só aparecem se houver contrato (incl.
+  // bônus) OU entrega real pra essa frente. Evita mostrar segmento
+  // sem dado nem possibilidade de dado. Quando só uma tactic está
+  // disponível, escondemos o SegmentedControl inteiro (1 opção é UI ruim).
+  // `effectiveTactic` cobre o caso do state apontar pra tactic sumida —
+  // sem setState em effect (anti-padrão React 19).
+  const t0Display = (data.totals || [])[0] || {};
+  const hasDeliveryO2O = aggregates.totals.some(
+    (r) => r.media_type === "DISPLAY" && r.tactic_type === "O2O",
+  );
+  const hasDeliveryOOH = aggregates.totals.some(
+    (r) => r.media_type === "DISPLAY" && r.tactic_type === "OOH",
+  );
+  const hasContractO2O =
+    (t0Display.contracted_o2o_display_impressions || 0) > 0 ||
+    (t0Display.bonus_o2o_display_impressions || 0) > 0;
+  const hasContractOOH =
+    (t0Display.contracted_ooh_display_impressions || 0) > 0 ||
+    (t0Display.bonus_ooh_display_impressions || 0) > 0;
+  const showO2O = hasContractO2O || hasDeliveryO2O;
+  const showOOH = hasContractOOH || hasDeliveryOOH;
+  const availableTactics = TACTIC_OPTIONS.filter((opt) =>
+    opt.value === "O2O" ? showO2O : showOOH,
+  );
+  const effectiveTactic =
+    availableTactics.find((t) => t.value === tactic)?.value
+    || availableTactics[0]?.value
+    || tactic;
+
   // Derivações por tactic + filtros (audiência ∧ linha criativa). Combinam
   // como AND: row passa se line_name está em `lines` (ou `lines` vazio) E
   // a chave de linha criativa está em `creativeLines` (ou `creativeLines`
@@ -91,10 +120,10 @@ export default function DisplayV2({
   // audiências (mesma quirk Legacy do filtro original).
   const view = useMemo(() => {
     const totals = aggregates.totals.filter(
-      (r) => r.media_type === "DISPLAY" && r.tactic_type === tactic,
+      (r) => r.media_type === "DISPLAY" && r.tactic_type === effectiveTactic,
     );
     const detailAll = aggregates.detail.filter(
-      (r) => r.media_type === "DISPLAY" && deriveTactic(r.line_name) === tactic,
+      (r) => r.media_type === "DISPLAY" && deriveTactic(r.line_name) === effectiveTactic,
     );
     const lineOptions = buildLineOptions(detailAll).filter((l) => l !== "ALL");
     const creativeLineOptions = [
@@ -110,7 +139,7 @@ export default function DisplayV2({
       rows: totals,
       detail: detailFiltered,
       detailAll,
-      tactic,
+      tactic: effectiveTactic,
       camp,
     });
 
@@ -120,7 +149,7 @@ export default function DisplayV2({
     const byAudience = groupByAudience(detailAll, "clicks", "viewable_impressions", "ctr");
 
     return { totals, detailAll, detailFiltered, lineOptions, creativeLineOptions, kpis, daily, bySize, byCreative, byAudience };
-  }, [aggregates, tactic, lines, creativeLines, camp]);
+  }, [aggregates, effectiveTactic, lines, creativeLines, camp]);
 
   const { totals, detailAll, detailFiltered, lineOptions, creativeLineOptions, kpis, daily, bySize, byCreative, byAudience } = view;
 
@@ -135,11 +164,11 @@ export default function DisplayV2({
   // ramo do JSX que usa esses valores não renderiza nesse caso.
   const row0 = totals[0] || {};
   const contractedImps =
-    tactic === "O2O"
+    effectiveTactic === "O2O"
       ? row0.contracted_o2o_display_impressions || 0
       : row0.contracted_ooh_display_impressions || 0;
   const bonusImps =
-    tactic === "O2O"
+    effectiveTactic === "O2O"
       ? row0.bonus_o2o_display_impressions || 0
       : row0.bonus_ooh_display_impressions || 0;
 
@@ -147,16 +176,24 @@ export default function DisplayV2({
     <div className="space-y-6">
       {/* ─── 1. Toolbar interna ──────────────────────────────────────── */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-        <SegmentedControlV2
-          label="Tática Display"
-          options={TACTIC_OPTIONS}
-          value={tactic}
-          onChange={(t) => {
-            setTactic(t);
-            setLines([]);
-            setCreativeLines([]);
-          }}
-        />
+        {/* Segmented O2O/OOH só renderiza se há mais de uma tactic com
+            contrato ou entrega. Quando só uma frente existe, o toggle é
+            ruído visual — escondemos e o conteúdo abaixo já reflete a
+            tactic única via effectiveTactic. */}
+        {availableTactics.length > 1 ? (
+          <SegmentedControlV2
+            label="Tática Display"
+            options={availableTactics}
+            value={effectiveTactic}
+            onChange={(t) => {
+              setTactic(t);
+              setLines([]);
+              setCreativeLines([]);
+            }}
+          />
+        ) : (
+          <div />
+        )}
         {!isEmpty && (
           <div className="flex flex-wrap items-center gap-2">
             <CreativeLineFilterV2
@@ -176,13 +213,13 @@ export default function DisplayV2({
       {isEmpty ? (
         <div className="rounded-xl border border-border bg-surface p-8 text-center">
           <p className="text-sm text-fg-muted">
-            Não há entrega Display {tactic} nesta campanha.
+            Não há entrega Display {effectiveTactic} nesta campanha.
           </p>
         </div>
       ) : (
         <DisplayContent
           camp={camp}
-          tactic={tactic}
+          tactic={effectiveTactic}
           aggregates={aggregates}
           detailAll={detailAll}
           detailFiltered={detailFiltered}

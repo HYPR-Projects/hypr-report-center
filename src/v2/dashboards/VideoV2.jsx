@@ -88,12 +88,36 @@ export default function VideoV2({
 }) {
   const camp = data.campaign;
 
+  // Tactics disponíveis: ver comentário equivalente em DisplayV2.
+  const t0Video = (data.totals || [])[0] || {};
+  const hasDeliveryO2O = aggregates.totals.some(
+    (r) => r.media_type === "VIDEO" && r.tactic_type === "O2O",
+  );
+  const hasDeliveryOOH = aggregates.totals.some(
+    (r) => r.media_type === "VIDEO" && r.tactic_type === "OOH",
+  );
+  const hasContractO2O =
+    (t0Video.contracted_o2o_video_completions || 0) > 0 ||
+    (t0Video.bonus_o2o_video_completions || 0) > 0;
+  const hasContractOOH =
+    (t0Video.contracted_ooh_video_completions || 0) > 0 ||
+    (t0Video.bonus_ooh_video_completions || 0) > 0;
+  const showO2O = hasContractO2O || hasDeliveryO2O;
+  const showOOH = hasContractOOH || hasDeliveryOOH;
+  const availableTactics = TACTIC_OPTIONS.filter((opt) =>
+    opt.value === "O2O" ? showO2O : showOOH,
+  );
+  const effectiveTactic =
+    availableTactics.find((t) => t.value === tactic)?.value
+    || availableTactics[0]?.value
+    || tactic;
+
   const view = useMemo(() => {
     const totals = aggregates.totals.filter(
-      (r) => r.media_type === "VIDEO" && r.tactic_type === tactic,
+      (r) => r.media_type === "VIDEO" && r.tactic_type === effectiveTactic,
     );
     const detailAll = aggregates.detail.filter(
-      (r) => r.media_type === "VIDEO" && deriveTactic(r.line_name) === tactic,
+      (r) => r.media_type === "VIDEO" && deriveTactic(r.line_name) === effectiveTactic,
     );
     const lineOptions = buildLineOptions(detailAll).filter((l) => l !== "ALL");
     const creativeLineOptions = [
@@ -108,7 +132,7 @@ export default function VideoV2({
     const kpis = computeVideoKpis({
       rows: totals,
       detail: detailFiltered,
-      tactic,
+      tactic: effectiveTactic,
     });
 
     // Normaliza creative_size pra Video: backend retorna "0x0" quando o
@@ -129,7 +153,7 @@ export default function VideoV2({
     const byAudience = groupByAudience(detailAll, "video_view_100", "viewable_impressions", "vtr");
 
     return { totals, detailAll, detailFiltered, detailNormalized, lineOptions, creativeLineOptions, kpis, daily, bySize, byCreative, byAudience };
-  }, [aggregates, tactic, lines, creativeLines]);
+  }, [aggregates, effectiveTactic, lines, creativeLines]);
 
   const { totals, detailAll, detailFiltered, detailNormalized, lineOptions, creativeLineOptions, kpis, daily, bySize, byCreative, byAudience } = view;
 
@@ -141,11 +165,11 @@ export default function VideoV2({
   // Views contratadas e bonus por tactic (vêm do row[0] em totals).
   const row0 = totals[0] || {};
   const contractedViews =
-    tactic === "O2O"
+    effectiveTactic === "O2O"
       ? row0.contracted_o2o_video_completions || 0
       : row0.contracted_ooh_video_completions || 0;
   const bonusViews =
-    tactic === "O2O"
+    effectiveTactic === "O2O"
       ? row0.bonus_o2o_video_completions || 0
       : row0.bonus_ooh_video_completions || 0;
 
@@ -153,16 +177,22 @@ export default function VideoV2({
     <div className="space-y-6">
       {/* ─── 1. Toolbar interna ──────────────────────────────────────── */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-        <SegmentedControlV2
-          label="Tática Video"
-          options={TACTIC_OPTIONS}
-          value={tactic}
-          onChange={(t) => {
-            setTactic(t);
-            setLines([]);
-            setCreativeLines([]);
-          }}
-        />
+        {/* Segmented O2O/OOH só renderiza se há mais de uma tactic com
+            contrato ou entrega (mesma lógica do DisplayV2). */}
+        {availableTactics.length > 1 ? (
+          <SegmentedControlV2
+            label="Tática Video"
+            options={availableTactics}
+            value={effectiveTactic}
+            onChange={(t) => {
+              setTactic(t);
+              setLines([]);
+              setCreativeLines([]);
+            }}
+          />
+        ) : (
+          <div />
+        )}
         {!isEmpty && (
           <div className="flex flex-wrap items-center gap-2">
             <CreativeLineFilterV2
@@ -182,13 +212,13 @@ export default function VideoV2({
       {isEmpty ? (
         <div className="rounded-xl border border-border bg-surface p-8 text-center">
           <p className="text-sm text-fg-muted">
-            Não há entrega Video {tactic} nesta campanha.
+            Não há entrega Video {effectiveTactic} nesta campanha.
           </p>
         </div>
       ) : (
         <VideoContent
           camp={camp}
-          tactic={tactic}
+          tactic={effectiveTactic}
           aggregates={aggregates}
           detailAll={detailAll}
           detailFiltered={detailFiltered}
