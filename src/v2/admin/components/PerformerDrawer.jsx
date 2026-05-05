@@ -469,8 +469,9 @@ function TargetIcon({ className }) {
   );
 }
 
-// Badge "ABS" — sinaliza que a campanha tem DoubleVerify Authentic Brand
-// Suitability ativo. Quando só uma das mídias tem ABS, indica qual.
+// Badge "ABS" — sinaliza que a campanha tem brand safety pre-bid ativo
+// (DoubleVerify ABS no DV360 ou DV/IAS no Xandr). Quando só uma das mídias
+// tem ABS, indica qual.
 function AbsBadge({ display, video }) {
   const both = display && video;
   const label = both ? "ABS" : display ? "ABS·D" : "ABS·V";
@@ -479,10 +480,10 @@ function AbsBadge({ display, video }) {
       className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wider uppercase bg-signature-soft text-signature border border-signature/30"
       title={
         both
-          ? "DoubleVerify ABS ativo em Display e Video — thresholds eCPM/CTR mais permissivos"
+          ? "Brand safety pre-bid ativo em Display e Video — thresholds eCPM/CTR mais permissivos"
           : display
-            ? "DoubleVerify ABS ativo em Display — thresholds eCPM/CTR mais permissivos pra Display"
-            : "DoubleVerify ABS ativo em Video — thresholds eCPM/CTR mais permissivos pra Video"
+            ? "Brand safety pre-bid ativo em Display — thresholds eCPM/CTR mais permissivos pra Display"
+            : "Brand safety pre-bid ativo em Video — thresholds eCPM/CTR mais permissivos pra Video"
       }
     >
       {label}

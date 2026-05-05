@@ -339,10 +339,11 @@ function pacingScore(p) {
   return 0;
 }
 
-// Thresholds por mídia. Quando a campanha tem DV ABS (Authentic Brand
-// Suitability) ativo NAQUELA mídia, o threshold é mais permissivo —
-// inventário com brand safety pre-bid é estruturalmente mais caro.
-// Detecção via flags `display_has_dv_abs` / `video_has_dv_abs` do payload.
+// Thresholds por mídia. Quando a campanha tem brand safety pre-bid (ABS)
+// ativo NAQUELA mídia, o threshold é mais permissivo — inventário com
+// pre-bid é estruturalmente mais caro. Cobre DV360 (DoubleVerify ABS) e
+// Xandr (DV ou IAS via data_provider_name). Detecção via flags
+// `display_has_abs` / `video_has_abs` do payload.
 const ECPM_THRESHOLD_DISPLAY     = 0.70;
 const ECPM_THRESHOLD_DISPLAY_ABS = 1.50;
 const ECPM_THRESHOLD_VIDEO       = 2.00;
@@ -368,8 +369,8 @@ const VTR_THRESHOLD              = 80;
 // VTR é exclusivo de Video — em campanhas só-Display max_vtr=0 (não
 // penaliza estruturalmente; o "teto realista" é menor que 100).
 //
-// DV ABS: thresholds eCPM/CTR aplicam por mídia conforme as flags
-// `c.display_has_dv_abs` e `c.video_has_dv_abs` do payload.
+// ABS: thresholds eCPM/CTR aplicam por mídia conforme as flags
+// `c.display_has_abs` e `c.video_has_abs` do payload (DV360 + Xandr).
 function scoreCampaignDetailed(c) {
   const dImpr = Number(c.display_impressions || 0);
   const vImpr = Number(c.video_impressions   || 0);
@@ -402,11 +403,11 @@ function scoreCampaignDetailed(c) {
     maxPacing = 0;
   }
 
-  // Thresholds dinâmicos por mídia, baseados em DV ABS. Cada flag é
-  // independente — campanha pode ter ABS só em Display, só em Video, ou
-  // em ambos (linhas diferentes da mesma campanha).
-  const dHasAbs = !!c.display_has_dv_abs;
-  const vHasAbs = !!c.video_has_dv_abs;
+  // Thresholds dinâmicos por mídia, baseados em ABS (DV360 ou Xandr DV/IAS).
+  // Cada flag é independente — campanha pode ter ABS só em Display, só em
+  // Video, ou em ambos (linhas diferentes da mesma campanha).
+  const dHasAbs = !!c.display_has_abs;
+  const vHasAbs = !!c.video_has_abs;
   const dEcpmTh = dHasAbs ? ECPM_THRESHOLD_DISPLAY_ABS : ECPM_THRESHOLD_DISPLAY;
   const vEcpmTh = vHasAbs ? ECPM_THRESHOLD_VIDEO_ABS   : ECPM_THRESHOLD_VIDEO;
   const dCtrTh  = dHasAbs ? CTR_THRESHOLD_DISPLAY_ABS  : CTR_THRESHOLD_DISPLAY;

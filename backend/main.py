@@ -3008,31 +3008,54 @@ def query_campaigns_list():
               AND UPPER(line_name) NOT LIKE '%SURVEY%'
             GROUP BY short_token
         ),
-        -- DoubleVerify ABS detection por mídia. dv360_daily_costs registra
-        -- `doubleverify_pre_bid_fee` quando a line item passou por filtro
-        -- pre-bid da DV (Authentic Brand Suitability é uma feature pre-bid).
-        -- Se SUM > 0 pra alguma linha Display da campanha → display_has_dv_abs;
-        -- idem para Video. Critério "qualquer linha" (B do plano de score) —
-        -- a campanha pode misturar linhas com e sem ABS, e cada mídia é
-        -- avaliada independente.
+        -- Brand Safety pre-bid (ABS) detection por mídia, cobrindo DV360 e Xandr.
+        -- Critério "qualquer linha" — uma campanha pode misturar linhas com e
+        -- sem ABS, e cada mídia (Display/Video) é avaliada independente.
+        --
+        -- DV360: `doubleverify_pre_bid_fee_advertiser_currency` > 0 quando a
+        --   line item passou por filtro pre-bid da DV (Authentic Brand
+        --   Suitability é a feature pre-bid).
+        -- Xandr: `xandr_daily_costs.data_provider_name` IN (DV, IAS) quando
+        --   o trafficking contratou um vendor de pre-bid pra aquela line.
+        --   Validamos: das 1550 LIs com esse sinal, 0 têm "_NO-ABS_" no
+        --   line_item_name — convenção interna que marca ausência de ABS.
         --
         -- Mapping line_item_id → short_token vem de unified_daily_performance_metrics
-        -- (que já tem ambos nativamente). Antes usávamos client_line_item_mapping,
-        -- mas essa tabela está abandonada (10 rows totais de mar/2026, inútil).
-        dv_abs AS (
-            SELECT
-                m.short_token,
-                MAX(IF(d.media_type = 'DISPLAY' AND d.doubleverify_pre_bid_fee_advertiser_currency > 0, TRUE, FALSE))
-                    AS display_has_dv_abs,
-                MAX(IF(d.media_type = 'VIDEO'   AND d.doubleverify_pre_bid_fee_advertiser_currency > 0, TRUE, FALSE))
-                    AS video_has_dv_abs
+        -- (que tem ambos nativamente, pra DV360 e Xandr).
+        abs_signals AS (
+            SELECT m.short_token, d.media_type
             FROM `site-hypr.prod_assets.dv360_daily_costs` d
             JOIN (
                 SELECT DISTINCT short_token, line_item_id
                 FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
                 WHERE line_item_id IS NOT NULL
             ) m USING (line_item_id)
-            GROUP BY m.short_token
+            WHERE d.doubleverify_pre_bid_fee_advertiser_currency > 0
+            GROUP BY m.short_token, d.media_type
+
+            UNION ALL
+
+            -- xandr_daily_costs.line_item_id é STRING; xandr_daily_performance_metrics
+            -- é FLOAT64. CAST AS STRING pra normalizar o JOIN.
+            SELECT m.short_token, p.media_type
+            FROM `site-hypr.prod_assets.xandr_daily_costs` c
+            JOIN `site-hypr.prod_assets.xandr_daily_performance_metrics` p
+              ON CAST(c.line_item_id AS STRING) = CAST(p.line_item_id AS STRING)
+            JOIN (
+                SELECT DISTINCT short_token, line_item_id
+                FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+                WHERE source = 'XANDR' AND line_item_id IS NOT NULL
+            ) m ON CAST(c.line_item_id AS STRING) = m.line_item_id
+            WHERE c.data_provider_name IN ('DOUBLEVERIFY', 'INTEGRAL AD SCIENCE - WEB')
+            GROUP BY m.short_token, p.media_type
+        ),
+        campaign_abs AS (
+            SELECT
+                short_token,
+                MAX(IF(media_type = 'DISPLAY', TRUE, FALSE)) AS display_has_abs,
+                MAX(IF(media_type = 'VIDEO',   TRUE, FALSE)) AS video_has_abs
+            FROM abs_signals
+            GROUP BY short_token
         )
         SELECT
             b.short_token, b.client_name, b.campaign_name,
@@ -3050,12 +3073,12 @@ def query_campaigns_list():
             u.admin_total_cost,       u.admin_impressions,
             u.d_admin_total_cost,     u.d_admin_impressions,
             u.v_admin_total_cost,     u.v_admin_impressions,
-            dv.display_has_dv_abs,    dv.video_has_dv_abs
+            ab.display_has_abs,       ab.video_has_abs
         FROM base b
-        LEFT JOIN agg       a USING (short_token)
-        LEFT JOIN checklist c USING (short_token)
-        LEFT JOIN unified   u USING (short_token)
-        LEFT JOIN dv_abs    dv USING (short_token)
+        LEFT JOIN agg          a USING (short_token)
+        LEFT JOIN checklist    c USING (short_token)
+        LEFT JOIN unified      u USING (short_token)
+        LEFT JOIN campaign_abs ab USING (short_token)
         ORDER BY b.start_date DESC
     """
 
@@ -3226,15 +3249,15 @@ def query_campaigns_list():
         if v_admin_impr > 0 and v_admin_cost > 0:
             entry["video_ecpm"] = round(v_admin_cost / v_admin_impr * 1000, 2)
 
-        # DoubleVerify ABS por mídia. Quando a flag é TRUE, scoreCampaignDetailed
-        # no frontend usa thresholds mais permissivos pra eCPM e CTR daquela mídia
-        # (inventário com brand safety pre-bid é estruturalmente mais caro).
-        # Só emite no payload se TRUE — economiza bytes e deixa o frontend usar
-        # `if (c.display_has_dv_abs)` direto.
-        if r["display_has_dv_abs"]:
-            entry["display_has_dv_abs"] = True
-        if r["video_has_dv_abs"]:
-            entry["video_has_dv_abs"] = True
+        # Brand Safety pre-bid (ABS) por mídia, agregando DV360 + Xandr. Quando
+        # a flag é TRUE, scoreCampaignDetailed no frontend usa thresholds mais
+        # permissivos pra eCPM e CTR daquela mídia (inventário com pre-bid é
+        # estruturalmente mais caro). Só emite no payload se TRUE — economiza
+        # bytes e deixa o frontend usar `if (c.display_has_abs)` direto.
+        if r["display_has_abs"]:
+            entry["display_has_abs"] = True
+        if r["video_has_abs"]:
+            entry["video_has_abs"] = True
 
         result.append(entry)
 
