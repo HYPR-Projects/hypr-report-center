@@ -15,15 +15,26 @@ const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true 
   const fileRef               = useRef();
   const storageKey            = `hypr_${type.toLowerCase()}_${token}`;
 
-  useEffect(()=>{
-    try { const s=localStorage.getItem(storageKey); if(s){setData(JSON.parse(s));return;} } catch{}
-    if(serverData){
-      try{
-        const parsed=typeof serverData==="string"?JSON.parse(serverData):serverData;
+  // Server é a source of truth quando o backend devolveu algo: o payload já
+  // reflete a `view` corrente (mês específico ou agregada). LocalStorage só
+  // serve de fallback offline / pré-fetch — antes a ordem era invertida e a
+  // aba ficava presa no último upload local mesmo quando a view mudava
+  // (bug aparente em reports merged ao alternar entre meses).
+  useEffect(() => {
+    if (serverData) {
+      try {
+        const parsed = typeof serverData === "string" ? JSON.parse(serverData) : serverData;
         setData(parsed);
-      }catch{}
+        try { localStorage.setItem(storageKey, JSON.stringify(parsed)); } catch { /* quota */ }
+        return;
+      } catch { /* fall through pra localStorage */ }
     }
-  },[storageKey,serverData]);
+    try {
+      const s = localStorage.getItem(storageKey);
+      if (s) { setData(JSON.parse(s)); return; }
+    } catch { /* ignore */ }
+    setData(null);
+  }, [storageKey, serverData]);
 
   // Upload "legado" (PDOOH ainda usa esse caminho — Excel solto sem
   // popup de filtros). RMND passou a usar o RmndUploadModal.
