@@ -220,21 +220,25 @@ function VideoContent({
         </h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <KpiCardV2
+            outlined
             label="Budget Contratado"
             value={fmtR(kpis.budget)}
             hint="Budget alocado à tática selecionada (O2O ou OOH)."
           />
           <KpiCardV2
+            outlined
             label="Views Contratadas"
             value={fmt(contractedViews)}
             hint="Volume de completions (views 100%) contratadas para a tática."
           />
           <KpiCardV2
+            outlined
             label="Views Bonus"
             value={fmt(bonusViews)}
             hint="Bonus negociado adicional ao contratado."
           />
           <KpiCardV2
+            outlined
             label="CPCV Negociado"
             value={fmtCpcv(kpis.cpcvNeg)}
             hint="CPCV (Custo Por Completion View) acordado em contrato."

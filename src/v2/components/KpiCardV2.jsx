@@ -24,6 +24,8 @@ export function KpiCardV2({
   value,
   hint,
   accent = false,
+  outlined = false, // sem fundo (só borda) — usado na seção Contratual pra
+                    // não competir visualmente com Performance
   loading = false,
   sparkline = null, // ReactNode opcional (SparklineV2)
   className,
@@ -44,7 +46,11 @@ export function KpiCardV2({
   return (
     <Card
       variant={accent ? "highlighted" : "default"}
-      className={cn("min-w-0 bg-surface-2 border-border", className)}
+      className={cn(
+        "min-w-0 border-border",
+        outlined ? "bg-transparent" : "bg-surface-2",
+        className,
+      )}
     >
       <CardBody className="flex flex-col gap-2.5 p-4">
         {hint ? (

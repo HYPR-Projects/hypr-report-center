@@ -207,21 +207,25 @@ function DisplayContent({
         </h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <KpiCardV2
+            outlined
             label="Budget Contratado"
             value={fmtR(kpis.budget)}
             hint="Budget alocado à tática selecionada (O2O ou OOH)."
           />
           <KpiCardV2
+            outlined
             label="Imp. Contratadas"
             value={fmt(contractedImps)}
             hint="Volume de impressões contratadas para a tática."
           />
           <KpiCardV2
+            outlined
             label="Imp. Bonus"
             value={fmt(bonusImps)}
             hint="Bonus negociado adicional ao contratado."
           />
           <KpiCardV2
+            outlined
             label="CPM Negociado"
             value={fmtR(kpis.cpmNeg)}
             hint="CPM acordado em contrato — base do cálculo de rentabilidade."
