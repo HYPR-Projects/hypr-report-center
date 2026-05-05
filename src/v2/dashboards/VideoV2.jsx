@@ -36,6 +36,7 @@ import {
   extractAudience,
   groupByDate,
   groupBySize,
+  groupByCreativeName,
   groupByAudience,
 } from "../../shared/aggregations";
 import { fmt, fmtP, fmtP2, fmtR } from "../../shared/format";
@@ -116,12 +117,13 @@ export default function VideoV2({
 
     const daily = groupByDate(detailFiltered, "video_view_100", "viewable_impressions", "vtr");
     const bySize = groupBySize(detailNormalized, "video_view_100", "viewable_impressions", "vtr");
+    const byCreative = groupByCreativeName(detailFiltered, "video_view_100", "viewable_impressions", "vtr");
     const byAudience = groupByAudience(detailAll, "video_view_100", "viewable_impressions", "vtr");
 
-    return { totals, detailAll, detailFiltered, detailNormalized, lineOptions, kpis, daily, bySize, byAudience };
+    return { totals, detailAll, detailFiltered, detailNormalized, lineOptions, kpis, daily, bySize, byCreative, byAudience };
   }, [aggregates, tactic, lines]);
 
-  const { totals, detailAll, detailFiltered, detailNormalized, lineOptions, kpis, daily, bySize, byAudience } = view;
+  const { totals, detailAll, detailFiltered, detailNormalized, lineOptions, kpis, daily, bySize, byCreative, byAudience } = view;
 
   // Empty state: a tactic atual não tem entregas. Mantém a toolbar
   // visível pra o usuário poder voltar pra outra tactic — antes
@@ -178,6 +180,7 @@ export default function VideoV2({
           kpis={kpis}
           daily={daily}
           bySize={bySize}
+          byCreative={byCreative}
           byAudience={byAudience}
           contractedViews={contractedViews}
           bonusViews={bonusViews}
@@ -199,6 +202,7 @@ function VideoContent({
   kpis,
   daily,
   bySize,
+  byCreative,
   byAudience,
   contractedViews,
   bonusViews,
@@ -325,6 +329,26 @@ function VideoContent({
           rateLabel="VTR"
           rateFormatter={fmtP2}
           extraRows={detailNormalized}
+          mediaType="VIDEO"
+        />
+      )}
+
+      {/* ─── 7b. Tabela "Por Criativo" (creative_name) ────────────────── */}
+      {byCreative.length > 0 && (
+        <FormatBreakdownTableV2
+          rows={byCreative}
+          groupKey="creative_name"
+          groupLabel="Criativo"
+          itemNoun="criativo"
+          denomKey="viewable_impressions"
+          denomLabel="Imp. Visíveis"
+          numeratorKey="video_view_100"
+          numeratorLabel="Views 100%"
+          rateKey="vtr"
+          rateLabel="VTR"
+          rateFormatter={fmtP2}
+          extraRows={detailFiltered}
+          getDetailGroupKey={(r) => r.creative_name || "N/A"}
           mediaType="VIDEO"
         />
       )}

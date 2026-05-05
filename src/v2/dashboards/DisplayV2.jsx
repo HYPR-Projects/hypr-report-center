@@ -35,6 +35,7 @@ import {
   extractAudience,
   groupByDate,
   groupBySize,
+  groupByCreativeName,
   groupByAudience,
 } from "../../shared/aggregations";
 import { fmt, fmtP, fmtP2, fmtR } from "../../shared/format";
@@ -101,12 +102,13 @@ export default function DisplayV2({
 
     const daily = groupByDate(detailFiltered, "clicks", "viewable_impressions", "ctr");
     const bySize = groupBySize(detailFiltered, "clicks", "viewable_impressions", "ctr");
+    const byCreative = groupByCreativeName(detailFiltered, "clicks", "viewable_impressions", "ctr");
     const byAudience = groupByAudience(detailAll, "clicks", "viewable_impressions", "ctr");
 
-    return { totals, detailAll, detailFiltered, lineOptions, kpis, daily, bySize, byAudience };
+    return { totals, detailAll, detailFiltered, lineOptions, kpis, daily, bySize, byCreative, byAudience };
   }, [aggregates, tactic, lines, camp]);
 
-  const { totals, detailAll, detailFiltered, lineOptions, kpis, daily, bySize, byAudience } = view;
+  const { totals, detailAll, detailFiltered, lineOptions, kpis, daily, bySize, byCreative, byAudience } = view;
 
   // Empty state: a tactic atual não tem entregas. Antes a gente fazia
   // early return aqui sem renderizar a toolbar — o usuário ficava preso
@@ -165,6 +167,7 @@ export default function DisplayV2({
           kpis={kpis}
           daily={daily}
           bySize={bySize}
+          byCreative={byCreative}
           byAudience={byAudience}
           contractedImps={contractedImps}
           bonusImps={bonusImps}
@@ -186,6 +189,7 @@ function DisplayContent({
   kpis,
   daily,
   bySize,
+  byCreative,
   byAudience,
   contractedImps,
   bonusImps,
@@ -315,6 +319,26 @@ function DisplayContent({
           rateLabel="CTR"
           rateFormatter={fmtP2}
           extraRows={detailFiltered}
+          mediaType="DISPLAY"
+        />
+      )}
+
+      {/* ─── 7b. Tabela "Por Criativo" (creative_name) ────────────────── */}
+      {byCreative.length > 0 && (
+        <FormatBreakdownTableV2
+          rows={byCreative}
+          groupKey="creative_name"
+          groupLabel="Criativo"
+          itemNoun="criativo"
+          denomKey="viewable_impressions"
+          denomLabel="Imp. Visíveis"
+          numeratorKey="clicks"
+          numeratorLabel="Cliques"
+          rateKey="ctr"
+          rateLabel="CTR"
+          rateFormatter={fmtP2}
+          extraRows={detailFiltered}
+          getDetailGroupKey={(r) => r.creative_name || "N/A"}
           mediaType="DISPLAY"
         />
       )}

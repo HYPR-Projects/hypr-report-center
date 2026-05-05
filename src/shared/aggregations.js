@@ -113,6 +113,23 @@ export const groupBySize = (rows, numeratorKey, denomKey, rateKey) =>
   }));
 
 /**
+ * Agrega rows por `creative_name`. Mesma forma de `groupBySize` — soma
+ * numerador/denominador e calcula a taxa final. Usado na tabela
+ * "Distribuição por Criativo" das abas Display/Video.
+ */
+export const groupByCreativeName = (rows, numeratorKey, denomKey, rateKey) =>
+  Object.values(rows.reduce((acc, r) => {
+    const k = r.creative_name || "N/A";
+    if (!acc[k]) acc[k] = { creative_name: k, [denomKey]: 0, [numeratorKey]: 0 };
+    acc[k][denomKey]      += r[denomKey]      || 0;
+    acc[k][numeratorKey]  += r[numeratorKey]  || 0;
+    return acc;
+  }, {})).map(r => ({
+    ...r,
+    [rateKey]: r[denomKey] > 0 ? r[numeratorKey] / r[denomKey] * 100 : 0,
+  }));
+
+/**
  * Agrega rows por audiência (extraída do line_name), ignorando lines de
  * survey e linhas sem padrão reconhecível ("N/A"). Sempre opera sobre o
  * conjunto total — não filtra por line, porque essa visão deve mostrar
