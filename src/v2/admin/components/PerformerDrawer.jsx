@@ -182,7 +182,7 @@ function CampaignCard({ item, onOpenReport }) {
   return (
     <div
       className={cn(
-        "rounded-lg border border-border border-l-4 bg-surface p-3 space-y-2.5",
+        "rounded-lg border border-border border-l-4 bg-surface p-4 space-y-3",
         BORDER_LEFT[severityT]
       )}
     >
@@ -351,7 +351,7 @@ export function PerformerDrawer({ performer, displayName, onOpenReport, onClose 
   return (
     <Drawer open={open} onOpenChange={(v) => { if (!v) onClose?.(); }}>
       {open && (
-        <DrawerContent className="sm:w-[480px]">
+        <DrawerContent widthClass="sm:w-[560px] xl:w-[600px]">
           <PerformerDrawerInner
             performer={performer}
             displayName={displayName}
@@ -422,7 +422,7 @@ function PerformerDrawerInner({ performer, displayName, onOpenReport }) {
 
         {/* SEÇÃO 1: Onde tem mais a ganhar */}
         {topGain.length > 0 && (
-          <section className="space-y-2">
+          <section className="space-y-3">
             <h3 className="text-[11px] uppercase tracking-widest font-bold text-fg flex items-center gap-1.5">
               <TargetIcon className="size-3.5 text-signature" />
               Onde tem mais a ganhar
@@ -431,7 +431,7 @@ function PerformerDrawerInner({ performer, displayName, onOpenReport }) {
               Campanhas ordenadas por <strong>potencial de ganho</strong> (gap × share
               de impressões). Borda vermelha = mais alavancagem.
             </p>
-            <div className="space-y-2">
+            <div className="space-y-3">
               {topGain.map((item) => (
                 <CampaignCard
                   key={item.campaign.short_token}

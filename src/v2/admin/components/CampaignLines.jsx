@@ -167,31 +167,39 @@ export function CampaignLines({ shortToken, hasAbs }) {
   }
 
   return (
-    <div className="space-y-1.5 pt-1">
+    <div className="space-y-2 pt-2">
       {worst.map(({ line, ctr, viewPct, vtr, ecpm, tones, isVideo, imps }, idx) => (
         <div
           key={`${line.line_name}::${line.media_type}::${idx}`}
-          className="rounded bg-canvas-deeper border border-border/60 px-2 py-1.5 text-[10.5px]"
+          className="rounded-md bg-canvas-deeper border border-border/60 p-2.5 space-y-2"
         >
-          <div className="flex items-center justify-between gap-2 mb-1">
-            <div className="min-w-0 flex items-center gap-1.5">
-              <span className={cn(
-                "shrink-0 inline-flex items-center px-1 py-px rounded text-[9px] font-bold uppercase tracking-wider",
-                isVideo ? "bg-signature/15 text-signature" : "bg-surface-strong text-fg-muted"
-              )}>
-                {isVideo ? "VID" : "DSP"}
-              </span>
-              <span className="text-fg truncate" title={line.line_name}>
-                {line.line_name || "—"}
-              </span>
-            </div>
-            <span className="shrink-0 text-fg-subtle tabular-nums">{formatCount(imps)} impr</span>
+          {/* Linha 1: nome completo da line — quebra em qualquer caractere
+              pra IDs longos sem espaço (ID-XXX_HYPR_CLIENT_FORMAT_...). Até
+              2 linhas; tooltip mostra completo se ultrapassar. */}
+          <div
+            className="text-[11px] text-fg leading-snug font-medium break-all line-clamp-2"
+            title={line.line_name}
+          >
+            {line.line_name || "—"}
           </div>
-          <div className="grid grid-cols-4 gap-1">
-            <Pill label="CTR"  value={ctr     != null ? `${ctr.toFixed(2)}%` : "—"} t={tones.ctr} />
+
+          {/* Linha 2: chip mídia + impressões */}
+          <div className="flex items-center justify-between gap-2 text-[10px]">
+            <span className={cn(
+              "inline-flex items-center px-1.5 py-0.5 rounded font-bold uppercase tracking-wider",
+              isVideo ? "bg-signature/15 text-signature" : "bg-surface-strong text-fg-muted"
+            )}>
+              {isVideo ? "VIDEO" : "DISPLAY"}
+            </span>
+            <span className="text-fg-subtle tabular-nums">{formatCount(imps)} impressões</span>
+          </div>
+
+          {/* Linha 3: 4 pílulas com mais respiro */}
+          <div className="grid grid-cols-4 gap-1.5">
+            <Pill label="CTR"  value={ctr     != null ? `${ctr.toFixed(2)}%`     : "—"} t={tones.ctr} />
             <Pill label="View" value={viewPct != null ? `${viewPct.toFixed(0)}%` : "—"} t={tones.view} />
-            <Pill label="VTR"  value={vtr     != null ? `${vtr.toFixed(0)}%` : "—"} t={isVideo ? tones.vtr : "neutral"} />
-            <Pill label="eCPM" value={ecpm    != null ? `R$ ${ecpm.toFixed(2)}` : "—"} t={tones.ecpm} />
+            <Pill label="VTR"  value={vtr     != null ? `${vtr.toFixed(0)}%`     : "—"} t={isVideo ? tones.vtr : "neutral"} />
+            <Pill label="eCPM" value={ecpm    != null ? `R$ ${ecpm.toFixed(2)}`  : "—"} t={tones.ecpm} />
           </div>
         </div>
       ))}
@@ -201,9 +209,9 @@ export function CampaignLines({ shortToken, hasAbs }) {
 
 function Pill({ label, value, t }) {
   return (
-    <div className={cn("rounded px-1.5 py-0.5 leading-tight", TONE_CLASS[t] || TONE_CLASS.neutral)}>
-      <div className="text-[8.5px] uppercase tracking-wider opacity-70 font-semibold">{label}</div>
-      <div className="text-[10.5px] tabular-nums font-semibold">{value}</div>
+    <div className={cn("rounded px-2 py-1 leading-tight text-center", TONE_CLASS[t] || TONE_CLASS.neutral)}>
+      <div className="text-[9px] uppercase tracking-wider opacity-70 font-semibold">{label}</div>
+      <div className="text-[11px] tabular-nums font-bold mt-0.5">{value}</div>
     </div>
   );
 }

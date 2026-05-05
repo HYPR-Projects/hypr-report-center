@@ -20,7 +20,9 @@
 // Uso típico no admin V2: card de campanha clicado abre drawer com
 // ações (Loom, Survey, Logo, Owner, Link Cliente, abrir Report).
 //
-// Largura fixa de 420px no desktop; full-width abaixo de 640px.
+// Largura padrão de 420px no desktop; full-width abaixo de 640px.
+// Drawers densos (ex: PerformerDrawer com line items) podem passar
+// `widthClass` pra alargar — ex: "sm:w-[540px]".
 
 import * as Dialog from "@radix-ui/react-dialog";
 import { forwardRef } from "react";
@@ -37,7 +39,7 @@ export function Drawer({ open, onOpenChange, children }) {
 export const DrawerTrigger = Dialog.Trigger;
 
 export const DrawerContent = forwardRef(function DrawerContent(
-  { className, children, ...rest },
+  { className, widthClass = "sm:w-[420px]", children, ...rest },
   ref
 ) {
   return (
@@ -54,7 +56,8 @@ export const DrawerContent = forwardRef(function DrawerContent(
         ref={ref}
         className={cn(
           // Posicionamento fixo, slide da direita
-          "fixed top-0 right-0 z-50 h-full w-full sm:w-[420px]",
+          "fixed top-0 right-0 z-50 h-full w-full",
+          widthClass,
           "bg-canvas-elevated border-l border-border shadow-2xl",
           "flex flex-col outline-none",
           // Animations via tailwindcss-animate (já registrado no theme.css)
