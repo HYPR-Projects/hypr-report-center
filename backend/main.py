@@ -831,6 +831,24 @@ def report_data(request):
             logger.error(f"[ERROR get_logo] {e}")
             return (jsonify({"error": "Erro ao buscar logo"}), 500, headers)
 
+    # ── Endpoint: line items de uma campanha (admin) ────────────────────────
+    # Usado pelo PerformerDrawer pra mostrar piores LIs dentro de cada
+    # campanha do CS. Métricas brutas — frontend calcula CTR/Viewability/
+    # VTR/eCPM e ranqueia. Sem cache: chamada sob demanda quando admin
+    # expande um card de campanha (poucos por sessão, custo BQ baixo).
+    if request.method == "GET" and request.args.get("action") == "get_campaign_lines":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        short_token = request.args.get("short_token", "").strip()
+        if not short_token:
+            return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+        try:
+            lines = query_campaign_lines(short_token)
+            return (jsonify({"lines": lines}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR get_campaign_lines] {e}")
+            return (jsonify({"error": "Erro ao buscar line items"}), 500, headers)
+
     # ── Endpoint: ler override de ABS (Brand Safety pre-bid) ────────────────
     # Devolve {has_abs, source} onde source é "auto" (sinal do BQ via
     # query_campaigns_list — se já detectado, override é redundante),
@@ -2916,6 +2934,65 @@ def query_daily(token):
             "effective_total_cost": float(r["effective_total_cost"] or 0),
             "ctr": round(ctr, 4),
             "vtr": round(vtr, 4),
+        })
+    return result
+
+
+def query_campaign_lines(token):
+    """Retorna lista de line items agregados ao período inteiro da campanha
+    com métricas brutas pro frontend calcular CTR/Viewability/VTR/eCPM e
+    decidir as "piores". Granularidade: 1 row por (line_name, media_type) —
+    raro uma mesma line cobrir os dois media_types, mas se cobre, mantém
+    separado (thresholds são diferentes por mídia).
+
+    Usado pelo PerformerDrawer admin pra mostrar piores LIs dentro de cada
+    campanha do CS.
+
+    `effective_total_cost` é acumulado em campaign_results por (date, line,
+    creative) — somar direto inflaria. A subquery interna pega MAX por
+    (date, line, creative) e o externo soma esses MAXes.
+    """
+    sql = f"""
+        WITH dedup AS (
+            SELECT
+                date, line_name, creative_name, media_type,
+                SUM(impressions)                        AS impressions,
+                SUM(viewable_impressions)               AS viewable_impressions,
+                SUM(clicks)                             AS clicks,
+                SUM(viewable_video_starts)              AS video_starts,
+                SUM(viewable_video_view_100_complete)   AS video_view_100,
+                MAX(effective_total_cost)               AS line_creative_day_cost
+            FROM {table_ref()}
+            WHERE short_token = @token
+              AND media_type IN ('DISPLAY', 'VIDEO')
+              AND UPPER(line_name) NOT LIKE '%SURVEY%'
+            GROUP BY date, line_name, creative_name, media_type
+        )
+        SELECT
+            line_name,
+            media_type,
+            SUM(impressions)                AS impressions,
+            SUM(viewable_impressions)       AS viewable_impressions,
+            SUM(clicks)                     AS clicks,
+            SUM(video_starts)               AS video_starts,
+            SUM(video_view_100)             AS video_view_100,
+            SUM(line_creative_day_cost)     AS total_cost
+        FROM dedup
+        GROUP BY line_name, media_type
+        ORDER BY impressions DESC
+    """
+    rows = run_query(sql, token)
+    result = []
+    for r in rows:
+        result.append({
+            "line_name":            r["line_name"]            or "",
+            "media_type":           r["media_type"]           or "",
+            "impressions":          int(r["impressions"]          or 0),
+            "viewable_impressions": int(r["viewable_impressions"] or 0),
+            "clicks":               int(r["clicks"]               or 0),
+            "video_starts":         int(r["video_starts"]         or 0),
+            "video_view_100":       int(r["video_view_100"]       or 0),
+            "total_cost":           float(r["total_cost"]         or 0),
         })
     return result
 

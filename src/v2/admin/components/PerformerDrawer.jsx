@@ -22,8 +22,10 @@
 //   │ vs TIME — 4 deltas alinhados                │
 //   └─────────────────────────────────────────────┘
 
+import { useState } from "react";
 import { Drawer, DrawerContent, DrawerHeader, DrawerBody } from "../../../ui/Drawer";
 import { cn } from "../../../ui/cn";
+import { CampaignLines } from "./CampaignLines";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function localPartFromEmail(email) {
@@ -170,10 +172,12 @@ function CampaignCard({ item, onOpenReport }) {
   const { campaign, breakdown, potential } = item;
   const severityT = severityTone(potential);
   const handleOpen = () => onOpenReport?.(campaign.short_token);
+  const [linesExpanded, setLinesExpanded] = useState(false);
 
   // Diagnóstico: top 2 categorias com perda. Cada uma vira uma "frase"
   // estruturada com ícone — em vez de string solta concatenada por "·".
   const topProblems = breakdown.diagnostics.slice(0, 2);
+  const hasAbs = !!(breakdown.abs?.display || breakdown.abs?.video);
 
   return (
     <div
@@ -236,13 +240,29 @@ function CampaignCard({ item, onOpenReport }) {
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={handleOpen}
-        className="w-full text-[11px] font-semibold text-signature hover:underline text-left cursor-pointer"
-      >
-        Abrir report →
-      </button>
+      {/* Ações inline: expand line items + abrir report */}
+      <div className="flex items-center justify-between gap-2 pt-0.5">
+        <button
+          type="button"
+          onClick={() => setLinesExpanded((v) => !v)}
+          aria-expanded={linesExpanded}
+          className="text-[11px] font-medium text-fg-muted hover:text-fg cursor-pointer flex items-center gap-1"
+        >
+          <span className={cn("transition-transform", linesExpanded && "rotate-90")}>▸</span>
+          {linesExpanded ? "Ocultar piores lines" : "Ver piores lines"}
+        </button>
+        <button
+          type="button"
+          onClick={handleOpen}
+          className="text-[11px] font-semibold text-signature hover:underline cursor-pointer"
+        >
+          Abrir report →
+        </button>
+      </div>
+
+      {linesExpanded && (
+        <CampaignLines shortToken={campaign.short_token} hasAbs={hasAbs} />
+      )}
     </div>
   );
 }

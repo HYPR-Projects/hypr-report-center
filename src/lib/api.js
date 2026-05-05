@@ -425,6 +425,25 @@ export async function saveLoom({ short_token, loom_url }) {
   );
 }
 
+// ── Line items de uma campanha (admin) ──────────────────────────────────────
+
+/**
+ * Retorna lista de line items agregados ao período inteiro com métricas
+ * brutas (impressions, viewable, clicks, video_starts, video_view_100,
+ * total_cost). 1 entry por (line_name, media_type). Usado pelo
+ * PerformerDrawer pra mostrar piores LIs.
+ */
+export async function getCampaignLines({ short_token }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=get_campaign_lines&short_token=${encodeURIComponent(short_token)}`,
+    { headers: adminAuthHeaders(jwt) },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json().catch(() => ({}));
+  return Array.isArray(d?.lines) ? d.lines : [];
+}
+
 // ── Brand Safety pre-bid override (admin) ───────────────────────────────────
 
 /**
