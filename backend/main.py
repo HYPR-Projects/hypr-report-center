@@ -3429,10 +3429,20 @@ def query_campaigns_list():
         d_admin_impr = int(r["d_admin_impressions"] or 0)
         v_admin_cost = float(r["v_admin_total_cost"] or 0)
         v_admin_impr = int(r["v_admin_impressions"] or 0)
-        if d_admin_impr > 0 and d_admin_cost > 0:
-            entry["display_ecpm"] = round(d_admin_cost / d_admin_impr * 1000, 2)
-        if v_admin_impr > 0 and v_admin_cost > 0:
-            entry["video_ecpm"] = round(v_admin_cost / v_admin_impr * 1000, 2)
+        # Splits no payload pro Top Performers agregar correto via
+        # Σnumerador/Σdenominador (eCPM Display e Video do CS). Sem isso o
+        # frontend só tinha o eCPM já calculado por campanha e não dava pra
+        # somar de volta sem perder precisão.
+        if d_admin_impr > 0:
+            entry["d_admin_total_cost"] = round(d_admin_cost, 2)
+            entry["d_admin_impressions"] = d_admin_impr
+            if d_admin_cost > 0:
+                entry["display_ecpm"] = round(d_admin_cost / d_admin_impr * 1000, 2)
+        if v_admin_impr > 0:
+            entry["v_admin_total_cost"] = round(v_admin_cost, 2)
+            entry["v_admin_impressions"] = v_admin_impr
+            if v_admin_cost > 0:
+                entry["video_ecpm"] = round(v_admin_cost / v_admin_impr * 1000, 2)
 
         # Brand Safety pre-bid (ABS) por mídia, agregando DV360 + Xandr. Quando
         # a flag é TRUE, scoreCampaignDetailed no frontend usa thresholds mais
