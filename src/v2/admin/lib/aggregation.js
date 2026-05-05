@@ -249,13 +249,21 @@ function aggregateMetrics(set) {
   const vExpected  = sumField(set, "video_expected_completions");
   const cost       = sumField(set, "admin_total_cost");
   const impr       = sumField(set, "admin_impressions");
+  // Splits por mídia pra eCPM separado — Display vai pro score, Video é
+  // exibido sem cor condicional (não pontua mais, mas serve de referência).
+  const dCost      = sumField(set, "d_admin_total_cost");
+  const dCostImpr  = sumField(set, "d_admin_impressions");
+  const vCost      = sumField(set, "v_admin_total_cost");
+  const vCostImpr  = sumField(set, "v_admin_impressions");
 
   return {
     ctr:        dImpr     > 0 ? (dClicks   / dImpr)     * 100  : meanOfField(set, "display_ctr"),
     vtr:        vViewable > 0 ? (vCompl    / vViewable) * 100  : meanOfField(set, "video_vtr"),
     dsp_pacing: dExpected > 0 ? (dViewable / dExpected) * 100  : meanOfField(set, "display_pacing"),
     vid_pacing: vExpected > 0 ? (vCompl    / vExpected) * 100  : meanOfField(set, "video_pacing"),
-    ecpm:       impr      > 0 ? (cost      / impr)      * 1000 : null,
+    ecpm:         impr      > 0 ? (cost  / impr)     * 1000 : null,
+    ecpm_display: dCostImpr > 0 ? (dCost / dCostImpr) * 1000 : null,
+    ecpm_video:   vCostImpr > 0 ? (vCost / vCostImpr) * 1000 : null,
   };
 }
 
@@ -625,11 +633,13 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email") {
       score: 0, // preenchido depois com o score regredido
       campaign_count: list.length,
       ideal_pacing_count: idealPacing,
-      ecpm_avg:   m.ecpm,
-      dsp_pacing: m.dsp_pacing,
-      vid_pacing: m.vid_pacing,
-      ctr:        m.ctr,
-      vtr:        m.vtr,
+      ecpm_avg:     m.ecpm,
+      ecpm_display: m.ecpm_display,
+      ecpm_video:   m.ecpm_video,
+      dsp_pacing:   m.dsp_pacing,
+      vid_pacing:   m.vid_pacing,
+      ctr:          m.ctr,
+      vtr:          m.vtr,
       // Breakdown agregado por categoria (pts médios ponderados / max realista).
       breakdown: weightSum > 0 ? {
         pacing_pts: pacingPtsSum / weightSum,

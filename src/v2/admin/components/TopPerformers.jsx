@@ -102,7 +102,7 @@ function formatPctTwo(value) {
 
 function MicroMetric({ label, value, tone = "fg" }) {
   return (
-    <div className="flex flex-col gap-1 min-w-0">
+    <div className="flex flex-col gap-1 min-w-0 lg:pl-3 lg:border-l lg:border-border/40 lg:first:border-l-0 lg:first:pl-0">
       <span className="text-[9px] uppercase tracking-widest font-bold text-fg-subtle whitespace-nowrap leading-none">
         {label}
       </span>
@@ -143,8 +143,12 @@ function ScoreDelta({ current, previous }) {
 function PerformerRow({ rank, performer, displayName, scorePrev, onClick }) {
   const {
     email, score, breakdown: bd, campaign_count, ideal_pacing_count,
-    dsp_pacing, vid_pacing, ctr, vtr, ecpm_avg,
+    dsp_pacing, vid_pacing, ctr, vtr, ecpm_display, ecpm_video, ecpm_avg,
   } = performer;
+  // Fallback: payload antigo (sem split por mídia) cai no ecpm_avg como
+  // se fosse Display — VideoecPM fica null e renderiza "—" sem cor.
+  const ecpmDisplay = ecpm_display ?? ecpm_avg;
+  const ecpmVideo   = ecpm_video ?? null;
   const name = displayName || localPartFromEmail(email);
   // max_total dinâmico: campanhas só-video têm max ~45, só-display ~90.
   // Score do CS é a média ponderada — então o max também é ponderado.
@@ -184,13 +188,17 @@ function PerformerRow({ rank, performer, displayName, scorePrev, onClick }) {
         </div>
       </div>
 
-      {/* Métricas agregadas (col 2 — flex grow) */}
-      <div className="flex-1 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-x-4 gap-y-2 min-w-0">
+      {/* Métricas agregadas (col 2 — flex grow). 6 colunas em desktop com
+          divisor vertical entre cada via border-l no MicroMetric. eCPM
+          Video sem cor condicional — não pontua mais no score, então
+          colorir confundiria. */}
+      <div className="flex-1 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-x-3 gap-y-2 min-w-0">
         <MicroMetric label="Pacing DSP" value={formatPctInt(dsp_pacing)} tone={tonePacing(dsp_pacing)} />
         <MicroMetric label="Pacing VID" value={formatPctInt(vid_pacing)} tone={tonePacing(vid_pacing)} />
         <MicroMetric label="CTR"        value={formatPctTwo(ctr)}        tone={toneCtr(ctr)} />
         <MicroMetric label="VTR"        value={formatPctTwo(vtr)}        tone={toneVtr(vtr)} />
-        <MicroMetric label="eCPM"       value={formatBRL(ecpm_avg)}      tone={toneEcpm(ecpm_avg)} />
+        <MicroMetric label="eCPM Disp"  value={formatBRL(ecpmDisplay)}   tone={toneEcpm(ecpmDisplay)} />
+        <MicroMetric label="eCPM Vid"   value={formatBRL(ecpmVideo)}     tone="fg" />
       </div>
 
       {/* Score (col 3) */}
