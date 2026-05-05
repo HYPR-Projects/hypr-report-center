@@ -94,9 +94,19 @@ export function OwnerFilter({ selected, onChange, teamMembers }) {
           sideOffset={6}
           collisionPadding={16}
           align="start"
+          // `--radix-popover-content-available-height` é setada pelo Radix
+          // com o espaço REAL disponível depois do collision detection
+          // (considera trigger position + viewport + collisionPadding). O
+          // valor antigo `min(440px,calc(100vh-32px))` ignorava a posição
+          // do trigger — quando o dropdown era flipado pra cima e não
+          // cabia 440px no espaço acima, o conteúdo era clipado pela
+          // borda. Com a var nativa o dropdown encolhe pra caber e o
+          // overflow-y-auto interno scrolla normalmente. Mínimo 200px
+          // pra não ficar microscópico em telas muito apertadas.
           className={cn(
-            "z-50 w-[280px] max-w-[calc(100vw-32px)]",
-            "max-h-[min(440px,calc(100vh-32px))]",
+            "z-50 w-[300px] max-w-[calc(100vw-32px)]",
+            "max-h-[min(560px,var(--radix-popover-content-available-height,560px))]",
+            "min-h-[200px]",
             "rounded-xl border border-border bg-canvas-elevated shadow-lg",
             "overflow-hidden flex flex-col",
             "data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out",
