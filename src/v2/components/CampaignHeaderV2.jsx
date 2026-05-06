@@ -15,6 +15,7 @@
 
 import { useLogoAnalysis } from "../hooks/useLogoAnalysis";
 import { useTheme } from "../hooks/useTheme";
+import { TokenChip } from "../admin/components/TokenChip";
 
 const fmtDateShort = (ymd) => {
   if (!ymd) return null;
@@ -156,10 +157,11 @@ export function CampaignHeaderV2({
             {shortToken && !isMerged && (
               <>
                 <span className="text-fg-subtle">·</span>
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-signature-soft border border-signature/40 text-signature text-[11px] font-bold tracking-wider">
-                  <CircleIcon className="size-3" />
-                  {shortToken}
-                </span>
+                <TokenChip
+                  token={shortToken}
+                  variant="report"
+                  icon={<CircleIcon className="size-3" />}
+                />
               </>
             )}
             {isMerged && (

@@ -20,6 +20,7 @@
 // API
 //   <TokenChip token="ABC123" variant="card" />
 //   <TokenChip token="ABC123" variant="compact" />
+//   <TokenChip token="ABC123" variant="report" icon={<CircleIcon className="size-3" />} />
 
 import { useState, useRef, useEffect } from "react";
 import { cn } from "../../../ui/cn";
@@ -29,9 +30,14 @@ const VARIANTS = {
     "text-[10px] tracking-wider px-1.5 py-0.5 rounded border",
   compact:
     "text-[9.5px] tracking-wider px-1 rounded",
+  // report: usado no header do report público — visual signature soft com
+  // ícone opcional à esquerda. Maior que o card pra equiparar com período
+  // e duração na linha de meta.
+  report:
+    "text-[11px] tracking-wider px-2.5 py-1 rounded-md border",
 };
 
-export function TokenChip({ token, variant = "card", className }) {
+export function TokenChip({ token, variant = "card", icon, className }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef(null);
 
@@ -64,20 +70,31 @@ export function TokenChip({ token, variant = "card", className }) {
       className={cn(
         "font-mono uppercase cursor-pointer select-none",
         "transition-colors duration-150",
-        // Estado idle x copiado
+        // Estado idle x copiado.
+        // Report variant idle usa signature soft (vive no header colorido);
+        // os outros usam neutro (vivem dentro de cards do menu admin).
         copied
           ? "bg-success-soft text-success"
-          : "bg-surface text-fg-subtle hover:text-fg hover:bg-surface-strong",
-        // Variantes (card tem border, compact não)
+          : variant === "report"
+            ? "bg-signature-soft text-signature font-bold hover:bg-signature/15"
+            : "bg-surface text-fg-subtle hover:text-fg hover:bg-surface-strong",
+        // Variantes (card e report têm border, compact não)
         VARIANTS[variant],
-        // Border só no card variant — compact mantinha sem antes
+        // Border per variant: success quando copiado, neutro/signature quando idle
         variant === "card" && (copied ? "border-success/40" : "border-border"),
-        // Largura mínima evita "pulinho" quando o texto troca pra COPIADO
-        "inline-flex items-center justify-center min-w-[5.5ch]",
+        variant === "report" && (copied ? "border-success/40" : "border-signature/40"),
+        // Largura mínima evita "pulinho" quando o texto troca pra COPIADO.
+        // Com leading icon, o gap interno aumenta — usa inline-flex gap-1.5.
+        "inline-flex items-center justify-center gap-1.5 min-w-[5.5ch]",
         className,
       )}
     >
-      {copied ? "✓ COPIADO" : token}
+      {copied ? "✓ COPIADO" : (
+        <>
+          {icon}
+          {token}
+        </>
+      )}
     </button>
   );
 }
