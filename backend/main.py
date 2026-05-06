@@ -3544,6 +3544,25 @@ def query_campaigns_list():
         if r["video_has_abs"]:
             entry["video_has_abs"] = True
 
+        # Campanha 100% bonificada — todo volume contratado é cortesia (sem
+        # custo faturado). Frontend usa pra renderizar selo "BONIFICADA" no
+        # card do menu admin (espelha o tratamento do report público em
+        # CampaignHeaderV2 + OverviewV2). Só emite quando TRUE.
+        contracted_total = (
+            float(r["contracted_o2o_display"] or 0) +
+            float(r["contracted_ooh_display"] or 0) +
+            float(r["contracted_o2o_video"]   or 0) +
+            float(r["contracted_ooh_video"]   or 0)
+        )
+        bonus_total = (
+            float(r["bonus_o2o_display"] or 0) +
+            float(r["bonus_ooh_display"] or 0) +
+            float(r["bonus_o2o_video"]   or 0) +
+            float(r["bonus_ooh_video"]   or 0)
+        )
+        if contracted_total == 0 and bonus_total > 0:
+            entry["is_bonus_only"] = True
+
         result.append(entry)
 
     # Merge owners (lookup planilha + overrides BQ + aliases BQ) em Python.
