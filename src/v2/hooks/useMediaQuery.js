@@ -30,8 +30,12 @@ export function useMediaQuery(query) {
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const mql = window.matchMedia(query);
+    // Não chamamos setMatches(mql.matches) sincronamente aqui — o
+    // useState(getMatch) inicializer já avalia no client com o valor
+    // correto, e qualquer mudança subsequente vem via 'change' listener
+    // abaixo. Setar sincronamente dispararia render cascata sem ganho
+    // (e o lint react-hooks/set-state-in-effect rejeita por isso).
     const onChange = (e) => setMatches(e.matches);
-    setMatches(mql.matches);
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
   }, [query]);
