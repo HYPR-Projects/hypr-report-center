@@ -332,6 +332,11 @@ function DisplayContent({
             value={fmtR(kpis.cpc)}
             hint="Custo Efetivo / Cliques."
           />
+          <KpiCardV2
+            label="Custo Efetivo Total"
+            value={fmtR(kpis.cost)}
+            hint="Valor investido até o momento na tática selecionada — base do pacing."
+          />
         </div>
       </section>
 

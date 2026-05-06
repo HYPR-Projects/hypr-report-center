@@ -301,7 +301,7 @@ function VideoContent({
         <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle mb-3">
           Performance
         </h2>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <KpiCardV2
             label="Views Start"
             value={fmt(kpis.starts)}
@@ -328,6 +328,11 @@ function VideoContent({
             value={fmtP(kpis.rentab)}
             accent
             hint="(CPCV Negociado − CPCV Efetivo) / CPCV Negociado. Positivo = a HYPR entregou mais que o contratado."
+          />
+          <KpiCardV2
+            label="Custo Efetivo Total"
+            value={fmtR(kpis.cost)}
+            hint="Valor investido até o momento na tática selecionada — base do pacing."
           />
         </div>
       </section>
