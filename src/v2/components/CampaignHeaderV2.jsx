@@ -13,7 +13,7 @@
 // claro contra canvas. O glow radial vem por inline style (gradient
 // arbitrário, não tem utility direta).
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { useLogoAnalysis } from "../hooks/useLogoAnalysis";
 import { useTheme } from "../hooks/useTheme";
@@ -84,21 +84,44 @@ export function CampaignHeaderV2({
   const days = daysBetween(startDate, endDate);
   const isMerged = !!mergeMeta;
 
-  // Negociação (Sales Center) — fetch lazy; o botão "Negociado" só aparece
-  // quando a campanha tem registro. `null` = ainda carregando ou ausente,
-  // sem distinção (botão escondido em ambos os casos).
-  const [negotiation, setNegotiation] = useState(null);
+  // Negociação (Sales Center) — fetch lazy. Em campanha merged, busca
+  // por TODOS os membros em paralelo e o modal vira multi-PI com tabs;
+  // em campanha single-PI, fica com 1 negociação só. Botão aparece se
+  // pelo menos um membro tiver registro no Sales Center.
+  const [negotiationsByToken, setNegotiationsByToken] = useState({});
   const [negoOpen, setNegoOpen] = useState(false);
+  // Lista de membros pra fetch — sempre tratada como array pra unificar
+  // o caminho merged vs single. Quando não há merge, vira [{short_token}].
+  const negotiationMembers = useMemo(() => {
+    if (mergeMeta?.members?.length) {
+      return mergeMeta.members.map((m) => ({
+        short_token: m.short_token,
+        start_date: m.start_date,
+        is_active: m.short_token === mergeMeta.active_token,
+      }));
+    }
+    if (shortToken) return [{ short_token: shortToken }];
+    return [];
+  }, [shortToken, mergeMeta]);
+  // Chave pro effect — string estável que muda só quando a lista de
+  // tokens em si muda (não quando o mergeMeta troca de identidade).
+  const memberTokensKey = negotiationMembers.map((m) => m.short_token).join(",");
   useEffect(() => {
-    if (!shortToken) return;
+    if (!negotiationMembers.length) return;
     let cancelled = false;
-    getNegotiation(shortToken).then((n) => {
-      if (!cancelled) setNegotiation(n);
+    Promise.all(
+      negotiationMembers.map((m) =>
+        getNegotiation(m.short_token).then((n) => [m.short_token, n]),
+      ),
+    ).then((entries) => {
+      if (cancelled) return;
+      setNegotiationsByToken(Object.fromEntries(entries));
     });
     return () => {
       cancelled = true;
     };
-  }, [shortToken]);
+  }, [memberTokensKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const hasAnyNegotiation = Object.values(negotiationsByToken).some(Boolean);
 
   // Logo dinâmica entre temas com UMA única imagem
   // ──────────────────────────────────────────────
@@ -201,7 +224,7 @@ export function CampaignHeaderV2({
                 </span>
               </>
             )}
-            {negotiation && (
+            {hasAnyNegotiation && (
               <>
                 <span className="text-fg-subtle">·</span>
                 <NegotiationButton onClick={() => setNegoOpen(true)} />
@@ -267,7 +290,9 @@ export function CampaignHeaderV2({
       <NegotiationModal
         open={negoOpen}
         onOpenChange={setNegoOpen}
-        negotiation={negotiation}
+        negotiationsByToken={negotiationsByToken}
+        members={negotiationMembers}
+        defaultActiveToken={currentView && currentView !== "aggregated" ? currentView : (mergeMeta?.active_token || shortToken)}
         legacyTotals={legacyTotals}
         reportData={reportData}
       />

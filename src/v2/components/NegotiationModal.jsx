@@ -24,7 +24,7 @@
 // campanhas com cadastro parcial.
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cn } from "../../ui/cn";
 
 // ─── Formatters ─────────────────────────────────────────────────────────
@@ -216,7 +216,42 @@ function detectTacticActive(tactic, reportData) {
 
 // ─── Componente principal ───────────────────────────────────────────────
 
-export function NegotiationModal({ open, onOpenChange, negotiation, legacyTotals, reportData }) {
+export function NegotiationModal({
+  open,
+  onOpenChange,
+  negotiationsByToken,
+  members,
+  defaultActiveToken,
+  legacyTotals,
+  reportData,
+}) {
+  // Filtra só membros que têm registro no Sales Center pra montar as tabs.
+  // Ordem: mais recente → mais antiga (mesmo padrão do MergeViewSwitcher
+  // do header). Em campanha single-PI sem merge, members tem 1 entry só
+  // e não há tabs renderizadas.
+  const validMembers = useMemo(() => {
+    if (!members || !negotiationsByToken) return [];
+    return members
+      .filter((m) => negotiationsByToken[m.short_token])
+      .sort((a, b) => (b.start_date || "").localeCompare(a.start_date || ""));
+  }, [members, negotiationsByToken]);
+
+  // Token ativo dentro do modal — começa no defaultActiveToken (espelha
+  // o ?view= da URL ou o active_token do merge); se esse não tem
+  // negociação, cai no primeiro válido. Reset quando defaultActiveToken
+  // muda (ex: user troca de mês na URL e abre o modal de novo).
+  const [activeToken, setActiveToken] = useState(null);
+  useEffect(() => {
+    if (!open) return;
+    const fallback = validMembers[0]?.short_token;
+    setActiveToken(
+      defaultActiveToken && negotiationsByToken?.[defaultActiveToken]
+        ? defaultActiveToken
+        : fallback || null,
+    );
+  }, [open, defaultActiveToken, validMembers, negotiationsByToken]);
+
+  const negotiation = activeToken ? negotiationsByToken?.[activeToken] : null;
   const extras = useMemo(() => parseExtras(negotiation?.extras), [negotiation]);
   const features = useMemo(() => deriveFeatures(extras), [extras]);
   const studies = useMemo(() => deriveStudies(extras), [extras]);
@@ -225,6 +260,7 @@ export function NegotiationModal({ open, onOpenChange, negotiation, legacyTotals
   const lineHaystack = useMemo(() => buildLineHaystack(reportData), [reportData]);
 
   if (!negotiation) return null;
+  const showMemberTabs = validMembers.length > 1;
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -252,6 +288,13 @@ export function NegotiationModal({ open, onOpenChange, negotiation, legacyTotals
           )}
         >
           <NegotiationHeader negotiation={negotiation} />
+          {showMemberTabs && (
+            <MemberTabs
+              members={validMembers}
+              activeToken={activeToken}
+              onChange={setActiveToken}
+            />
+          )}
           <div className="flex-1 overflow-y-auto px-6 md:px-8 pb-8 pt-6 space-y-6">
             <CommercialPlan negotiation={negotiation} />
             <FormatsAndProducts negotiation={negotiation} />
@@ -357,6 +400,74 @@ function NegotiationHeader({ negotiation }) {
   );
 }
 
+// ─── Member tabs (multi-PI em campanha merged) ─────────────────────────
+//
+// Aparece logo abaixo do header quando a campanha tem 2+ PIs com
+// negociação cadastrada. Cada PI vira uma pill (mais recente → antigo)
+// com o mês + indicador de "atual" pro membro ativo do merge group.
+// Click troca o `activeToken` interno do modal sem disparar refetch —
+// usa os payloads que já vieram em paralelo no header.
+function MemberTabs({ members, activeToken, onChange }) {
+  return (
+    <div className="px-6 md:px-8 pt-4 pb-3 border-b border-border bg-surface">
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="text-[9.5px] font-bold uppercase tracking-[1.5px] text-fg-subtle mr-1">
+          Negociações
+        </span>
+        {members.map((m) => {
+          const selected = m.short_token === activeToken;
+          const monthLabel = formatMonthShort(m.start_date) || m.short_token;
+          return (
+            <button
+              key={m.short_token}
+              type="button"
+              onClick={() => onChange(m.short_token)}
+              className={cn(
+                "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold border cursor-pointer transition-colors",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas-elevated",
+                selected
+                  ? "bg-signature text-white border-signature"
+                  : "bg-surface-2 text-fg-muted border-border hover:text-fg hover:bg-surface-3 hover:border-signature/40",
+              )}
+            >
+              <span>{monthLabel}</span>
+              <span
+                className={cn(
+                  "font-mono text-[9px]",
+                  selected ? "text-white/70" : "text-fg-subtle",
+                )}
+              >
+                {m.short_token}
+              </span>
+              {m.is_active && (
+                <span
+                  className={cn(
+                    "text-[8.5px] uppercase tracking-widest font-bold px-1 py-px rounded",
+                    selected ? "bg-white/20 text-white" : "bg-success/15 text-success",
+                  )}
+                >
+                  atual
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// "2026-02-01" → "Fev 26" (mesmo formato do MergeViewSwitcher do header)
+function formatMonthShort(ymd) {
+  if (!ymd || typeof ymd !== "string") return null;
+  const [yStr, mStr] = ymd.split("-");
+  const y = Number(yStr);
+  const m = Number(mStr);
+  if (!y || !m) return null;
+  const MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+  return `${MESES[m - 1]} ${String(y).slice(-2)}`;
+}
+
 // ─── Plano comercial ───────────────────────────────────────────────────
 function CommercialPlan({ negotiation }) {
   const investment = fmtBRL(negotiation.investment);
@@ -409,14 +520,22 @@ function FormatsAndProducts({ negotiation }) {
 
 // ─── Volumes contratados ───────────────────────────────────────────────
 function Volumes({ negotiation, legacyTotals, extras, reportData }) {
-  const o2oDisp = negotiation.o2o_impressoes ?? 0;
-  const o2oVid = negotiation.o2o_views ?? 0;
-  const o2oDispBonus = negotiation.bonus_o2o_impressoes ?? 0;
-  const o2oVidBonus = negotiation.bonus_o2o_views ?? 0;
+  // Prioridade de fonte por campo: coluna explícita do Sales Center →
+  // chave correspondente em `extras` (per-PI) → legacy do checklist_info
+  // (somado em campanhas merged). O fallback no legacy é o último recurso
+  // pra cobrir checklists antigos que não tinham as colunas/extras.
+  const numFromExtras = (key) => Number(extras?.[key] || 0) || 0;
+  const o2oDisp = negotiation.o2o_impressoes ?? numFromExtras("O2O_imp");
+  const o2oVid = negotiation.o2o_views ?? numFromExtras("O2O_views");
+  const o2oDispBonus = negotiation.bonus_o2o_impressoes ?? numFromExtras("O2O_bonus_imp");
+  const o2oVidBonus = negotiation.bonus_o2o_views ?? numFromExtras("O2O_bonus_views");
 
   // OOH no Sales Center vive em extras.OOH_imp + ooh_link (planilha externa).
   // Tentamos a chave conhecida e caímos no checklist_info legacy se vazio.
-  const oohImpFromExtras = Number(extras?.OOH_imp || 0) || 0;
+  const oohImpFromExtras = numFromExtras("OOH_imp");
+  const oohBonusImpFromExtras = numFromExtras("OOH_bonus_imp");
+  const oohViewsFromExtras = numFromExtras("OOH_views");
+  const oohBonusViewsFromExtras = numFromExtras("OOH_bonus_views");
 
   const lt = legacyTotals || {};
   const legacyO2ODisp = lt.contracted_o2o_display_impressions || 0;
@@ -435,9 +554,9 @@ function Volumes({ negotiation, legacyTotals, extras, reportData }) {
   const o2oVideoContracted = o2oVid || legacyO2OVid;
   const o2oVideoBonus = o2oVidBonus || legacyO2OVidBonus;
   const oohDisplayContracted = oohImpFromExtras || legacyOOHDisp;
-  const oohDisplayBonus = legacyOOHDispBonus;
-  const oohVideoContracted = legacyOOHVid;
-  const oohVideoBonus = legacyOOHVidBonus;
+  const oohDisplayBonus = oohBonusImpFromExtras || legacyOOHDispBonus;
+  const oohVideoContracted = oohViewsFromExtras || legacyOOHVid;
+  const oohVideoBonus = oohBonusViewsFromExtras || legacyOOHVidBonus;
 
   const hasO2O = !!(o2oDisplayContracted || o2oDisplayBonus || o2oVideoContracted || o2oVideoBonus);
   const hasOOH = !!(oohDisplayContracted || oohDisplayBonus || oohVideoContracted || oohVideoBonus);
