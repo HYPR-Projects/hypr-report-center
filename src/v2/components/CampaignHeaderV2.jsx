@@ -73,6 +73,10 @@ export function CampaignHeaderV2({
   // NegotiationModal pra preencher OOH/Display/Video que o Sales Center
   // não armazena em colunas próprias.
   legacyTotals = null,
+  // Payload completo do report — usado pelo NegotiationModal pra detectar
+  // se cada feature/tactic do "negociado" já está ATIVADA (entrega real
+  // OU cadastro paralelo) ou PENDENTE.
+  reportData = null,
 }) {
   const status = deriveStatus(startDate, endDate);
   const start = fmtDateShort(startDate);
@@ -265,6 +269,7 @@ export function CampaignHeaderV2({
         onOpenChange={setNegoOpen}
         negotiation={negotiation}
         legacyTotals={legacyTotals}
+        reportData={reportData}
       />
     </section>
   );

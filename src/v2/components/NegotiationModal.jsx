@@ -106,12 +106,80 @@ function deriveStudies(extras) {
   return Array.isArray(extras.selected_studies) ? extras.selected_studies : [];
 }
 
+// ─── Detecção de "ativado" no report ───────────────────────────────────
+//
+// Recebemos o payload do report (`data`) e descobrimos, para cada item
+// negociado, se há entrega real OU cadastro paralelo correspondente.
+// Resultado vira a pílula verde "Ativado" / cinza "Pendente" no card.
+
+// Features com slot dedicado no payload (admin cadastra explicitamente).
+// Match por keyword no nome — case-insensitive — pra pegar variações
+// ("P-DOOH", "PDOOH", "Brand Lift" → Survey).
+const FEATURE_PAYLOAD_KEY = [
+  { match: /survey|brand\s*lift/i,    key: "survey" },
+  { match: /loom/i,                   key: "loom" },
+  { match: /^p[-\s]?dooh$|pdooh/i,    key: "pdooh" },
+  { match: /rmnd|amazon/i,            key: "rmnd" },
+];
+
+// Constrói uma string única com line_name + creative_name de todas as
+// rows (totals + detail) — usada pra grep de features que vivem no nome
+// da line/criativo (ex: "Topics", "Tap to Go", "Downloaded Apps").
+function buildLineHaystack(reportData) {
+  if (!reportData) return "";
+  const rows = [
+    ...(reportData.totals || []),
+    ...(reportData.detail || []),
+  ];
+  return rows
+    .map((r) => `${r?.line_name || ""} ${r?.creative_name || ""}`)
+    .join(" ")
+    .toLowerCase();
+}
+
+function detectFeatureActive(featureName, reportData, haystack) {
+  if (!reportData || !featureName) return false;
+  const lower = featureName.toLowerCase().trim();
+
+  // Tier 1: feature tem slot dedicado no payload?
+  for (const { match, key } of FEATURE_PAYLOAD_KEY) {
+    if (match.test(featureName)) return !!reportData[key];
+  }
+
+  // Tier 2: grep no haystack (line_name + creative_name).
+  if (!haystack) return false;
+  // Variantes pra cobrir convenções de naming:
+  //   "Tap to Go" → também "tap_to_go", "taptogo", "tapto_go"
+  const variants = new Set([
+    lower,
+    lower.replace(/\s+/g, "_"),
+    lower.replace(/\s+/g, ""),
+    lower.replace(/\s+/g, "-"),
+  ]);
+  for (const v of variants) {
+    if (v && haystack.includes(v)) return true;
+  }
+  return false;
+}
+
+// O2O / OOH "ativado" = há ao menos uma row de delivery com aquela
+// tactic_type. Sem delivery ainda = pendente (campanha brand-new ou
+// frente que não rodou).
+function detectTacticActive(tactic, reportData) {
+  if (!reportData) return false;
+  return (reportData.totals || []).some((r) => r.tactic_type === tactic) ||
+         (reportData.detail || []).some((r) => r.tactic_type === tactic);
+}
+
 // ─── Componente principal ───────────────────────────────────────────────
 
-export function NegotiationModal({ open, onOpenChange, negotiation, legacyTotals }) {
+export function NegotiationModal({ open, onOpenChange, negotiation, legacyTotals, reportData }) {
   const extras = useMemo(() => parseExtras(negotiation?.extras), [negotiation]);
   const features = useMemo(() => deriveFeatures(extras), [extras]);
   const studies = useMemo(() => deriveStudies(extras), [extras]);
+  // Haystack de nomes de line/criativo — usado pelos detectores de
+  // feature. Pré-computado uma vez por payload pra não rodar n vezes.
+  const lineHaystack = useMemo(() => buildLineHaystack(reportData), [reportData]);
 
   if (!negotiation) return null;
 
@@ -144,8 +212,13 @@ export function NegotiationModal({ open, onOpenChange, negotiation, legacyTotals
           <div className="flex-1 overflow-y-auto px-6 md:px-8 pb-8 pt-6 space-y-6">
             <CommercialPlan negotiation={negotiation} />
             <FormatsAndProducts negotiation={negotiation} />
-            <Volumes negotiation={negotiation} legacyTotals={legacyTotals} extras={extras} />
-            <FeaturesGrid features={features} />
+            <Volumes
+              negotiation={negotiation}
+              legacyTotals={legacyTotals}
+              extras={extras}
+              reportData={reportData}
+            />
+            <FeaturesGrid features={features} reportData={reportData} lineHaystack={lineHaystack} />
             <Audiences negotiation={negotiation} />
             <Pracas negotiation={negotiation} extras={extras} />
             <Studies studies={studies} />
@@ -292,7 +365,7 @@ function FormatsAndProducts({ negotiation }) {
 }
 
 // ─── Volumes contratados ───────────────────────────────────────────────
-function Volumes({ negotiation, legacyTotals, extras }) {
+function Volumes({ negotiation, legacyTotals, extras, reportData }) {
   const o2oDisp = negotiation.o2o_impressoes ?? 0;
   const o2oVid = negotiation.o2o_views ?? 0;
   const o2oDispBonus = negotiation.bonus_o2o_impressoes ?? 0;
@@ -328,12 +401,16 @@ function Volumes({ negotiation, legacyTotals, extras }) {
 
   if (!hasO2O && !hasOOH) return null;
 
+  const o2oActive = detectTacticActive("O2O", reportData);
+  const oohActive = detectTacticActive("OOH", reportData);
+
   return (
     <Section title="Volumes contratados">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
         {hasO2O && (
           <VolumeCard
             tactic="O2O"
+            active={o2oActive}
             displayContracted={o2oDisplayContracted}
             displayBonus={o2oDisplayBonus}
             videoContracted={o2oVideoContracted}
@@ -343,6 +420,7 @@ function Volumes({ negotiation, legacyTotals, extras }) {
         {hasOOH && (
           <VolumeCard
             tactic="OOH"
+            active={oohActive}
             displayContracted={oohDisplayContracted}
             displayBonus={oohDisplayBonus}
             videoContracted={oohVideoContracted}
@@ -354,13 +432,16 @@ function Volumes({ negotiation, legacyTotals, extras }) {
   );
 }
 
-function VolumeCard({ tactic, displayContracted, displayBonus, videoContracted, videoBonus }) {
+function VolumeCard({ tactic, active, displayContracted, displayBonus, videoContracted, videoBonus }) {
   const hasDisplay = !!(displayContracted || displayBonus);
   const hasVideo = !!(videoContracted || videoBonus);
   return (
-    <div className="rounded-xl border border-border bg-surface-2 px-4 py-3.5">
-      <div className="text-[10px] font-bold uppercase tracking-[1.5px] text-signature mb-3">
-        {tactic}
+    <div className="h-full rounded-xl border border-border bg-surface-2 px-4 py-3.5">
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <span className="text-[10px] font-bold uppercase tracking-[1.5px] text-signature">
+          {tactic}
+        </span>
+        <StatusPill active={active} />
       </div>
       <div className="space-y-2.5">
         {hasDisplay && (
@@ -392,20 +473,24 @@ function VolumeLine({ label, contracted, bonus, unit }) {
 }
 
 // ─── Features ativadas ─────────────────────────────────────────────────
-function FeaturesGrid({ features }) {
+function FeaturesGrid({ features, reportData, lineHaystack }) {
   if (!features.length) return null;
   return (
     <Section title="Features ativadas">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 items-stretch">
         {features.map((f) => (
-          <FeatureCard key={f.name} feature={f} />
+          <FeatureCard
+            key={f.name}
+            feature={f}
+            active={detectFeatureActive(f.name, reportData, lineHaystack)}
+          />
         ))}
       </div>
     </Section>
   );
 }
 
-function FeatureCard({ feature: f }) {
+function FeatureCard({ feature: f, active }) {
   // `ftext_<feature>` ocasionalmente carrega URL (ex: link da Survey).
   // Detectamos e renderizamos como link clicável com `break-all` pra
   // não estourar a largura do card. Texto comum vai num <p> normal.
@@ -413,19 +498,15 @@ function FeatureCard({ feature: f }) {
   return (
     <div className="h-full rounded-xl border border-border bg-surface-2 px-4 py-3.5 flex flex-col gap-2">
       <div className="flex items-start justify-between gap-2">
-        <span className="text-sm font-semibold text-fg leading-tight">{f.name}</span>
-        {f.type && (
-          <span
-            className={cn(
-              "shrink-0 text-[9.5px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded",
-              f.type === "bonificada"
-                ? "bg-warning-soft text-warning border border-warning/30"
-                : "bg-signature-soft text-signature border border-signature/30",
-            )}
-          >
-            {f.type}
-          </span>
-        )}
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-fg leading-tight">{f.name}</div>
+          {f.type && (
+            <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wider text-fg-subtle">
+              {f.type}
+            </div>
+          )}
+        </div>
+        <StatusPill active={active} />
       </div>
       {f.volumes.length > 0 && (
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11.5px] text-fg-muted">
@@ -768,6 +849,32 @@ function Stat({ label, value, emphasis }) {
         {value}
       </div>
     </div>
+  );
+}
+
+// Pílula de status — verde "Ativado" se a feature/tactic foi detectada
+// no payload do report, cinza "Pendente" caso contrário. Decisão visual:
+// success-soft sólido pro ativo (chama atenção positiva); cinza neutro
+// pro pendente (não compete visualmente com bonificada/contratada nem
+// gera ansiedade — é só "ainda não").
+function StatusPill({ active }) {
+  return (
+    <span
+      className={cn(
+        "shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded",
+        "text-[9.5px] font-bold uppercase tracking-wider border",
+        active
+          ? "bg-success-soft text-success border-success/30"
+          : "bg-canvas-deeper text-fg-subtle border-border",
+      )}
+      title={active ? "Detectado no report" : "Ainda não detectado no report"}
+    >
+      <span
+        className={cn("size-1.5 rounded-full", active ? "bg-success" : "bg-fg-subtle")}
+        aria-hidden
+      />
+      {active ? "Ativado" : "Pendente"}
+    </span>
   );
 }
 

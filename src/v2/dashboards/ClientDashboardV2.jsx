@@ -500,6 +500,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
             onViewChange={setView}
             isBonusOnly={isBonusOnly}
             legacyTotals={(data.totals || [])[0]}
+            reportData={data}
           />
 
           {/* Tabs com filtro de período alinhado à direita.
