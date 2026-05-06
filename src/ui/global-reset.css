@@ -75,4 +75,77 @@
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
   }
+
+  /* ---------- Mobile: tap highlight + touch action ---------- */
+  /* Remove o flash cinza padrão do iOS/Android ao tocar em links/botões.
+   * O foco visível já é tratado por :focus-visible acima e pelo hover
+   * dos próprios componentes. Mantém acessibilidade (não é tap-target
+   * que muda; é só o feedback visual default do WebView). */
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* iOS Safari: preserva texto em tamanho consistente quando o usuário
+   * gira o device. Sem isso, font-size de body inflama em landscape. */
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Safe-area utilities (iOS notch / home indicator / Android nav bar)
+ * ──────────────────────────────────────────────────────────────────────
+ * Tailwind v4 `@utility` registra utilidades arbitrárias usáveis com
+ * todos os prefixos (sm:, md:, hover:, etc). Usar em headers fixos,
+ * footers fixos, drawers fullscreen e bottom-sheets pra não ficar
+ * embaixo do notch/home indicator no iPhone.
+ *
+ * Uso:
+ *   <header class="pt-safe">  →  padding-top: max(safe-area-top, 0)
+ *   <footer class="pb-safe">  →  padding-bottom: max(safe-area-bottom, 0)
+ *   <div class="px-safe">     →  padding-x: max(safe-area-x, 0)
+ *
+ * Combina com utilities normais: `pt-4 pt-safe` → soma o padding já
+ * declarado com a safe-area inset. Quando o device não tem inset
+ * (desktop, Android sem gestural nav), env() retorna 0 → utility é no-op.
+ */
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+@utility pl-safe {
+  padding-left: env(safe-area-inset-left);
+}
+@utility pr-safe {
+  padding-right: env(safe-area-inset-right);
+}
+@utility px-safe {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+@utility py-safe {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+@utility min-h-screen-safe {
+  /* Altura útil descontando safe-areas — pra modais/sheets fullscreen
+   * que não devem encostar no notch nem no home indicator. */
+  min-height: calc(100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  min-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+}
+
+/* Esconde scrollbar visualmente mas mantém o scroll funcional. Padrão
+ * usado em tab bars mobile (iOS/Android), carousels e barras de chips
+ * que estouram horizontalmente — UX é "deslizar pro lado", barra visível
+ * suja o design. Continua acessível via teclado (Tab leva foco, scrollIntoView
+ * acompanha) e via swipe touch. */
+@utility scrollbar-hidden {
+  scrollbar-width: none;          /* Firefox */
+  -ms-overflow-style: none;       /* legacy IE/Edge */
+  &::-webkit-scrollbar {
+    display: none;                /* Chromium, Safari */
+  }
 }
