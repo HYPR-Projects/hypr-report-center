@@ -14,12 +14,14 @@
 // OwnerModal) — eles continuam funcionando e não tem por que duplicar.
 // O drawer é só um hub de ações com visual atualizado.
 
+import { useEffect, useState } from "react";
 import { Drawer, DrawerContent, DrawerHeader, DrawerBody, DrawerFooter } from "../../../ui/Drawer";
 import { Button } from "../../../ui/Button";
 import { cn } from "../../../ui/cn";
 import { Avatar } from "../../../ui/Avatar";
 import { AbsToggle } from "./AbsToggle";
 import { TokenChip } from "./TokenChip";
+import { getNegotiation } from "../../../lib/api";
 import {
   formatDateRange,
   formatPacingValue,
@@ -70,6 +72,13 @@ const ICON = {
       <path d="M8 18v3M16 18v3M6 21h12" />
     </svg>
   ),
+  nego: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <path d="M9 13h6M9 17h4" />
+    </svg>
+  ),
   owner: (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="8" r="4" />
@@ -110,10 +119,27 @@ export function CampaignDrawer({
   onPdooh,
   onOwner,
   onMerge,
+  onNegotiation,       // chamado quando admin clica em "Negociado" — recebe (campaign, negotiation)
   onAbsChange,         // chamado após admin salvar override de ABS — pai refaz lista
   onOpenReport,
   teamMap = {},
 }) {
+  // Negociação (Sales Center) — fetch lazy quando o drawer abre. Botão
+  // "Negociado" só aparece quando a campanha tem registro no Sales Center.
+  // Mesmo padrão do CampaignHeaderV2 do report.
+  const drawerToken = campaign?.short_token;
+  const [negotiation, setNegotiation] = useState(null);
+  useEffect(() => {
+    if (!open || !drawerToken) {
+      setNegotiation(null);
+      return;
+    }
+    let cancelled = false;
+    getNegotiation(drawerToken).then((n) => {
+      if (!cancelled) setNegotiation(n);
+    });
+    return () => { cancelled = true; };
+  }, [open, drawerToken]);
   if (!campaign) {
     return (
       <Drawer open={open} onOpenChange={onOpenChange}>
@@ -253,6 +279,14 @@ export function CampaignDrawer({
               onClick={() => onCopyLink?.(campaign)}
             />
             <ActionButton icon={ICON.owner}  label="Gerenciar owner (CP/CS)" onClick={() => onOwner?.(campaign)} />
+            {negotiation && (
+              <ActionButton
+                icon={ICON.nego}
+                label="Ver Negociado"
+                variant="highlight"
+                onClick={() => onNegotiation?.(campaign, negotiation)}
+              />
+            )}
             <ActionButton
               icon={ICON.merge}
               label={merge_id ? "Gerenciar agrupamento" : "Agrupar com outros tokens"}

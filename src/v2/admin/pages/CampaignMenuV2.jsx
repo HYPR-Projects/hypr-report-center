@@ -50,6 +50,7 @@ import OwnerModal from "../../../components/modals/OwnerModal";
 import MergeModal from "../../../components/modals/MergeModal";
 import RmndUploadModal from "../../../components/modals/RmndUploadModal";
 import SimpleUploadModal from "../../../components/modals/SimpleUploadModal";
+import { NegotiationModal } from "../../components/NegotiationModal";
 import { getOrIssueAdminJwt } from "../../../shared/auth";
 
 import { Button } from "../../../ui/Button";
@@ -163,6 +164,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   const [mergeModal, setMergeModal]       = useState(null);
   const [rmndModal, setRmndModal]         = useState(null);
   const [pdoohModal, setPdoohModal]       = useState(null);
+  const [negotiationModal, setNegotiationModal] = useState(null); // { short_token, negotiation }
   const [adminJwtForUploads, setAdminJwtForUploads] = useState(null);
 
   // Theme — single source of truth via hook V2 (aplica data-theme no
@@ -764,6 +766,10 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           setMergeModal(c);
           handleCloseDrawer();
         }}
+        onNegotiation={(c, n) => {
+          setNegotiationModal({ short_token: c.short_token, negotiation: n });
+          handleCloseDrawer();
+        }}
         onAbsChange={handleAbsSaved}
         onOpenReport={onOpenReport}
         teamMap={teamMap}
@@ -837,6 +843,13 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           description="Suba o relatório PDOOH (.csv ou .xlsx) para "
         />
       )}
+      <NegotiationModal
+        open={!!negotiationModal}
+        onOpenChange={(o) => !o && setNegotiationModal(null)}
+        negotiationsByToken={negotiationModal ? { [negotiationModal.short_token]: negotiationModal.negotiation } : {}}
+        members={negotiationModal ? [{ short_token: negotiationModal.short_token }] : []}
+        defaultActiveToken={negotiationModal?.short_token}
+      />
     </div>
   );
 }

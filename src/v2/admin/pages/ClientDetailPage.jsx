@@ -28,6 +28,7 @@ import SurveyModal from "../../../components/modals/SurveyModal";
 import LogoModal from "../../../components/modals/LogoModal";
 import OwnerModal from "../../../components/modals/OwnerModal";
 import MergeModal from "../../../components/modals/MergeModal";
+import { NegotiationModal } from "../../components/NegotiationModal";
 
 import { Card } from "../../../ui/Card";
 import { Skeleton } from "../../../ui/Skeleton";
@@ -81,6 +82,7 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
   const [logoModal, setLogoModal]           = useState(null);
   const [ownerModal, setOwnerModal]         = useState(null);
   const [mergeModal, setMergeModal]         = useState(null);
+  const [negotiationModal, setNegotiationModal] = useState(null); // { short_token, negotiation }
 
   // Theme — single source of truth via hook V2 (ver CampaignMenuV2).
   const [theme] = useTheme();
@@ -536,6 +538,10 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
           setMergeModal(c);
           setDrawerCampaign(null);
         }}
+        onNegotiation={(c, n) => {
+          setNegotiationModal({ short_token: c.short_token, negotiation: n });
+          setDrawerCampaign(null);
+        }}
         onAbsChange={handleAbsSaved}
         onOpenReport={onOpenReport}
         teamMap={teamMap}
@@ -582,6 +588,13 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
           theme={legacyModalTheme(isDark)}
         />
       )}
+      <NegotiationModal
+        open={!!negotiationModal}
+        onOpenChange={(o) => !o && setNegotiationModal(null)}
+        negotiationsByToken={negotiationModal ? { [negotiationModal.short_token]: negotiationModal.negotiation } : {}}
+        members={negotiationModal ? [{ short_token: negotiationModal.short_token }] : []}
+        defaultActiveToken={negotiationModal?.short_token}
+      />
     </div>
   );
 }
