@@ -113,7 +113,16 @@ export function CampaignCardV2({
     // Merge Reports — quando presente, indica que o token pertence a um
     // grupo unificado. UI sinaliza com badge discreto no header do card.
     merge_id,
+    // Campanha 100% bonificada (todo volume é cortesia HYPR, sem custo
+    // contratado). Backend emite a flag derivada de contracted_*=0 +
+    // bonus_*>0. Espelha o tratamento do report público.
+    is_bonus_only,
+    // Brand Safety pre-bid (DV ABS / IAS) por mídia — emite só quando TRUE.
+    // Card mostra um único selo "ABS" se qualquer das duas mídias tiver.
+    display_has_abs,
+    video_has_abs,
   } = campaign;
+  const has_abs = display_has_abs || video_has_abs;
 
   const ended  = isCampaignEnded(end_date);
   const health = ended ? "ended" : classifyHealth(display_pacing, video_pacing);
@@ -165,6 +174,8 @@ export function CampaignCardV2({
             </h3>
             <TokenChip token={short_token} variant="card" />
             {merge_id && <MergedBadge />}
+            {is_bonus_only && <BonusBadge />}
+            {has_abs && <AbsBadge />}
             {ended && (
               <span className="text-[9px] uppercase tracking-widest font-bold text-fg-subtle">
                 encerrada
@@ -300,6 +311,51 @@ function MergedBadge() {
         <path d="M9 6c4 0 6 2 6 6M9 18c4 0 6-2 6-6" />
       </svg>
       agrupado
+    </span>
+  );
+}
+
+/**
+ * Badge "BONIFICADA" — campanha 100% cortesia HYPR (todo volume contratado
+ * é bônus, sem custo faturado). Cor warning (dourado) carrega a conotação
+ * de "presente". Visualmente irmão do MergedBadge, mas usando o token
+ * --color-warning pra distinguir de "agrupado".
+ */
+function BonusBadge() {
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-warning px-1.5 py-0.5 rounded bg-warning-soft border border-warning/40"
+      title="Campanha 100% bonificada — todo volume entregue é cortesia HYPR"
+    >
+      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="20 12 20 22 4 22 4 12" />
+        <rect x="2" y="7" width="20" height="5" />
+        <line x1="12" y1="22" x2="12" y2="7" />
+        <path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z" />
+        <path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z" />
+      </svg>
+      bonificada
+    </span>
+  );
+}
+
+/**
+ * Badge "ABS" — campanha com Brand Safety pre-bid (DV ABS / IAS) ativo em
+ * pelo menos uma mídia. Sinaliza pra operação que os thresholds de eCPM
+ * e CTR no Top Performers estão sendo avaliados em régua mais permissiva
+ * (inventário pre-bid é estruturalmente mais caro). Cor success (verde)
+ * porque é um atributo "positivo" da campanha — garantia de inventário.
+ */
+function AbsBadge() {
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-success px-1.5 py-0.5 rounded bg-success-soft border border-success/30"
+      title="Brand Safety pre-bid (DV ABS / IAS) ativo — thresholds permissivos no scoring"
+    >
+      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z" />
+      </svg>
+      abs
     </span>
   );
 }
