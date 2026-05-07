@@ -128,6 +128,21 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt,
   // que pelo contrato representa "quanto vale o que estamos bonificando").
   const { main: bonusMain, cents: bonusCents } = splitCents(budgetTotal);
 
+  // "Custo + Over" só aparece quando há over-delivery real. Sem over,
+  // o valor é idêntico ao Hero "Custo Efetivo · Total" — duplicar o
+  // mesmo número polui o grid sem agregar info.
+  const hasOverDelivery = totalCustoOver > totalCusto;
+  const showCustoOver = !isBonusOnly && hasOverDelivery;
+  const slot4Visible = hasVideo || showCustoOver;
+  const slot5Visible = (!isFiltered && pacingGeral > 0) || showCustoOver;
+  const gridColsClass = isBonusOnly
+    ? (slot4Visible ? "xl:grid-cols-5" : "xl:grid-cols-4")
+    : slot4Visible && slot5Visible
+      ? "xl:grid-cols-6"
+      : slot4Visible || slot5Visible
+        ? "xl:grid-cols-5"
+        : "xl:grid-cols-4";
+
   return (
     <div className="space-y-6">
       {/* ─── 1. Hero KPI + auxiliares ────────────────────────────────── */}
@@ -135,7 +150,7 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt,
           encurta pra 5 cols — Budget, Custo+Over e Pacing Geral somem
           (este último porque o cálculo usa budget contratado, que é 0 em
           campanha 100% bônus). Layout fica: Hero(3)+Imp(1)+Views(1)=5. */}
-      <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 ${isBonusOnly ? "xl:grid-cols-5" : "xl:grid-cols-6"}`}>
+      <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 ${gridColsClass}`}>
         <div className={isBonusOnly ? "md:col-span-2 xl:col-span-3" : "md:col-span-2 xl:col-span-2"}>
           {isBonusOnly ? (
             <HeroKpiCardV2
@@ -211,9 +226,10 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt,
           />
         ) : (
           /* Fallback "Custo + Over" não faz sentido em bonificada
-             (custo é sempre 0). Quando bonificada e sem video, slot
-             fica vazio — o grid `xl:grid-cols-6` reflowa naturalmente. */
-          !isBonusOnly && (
+             (custo é sempre 0) nem quando o valor é igual ao Hero
+             (sem over-delivery). Em ambos os casos slot fica vazio
+             e o grid reflowa pelo `gridColsClass`. */
+          showCustoOver && (
             <KpiCardV2
               label="Custo + Over"
               value={fmtR(totalCustoOver)}
@@ -244,7 +260,7 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt,
             }
           />
         ) : (
-          !isBonusOnly && (
+          showCustoOver && (
             <KpiCardV2
               label="Custo + Over"
               value={fmtR(totalCustoOver)}
