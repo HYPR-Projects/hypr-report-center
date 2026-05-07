@@ -344,6 +344,9 @@ function aggregateByDay(daily, mediaFilter) {
     : daily.filter((r) => r.media_type === mediaFilter);
   if (!filtered.length) return [];
 
+  // Buckets por mídia: VTR/CPCV usam só dados de video, CPM usa só dados
+  // de display. Sem isso, no modo AGGREGATED viraria "blended" (mistura
+  // custo de display com views de video, viewable de display dilui VTR).
   const byDate = filtered.reduce((acc, r) => {
     const date = r.date;
     if (!date) return acc;
@@ -356,14 +359,28 @@ function aggregateByDay(daily, mediaFilter) {
         video_starts:         0,
         video_view_100:       0,
         cost:                 0,
+        display_viewable:     0,
+        display_cost:         0,
+        video_viewable:       0,
+        video_cost:           0,
       };
     }
+    const isDisplay = r.media_type === "DISPLAY";
+    const isVideo   = r.media_type === "VIDEO";
     acc[date].impressions          += r.impressions          || 0;
     acc[date].viewable_impressions += r.viewable_impressions || 0;
     acc[date].clicks               += r.clicks               || 0;
     acc[date].video_starts         += r.video_starts         || 0;
     acc[date].video_view_100       += r.video_view_100       || 0;
     acc[date].cost                 += r.effective_total_cost || 0;
+    if (isDisplay) {
+      acc[date].display_viewable += r.viewable_impressions || 0;
+      acc[date].display_cost     += r.effective_total_cost || 0;
+    }
+    if (isVideo) {
+      acc[date].video_viewable += r.viewable_impressions || 0;
+      acc[date].video_cost     += r.effective_total_cost || 0;
+    }
     return acc;
   }, {});
 
@@ -379,20 +396,20 @@ function aggregateByDay(daily, mediaFilter) {
       viewability: r.impressions > 0
         ? (r.viewable_impressions / r.impressions) * 100
         : 0,
-      // VTR = views 100% / impressões visíveis (apenas video)
-      vtr: r.viewable_impressions > 0
-        ? (r.video_view_100 / r.viewable_impressions) * 100
+      // VTR = views 100% / visíveis de VIDEO (não viewable total — no
+      // AGGREGATED isso diluía com display).
+      vtr: r.video_viewable > 0
+        ? (r.video_view_100 / r.video_viewable) * 100
         : 0,
-      // CPM Efetivo = custo / imp. visíveis × 1000 (custo por mil
-      // impressões realmente vistas). null quando não há denominador
-      // pra exibir "—" em vez de "R$ 0,00".
-      cpm: r.viewable_impressions > 0
-        ? (r.cost / r.viewable_impressions) * 1000
+      // CPM Efetivo = custo de display / visíveis de display × 1000.
+      // No AGGREGATED, isolar pra não inflar o CPM com custo de video.
+      cpm: r.display_viewable > 0
+        ? (r.display_cost / r.display_viewable) * 1000
         : null,
-      // CPCV Efetivo = custo / views 100% (custo por view completa).
-      // Usa custo total por dia mesmo no AGGREGATED — vira "blended".
+      // CPCV Efetivo = custo de video / views 100%. Análogo ao CPM,
+      // isola o lado de video do custo total.
       cpcv: r.video_view_100 > 0
-        ? r.cost / r.video_view_100
+        ? r.video_cost / r.video_view_100
         : null,
     }))
     .sort((a, b) => b.date.localeCompare(a.date)); // mais recente no topo
@@ -411,8 +428,17 @@ function computeTotalsRow(rows) {
       video_starts:         acc.video_starts         + (r.video_starts         || 0),
       video_view_100:       acc.video_view_100       + (r.video_view_100       || 0),
       cost:                 acc.cost                 + (r.cost                 || 0),
+      display_viewable:     acc.display_viewable     + (r.display_viewable     || 0),
+      display_cost:         acc.display_cost         + (r.display_cost         || 0),
+      video_viewable:       acc.video_viewable       + (r.video_viewable       || 0),
+      video_cost:           acc.video_cost           + (r.video_cost           || 0),
     }),
-    { impressions: 0, viewable_impressions: 0, clicks: 0, video_starts: 0, video_view_100: 0, cost: 0 },
+    {
+      impressions: 0, viewable_impressions: 0, clicks: 0,
+      video_starts: 0, video_view_100: 0, cost: 0,
+      display_viewable: 0, display_cost: 0,
+      video_viewable: 0, video_cost: 0,
+    },
   );
   return {
     ...sum,
@@ -422,14 +448,14 @@ function computeTotalsRow(rows) {
     viewability: sum.impressions > 0
       ? (sum.viewable_impressions / sum.impressions) * 100
       : 0,
-    vtr: sum.viewable_impressions > 0
-      ? (sum.video_view_100 / sum.viewable_impressions) * 100
+    vtr: sum.video_viewable > 0
+      ? (sum.video_view_100 / sum.video_viewable) * 100
       : 0,
-    cpm: sum.viewable_impressions > 0
-      ? (sum.cost / sum.viewable_impressions) * 1000
+    cpm: sum.display_viewable > 0
+      ? (sum.display_cost / sum.display_viewable) * 1000
       : null,
     cpcv: sum.video_view_100 > 0
-      ? sum.cost / sum.video_view_100
+      ? sum.video_cost / sum.video_view_100
       : null,
   };
 }

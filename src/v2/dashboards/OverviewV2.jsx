@@ -49,7 +49,7 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt,
     totalImpressions, totalCusto, totalCustoOver,
     display, video, totals,
     isFiltered, budgetProRata, budgetTotal,
-    chartDisplay, chartVideo, daily0,
+    chartDisplay, chartVideo, daily0, detail,
   } = aggregates;
 
   // Quando o report é merged em visão agregada, o pacing/over reflete
@@ -393,10 +393,15 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt,
           que oculta as tabs Display/Video em ClientDashboardV2 — assim
           campanha só-Display não mostra um toggle "Video" que ao ser
           clicado sempre vai dizer "Sem entregas de Video". */}
-      {daily0 && daily0.length > 0 && (
+      {detail && detail.length > 0 && (
         <CollapsibleSectionV2 title="Entrega Agregada por Dia" defaultOpen>
+          {/* Usa `detail` (enriched) em vez de `daily0` porque o backend
+              retorna effective_total_cost em query_daily como MAX
+              (cumulativo) — somar valores diários distorce. enrichDetailCosts
+              apportiona o custo total proporcionalmente, então somar
+              detail por dia bate com o total da campanha. */}
           <DailyAggregateTableV2
-            daily={daily0}
+            daily={detail}
             campaignName={camp.campaign_name}
             availableMedia={availableMediaFromData(data)}
           />
