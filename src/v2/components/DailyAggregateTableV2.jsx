@@ -8,14 +8,23 @@
 // o que faz sentido pra ela.
 //
 // Métricas por mídia:
-//   AGGREGATED: Data · Impressões · Imp. Visíveis · Cliques · CTR ·
-//               Viewability · Custo Efetivo (métricas universais a
-//               ambas as mídias — VTR fica fora porque mistura
-//               numerador de video com denominador agregado)
+//   AGGREGATED: union — Data · Impressões · Imp. Visíveis · Cliques ·
+//               CTR · Viewability · Start Views · 100% Views · VTR ·
+//               CPM Ef. · CPCV Ef. · Custo Efetivo. CPM/CPCV viram
+//               "blended" (custo total dividido pelo denominador) —
+//               útil pra ver o efetivo de campanha mista.
 //   DISPLAY:    Data · Impressões · Imp. Visíveis · Cliques · CTR ·
-//               Viewability · Custo Efetivo
+//               Viewability · CPM Ef. · Custo Efetivo
 //   VIDEO:      Data · Impressões · Imp. Visíveis · Cliques · CTR ·
-//               Start Views · 100% Views · VTR · Custo Efetivo
+//               Viewability · Start Views · 100% Views · VTR ·
+//               CPCV Ef. · Custo Efetivo
+//
+// Fórmulas de derivados:
+//   CTR         = cliques            / imp. visíveis
+//   Viewability = imp. visíveis      / impressões
+//   VTR         = views 100%         / imp. visíveis
+//   CPM Ef.     = custo efetivo      / imp. visíveis × 1000
+//   CPCV Ef.    = custo efetivo      / views 100%
 //
 // Comportamento:
 //   - Default = AGGREGATED quando há ambas as mídias, senão a única
@@ -58,6 +67,11 @@ const COLUMNS = {
     { key: "clicks",                label: "Cliques",       type: "number" },
     { key: "ctr",                   label: "CTR",           type: "percent2" },
     { key: "viewability",           label: "Viewability",   type: "percent1" },
+    { key: "video_starts",          label: "Start Views",   type: "number" },
+    { key: "video_view_100",        label: "100% Views",    type: "number" },
+    { key: "vtr",                   label: "VTR",           type: "percent1" },
+    { key: "cpm",                   label: "CPM Ef.",       type: "currency" },
+    { key: "cpcv",                  label: "CPCV Ef.",      type: "currency" },
     { key: "cost",                  label: "Custo Ef.",     type: "currency" },
   ],
   DISPLAY: [
@@ -67,6 +81,7 @@ const COLUMNS = {
     { key: "clicks",                label: "Cliques",       type: "number" },
     { key: "ctr",                   label: "CTR",           type: "percent2" },
     { key: "viewability",           label: "Viewability",   type: "percent1" },
+    { key: "cpm",                   label: "CPM Ef.",       type: "currency" },
     { key: "cost",                  label: "Custo Ef.",     type: "currency" },
   ],
   VIDEO: [
@@ -75,9 +90,11 @@ const COLUMNS = {
     { key: "viewable_impressions",  label: "Imp. Visíveis", type: "number" },
     { key: "clicks",                label: "Cliques",       type: "number" },
     { key: "ctr",                   label: "CTR",           type: "percent2" },
+    { key: "viewability",           label: "Viewability",   type: "percent1" },
     { key: "video_starts",          label: "Start Views",   type: "number" },
     { key: "video_view_100",        label: "100% Views",    type: "number" },
     { key: "vtr",                   label: "VTR",           type: "percent1" },
+    { key: "cpcv",                  label: "CPCV Ef.",      type: "currency" },
     { key: "cost",                  label: "Custo Ef.",     type: "currency" },
   ],
 };
@@ -366,6 +383,17 @@ function aggregateByDay(daily, mediaFilter) {
       vtr: r.viewable_impressions > 0
         ? (r.video_view_100 / r.viewable_impressions) * 100
         : 0,
+      // CPM Efetivo = custo / imp. visíveis × 1000 (custo por mil
+      // impressões realmente vistas). null quando não há denominador
+      // pra exibir "—" em vez de "R$ 0,00".
+      cpm: r.viewable_impressions > 0
+        ? (r.cost / r.viewable_impressions) * 1000
+        : null,
+      // CPCV Efetivo = custo / views 100% (custo por view completa).
+      // Usa custo total por dia mesmo no AGGREGATED — vira "blended".
+      cpcv: r.video_view_100 > 0
+        ? r.cost / r.video_view_100
+        : null,
     }))
     .sort((a, b) => b.date.localeCompare(a.date)); // mais recente no topo
 }
@@ -397,6 +425,12 @@ function computeTotalsRow(rows) {
     vtr: sum.viewable_impressions > 0
       ? (sum.video_view_100 / sum.viewable_impressions) * 100
       : 0,
+    cpm: sum.viewable_impressions > 0
+      ? (sum.cost / sum.viewable_impressions) * 1000
+      : null,
+    cpcv: sum.video_view_100 > 0
+      ? sum.cost / sum.video_view_100
+      : null,
   };
 }
 
