@@ -2,19 +2,25 @@
 //
 // Tabela "Entrega Agregada por Dia" — agrega o `daily` (granular por
 // line+criativo+dia) somando todas as lines pra ter uma visão por dia
-// inteira. Tem toggle Display/Video que troca o conjunto de métricas
-// exibidas, porque misturar CPM (display) com CPCV (video) na mesma
-// linha confunde mais do que ajuda — agora cada mídia mostra só o que
-// faz sentido pra ela.
+// inteira. Tem toggle Agregado/Display/Video que troca o conjunto de
+// métricas exibidas, porque misturar CPM (display) com CPCV (video) na
+// mesma linha confunde mais do que ajuda — agora cada mídia mostra só
+// o que faz sentido pra ela.
 //
 // Métricas por mídia:
-//   DISPLAY: Data · Impressões · Imp. Visíveis · Cliques · CTR ·
-//            Viewability · Custo Efetivo
-//   VIDEO:   Data · Impressões · Imp. Visíveis · Cliques · CTR ·
-//            Start Views · 100% Views · VTR · Custo Efetivo
+//   AGGREGATED: Data · Impressões · Imp. Visíveis · Cliques · CTR ·
+//               Viewability · Custo Efetivo (métricas universais a
+//               ambas as mídias — VTR fica fora porque mistura
+//               numerador de video com denominador agregado)
+//   DISPLAY:    Data · Impressões · Imp. Visíveis · Cliques · CTR ·
+//               Viewability · Custo Efetivo
+//   VIDEO:      Data · Impressões · Imp. Visíveis · Cliques · CTR ·
+//               Start Views · 100% Views · VTR · Custo Efetivo
 //
 // Comportamento:
-//   - Default = DISPLAY (mais usado)
+//   - Default = AGGREGATED quando há ambas as mídias, senão a única
+//   - Toggle Agregado só aparece quando a campanha tem Display E Video
+//   - Linha de Total no rodapé (counts somados, ratios recalculados)
 //   - Dias ordenados decrescente (mais recente no topo)
 //   - Datas formatadas "28/04 ter" (curto + dia da semana)
 //   - CSV export respeita a mídia atualmente selecionada
@@ -32,13 +38,28 @@ import { SegmentedControlV2 } from "./SegmentedControlV2";
 const WEEKDAY_PT = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 
 const MEDIA_OPTIONS = [
-  { value: "DISPLAY", label: "Display" },
-  { value: "VIDEO",   label: "Video"   },
+  { value: "AGGREGATED", label: "Agregado" },
+  { value: "DISPLAY",    label: "Display"  },
+  { value: "VIDEO",      label: "Video"    },
 ];
+
+const MEDIA_LABEL = MEDIA_OPTIONS.reduce((acc, opt) => {
+  acc[opt.value] = opt.label;
+  return acc;
+}, {});
 
 // Configuração de colunas por mídia. Mantém estrutura serializável pra
 // reutilizar no CSV header + table head sem duplicar.
 const COLUMNS = {
+  AGGREGATED: [
+    { key: "date",                  label: "Data",          align: "left", type: "date" },
+    { key: "impressions",           label: "Impressões",    type: "number" },
+    { key: "viewable_impressions",  label: "Imp. Visíveis", type: "number" },
+    { key: "clicks",                label: "Cliques",       type: "number" },
+    { key: "ctr",                   label: "CTR",           type: "percent2" },
+    { key: "viewability",           label: "Viewability",   type: "percent1" },
+    { key: "cost",                  label: "Custo Ef.",     type: "currency" },
+  ],
   DISPLAY: [
     { key: "date",                  label: "Data",          align: "left", type: "date" },
     { key: "impressions",           label: "Impressões",    type: "number" },
@@ -76,13 +97,18 @@ export function DailyAggregateTableV2({
   availableMedia = null,
 }) {
   // Filtra MEDIA_OPTIONS pelo conjunto disponível (se passado). Mantém
-  // ordem original (Display antes de Video).
-  const filteredMediaOptions = useMemo(
-    () => availableMedia
-      ? MEDIA_OPTIONS.filter((opt) => availableMedia.includes(opt.value))
-      : MEDIA_OPTIONS,
-    [availableMedia],
-  );
+  // ordem original (Agregado, Display, Video). Agregado só faz sentido
+  // quando há ambas mídias — se a campanha tem só uma, mostra direto a
+  // mídia única (sem opção "Agregado" redundante).
+  const filteredMediaOptions = useMemo(() => {
+    const hasBoth =
+      !availableMedia
+      || (availableMedia.includes("DISPLAY") && availableMedia.includes("VIDEO"));
+    return MEDIA_OPTIONS.filter((opt) => {
+      if (opt.value === "AGGREGATED") return hasBoth;
+      return availableMedia ? availableMedia.includes(opt.value) : true;
+    });
+  }, [availableMedia]);
   const showToggle = !lockedMedia && filteredMediaOptions.length > 1;
   const fallbackMedia = filteredMediaOptions[0]?.value || "DISPLAY";
 
@@ -100,6 +126,14 @@ export function DailyAggregateTableV2({
     [daily, media],
   );
 
+  // Linha de Total: counts somados, ratios (CTR, Viewability, VTR)
+  // recalculados a partir dos somatórios — somar percentuais brutos
+  // dá média ponderada errada.
+  const totalsRow = useMemo(
+    () => computeTotalsRow(aggregated),
+    [aggregated],
+  );
+
   const columns = COLUMNS[media];
 
   const downloadCsv = () => {
@@ -107,7 +141,10 @@ export function DailyAggregateTableV2({
     const rows = aggregated.map((r) =>
       columns.map((c) => formatCsvCell(r[c.key], c.type)),
     );
-    const csv = [headers, ...rows]
+    const totalLine = totalsRow
+      ? [columns.map((c) => formatCsvCell(totalsRow[c.key], c.type))]
+      : [];
+    const csv = [headers, ...rows, ...totalLine]
       .map((row) => row.map((v) => `"${v ?? ""}"`).join(","))
       .join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -153,7 +190,7 @@ export function DailyAggregateTableV2({
 
       {empty ? (
         <div className="p-6 text-center text-sm text-fg-subtle">
-          Sem entregas de {media === "DISPLAY" ? "Display" : "Video"} no período.
+          Sem entregas de {MEDIA_LABEL[media] || media} no período.
         </div>
       ) : (
         <div className="overflow-x-auto">
@@ -185,6 +222,23 @@ export function DailyAggregateTableV2({
                 </tr>
               ))}
             </tbody>
+            {totalsRow && (
+              <tfoot>
+                <tr className="border-t-2 border-border bg-surface font-semibold">
+                  {columns.map((c) => (
+                    <Td
+                      key={c.key}
+                      align={c.align}
+                      mono={c.type === "date"}
+                    >
+                      {c.key === "date"
+                        ? "Total"
+                        : formatCell(totalsRow[c.key], c.type)}
+                    </Td>
+                  ))}
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       )}
@@ -263,11 +317,14 @@ function formatDateLabel(ymd) {
 // ─── Aggregation ──────────────────────────────────────────────────────
 
 // Agrupa por data filtrando pela mídia atual, soma counts brutos,
-// recalcula derivados (CTR, VTR, Viewability).
+// recalcula derivados (CTR, VTR, Viewability). Quando mediaFilter é
+// "AGGREGATED", não filtra — soma Display + Video no mesmo balde.
 function aggregateByDay(daily, mediaFilter) {
   if (!daily || !daily.length) return [];
 
-  const filtered = daily.filter((r) => r.media_type === mediaFilter);
+  const filtered = mediaFilter === "AGGREGATED"
+    ? daily
+    : daily.filter((r) => r.media_type === mediaFilter);
   if (!filtered.length) return [];
 
   const byDate = filtered.reduce((acc, r) => {
@@ -311,6 +368,36 @@ function aggregateByDay(daily, mediaFilter) {
         : 0,
     }))
     .sort((a, b) => b.date.localeCompare(a.date)); // mais recente no topo
+}
+
+// Linha de Total: soma counts e recalcula ratios. Reaproveita as mesmas
+// fórmulas do aggregateByDay pra manter coerência entre célula diária e
+// totalizador.
+function computeTotalsRow(rows) {
+  if (!rows || !rows.length) return null;
+  const sum = rows.reduce(
+    (acc, r) => ({
+      impressions:          acc.impressions          + (r.impressions          || 0),
+      viewable_impressions: acc.viewable_impressions + (r.viewable_impressions || 0),
+      clicks:               acc.clicks               + (r.clicks               || 0),
+      video_starts:         acc.video_starts         + (r.video_starts         || 0),
+      video_view_100:       acc.video_view_100       + (r.video_view_100       || 0),
+      cost:                 acc.cost                 + (r.cost                 || 0),
+    }),
+    { impressions: 0, viewable_impressions: 0, clicks: 0, video_starts: 0, video_view_100: 0, cost: 0 },
+  );
+  return {
+    ...sum,
+    ctr: sum.viewable_impressions > 0
+      ? (sum.clicks / sum.viewable_impressions) * 100
+      : 0,
+    viewability: sum.impressions > 0
+      ? (sum.viewable_impressions / sum.impressions) * 100
+      : 0,
+    vtr: sum.viewable_impressions > 0
+      ? (sum.video_view_100 / sum.viewable_impressions) * 100
+      : 0,
+  };
 }
 
 function DownloadIcon() {
