@@ -205,6 +205,16 @@ export function DailyAggregateTableV2({
         </div>
       </div>
 
+      {/* Disclaimer no Agregado: CPM só conta Display, CPCV só conta Video.
+          Coerente com o modelo de cobrança HYPR (Display por CPM, Video por
+          CPCV) e evita o usuário interpretar uma blendagem como média geral. */}
+      {!empty && media === "AGGREGATED" && (
+        <div className="px-4 py-2 border-b border-border bg-surface text-[11px] text-fg-subtle leading-snug">
+          CPM Ef. é calculado apenas sobre a entrega de Display e CPCV Ef.
+          apenas sobre a de Video — coerente com o modelo de cobrança HYPR.
+        </div>
+      )}
+
       {empty ? (
         <div className="p-6 text-center text-sm text-fg-subtle">
           Sem entregas de {MEDIA_LABEL[media] || media} no período.
