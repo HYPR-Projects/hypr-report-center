@@ -278,8 +278,8 @@ export default function SheetsIntegrationCardV2({
             </div>
             <p className="text-xs text-fg-muted mt-1 max-w-2xl">
               {isMerge
-                ? "Cria uma planilha no seu Drive com a base unificada de todos os tokens do grupo (com colunas extras Mês e Token), atualizada diariamente às 06:00 BRT."
-                : "Cria uma planilha no seu Drive com a Base de Dados completa, atualizada diariamente às 06:00 BRT. Compartilhe com o cliente como faria com qualquer planilha. Sync automático para 30 dias após o término da campanha."}
+                ? "Cria uma planilha no seu Drive com a base unificada de todos os tokens do grupo (com colunas extras Mês e Token), atualizada automaticamente às 08h e 12h BRT todos os dias."
+                : "Cria uma planilha no seu Drive com a Base de Dados completa, atualizada automaticamente às 08h e 12h BRT todos os dias. Compartilhe com o cliente como faria com qualquer planilha. Sync automático para 30 dias após o término da campanha."}
             </p>
             {error && <ErrorLine msg={error} />}
           </div>
@@ -307,9 +307,12 @@ export default function SheetsIntegrationCardV2({
     // título (created_by, last_sync, sync_until), então alinha ao topo
     // pra ícone/título encostarem na primeira linha de texto.
     const rowAlign = isAdmin ? "items-start" : "items-center";
+    const freshness = isAdmin ? computeFreshness(integration) : { level: "fresh" };
+    const showStaleBanner = freshness.level !== "fresh";
     return (
-      <Card>
+      <Card variant={showStaleBanner ? "warning" : undefined}>
         <div className="flex flex-col gap-3">
+          {showStaleBanner && <StaleBanner freshness={freshness} />}
           <div className={`flex ${rowAlign} gap-4`}>
             <SheetIcon />
             <div className="flex-1 min-w-0">
@@ -328,7 +331,12 @@ export default function SheetsIntegrationCardV2({
                   )}
                   {integration.last_synced_at && (
                     <div>
-                      Último sync: <span className="text-fg-muted">{formatDateTime(integration.last_synced_at)}</span>
+                      Último sync com sucesso: <span className="text-fg-muted">{formatDateTime(integration.last_synced_at)}</span>
+                    </div>
+                  )}
+                  {integration.last_attempt_at && (
+                    <div>
+                      Última tentativa: <span className="text-fg-muted">{formatDateTime(integration.last_attempt_at)}</span>
                     </div>
                   )}
                   {integration.sync_until && (
@@ -472,11 +480,39 @@ export default function SheetsIntegrationCardV2({
 
 // ─── Subcomponents ───────────────────────────────────────────────────────────
 function Card({ children, variant }) {
-  const border = variant === "error" ? "border-red-500/40" : "border-border";
-  const bg     = variant === "error" ? "bg-red-500/5"     : "bg-surface";
+  // Variants usam tokens do design system (theme-aware via theme.css):
+  // - error → --color-danger (vermelho)
+  // - warning → --color-warning (amarelo/mustard)
+  const styles = {
+    error:   { border: "border-danger/40",  bg: "bg-danger-soft" },
+    warning: { border: "border-warning/40", bg: "bg-warning-soft" },
+  };
+  const s = styles[variant] || { border: "border-border", bg: "bg-surface" };
   return (
-    <div className={`rounded-xl border ${border} ${bg} p-5`}>
+    <div className={`rounded-xl border ${s.border} ${s.bg} p-5`}>
       {children}
+    </div>
+  );
+}
+
+function StaleBanner({ freshness }) {
+  // 2 sub-estados: "tried-and-failed" (cron tentou recentemente, mas essa
+  // row específica não atualizou — sintoma do bug que vimos em 08/05) e
+  // "never-tried" (cron pode ter parado globalmente). Mensagens diferentes
+  // pra orientar o admin sobre onde olhar.
+  const isTriedFailed = freshness.level === "tried-and-failed";
+  const ago = formatHoursAgo(freshness.hoursSinceSync);
+  return (
+    <div className="rounded-lg bg-warning-soft border border-warning/40 px-3 py-2">
+      <div className="text-xs font-semibold text-warning">
+        ⚠ Dados podem estar desatualizados
+      </div>
+      <div className="text-[11px] text-fg-muted mt-0.5">
+        Última sync com sucesso {ago}.{" "}
+        {isTriedFailed
+          ? "O cron tentou recentemente e falhou nessa integração — verifique os logs do Cloud Run."
+          : "O cron pode ter parado de rodar — confira o Cloud Scheduler."}
+      </div>
     </div>
   );
 }
@@ -538,4 +574,38 @@ function formatDate(iso) {
     const d = new Date(iso);
     return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
   } catch { return iso; }
+}
+
+// Detecta sync travado.
+//
+// `last_synced_at` é a fonte da verdade pra freshness — o card mente "ATIVO"
+// quando o cron crasha no meio do loop (timeout/OOM antes de marcar a row).
+// O sync corre 2x/dia (08h e 12h BRT), então > 26h sem sucesso já é vermelho.
+//
+// `last_attempt_at` (gravado ANTES de cada iteração no backend) sub-classifica:
+//   - tried-and-failed: tentou recentemente mas não sincronizou → erro real
+//                        no processamento dessa row específica.
+//   - never-tried:      nem tentou recentemente → cron parou globalmente, ou
+//                        a row não foi processada no último run que crashou.
+function computeFreshness(integration) {
+  if (!integration?.last_synced_at) return { level: "fresh" };
+  const now      = Date.now();
+  const synced   = new Date(integration.last_synced_at).getTime();
+  const attempt  = integration.last_attempt_at
+    ? new Date(integration.last_attempt_at).getTime()
+    : null;
+  const hoursSinceSync    = (now - synced) / (1000 * 60 * 60);
+  const hoursSinceAttempt = attempt ? (now - attempt) / (1000 * 60 * 60) : Infinity;
+
+  if (hoursSinceSync < 26) return { level: "fresh" };
+  // Tentou nas últimas 14h (= último ciclo de cron) mas não sincronizou.
+  if (hoursSinceAttempt < 14) {
+    return { level: "tried-and-failed", hoursSinceSync };
+  }
+  return { level: "never-tried", hoursSinceSync };
+}
+
+function formatHoursAgo(hours) {
+  if (hours < 24) return `há ${Math.round(hours)}h`;
+  return `há ${Math.round(hours / 24)} dia${Math.round(hours / 24) === 1 ? "" : "s"}`;
 }

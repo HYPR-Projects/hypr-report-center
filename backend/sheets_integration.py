@@ -44,7 +44,16 @@ Schema da tabela
     created_by_email   STRING           -- membro HYPR que ativou
     refresh_token_enc  BYTES            -- KMS-encrypted refresh_token
     created_at         TIMESTAMP
-    last_synced_at     TIMESTAMP
+    last_synced_at     TIMESTAMP        -- timestamp da última sync com SUCESSO
+    last_attempt_at    TIMESTAMP        -- timestamp da última TENTATIVA de sync
+                                          (gravado ANTES de processar a row).
+                                          Permite detectar falha silenciosa:
+                                          se last_attempt_at >> last_synced_at,
+                                          o cron tentou mas crashou antes de
+                                          completar (timeout/OOM/exception
+                                          fora do try/except). Sem isso, rows
+                                          mortas ficam com status='active' e
+                                          UI mente.
     sync_until         DATE             -- end_date + 30 dias (token: do próprio
                                           token; merge: maior end_date do grupo)
     status             STRING           -- active | paused | revoked | error
@@ -187,6 +196,7 @@ def ensure_table_exists() -> None:
             refresh_token_enc  BYTES,
             created_at         TIMESTAMP,
             last_synced_at     TIMESTAMP,
+            last_attempt_at    TIMESTAMP,
             sync_until         DATE,
             status             STRING,
             last_error         STRING
@@ -208,6 +218,16 @@ def ensure_table_exists() -> None:
             ).result()
         except Exception as e:
             logger.warning(f"[WARN ensure_table_exists backfill target_type] {e}")
+        # Migration: adiciona last_attempt_at (PR-attempt-tracking).
+        # Usado pra detectar sync que tentou e morreu silenciosamente
+        # (timeout/OOM/exception não capturada). Sem default — rows
+        # legacy ficam com NULL até a próxima tentativa.
+        try:
+            _bq_client().query(
+                f"ALTER TABLE `{_table_id()}` ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMP"
+            ).result()
+        except Exception as e:
+            logger.warning(f"[WARN ensure_table_exists ADD COLUMN last_attempt_at] {e}")
         _table_ensured = True
 
 
@@ -329,6 +349,7 @@ def get_integration(target_id: str, target_type: str = TARGET_TOKEN) -> Optional
         refresh_token_enc,
         created_at,
         last_synced_at,
+        last_attempt_at,
         sync_until,
         status,
         last_error
@@ -364,6 +385,7 @@ def get_integration(target_id: str, target_type: str = TARGET_TOKEN) -> Optional
         "refresh_token_enc": r["refresh_token_enc"],
         "created_at":       r["created_at"],
         "last_synced_at":   r["last_synced_at"],
+        "last_attempt_at":  r["last_attempt_at"],
         "sync_until":       r["sync_until"],
         "status":           r["status"],
         "last_error":       r["last_error"],
@@ -464,9 +486,15 @@ def _update_status(
     target_type: str = TARGET_TOKEN,
     status: Optional[str] = None,
     last_synced_at: Optional[datetime] = None,
+    last_attempt_at: Optional[datetime] = None,
     last_error: Optional[str] = None,
 ) -> None:
-    """Atualiza apenas campos de status/erro/sync. Não toca refresh_token."""
+    """Atualiza apenas campos de status/erro/sync. Não toca refresh_token.
+
+    `last_error=None` no caller significa "não mexer". Pra zerar o erro
+    explicitamente (ex.: sync recuperou), passa string vazia "" — convertida
+    aqui pra NULL no SQL (BQ aceita STRING NULL).
+    """
     _validate_target_type(target_type)
     sets = []
     params = [
@@ -479,6 +507,9 @@ def _update_status(
     if last_synced_at is not None:
         sets.append("last_synced_at = @last_synced_at")
         params.append(bigquery.ScalarQueryParameter("last_synced_at", "TIMESTAMP", last_synced_at))
+    if last_attempt_at is not None:
+        sets.append("last_attempt_at = @last_attempt_at")
+        params.append(bigquery.ScalarQueryParameter("last_attempt_at", "TIMESTAMP", last_attempt_at))
     if last_error is not None:
         sets.append("last_error = @last_error")
         params.append(bigquery.ScalarQueryParameter("last_error", "STRING", last_error))
@@ -493,6 +524,26 @@ def _update_status(
         sql,
         job_config=bigquery.QueryJobConfig(query_parameters=params),
     ).result()
+
+
+def _mark_attempt(target_id: str, target_type: str) -> None:
+    """Marca o início de uma tentativa de sync. Chamado ANTES de processar
+    a row no loop do cron — antes de qualquer chamada que possa estourar
+    timeout/memória.
+
+    Best-effort: se a própria escrita falhar (BQ down), loga e segue. O
+    objetivo é rastrear "tentei processar essa row" pro frontend distinguir
+    "sync travado" de "sync nem chegou nessa row". Não pode bloquear a
+    iteração do cron — se essa update falhar, o sync ainda deve tentar.
+    """
+    try:
+        _update_status(
+            target_id,
+            target_type=target_type,
+            last_attempt_at=datetime.now(timezone.utc),
+        )
+    except Exception as e:
+        logger.warning(f"[WARN _mark_attempt {target_type}/{target_id}] {e}")
 
 
 def delete_integration(
@@ -683,6 +734,11 @@ def sync_all_due(token_loader, merge_loader=None) -> Dict:
     for integ in active:
         target_id   = integ["target_id"]
         target_type = integ.get("target_type", TARGET_TOKEN)
+        # Marca a tentativa ANTES de qualquer processamento. Se o cron
+        # crashar (timeout/OOM/exception fora do try), o frontend usa
+        # `last_attempt_at` recente + `last_synced_at` antigo pra mostrar
+        # "tentou mas falhou" em vez de mentir "ATIVO" com sync velho.
+        _mark_attempt(target_id, target_type)
         try:
             if target_type == TARGET_MERGE:
                 if merge_loader is None:
@@ -1391,6 +1447,7 @@ def status_for_response(
         "created_by_email": integ["created_by_email"],
         "created_at":       integ["created_at"].isoformat() if integ["created_at"] else None,
         "last_synced_at":   integ["last_synced_at"].isoformat() if integ["last_synced_at"] else None,
+        "last_attempt_at":  integ["last_attempt_at"].isoformat() if integ.get("last_attempt_at") else None,
         "sync_until":       integ["sync_until"].isoformat() if integ["sync_until"] else None,
         "last_error":       integ["last_error"],
     }
