@@ -48,6 +48,7 @@ import shares
 import clients
 import merges
 import sheets_integration
+import sheets_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -749,6 +750,26 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR sheets_sync_all] {e}")
             return (jsonify({"error": "Erro no sync diário"}), 500, headers)
+
+    # ── Endpoint: alerta diário pra CS sobre integrações stale (cron) ───────
+    # Invocado pelo Cloud Scheduler diariamente às 09:00 BRT — 1h depois do
+    # sync das 08h, dando tempo do cron rodar.
+    #
+    # Pra cada integração com last_synced_at > 26h, envia 1 email pro
+    # `created_by_email` (CS responsável) listando as campanhas dele.
+    # Auth via X-Cron-Secret igual ao sheets_sync_all — Scheduler não tem
+    # identidade humana.
+    if request.method == "POST" and request.args.get("action") == "sheets_alert_stale":
+        provided  = request.headers.get("X-Cron-Secret", "")
+        expected  = os.environ.get("CRON_SECRET", "")
+        if not expected or not hmac.compare_digest(provided, expected):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            summary = sheets_alerts.alert_stale_integrations()
+            return (jsonify({"summary": summary}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR sheets_alert_stale] {e}")
+            return (jsonify({"error": "Erro no alerta diário"}), 500, headers)
 
     # ── Endpoint: deletar integração (admin) ────────────────────────────────
     # Remove o registro do BQ. NÃO deleta a sheet do Drive — fica como
