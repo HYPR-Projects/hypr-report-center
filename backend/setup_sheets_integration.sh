@@ -129,7 +129,7 @@ PASSOS MANUAIS (não dá via gcloud):
 
      gcloud scheduler jobs create http sheets-sync-daily \
        --location=southamerica-east1 \
-       --schedule="0 6 * * *" \
+       --schedule="0 8,12 * * *" \
        --time-zone="America/Sao_Paulo" \
        --uri="${CF_URL}?action=sheets_sync_all" \
        --http-method=POST \

@@ -73,6 +73,8 @@ TYPEFORM_TOKEN=$(extract_env "TYPEFORM_TOKEN")
 GOOGLE_OAUTH_CLIENT_ID=$(extract_env "GOOGLE_OAUTH_CLIENT_ID")
 GOOGLE_OAUTH_CLIENT_SECRET=$(extract_env "GOOGLE_OAUTH_CLIENT_SECRET")
 CRON_SECRET=$(extract_env "CRON_SECRET")
+SENDGRID_API_KEY=$(extract_env "SENDGRID_API_KEY")
+SHEETS_ALERT_FROM=$(extract_env "SHEETS_ALERT_FROM")
 
 if [ -z "$JWT_SECRET" ]; then
   echo "✗ JWT_SECRET não encontrado na revisão $ACTIVE_REV. Abortando."
@@ -95,6 +97,14 @@ if [ -n "$CRON_SECRET" ]; then
   echo "  ✓ CRON_SECRET capturado"
 else
   echo "  ⚠ CRON_SECRET ausente — sync diário do Sheets desabilitado"
+fi
+if [ -n "$SENDGRID_API_KEY" ]; then
+  echo "  ✓ SENDGRID_API_KEY capturado"
+else
+  echo "  ⚠ SENDGRID_API_KEY ausente — alertas por email pra CS desabilitados"
+fi
+if [ -n "$SHEETS_ALERT_FROM" ]; then
+  echo "  ✓ SHEETS_ALERT_FROM capturado"
 fi
 
 # ── 2. Montar arquivo YAML com todas as envvars ──────────────────────────────
@@ -122,6 +132,12 @@ fi
 if [ -n "$CRON_SECRET" ]; then
   echo "CRON_SECRET: '${CRON_SECRET}'" >> "$ENV_FILE"
 fi
+if [ -n "$SENDGRID_API_KEY" ]; then
+  echo "SENDGRID_API_KEY: '${SENDGRID_API_KEY}'" >> "$ENV_FILE"
+fi
+if [ -n "$SHEETS_ALERT_FROM" ]; then
+  echo "SHEETS_ALERT_FROM: '${SHEETS_ALERT_FROM}'" >> "$ENV_FILE"
+fi
 
 # ── 3. Deploy ────────────────────────────────────────────────────────────────
 echo ""
@@ -135,9 +151,9 @@ gcloud functions deploy "$FUNCTION_NAME" \
   --entry-point=report_data \
   --trigger-http \
   --allow-unauthenticated \
-  --memory=512MB \
+  --memory=1Gi \
   --cpu=1 \
-  --timeout=60s \
+  --timeout=540s \
   --min-instances=1 \
   --max-instances=20 \
   --concurrency=10 \
