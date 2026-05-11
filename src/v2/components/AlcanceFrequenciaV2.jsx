@@ -34,6 +34,15 @@ function parseAlcanceNumber(s) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+// Formata o input de alcance enquanto o admin digita: só dígitos no input
+// viram pontuação BR (617800 → "617.800"). Alcance é contagem de pessoas,
+// sempre inteiro — não há decimal.
+function formatAlcanceInput(s) {
+  const digits = String(s ?? "").replace(/\D/g, "");
+  if (!digits) return "";
+  return Number(digits).toLocaleString("pt-BR");
+}
+
 // Calcula frequência derivada (impressões / alcance) formatada em pt-BR.
 // Retorna string ou null se não dá pra calcular.
 function deriveFrequencia(alcanceStr, totalImpressions) {
@@ -172,7 +181,7 @@ export function AlcanceFrequenciaV2({
           icon={<PeopleIcon />}
           label="Alcance único"
           value={alcance}
-          onChange={setAlcance}
+          onChange={(v) => setAlcance(formatAlcanceInput(v))}
           placeholder="Ex: 1.250.000"
           editing={isAdmin && editing}
           hint={null}
