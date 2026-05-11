@@ -1,30 +1,55 @@
 // src/v2/components/AlcanceFrequenciaV2.jsx
 //
-// Bloco "Alcance & Frequência" — admin pode editar e persistir, cliente
-// vê read-only. Quando ambos estão vazios e usuário não é admin, mostra
-// mensagem "será disponibilizado em breve" (mesma regra do Legacy).
+// Bloco "Alcance & Frequência" — admin edita, cliente vê read-only.
 //
-// Redesenhado em PR-13 pra bater com o mockup:
-//   - Layout horizontal com ícones grandes (people, refresh)
-//   - Valores grandes (text-3xl) à direita do ícone
-//   - Botão Editar com ícone de pencil
-//   - Card sem border-bottom no header (header e body como uma peça só)
+// Escopo (target_type/target_id):
+//   Cada report-membro de um grupo merge tem seu próprio par
+//   (alcance, frequencia), e a visão agregada do grupo tem outro par
+//   independente (não é soma — alcance único entre meses se sobrepõe).
+//   O componente recebe `targetType` ("token" ou "merge") e `targetId`
+//   (short_token ou merge_id) do parent, e usa esse escopo tanto pra
+//   identificar qual valor mostrar (via key remount) quanto pra
+//   persistir via saveAlcanceFrequencia.
 //
-// Self-contained: gerencia próprio state local + chama a API direto.
+// Frequência auto-calculada:
+//   Quando o admin preenche apenas `alcance`, o valor de frequência é
+//   derivado em runtime como `totalImpressions / alcance`. O front mostra
+//   esse valor sem persistir — sai do estado "calculado" só se o admin
+//   sobrescrever manualmente no input.
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { saveAlcanceFrequencia } from "../../lib/api";
+import { fmt } from "../../shared/format";
 import { Card } from "../../ui/Card";
 import { Button } from "../../ui/Button";
 import { Input } from "../../ui/Input";
 import { cn } from "../../ui/cn";
 
+// Parser tolerante a formato BR ("1.250.000", "1250000", "1.250.000,5").
+// Retorna número positivo ou null.
+function parseAlcanceNumber(s) {
+  if (!s) return null;
+  const cleaned = String(s).replace(/\./g, "").replace(",", ".").trim();
+  const n = parseFloat(cleaned);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+// Calcula frequência derivada (impressões / alcance) formatada em pt-BR.
+// Retorna string ou null se não dá pra calcular.
+function deriveFrequencia(alcanceStr, totalImpressions) {
+  const a = parseAlcanceNumber(alcanceStr);
+  if (!a || !totalImpressions || totalImpressions <= 0) return null;
+  return fmt(totalImpressions / a, 2);
+}
+
 export function AlcanceFrequenciaV2({
-  token,
+  targetType,
+  targetId,
   isAdmin,
   adminJwt,
   initialAlcance = "",
   initialFrequencia = "",
+  totalImpressions = 0,
 }) {
   const [alcance, setAlcance] = useState(initialAlcance || "");
   const [frequencia, setFrequencia] = useState(initialFrequencia || "");
@@ -37,7 +62,23 @@ export function AlcanceFrequenciaV2({
     frequencia: initialFrequencia || "",
   });
 
-  const isEmpty = !alcance && !frequencia;
+  // Reset interno quando o escopo (target) ou os valores iniciais mudam —
+  // troca de view dentro de um grupo merge não remonta o componente, então
+  // sem isso os campos digitados num mês vazariam pro outro.
+  useEffect(() => {
+    setAlcance(initialAlcance || "");
+    setFrequencia(initialFrequencia || "");
+    lastSavedRef.current = {
+      alcance: initialAlcance || "",
+      frequencia: initialFrequencia || "",
+    };
+    setEditing(false);
+    setError(null);
+  }, [targetType, targetId, initialAlcance, initialFrequencia]);
+
+  const derivedFreq = deriveFrequencia(alcance, totalImpressions);
+  const displayFrequencia = frequencia || derivedFreq || "";
+  const isEmpty = !alcance && !displayFrequencia;
 
   const startEdit = () => {
     setError(null);
@@ -52,13 +93,18 @@ export function AlcanceFrequenciaV2({
   };
 
   const save = async () => {
+    if (!targetType || !targetId) {
+      setError("Escopo não definido — recarregue a página");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
       const trimmedAlcance = alcance.trim();
       const trimmedFrequencia = frequencia.trim();
       await saveAlcanceFrequencia({
-        short_token: token,
+        target_type: targetType,
+        target_id: targetId,
         alcance: trimmedAlcance,
         frequencia: trimmedFrequencia,
         adminJwt,
@@ -90,6 +136,8 @@ export function AlcanceFrequenciaV2({
       </Card>
     );
   }
+
+  const freqIsAuto = !frequencia && !!derivedFreq;
 
   return (
     <Card className="overflow-hidden">
@@ -127,14 +175,17 @@ export function AlcanceFrequenciaV2({
           onChange={setAlcance}
           placeholder="Ex: 1.250.000"
           editing={isAdmin && editing}
+          hint={null}
         />
         <Stat
           icon={<RefreshIcon />}
           label="Frequência média"
-          value={frequencia}
+          value={displayFrequencia}
+          editValue={frequencia}
           onChange={setFrequencia}
-          placeholder="Ex: 3.2x"
+          placeholder={derivedFreq ? `Auto: ${derivedFreq}` : "Ex: 3,2"}
           editing={isAdmin && editing}
+          hint={!editing && freqIsAuto ? "calculada" : null}
         />
       </div>
 
@@ -147,19 +198,24 @@ export function AlcanceFrequenciaV2({
   );
 }
 
-function Stat({ icon, label, value, onChange, placeholder, editing }) {
+function Stat({ icon, label, value, editValue, onChange, placeholder, editing, hint }) {
   return (
     <div className="flex items-center gap-4 px-6 py-5 bg-surface">
       <div className="shrink-0 size-12 rounded-xl bg-signature-soft border border-signature/30 inline-flex items-center justify-center text-signature">
         {icon}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="text-[10px] font-bold uppercase tracking-wider text-fg-muted mb-1">
-          {label}
+        <div className="text-[10px] font-bold uppercase tracking-wider text-fg-muted mb-1 flex items-center gap-2">
+          <span>{label}</span>
+          {hint && (
+            <span className="text-[9px] font-semibold uppercase tracking-wider text-fg-subtle bg-canvas border border-border rounded px-1.5 py-0.5">
+              {hint}
+            </span>
+          )}
         </div>
         {editing ? (
           <Input
-            value={value}
+            value={editValue ?? value}
             onChange={(e) => onChange(e.target.value)}
             placeholder={placeholder}
             size="md"

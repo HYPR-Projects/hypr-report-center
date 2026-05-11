@@ -688,12 +688,33 @@ export async function saveComment({ short_token, metric_name, author, comment, a
 
 // ── Alcance & Frequência (admin) ─────────────────────────────────────────────
 
-export async function saveAlcanceFrequencia({ short_token, alcance, frequencia, adminJwt }) {
-  return postJson(
+/**
+ * Persiste alcance/frequência num escopo (`token` ou `merge`). O escopo é
+ * obrigatório porque o mesmo grupo merge tem campos distintos pra:
+ *   - cada report-membro (drill-down de mês): `target_type="token"`, id = short_token
+ *   - a visão agregada do grupo:              `target_type="merge"`, id = merge_id
+ *
+ * `frequencia` é opcional. Quando vazia, o frontend calcula `impressões totais
+ * / alcance` em runtime — o valor só vai pro banco se o admin sobrescrever.
+ *
+ * Lança em status != 2xx pra o caller propagar o erro pra UI (diferente da
+ * versão antiga que ignorava response status).
+ */
+export async function saveAlcanceFrequencia({ target_type, target_id, alcance, frequencia, adminJwt }) {
+  const r = await postJson(
     `${API_URL}?action=save_af`,
-    { short_token, alcance, frequencia },
+    { target_type, target_id, alcance, frequencia },
     adminAuthHeaders(adminJwt),
   );
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try {
+      const d = await r.json();
+      if (d?.error) msg = d.error;
+    } catch { /* keep generic */ }
+    throw new Error(msg);
+  }
+  return r;
 }
 
 // ── Upload RMND/PDOOH (admin) ────────────────────────────────────────────────

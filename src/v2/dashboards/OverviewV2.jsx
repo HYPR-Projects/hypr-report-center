@@ -43,7 +43,7 @@ import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
 import { DailyAggregateTableV2 } from "../components/DailyAggregateTableV2";
 import { AlcanceFrequenciaV2 } from "../components/AlcanceFrequenciaV2";
 
-export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt, mergeMeta = null, coreFilter = "ALL", isBonusOnly = false }) {
+export default function OverviewV2({ data, aggregates, token, view = null, isAdmin, adminJwt, mergeMeta = null, coreFilter = "ALL", isBonusOnly = false }) {
   const camp = data.campaign;
   const {
     totalImpressions, totalCusto, totalCustoOver,
@@ -409,13 +409,36 @@ export default function OverviewV2({ data, aggregates, token, isAdmin, adminJwt,
       )}
 
       {/* ─── 6. Alcance & Frequência ────────────────────────────────── */}
-      <AlcanceFrequenciaV2
-        token={token}
-        isAdmin={isAdmin}
-        adminJwt={adminJwt}
-        initialAlcance={data.alcance}
-        initialFrequencia={data.frequencia}
-      />
+      {/* Escopo (target_type/target_id):
+            - Visão agregada de merge group (view = "aggregated"/"all" + mergeMeta)
+              → escopo "merge" com merge_id, valor independente dos membros.
+            - Caso contrário (single token OU drill-down de membro)
+              → escopo "token" com o token efetivamente exibido.
+          Total de impressões usa data.totals (campanha cheia, sem filtro de
+          período) — alcance é um valor de campanha, não de janela parcial. */}
+      {(() => {
+        const isAggregated = !!mergeMeta && (view === "aggregated" || view === "all");
+        const targetType = isAggregated ? "merge" : "token";
+        const targetId   = isAggregated
+          ? mergeMeta.merge_id
+          : (view || data.campaign?.short_token || token);
+        const totalImpressions = (data.totals || []).reduce(
+          (s, r) => s + (r.impressions || 0),
+          0,
+        );
+        return (
+          <AlcanceFrequenciaV2
+            key={`${targetType}:${targetId}`}
+            targetType={targetType}
+            targetId={targetId}
+            isAdmin={isAdmin}
+            adminJwt={adminJwt}
+            initialAlcance={data.alcance}
+            initialFrequencia={data.frequencia}
+            totalImpressions={totalImpressions}
+          />
+        );
+      })()}
     </div>
   );
 }

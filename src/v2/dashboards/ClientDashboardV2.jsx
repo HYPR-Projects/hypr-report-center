@@ -606,6 +606,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 data={data}
                 aggregates={aggregatesOverview}
                 token={token}
+                view={view}
                 isAdmin={isAdmin}
                 adminJwt={adminJwt}
                 mergeMeta={data.merge_meta}

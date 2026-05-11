@@ -914,6 +914,42 @@ def report_data(request):
             logger.error(f"[ERROR save_abs_override] {e}")
             return (jsonify({"error": "Erro ao salvar override de ABS"}), 500, headers)
 
+    # ── Endpoint: salvar Alcance & Frequência (admin) ────────────────────────
+    # Body: {target_type: "token"|"merge", target_id: <short_token|merge_id>,
+    #        alcance, frequencia}
+    #
+    # Compat: se vier `short_token` no body sem `target_type`, assume escopo
+    # token. Cobertura legacy do frontend antigo.
+    if request.method == "POST" and request.args.get("action") == "save_af":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            target_type = (body.get("target_type") or "").strip().lower()
+            target_id   = (body.get("target_id")   or "").strip()
+            if not target_type and body.get("short_token"):
+                target_type = "token"
+                target_id   = (body.get("short_token") or "").strip()
+            alcance    = (body.get("alcance")    or "").strip()
+            frequencia = (body.get("frequencia") or "").strip()
+            if target_type not in ("token", "merge"):
+                return (jsonify({"error": "target_type inválido (use 'token' ou 'merge')"}), 400, headers)
+            if not target_id:
+                return (jsonify({"error": "target_id é obrigatório"}), 400, headers)
+            save_alcance_frequencia(target_type, target_id, alcance, frequencia)
+            # Invalida cache: pra escopo token, derruba só esse token (o
+            # _cache_invalidate_token já limpa o cache merged também). Pra
+            # escopo merge, derruba o cache merged do grupo.
+            if target_type == "token":
+                _cache_invalidate_token(target_id)
+            else:
+                with _cache_lock:
+                    _merged_report_cache.pop(target_id, None)
+            return (jsonify({"ok": True}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR save_af] {e}")
+            return (jsonify({"error": "Erro ao salvar Alcance & Frequência"}), 500, headers)
+
     # ── Endpoint: salvar link Loom ───────────────────────────────────────────
     if request.method == "POST" and request.args.get("action") == "save_loom":
         if not authenticate_admin(request):
@@ -1750,6 +1786,7 @@ def fetch_campaign_data(short_token):
         "rmnd":   _query_pool.submit(query_upload, short_token, "RMND"),
         "pdooh":  _query_pool.submit(query_upload, short_token, "PDOOH"),
         "survey": _query_pool.submit(query_survey, short_token),
+        "alcance_frequencia": _query_pool.submit(query_alcance_frequencia, "token", short_token),
         # Status da integração com Google Sheets, se existir. Aqui sempre
         # passamos is_admin=False — o filtro de admin acontece no endpoint
         # report_data, que enriquece o payload depois de saber se a request
@@ -1775,7 +1812,16 @@ def fetch_campaign_data(short_token):
         # Para daily/detail logamos e retornamos vazio para que a UI mostre
         # "sem dados" em vez de erro 500.
         nullable = key in ("logo", "loom", "rmnd", "pdooh", "survey", "sheets_integration")
-        result[key] = _safe_future_result(future, key, default=None if nullable else [])
+        if key == "alcance_frequencia":
+            default = {"alcance": "", "frequencia": ""}
+        else:
+            default = None if nullable else []
+        result[key] = _safe_future_result(future, key, default=default)
+    # Achatamos alcance_frequencia em chaves de topo (`alcance`, `frequencia`)
+    # — frontend lê `data.alcance` e `data.frequencia` direto, sem aninhamento.
+    af = result.pop("alcance_frequencia", None) or {}
+    result["alcance"]    = af.get("alcance", "")    or ""
+    result["frequencia"] = af.get("frequencia", "") or ""
     return result
 
 
@@ -2304,6 +2350,11 @@ def compose_merged_report(group, force_refresh=False):
         {"merged": True, "items": survey_items} if survey_items else None
     )
 
+    # Alcance & Frequência da visão agregada: escopo próprio (merge_id), não
+    # soma dos membros. A soma sobre-contaria usuários únicos que aparecem em
+    # mais de um mês — o admin insere manualmente o valor agregado correto.
+    af_merge = query_alcance_frequencia("merge", group["merge_id"])
+
     return {
         "campaign":           composed_campaign,
         "totals":             composed_totals,
@@ -2316,6 +2367,8 @@ def compose_merged_report(group, force_refresh=False):
         "survey":             survey_payload,
         "sheets_integration": sheets,
         "merge_meta":         merge_meta,
+        "alcance":            af_merge.get("alcance", "")    or "",
+        "frequencia":         af_merge.get("frequencia", "") or "",
     }
 
 
@@ -2595,6 +2648,110 @@ def query_abs_override(short_token: str):
     except Exception as e:
         logger.warning(f"[WARN query_abs_override] {e}")
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Alcance & Frequência — salvar e buscar
+# ─────────────────────────────────────────────────────────────────────────────
+# Campos manuais (texto livre, formatados pelo admin) que o cliente vê no
+# bloco "Alcance & Frequência" da Visão Geral. São independentes por escopo:
+#
+#   scope_type="token" + scope_id=<short_token>  → valor por report individual.
+#                                                  Cobre tanto reports avulsos
+#                                                  quanto cada membro de um
+#                                                  grupo merge (drill-down por
+#                                                  mês).
+#   scope_type="merge" + scope_id=<merge_id>     → valor da visão agregada do
+#                                                  grupo. Não é soma dos membros
+#                                                  (haveria overlap entre meses);
+#                                                  o admin insere manualmente o
+#                                                  alcance único agregado.
+#
+# Frequência é opcional — o frontend calcula automaticamente a partir do
+# alcance + impressões totais entregues, e só persiste aqui se o admin
+# fez override manual.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_alc_freq_table_ensured = False
+_alc_freq_ensure_lock = threading.Lock()
+
+
+def _alc_freq_table_id() -> str:
+    return f"{PROJECT_ID}.{DATASET_ASSETS}.campaign_alcance_frequencia"
+
+
+def _ensure_alc_freq_table() -> None:
+    """Cria a tabela `campaign_alcance_frequencia` se não existir.
+    Idempotente, com flag de instância pra evitar query repetida em warm path."""
+    global _alc_freq_table_ensured
+    if _alc_freq_table_ensured:
+        return
+    with _alc_freq_ensure_lock:
+        if _alc_freq_table_ensured:
+            return
+        sql = f"""
+            CREATE TABLE IF NOT EXISTS `{_alc_freq_table_id()}` (
+                scope_type STRING NOT NULL,
+                scope_id   STRING NOT NULL,
+                alcance    STRING,
+                frequencia STRING,
+                updated_at TIMESTAMP NOT NULL
+            )
+        """
+        bq.query(sql).result()
+        _alc_freq_table_ensured = True
+
+
+def save_alcance_frequencia(scope_type: str, scope_id: str, alcance: str, frequencia: str):
+    """UPSERT do par (alcance, frequencia) para um escopo (token ou merge)."""
+    _ensure_alc_freq_table()
+    sql = f"""
+        MERGE `{_alc_freq_table_id()}` T
+        USING (SELECT @scope_type AS scope_type, @scope_id AS scope_id) S
+        ON T.scope_type = S.scope_type AND T.scope_id = S.scope_id
+        WHEN MATCHED THEN
+            UPDATE SET alcance = @alcance, frequencia = @frequencia,
+                       updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+            INSERT (scope_type, scope_id, alcance, frequencia, updated_at)
+            VALUES (@scope_type, @scope_id, @alcance, @frequencia, CURRENT_TIMESTAMP())
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("scope_type", "STRING", scope_type),
+            bigquery.ScalarQueryParameter("scope_id",   "STRING", scope_id),
+            bigquery.ScalarQueryParameter("alcance",    "STRING", alcance or ""),
+            bigquery.ScalarQueryParameter("frequencia", "STRING", frequencia or ""),
+        ]
+    )
+    bq.query(sql, job_config=job_config).result()
+
+
+def query_alcance_frequencia(scope_type: str, scope_id: str):
+    """Retorna {"alcance": str, "frequencia": str} do escopo, ou strings vazias
+    se nunca foi salvo. Tolera tabela inexistente (deploy novo)."""
+    sql = f"""
+        SELECT alcance, frequencia
+        FROM `{_alc_freq_table_id()}`
+        WHERE scope_type = @scope_type AND scope_id = @scope_id
+        LIMIT 1
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("scope_type", "STRING", scope_type),
+            bigquery.ScalarQueryParameter("scope_id",   "STRING", scope_id),
+        ]
+    )
+    try:
+        rows = list(bq.query(sql, job_config=job_config).result())
+        if rows:
+            return {
+                "alcance":    rows[0]["alcance"]    or "",
+                "frequencia": rows[0]["frequencia"] or "",
+            }
+    except Exception as e:
+        logger.warning(f"[WARN query_alcance_frequencia {scope_type}:{scope_id}] {e}")
+    return {"alcance": "", "frequencia": ""}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
