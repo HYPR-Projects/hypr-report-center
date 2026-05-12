@@ -3348,14 +3348,20 @@ def query_campaign_lines(token):
     Usado pelo PerformerDrawer admin pra mostrar piores LIs dentro de cada
     campanha do CS.
 
-    Custo: usa `total_cost` raw (custo HYPR/admin) em vez de
-    `effective_total_cost` (CPM/CPCV negociado × delivery = custo cliente
-    com markup). Razão: o eCPM exibido aqui precisa bater com o threshold
-    do score (R$ 0,70 / R$ 1,50 ABS), que também usa custo HYPR via
-    `d_admin_total_cost`. Antes mostrava R$ 11+ nas LIs (custo cliente)
-    enquanto o threshold era R$ 0,70 — confundia o diagnóstico.
+    Fontes (2 queries — tabelas em regiões diferentes, não dá cross-region
+    join direto):
+      - campaign_results (região default): métricas viewable_* (starts,
+        view_100, viewable_impressions) e clicks/impressions.
+      - unified_daily_performance_metrics (US): `total_cost` raw (custo
+        HYPR/admin) — bate com o threshold do score do Top Performers.
+        Antes usávamos `effective_total_cost` daqui (custo cliente, com
+        markup CPM/CPCV negociado × delivery), gerando eCPM de R$ 11+ vs
+        threshold de R$ 0,70 — confundia o diagnóstico.
+
+    Merge em Python por (line_name, media_type). Se uma LI aparece só em
+    campaign_results (improvável mas possível), admin_total_cost = 0.
     """
-    sql = f"""
+    sql_metrics = f"""
         SELECT
             line_name,
             media_type,
@@ -3363,8 +3369,7 @@ def query_campaign_lines(token):
             SUM(viewable_impressions)               AS viewable_impressions,
             SUM(clicks)                             AS clicks,
             SUM(viewable_video_starts)              AS video_starts,
-            SUM(viewable_video_view_100_complete)   AS video_view_100,
-            SUM(total_cost)                         AS admin_total_cost
+            SUM(viewable_video_view_100_complete)   AS video_view_100
         FROM {table_ref()}
         WHERE short_token = @token
           AND media_type IN ('DISPLAY', 'VIDEO')
@@ -3372,9 +3377,39 @@ def query_campaign_lines(token):
         GROUP BY line_name, media_type
         ORDER BY impressions DESC
     """
-    rows = run_query(sql, token)
+    sql_cost = """
+        SELECT
+            line_name,
+            media_type,
+            SUM(total_cost) AS admin_total_cost
+        FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+        WHERE short_token = @token
+          AND media_type IN ('DISPLAY', 'VIDEO')
+          AND UPPER(line_name) NOT LIKE '%SURVEY%'
+        GROUP BY line_name, media_type
+    """
+    job_config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("token", "STRING", token)
+    ])
+
+    # Paralelo: queries independentes em tabelas diferentes — ~metade da latência.
+    fut_metrics = _query_pool.submit(
+        lambda: list(bq.query(sql_metrics, job_config=job_config).result())
+    )
+    fut_cost = _query_pool.submit(
+        lambda: list(bq.query(sql_cost, job_config=job_config, location="US").result())
+    )
+    metrics_rows = fut_metrics.result()
+    cost_rows = fut_cost.result()
+
+    cost_by_key = {
+        (r["line_name"] or "", r["media_type"] or ""): float(r["admin_total_cost"] or 0)
+        for r in cost_rows
+    }
+
     result = []
-    for r in rows:
+    for r in metrics_rows:
+        key = (r["line_name"] or "", r["media_type"] or "")
         result.append({
             "line_name":            r["line_name"]            or "",
             "media_type":           r["media_type"]           or "",
@@ -3383,7 +3418,7 @@ def query_campaign_lines(token):
             "clicks":               int(r["clicks"]               or 0),
             "video_starts":         int(r["video_starts"]         or 0),
             "video_view_100":       int(r["video_view_100"]       or 0),
-            "admin_total_cost":     float(r["admin_total_cost"]   or 0),
+            "admin_total_cost":     cost_by_key.get(key, 0.0),
         })
     return result
 
