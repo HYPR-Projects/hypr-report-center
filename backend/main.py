@@ -3348,36 +3348,27 @@ def query_campaign_lines(token):
     Usado pelo PerformerDrawer admin pra mostrar piores LIs dentro de cada
     campanha do CS.
 
-    `effective_total_cost` é acumulado em campaign_results por (date, line,
-    creative) — somar direto inflaria. A subquery interna pega MAX por
-    (date, line, creative) e o externo soma esses MAXes.
+    Custo: usa `total_cost` raw (custo HYPR/admin) em vez de
+    `effective_total_cost` (CPM/CPCV negociado × delivery = custo cliente
+    com markup). Razão: o eCPM exibido aqui precisa bater com o threshold
+    do score (R$ 0,70 / R$ 1,50 ABS), que também usa custo HYPR via
+    `d_admin_total_cost`. Antes mostrava R$ 11+ nas LIs (custo cliente)
+    enquanto o threshold era R$ 0,70 — confundia o diagnóstico.
     """
     sql = f"""
-        WITH dedup AS (
-            SELECT
-                date, line_name, creative_name, media_type,
-                SUM(impressions)                        AS impressions,
-                SUM(viewable_impressions)               AS viewable_impressions,
-                SUM(clicks)                             AS clicks,
-                SUM(viewable_video_starts)              AS video_starts,
-                SUM(viewable_video_view_100_complete)   AS video_view_100,
-                MAX(effective_total_cost)               AS line_creative_day_cost
-            FROM {table_ref()}
-            WHERE short_token = @token
-              AND media_type IN ('DISPLAY', 'VIDEO')
-              AND UPPER(line_name) NOT LIKE '%SURVEY%'
-            GROUP BY date, line_name, creative_name, media_type
-        )
         SELECT
             line_name,
             media_type,
-            SUM(impressions)                AS impressions,
-            SUM(viewable_impressions)       AS viewable_impressions,
-            SUM(clicks)                     AS clicks,
-            SUM(video_starts)               AS video_starts,
-            SUM(video_view_100)             AS video_view_100,
-            SUM(line_creative_day_cost)     AS total_cost
-        FROM dedup
+            SUM(impressions)                        AS impressions,
+            SUM(viewable_impressions)               AS viewable_impressions,
+            SUM(clicks)                             AS clicks,
+            SUM(viewable_video_starts)              AS video_starts,
+            SUM(viewable_video_view_100_complete)   AS video_view_100,
+            SUM(total_cost)                         AS admin_total_cost
+        FROM {table_ref()}
+        WHERE short_token = @token
+          AND media_type IN ('DISPLAY', 'VIDEO')
+          AND UPPER(line_name) NOT LIKE '%SURVEY%'
         GROUP BY line_name, media_type
         ORDER BY impressions DESC
     """
@@ -3392,7 +3383,7 @@ def query_campaign_lines(token):
             "clicks":               int(r["clicks"]               or 0),
             "video_starts":         int(r["video_starts"]         or 0),
             "video_view_100":       int(r["video_view_100"]       or 0),
-            "total_cost":           float(r["total_cost"]         or 0),
+            "admin_total_cost":     float(r["admin_total_cost"]   or 0),
         })
     return result
 

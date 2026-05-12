@@ -65,7 +65,12 @@ function computeMetrics(line, hasAbs) {
   const clicks = Number(line.clicks) || 0;
   const starts = Number(line.video_starts) || 0;
   const v100 = Number(line.video_view_100) || 0;
-  const cost = Number(line.total_cost) || 0;
+  // Usa custo admin (HYPR raw), não effective (cliente com markup). Bate
+  // com o eCPM que alimenta o score do CS — antes divergia (LI mostrava
+  // R$ 11 vs threshold R$ 0,70 do score). Fallback pra `total_cost` é só
+  // pra evitar "—" durante a janela entre frontend deployado e backend
+  // antigo retornando o campo legado.
+  const cost = Number(line.admin_total_cost ?? line.total_cost) || 0;
   const isVideo = line.media_type === "VIDEO";
 
   const ctr      = view > 0   ? (clicks / view) * 100 : null;
