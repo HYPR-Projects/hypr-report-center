@@ -242,6 +242,7 @@ export function CampaignHeaderV2({
               activeToken={mergeMeta.active_token}
               currentView={currentView}
               onChange={onViewChange}
+              isEnded={status.label === "Encerrada"}
             />
           )}
         </div>
@@ -439,7 +440,7 @@ function MergeIcon({ className }) {
 //                        no UI, o pill do active_token vem destacado.
 // Click em qualquer pill atualiza URL e o ClientDashboardV2 refaz o fetch.
 // ─────────────────────────────────────────────────────────────────────────────
-function MergeViewSwitcher({ members, activeToken, currentView, onChange }) {
+function MergeViewSwitcher({ members, activeToken, currentView, onChange, isEnded = false }) {
   // Ordem desc por start_date — mais recente primeiro. Cliente abre o
   // report e vê o mês atual em destaque, com os anteriores em ordem
   // decrescente. A agregada vem por último (resumo do conjunto).
@@ -459,15 +460,22 @@ function MergeViewSwitcher({ members, activeToken, currentView, onChange }) {
         const selected =
           currentView === m.short_token ||
           (!currentView && isActive);
+        // Badge "atual" só faz sentido em campanha rodando — em campanha
+        // encerrada, todos os meses são "passados", não há um "agora".
+        // Mostrar "atual" no último mês de campanha já finalizada confunde.
         return (
           <ViewPill
             key={m.short_token}
             label={monthLabel || m.short_token}
             sublabel={
-              <span className="font-mono text-[9px]">{m.short_token}</span>
+              // Tamanho text-xs (~12px) deixa o token legível pra copiar.
+              // Antes era text-[9px] — visível mas dificil de selecionar
+              // num triple-click ou copiar exato sem zoom. Mantém font-mono
+              // pra reforçar que é código (vs label de mês em sans-serif).
+              <span className="font-mono text-xs tracking-tight">{m.short_token}</span>
             }
             selected={selected}
-            badge={isActive ? "atual" : null}
+            badge={isActive && !isEnded ? "atual" : null}
             onClick={() => onChange?.(m.short_token)}
           />
         );
