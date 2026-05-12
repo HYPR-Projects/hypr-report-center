@@ -35,6 +35,7 @@ import {
   YAxis,
 } from "recharts";
 import { useThemeColors, useChartNeutral } from "../hooks/useThemeColors";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 const fmtBig = (v) =>
   v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M`
@@ -55,6 +56,7 @@ export function DualChartV2({
 }) {
   const hypr = useThemeColors();
   const chartNeutral = useChartNeutral();
+  const isMobile = useIsMobile();
 
   // Cores default vêm do tema (re-resolvidas quando tema muda). Se
   // caller passou color1/color2 explícito, respeita override.
@@ -64,13 +66,23 @@ export function DualChartV2({
   if (!data?.length) return null;
 
   const isDate = /^\d{4}-\d{2}/.test(String(data[0][xKey]));
-  // bar size adaptativa — fica fino em datasets grandes, gordinho em
-  // pequenos. Mesma fórmula do Legacy.
-  const barSize = Math.min(32, Math.max(8, Math.floor(600 / data.length)));
-  // padding lateral adaptativo — datasets curtos (2-3 pontos) precisam
-  // de respiro grande pra não colar nas bordas; datasets longos viram
-  // padding mínimo pra não desperdiçar espaço útil.
-  const xPad = Math.max(24, Math.min(64, Math.floor(600 / data.length)));
+  const n = data.length;
+
+  // Largura útil de referência pra calcular bar/pad. Mobile (<768px) reserva
+  // ~360px depois dos Y-axis estreitos; desktop ~600px. Fórmula antiga usava
+  // 600 fixo → barras ficavam descalibradas em telas estreitas.
+  const refWidth = isMobile ? 360 : 600;
+  const barSize = Math.min(isMobile ? 20 : 32, Math.max(6, Math.floor(refWidth / n)));
+  // Padding lateral adaptativo — datasets curtos precisam respirar pras
+  // barras não colarem no eixo Y. Em mobile o teto cai pra liberar área útil.
+  const xPad = Math.max(isMobile ? 12 : 24, Math.min(isMobile ? 32 : 64, Math.floor(refWidth / n)));
+  // Dots da linha: > 14 pontos viram um blob denso que parece "linha sólida".
+  // Esconde os dots nesse regime — a Line continua visível e o tooltip
+  // mostra valor exato no hover. Activedot (hover) sempre aparece.
+  const showDots = n <= 14;
+  // Y-axis width: 52px × 2 come 104px num viewport mobile de 390px. Reduzir
+  // pra 40px libera 24px pra área de plot sem cortar labels ("0,60%" cabe).
+  const yWidth = isMobile ? 40 : 52;
 
   return (
     <div>
@@ -89,7 +101,7 @@ export function DualChartV2({
             axisLine={{ stroke: chartNeutral.grid }}
             tickFormatter={(v) => (isDate ? String(v).slice(5) : String(v))}
             interval="preserveStartEnd"
-            minTickGap={24}
+            minTickGap={isMobile ? 32 : 24}
             padding={{ left: xPad, right: xPad }}
           />
           <YAxis
@@ -98,7 +110,7 @@ export function DualChartV2({
             tickLine={false}
             axisLine={false}
             tickFormatter={fmtBig}
-            width={52}
+            width={yWidth}
             padding={{ top: 8, bottom: 0 }}
           />
           <YAxis
@@ -108,7 +120,7 @@ export function DualChartV2({
             tickLine={false}
             axisLine={false}
             tickFormatter={fmtPct}
-            width={52}
+            width={yWidth}
             padding={{ top: 8, bottom: 0 }}
           />
           <RTooltip
@@ -144,7 +156,7 @@ export function DualChartV2({
             type="monotone"
             stroke={lineColor}
             strokeWidth={2}
-            dot={{ r: 3, fill: lineColor }}
+            dot={showDots ? { r: 3, fill: lineColor } : false}
             activeDot={{ r: 5 }}
           />
         </LineChart>
