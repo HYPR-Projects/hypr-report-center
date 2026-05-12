@@ -3050,7 +3050,7 @@ def query_totals(token, campaign_info):
                 END AS viewable_completions
             FROM {UNIFIED}
             WHERE short_token = @token
-              AND UPPER(line_name) NOT LIKE '%SURVEY%'
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
         )
         SELECT
             tactic_type,
@@ -3310,7 +3310,7 @@ def query_daily(token):
             MAX(effective_total_cost)               AS effective_total_cost
         FROM {table_ref()}
         WHERE short_token = @token
-          AND UPPER(line_name) NOT LIKE '%SURVEY%'
+          AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
         GROUP BY date, media_type, 3
         ORDER BY date ASC
     """
@@ -3373,7 +3373,7 @@ def query_campaign_lines(token):
         FROM {table_ref()}
         WHERE short_token = @token
           AND media_type IN ('DISPLAY', 'VIDEO')
-          AND UPPER(line_name) NOT LIKE '%SURVEY%'
+          AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
         GROUP BY line_name, media_type
         ORDER BY impressions DESC
     """
@@ -3385,7 +3385,7 @@ def query_campaign_lines(token):
         FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
         WHERE short_token = @token
           AND media_type IN ('DISPLAY', 'VIDEO')
-          AND UPPER(line_name) NOT LIKE '%SURVEY%'
+          AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
         GROUP BY line_name, media_type
     """
     job_config = bigquery.QueryJobConfig(query_parameters=[
@@ -3446,7 +3446,7 @@ def query_detail(token):
             MAX(effective_total_cost)               AS effective_total_cost
         FROM {table_ref()}
         WHERE short_token = @token
-          AND UPPER(line_name) NOT LIKE '%SURVEY%'
+          AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
         GROUP BY
             date, campaign_name, line_name,
             creative_name, creative_size, media_type, 7
@@ -3553,7 +3553,7 @@ def query_campaigns_list():
                 MAX(effective_cost_with_over)         AS effective_cost_with_over
             FROM {table_ref()}
             WHERE media_type IN ('DISPLAY', 'VIDEO')
-              AND UPPER(line_name) NOT LIKE '%SURVEY%'
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
             GROUP BY short_token, media_type, date, line_name, creative_name
         ),
         agg AS (
@@ -3598,7 +3598,7 @@ def query_campaigns_list():
                 SUM(IF(media_type='VIDEO',   impressions, 0)) AS v_admin_impressions
             FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
             WHERE media_type IN ('DISPLAY', 'VIDEO')
-              AND UPPER(line_name) NOT LIKE '%SURVEY%'
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
             GROUP BY short_token
         ),
         -- Brand Safety pre-bid (ABS) detection por mídia, cobrindo DV360, Xandr
