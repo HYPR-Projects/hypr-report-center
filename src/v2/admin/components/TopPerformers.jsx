@@ -352,10 +352,9 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
         Video não pontuam. Max teórico varia por composição (100% Display
         = 90 · 100% Video = 45 · 50/50 = 67.5); score é normalizado pelo
         max da campanha. Score do CS é a média ponderada por impressões
-        regredida à média do time via Empirical Bayes — CSs com poucas
-        campanhas convergem pra média do time pra evitar viés de amostra
-        pequena. Métricas exibidas (Pacing/CTR/VTR/eCPM) são agregadas via
-        Σnumerador / Σdenominador sobre as campanhas ativas do owner.
+        das campanhas ativas. Métricas exibidas (Pacing/CTR/VTR/eCPM) são
+        agregadas via Σnumerador / Σdenominador sobre as campanhas ativas
+        do owner.
       </p>
     </div>
   );
