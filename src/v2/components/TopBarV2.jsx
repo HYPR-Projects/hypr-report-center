@@ -20,9 +20,20 @@ import HyprReportCenterLogo from "../../components/HyprReportCenterLogo";
 export function TopBarV2({
   updatedAtLabel,
   onShare,
+  shareState = "idle",
   onContactCS,
   className,
 }) {
+  // Mapeia estado do share pro tooltip + ícone do botão. O ClientDashboard
+  // empurra "copied"/"error" por 2s e volta pra "idle" — feedback de "deu
+  // certo" sem virar permanente. "copying" cobre a janela do round-trip pro
+  // getShareId quando o cache não tem.
+  const shareConfig = {
+    idle:    { title: "Copiar link do report",  Icon: ShareIcon, tone: "default" },
+    copying: { title: "Copiando…",              Icon: ShareIcon, tone: "default" },
+    copied:  { title: "Link copiado!",          Icon: CheckIcon, tone: "success" },
+    error:   { title: "Erro ao copiar",         Icon: ShareIcon, tone: "danger" },
+  }[shareState] || { title: "Copiar link do report", Icon: ShareIcon, tone: "default" };
   return (
     <header
       className={cn(
@@ -70,8 +81,8 @@ export function TopBarV2({
         )}
 
         {onShare && (
-          <IconButton onClick={onShare} title="Copiar link do report">
-            <ShareIcon className="size-4" />
+          <IconButton onClick={onShare} title={shareConfig.title} tone={shareConfig.tone}>
+            <shareConfig.Icon className="size-4" />
           </IconButton>
         )}
 
@@ -83,7 +94,14 @@ export function TopBarV2({
 
 // ─── Subcomponentes ───────────────────────────────────────────────────
 
-function IconButton({ children, onClick, title }) {
+function IconButton({ children, onClick, title, tone = "default" }) {
+  // tone visual: "default" (neutro), "success" (verde — copy ok),
+  // "danger" (vermelho — falha). Transição 200ms cobre o flash do feedback.
+  const toneClass = {
+    default: "border-border text-fg-muted hover:bg-surface hover:text-fg hover:border-border-strong",
+    success: "border-success/40 text-success bg-success-soft",
+    danger:  "border-danger/40 text-danger bg-danger-soft",
+  }[tone] || "";
   return (
     <button
       type="button"
@@ -92,14 +110,31 @@ function IconButton({ children, onClick, title }) {
       aria-label={title}
       className={cn(
         "inline-flex items-center justify-center size-9 rounded-lg",
-        "bg-transparent border border-border text-fg-muted cursor-pointer",
-        "hover:bg-surface hover:text-fg hover:border-border-strong",
-        "transition-colors duration-150",
+        "bg-transparent border cursor-pointer",
+        toneClass,
+        "transition-colors duration-200",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
       )}
     >
       {children}
     </button>
+  );
+}
+
+function CheckIcon({ className }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
   );
 }
 

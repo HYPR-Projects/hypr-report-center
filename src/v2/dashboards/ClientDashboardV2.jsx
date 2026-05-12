@@ -27,7 +27,7 @@ import { useEffect, useMemo, useState } from "react";
 import "../v2.css";
 import "../../ui/typography";
 
-import { getCampaign } from "../../lib/api";
+import { getCampaign, getShareId, getCachedShareId } from "../../lib/api";
 import { gaPageView } from "../../shared/analytics";
 import { computeAggregates } from "../../shared/aggregations";
 import { useLoadingTask } from "../../shared/loading";
@@ -386,11 +386,44 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     [data, mainRange, effectiveMainCore],
   );
 
-  const handleShare = () => {
-    if (typeof navigator === "undefined" || !navigator.clipboard) return;
-    navigator.clipboard.writeText(window.location.href).catch(() => {
-      /* silently fail */
-    });
+  // shareState: "idle" | "copying" | "copied" | "error" — controla o ícone
+  // e tooltip no TopBar. Resetado pra "idle" 2s após copied/error pra dar
+  // tempo de o usuário ver o feedback sem virar permanente.
+  const [shareState, setShareState] = useState("idle");
+
+  const handleShare = async () => {
+    if (typeof navigator === "undefined" || !navigator.clipboard) {
+      setShareState("error");
+      setTimeout(() => setShareState("idle"), 2000);
+      return;
+    }
+    // Sempre copia a URL pública (cliente): /report/<share_id>, SEM ?adm=
+    // ou outros query params. window.location.href poderia ter ?adm=<jwt>
+    // quando admin abre o report direto — colar isso pro cliente vazaria
+    // sessão admin de 8h.
+    const shortToken = data?.campaign?.short_token;
+    if (!shortToken) {
+      setShareState("error");
+      setTimeout(() => setShareState("idle"), 2000);
+      return;
+    }
+    try {
+      // Fast path: cache hit (resolvido em sessão anterior). Evita round-trip
+      // quando admin acabou de gerar o link pelo menu, por exemplo.
+      let shareId = getCachedShareId(shortToken);
+      if (!shareId) {
+        setShareState("copying");
+        shareId = await getShareId(shortToken);
+      }
+      if (!shareId) throw new Error("no share_id");
+      const url = `${window.location.origin}/report/${shareId}`;
+      await navigator.clipboard.writeText(url);
+      setShareState("copied");
+      setTimeout(() => setShareState("idle"), 2000);
+    } catch {
+      setShareState("error");
+      setTimeout(() => setShareState("idle"), 2000);
+    }
   };
 
   if (error) {
@@ -485,6 +518,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
         <TopBarV2
           updatedAtLabel="Atualizado agora"
           onShare={handleShare}
+          shareState={shareState}
         />
 
         <div className="mx-auto max-w-[1440px] px-4 md:px-6 lg:px-8 py-6 md:py-8 space-y-6">
