@@ -1813,15 +1813,16 @@ def fetch_campaign_data(short_token):
         # "sem dados" em vez de erro 500.
         nullable = key in ("logo", "loom", "rmnd", "pdooh", "survey", "sheets_integration")
         if key == "alcance_frequencia":
-            default = {"alcance": "", "frequencia": ""}
+            default = {"alcance": "", "frequencia": "", "updated_at": ""}
         else:
             default = None if nullable else []
         result[key] = _safe_future_result(future, key, default=default)
-    # Achatamos alcance_frequencia em chaves de topo (`alcance`, `frequencia`)
-    # — frontend lê `data.alcance` e `data.frequencia` direto, sem aninhamento.
+    # Achatamos alcance_frequencia em chaves de topo (`alcance`, `frequencia`,
+    # `alcance_updated_at`) — frontend lê direto, sem aninhamento.
     af = result.pop("alcance_frequencia", None) or {}
-    result["alcance"]    = af.get("alcance", "")    or ""
-    result["frequencia"] = af.get("frequencia", "") or ""
+    result["alcance"]            = af.get("alcance", "")    or ""
+    result["frequencia"]         = af.get("frequencia", "") or ""
+    result["alcance_updated_at"] = af.get("updated_at", "") or ""
     return result
 
 
@@ -2369,6 +2370,7 @@ def compose_merged_report(group, force_refresh=False):
         "merge_meta":         merge_meta,
         "alcance":            af_merge.get("alcance", "")    or "",
         "frequencia":         af_merge.get("frequencia", "") or "",
+        "alcance_updated_at": af_merge.get("updated_at", "") or "",
     }
 
 
@@ -2728,10 +2730,11 @@ def save_alcance_frequencia(scope_type: str, scope_id: str, alcance: str, freque
 
 
 def query_alcance_frequencia(scope_type: str, scope_id: str):
-    """Retorna {"alcance": str, "frequencia": str} do escopo, ou strings vazias
-    se nunca foi salvo. Tolera tabela inexistente (deploy novo)."""
+    """Retorna {"alcance": str, "frequencia": str, "updated_at": str ISO} do
+    escopo, ou strings vazias se nunca foi salvo. Tolera tabela inexistente
+    (deploy novo)."""
     sql = f"""
-        SELECT alcance, frequencia
+        SELECT alcance, frequencia, updated_at
         FROM `{_alc_freq_table_id()}`
         WHERE scope_type = @scope_type AND scope_id = @scope_id
         LIMIT 1
@@ -2745,13 +2748,15 @@ def query_alcance_frequencia(scope_type: str, scope_id: str):
     try:
         rows = list(bq.query(sql, job_config=job_config).result())
         if rows:
+            ts = rows[0]["updated_at"]
             return {
                 "alcance":    rows[0]["alcance"]    or "",
                 "frequencia": rows[0]["frequencia"] or "",
+                "updated_at": ts.isoformat() if ts else "",
             }
     except Exception as e:
         logger.warning(f"[WARN query_alcance_frequencia {scope_type}:{scope_id}] {e}")
-    return {"alcance": "", "frequencia": ""}
+    return {"alcance": "", "frequencia": "", "updated_at": ""}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

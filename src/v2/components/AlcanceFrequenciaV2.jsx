@@ -51,6 +51,21 @@ function deriveFrequencia(alcanceStr, totalImpressions) {
   return fmt(totalImpressions / a, 2);
 }
 
+// "2026-05-12T14:32:00+00:00" → "12/05/2026 às 14:32". Retorna null pra
+// timestamps vazios/inválidos — componente esconde a linha nesse caso.
+function formatUpdatedAt(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const date = d.toLocaleDateString("pt-BR", {
+    day: "2-digit", month: "2-digit", year: "numeric",
+  });
+  const time = d.toLocaleTimeString("pt-BR", {
+    hour: "2-digit", minute: "2-digit",
+  });
+  return `${date} às ${time}`;
+}
+
 export function AlcanceFrequenciaV2({
   targetType,
   targetId,
@@ -58,10 +73,12 @@ export function AlcanceFrequenciaV2({
   adminJwt,
   initialAlcance = "",
   initialFrequencia = "",
+  initialUpdatedAt = "",
   totalImpressions = 0,
 }) {
   const [alcance, setAlcance] = useState(initialAlcance || "");
   const [frequencia, setFrequencia] = useState(initialFrequencia || "");
+  const [updatedAt, setUpdatedAt] = useState(initialUpdatedAt || "");
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -77,13 +94,14 @@ export function AlcanceFrequenciaV2({
   useEffect(() => {
     setAlcance(initialAlcance || "");
     setFrequencia(initialFrequencia || "");
+    setUpdatedAt(initialUpdatedAt || "");
     lastSavedRef.current = {
       alcance: initialAlcance || "",
       frequencia: initialFrequencia || "",
     };
     setEditing(false);
     setError(null);
-  }, [targetType, targetId, initialAlcance, initialFrequencia]);
+  }, [targetType, targetId, initialAlcance, initialFrequencia, initialUpdatedAt]);
 
   const derivedFreq = deriveFrequencia(alcance, totalImpressions);
   const displayFrequencia = frequencia || derivedFreq || "";
@@ -124,6 +142,10 @@ export function AlcanceFrequenciaV2({
       };
       setAlcance(trimmedAlcance);
       setFrequencia(trimmedFrequencia);
+      // Optimistic: o backend grava CURRENT_TIMESTAMP() no MERGE. Em vez de
+      // refetch, usamos o relógio local — diferença de poucos segundos não
+      // muda nada na UI (mostramos só DD/MM/AAAA HH:MM).
+      setUpdatedAt(new Date().toISOString());
       setEditing(false);
     } catch (e) {
       setError(e?.message || "Erro ao salvar");
@@ -147,12 +169,20 @@ export function AlcanceFrequenciaV2({
   }
 
   const freqIsAuto = !frequencia && !!derivedFreq;
+  const updatedAtLabel = !isEmpty ? formatUpdatedAt(updatedAt) : null;
 
   return (
     <Card className="overflow-hidden">
       <div className="flex items-center justify-between gap-3 px-6 pt-5 pb-3">
-        <div className="text-[11px] font-bold uppercase tracking-widest text-fg-muted">
-          Alcance & Frequência
+        <div className="min-w-0">
+          <div className="text-[11px] font-bold uppercase tracking-widest text-fg-muted">
+            Alcance & Frequência
+          </div>
+          {updatedAtLabel && (
+            <div className="text-[10px] text-fg-subtle mt-0.5 tabular-nums">
+              Atualizado em {updatedAtLabel}
+            </div>
+          )}
         </div>
         {isAdmin && !editing && (
           <Button variant="ghost" size="sm" onClick={startEdit} iconLeft={<PencilIcon />}>

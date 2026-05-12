@@ -709,5 +709,11 @@ export function buildDemoPayload(today = new Date()) {
     survey: buildSurvey(),
     sheets_integration: null,
     merge_meta: null,
+    // Alcance & Frequência — frequência fica vazia pra demonstrar o cálculo
+    // derivado (impressões totais / alcance) no front. `alcance_updated_at`
+    // anchorado no `today` pra envelhecer junto com o demo.
+    alcance:            "1.250.000",
+    frequencia:         "",
+    alcance_updated_at: new Date(today.getTime() - 2 * 86400000).toISOString(),
   };
 }
