@@ -467,13 +467,7 @@ function MergeViewSwitcher({ members, activeToken, currentView, onChange, isEnde
           <ViewPill
             key={m.short_token}
             label={monthLabel || m.short_token}
-            sublabel={
-              // Tamanho text-xs (~12px) deixa o token legível pra copiar.
-              // Antes era text-[9px] — visível mas dificil de selecionar
-              // num triple-click ou copiar exato sem zoom. Mantém font-mono
-              // pra reforçar que é código (vs label de mês em sans-serif).
-              <span className="font-mono text-xs tracking-tight">{m.short_token}</span>
-            }
+            sublabel={<CopyableToken token={m.short_token} selected={selected} />}
             selected={selected}
             badge={isActive && !isEnded ? "atual" : null}
             onClick={() => onChange?.(m.short_token)}
@@ -528,6 +522,54 @@ function ViewPill({ label, sublabel, selected, badge, onClick }) {
         </span>
       )}
     </button>
+  );
+}
+
+// Token click-to-copy dentro do ViewPill. HTML não permite nested <button>,
+// então usamos <span> com onClick + stopPropagation pra não disparar o click
+// do pill (que troca a view). Feedback: troca o texto pra "copiado!" por 1.5s.
+//
+// Acessibilidade: sem tabIndex no span — fica de fora do tab order pra não
+// criar dois "interactive" empilhados (o <button> do pill já é o foco
+// principal). Usuários de teclado ainda alternam view via Enter/Espaço; pra
+// copiar token, usam menu de contexto (right-click → copiar). Mouse users
+// têm o click direto, que é o caso predominante.
+function CopyableToken({ token, selected }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!navigator?.clipboard) return;
+    navigator.clipboard
+      .writeText(token)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => { /* silently fail — usuário pode tentar de novo */ });
+  };
+
+  // Cores: quando o pill está selected (fundo azul), usa branco; senão
+  // signature pra puxar o olhar pro elemento clicável e hover-able.
+  const baseClass = selected
+    ? "text-white hover:bg-white/15"
+    : "text-signature hover:bg-signature/10";
+
+  return (
+    <span
+      role="button"
+      onClick={handleCopy}
+      onMouseDown={(e) => e.stopPropagation()}
+      title={copied ? "Copiado!" : `Clique pra copiar ${token}`}
+      className={[
+        "font-mono text-xs tracking-tight px-1 py-0.5 -mx-0.5 rounded cursor-pointer",
+        "transition-colors duration-150",
+        baseClass,
+      ].join(" ")}
+    >
+      {copied ? "copiado!" : token}
+    </span>
   );
 }
 
