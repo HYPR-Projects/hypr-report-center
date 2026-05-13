@@ -6,7 +6,7 @@ import TabChat from "../components/TabChat";
 import SurveyChart from "./SurveyChart";
 import DateRangeFilter from "../components/DateRangeFilter";
 import { ymd } from "../shared/dateFilter";
-import { parseSurveyConfig, fmtClientRange } from "../shared/surveyConfig";
+import { parseSurveyConfig, fmtClientRange, sumCounts } from "../shared/surveyConfig";
 
 const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
   const [questions,setQuestions]=useState(null);
@@ -41,10 +41,30 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
       setLoading(true);setError(null);
       try{
         if(!config){throw new Error("Configuração de survey inválida.");}
-        // Modelo Typeform (v1 array ou v2 com clientRange): questions[i] tem
-        // ctrlUrl/expUrl/focusRow. focusRow é opcional, só aplica a matrix.
-        if(!config.isLegacyCsv && Array.isArray(config.questions) && config.questions[0]?.ctrlUrl){
+        // Modelo moderno (Typeform v1/v2 + VideoAsk v3): array de questions.
+        // Cada item tem tipo "typeform" (default) com ctrlUrl/expUrl, ou
+        // "videoask" com ctrlCounts/expCounts já embutidos. Mesmo render.
+        const hasModernQuestion = !config.isLegacyCsv
+          && Array.isArray(config.questions)
+          && config.questions.some(q => q && (q.ctrlUrl || q.tipo === "videoask"));
+        if(hasModernQuestion){
           const results=await Promise.all(config.questions.map(async(q)=>{
+            // VideoAsk: contagens já vêm do XLSX parseado no setup — sem fetch.
+            // Mesma shape de saída de Typeform "choice" pra reusar render.
+            if(q.tipo === "videoask"){
+              const ctrl = q.ctrlCounts || {};
+              const exp = q.expCounts || {};
+              return {
+                nome: q.nome,
+                type: "choice",
+                source: "videoask",
+                focusRow: q.focusRow || null,
+                control_total: sumCounts(ctrl),
+                exposed_total: sumCounts(exp),
+                ctrl,
+                exp,
+              };
+            }
             const [ctrlData, expData] = await Promise.all([
               fetchTypeformData(q.ctrlUrl),
               fetchTypeformData(q.expUrl),
@@ -54,6 +74,7 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
               return {
                 nome: q.nome,
                 type: "matrix",
+                source: "typeform",
                 focusRow: q.focusRow || null,
                 control_total: ctrlData.total,
                 exposed_total: expData.total,
@@ -66,6 +87,7 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
             return {
               nome: q.nome,
               type: "choice",
+              source: "typeform",
               focusRow: q.focusRow || null,
               control_total: ctrlData.total,
               exposed_total: expData.total,
@@ -450,8 +472,26 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
               paddingBottom:8,
               borderBottom:`1px solid ${bdr}`,
             }}>
-              <div style={{fontSize:13,fontWeight:700,color:C.blue,textTransform:"uppercase",letterSpacing:1.5}}>
-                {q.nome||`Pergunta ${i+1}`}
+              <div style={{display:"flex",alignItems:"baseline",gap:10,flexWrap:"wrap"}}>
+                <div style={{fontSize:13,fontWeight:700,color:C.blue,textTransform:"uppercase",letterSpacing:1.5}}>
+                  {q.nome||`Pergunta ${i+1}`}
+                </div>
+                {q.source==="videoask"&&(
+                  <span
+                    title="Resultados vindos do export XLSX do VideoAsk"
+                    style={{
+                      fontSize:10,
+                      fontWeight:700,
+                      letterSpacing:0.8,
+                      textTransform:"uppercase",
+                      color:"#8E44AD",
+                      background:"#8E44AD18",
+                      border:"1px solid #8E44AD40",
+                      borderRadius:999,
+                      padding:"2px 7px",
+                    }}
+                  >VideoAsk</span>
+                )}
               </div>
               {isAdmin && (
                 <div style={{fontSize:11,color:mt,whiteSpace:"nowrap"}}>

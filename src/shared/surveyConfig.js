@@ -14,6 +14,11 @@
 //      Permite o admin escolher um período pra exibir ao cliente sem
 //      afetar a visão de inspeção interna.
 //
+// Dentro de `questions[i]` cada item agora aceita também `tipo: "videoask"`
+// com `ctrlCounts`/`expCounts` embutidos (contagens já parseadas do XLSX
+// exportado da plataforma, sem chamada de API em runtime). Quando `tipo`
+// está ausente, assume `"typeform"` por retrocompat.
+//
 // Esta função normaliza pra `{ questions, clientRange, isLegacyCsv,
 // legacyObject }` — chamadores não precisam saber o shape original.
 //
@@ -87,6 +92,34 @@ export function serializeSurveyConfig(questions, clientRange) {
     return JSON.stringify({ version: 2, questions, clientRange: range });
   }
   return JSON.stringify(questions);
+}
+
+// Tipo da pergunta: "typeform" (padrão histórico) ou "videoask".
+// Ausência do campo = "typeform" pra retrocompat com surveys salvos antes
+// da v3. Caller usa pra rotear render path (fetch via proxy vs. counts
+// embutidos) e pra rotular badge no relatório.
+export function getQuestionTipo(q) {
+  return q?.tipo === "videoask" ? "videoask" : "typeform";
+}
+
+// Soma valores de um dicionário {label: count} para totais agregados.
+// Aceita counts numéricos ou strings numéricas (defensivo contra JSON
+// que veio serializado com tipos misturados).
+export function sumCounts(counts) {
+  if (!counts || typeof counts !== "object") return 0;
+  let total = 0;
+  for (const v of Object.values(counts)) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) total += n;
+  }
+  return total;
+}
+
+// Pergunta videoask é renderizável se tem contagens válidas em AMBOS
+// lados (controle E exposto) — sem ambos, não dá pra calcular lift.
+export function isVideoaskQuestionRenderable(q) {
+  if (!q || q.tipo !== "videoask") return false;
+  return sumCounts(q.ctrlCounts) > 0 && sumCounts(q.expCounts) > 0;
 }
 
 // Formata um clientRange pra exibição compacta em PT-BR.

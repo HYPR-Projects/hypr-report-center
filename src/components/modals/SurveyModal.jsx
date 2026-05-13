@@ -9,7 +9,8 @@ import {
 } from "../../lib/api";
 import ModalShell from "./ModalShell";
 import { toast } from "../../lib/toast";
-import { parseSurveyConfig, serializeSurveyConfig } from "../../shared/surveyConfig";
+import { parseSurveyConfig, serializeSurveyConfig, sumCounts } from "../../shared/surveyConfig";
+import { parseVideoaskFile } from "../../lib/videoaskParser";
 
 /**
  * Modal pra configurar surveys (controle vs. exposto) via API do Typeform.
@@ -26,12 +27,28 @@ import { parseSurveyConfig, serializeSurveyConfig } from "../../shared/surveyCon
  * groupOverride (ou pelo nome detectado) e mapeamos pra esse formato.
  * Renderer (SurveyTab) não muda.
  */
+// Estado de um upload VideoAsk parseado. Persiste no bloco mesmo quando
+// tipo=typeform, pra não perder dados se admin alternar.
+const EMPTY_VIDEOASK_SIDE = () => ({
+  fileName: "",
+  question: "",   // header "Q1. ..." extraído do XLSX
+  counts: {},     // {resposta: n}
+  total: 0,
+  firstAt: null,  // ISO string da 1ª resposta (informativo)
+  lastAt: null,
+});
+
 const EMPTY_BLOCK = (defaultMode = "list") => ({
   nome: "",
+  tipo: "typeform", // "typeform" | "videoask"
   forms: [
     { mode: defaultMode, formId: "", url: "", groupOverride: null },
     { mode: defaultMode, formId: "", url: "", groupOverride: null },
   ],
+  videoask: {
+    ctrl: EMPTY_VIDEOASK_SIDE(),
+    exp: EMPTY_VIDEOASK_SIDE(),
+  },
   focusRow: "",
 });
 
@@ -188,6 +205,7 @@ function findPartnerForm(formId, formsById, forms) {
 function buildUsageMap(blocks, formsById) {
   const m = new Map();
   blocks.forEach((b, blockIdx) => {
+    if (b.tipo === "videoask") return; // duplicatas só fazem sentido em Typeform
     b.forms.forEach((form, formIdx) => {
       if (form.mode === "list" && form.formId) {
         const arr = m.get(form.formId) || [];
@@ -263,6 +281,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
   useEffect(() => {
     const idsNeeded = new Set();
     for (const b of blocks) {
+      if (b.tipo === "videoask") continue;
       for (const f of b.forms) {
         if (f.mode === "list" && f.formId) idsNeeded.add(f.formId);
       }
@@ -312,6 +331,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
   useEffect(() => {
     const idsNeeded = new Set();
     for (const b of blocks) {
+      if (b.tipo === "videoask") continue;
       for (const f of b.forms) {
         const id = f.mode === "list" ? f.formId : extractFormId(f.url);
         if (id) idsNeeded.add(id);
@@ -374,19 +394,21 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
       const defaultMode = listFailed || formsList.length === 0 ? "manual" : "list";
 
       // Hidrata blocos com config existente. O formato salvo aceita v1
-      // (array puro) ou v2 ({version:2, questions, clientRange}); ambos
-      // entregues normalizados via parseSurveyConfig.
+      // (array puro), v2 ({version:2, questions, clientRange}) e v3
+      // (questions com tipo="videoask"); todos normalizados via parseSurveyConfig.
       if (savedRaw.status === "fulfilled" && savedRaw.value) {
         const cfg = parseSurveyConfig(savedRaw.value);
         if (cfg && Array.isArray(cfg.questions) && cfg.questions.length) {
           const idsInList = new Set(formsList.map((f) => f.id));
           const hydrated = cfg.questions.map((q) => {
+            const isVideoask = q.tipo === "videoask";
             const ctrlId = q.ctrlFormId || extractFormId(q.ctrlUrl);
             const expId  = q.expFormId  || extractFormId(q.expUrl);
             const ctrlMatched = ctrlId && idsInList.has(ctrlId);
             const expMatched  = expId  && idsInList.has(expId);
             return {
               nome: q.nome || "",
+              tipo: isVideoask ? "videoask" : "typeform",
               forms: [
                 {
                   mode: ctrlMatched ? "list" : "manual",
@@ -401,6 +423,28 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
                   groupOverride: "exposto",
                 },
               ],
+              videoask: {
+                ctrl: isVideoask
+                  ? {
+                      fileName: q.ctrlFileName || "",
+                      question: q.ctrlQuestion || "",
+                      counts: q.ctrlCounts || {},
+                      total: sumCounts(q.ctrlCounts),
+                      firstAt: q.ctrlFirstAt || null,
+                      lastAt: q.ctrlLastAt || null,
+                    }
+                  : EMPTY_VIDEOASK_SIDE(),
+                exp: isVideoask
+                  ? {
+                      fileName: q.expFileName || "",
+                      question: q.expQuestion || "",
+                      counts: q.expCounts || {},
+                      total: sumCounts(q.expCounts),
+                      firstAt: q.expFirstAt || null,
+                      lastAt: q.expLastAt || null,
+                    }
+                  : EMPTY_VIDEOASK_SIDE(),
+              },
               focusRow: q.focusRow || "",
             };
           });
@@ -442,6 +486,15 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
       if (!b.nome.trim()) {
         toast.error(`Pergunta ${i + 1}: preencha o nome.`);
         return;
+      }
+      if (b.tipo === "videoask") {
+        const ctrlOk = b.videoask?.ctrl?.fileName && sumCounts(b.videoask.ctrl.counts) > 0;
+        const expOk  = b.videoask?.exp?.fileName  && sumCounts(b.videoask.exp.counts)  > 0;
+        if (!ctrlOk || !expOk) {
+          toast.error(`Pergunta ${i + 1}: envie os 2 arquivos do VideoAsk (Controle e Exposto) com respostas válidas.`);
+          return;
+        }
+        continue;
       }
       // Cada form deve ter conteúdo (formId em list, URL válida em manual)
       const formsOk = b.forms.every((f) =>
@@ -506,6 +559,23 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
     try {
       const payload = blocks.map((b) => {
         const out = { nome: b.nome.trim() };
+        if (b.tipo === "videoask") {
+          out.tipo = "videoask";
+          out.ctrlCounts = b.videoask.ctrl.counts || {};
+          out.expCounts = b.videoask.exp.counts || {};
+          // Metadata informativa — usada na UI admin e no badge do report.
+          // Não afeta o cálculo de lift (só counts importa).
+          if (b.videoask.ctrl.fileName) out.ctrlFileName = b.videoask.ctrl.fileName;
+          if (b.videoask.exp.fileName)  out.expFileName  = b.videoask.exp.fileName;
+          if (b.videoask.ctrl.question) out.ctrlQuestion = b.videoask.ctrl.question;
+          if (b.videoask.exp.question)  out.expQuestion  = b.videoask.exp.question;
+          if (b.videoask.ctrl.firstAt)  out.ctrlFirstAt  = b.videoask.ctrl.firstAt;
+          if (b.videoask.ctrl.lastAt)   out.ctrlLastAt   = b.videoask.ctrl.lastAt;
+          if (b.videoask.exp.firstAt)   out.expFirstAt   = b.videoask.exp.firstAt;
+          if (b.videoask.exp.lastAt)    out.expLastAt    = b.videoask.exp.lastAt;
+          if (b.focusRow && b.focusRow.trim()) out.focusRow = b.focusRow.trim();
+          return out;
+        }
         const ctrl = b.forms.find((f) => getFormGroup(f, formsById) === "controle");
         const exp  = b.forms.find((f) => getFormGroup(f, formsById) === "exposto");
         // Controle
@@ -650,6 +720,8 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
                   alignItems: "center",
                   justifyContent: "space-between",
                   marginBottom: 12,
+                  gap: 10,
+                  flexWrap: "wrap",
                 }}
               >
                 <div
@@ -663,6 +735,11 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
                 >
                   Pergunta {idx + 1}
                 </div>
+                <TipoToggle
+                  value={block.tipo}
+                  onChange={(t) => updateBlock(idx, { tipo: t })}
+                  theme={{ text, muted, modalBdr, inputBg }}
+                />
                 {blocks.length > 1 && (
                   <button
                     onClick={() => removeBlock(idx)}
@@ -692,72 +769,95 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
                 />
               </div>
 
-              {block.forms.map((form, fIdx) => {
-                // Sugestão: o outro slot tem form, este está vazio, e existe irmão na lista
-                const otherFilledIdx = block.forms.findIndex((x, j) => j !== fIdx && x.mode === "list" && x.formId);
-                const otherForm = otherFilledIdx >= 0 ? block.forms[otherFilledIdx] : null;
-                let suggestion = null;
-                if (form.mode === "list" && !form.formId && otherForm) {
-                  const partner = findPartnerForm(otherForm.formId, formsById, forms);
-                  if (partner) {
-                    const used = usageMap.get(partner.id) || [];
-                    if (used.length === 0) suggestion = partner;
+              {block.tipo === "videoask" ? (
+                <VideoaskUploads
+                  videoask={block.videoask}
+                  onChange={(side, patch) =>
+                    setBlocks((bs) =>
+                      bs.map((bl, i) => {
+                        if (i !== idx) return bl;
+                        return {
+                          ...bl,
+                          videoask: {
+                            ...bl.videoask,
+                            [side]: { ...bl.videoask[side], ...patch },
+                          },
+                        };
+                      }),
+                    )
                   }
-                }
-
-                return (
-                  <div key={fIdx} style={{ marginBottom: fIdx === 0 ? 10 : 0 }}>
-                    <FormPicker
-                      label={`Form ${fIdx + 1} do par`}
-                      forms={forms}
-                      formsById={formsById}
-                      mode={form.mode}
-                      formId={form.formId}
-                      url={form.url}
-                      groupOverride={form.groupOverride}
-                      effectiveGroup={getFormGroup(form, formsById)}
-                      disabled={emptyForms && form.mode === "list"}
-                      usageMap={usageMap}
-                      currentBlockIdx={idx}
-                      currentFormIdx={fIdx}
-                      suggestion={suggestion}
-                      onChange={(patch) =>
-                        updateForm(idx, fIdx, {
-                          mode: patch.mode ?? form.mode,
-                          formId: patch.formId ?? (patch.mode === "manual" ? "" : form.formId),
-                          url: patch.url ?? form.url,
-                          // Quando o admin troca o form por outro pela lista,
-                          // limpa override pra deixar a auto-detecção valer.
-                          ...(patch.formId !== undefined && patch.formId !== form.formId
-                            ? { groupOverride: null }
-                            : {}),
-                          ...(patch.groupOverride !== undefined
-                            ? { groupOverride: patch.groupOverride }
-                            : {}),
-                        })
+                  theme={{ text, muted, modalBdr, inputBg, cardBg }}
+                />
+              ) : (
+                <>
+                  {block.forms.map((form, fIdx) => {
+                    // Sugestão: o outro slot tem form, este está vazio, e existe irmão na lista
+                    const otherFilledIdx = block.forms.findIndex((x, j) => j !== fIdx && x.mode === "list" && x.formId);
+                    const otherForm = otherFilledIdx >= 0 ? block.forms[otherFilledIdx] : null;
+                    let suggestion = null;
+                    if (form.mode === "list" && !form.formId && otherForm) {
+                      const partner = findPartnerForm(otherForm.formId, formsById, forms);
+                      if (partner) {
+                        const used = usageMap.get(partner.id) || [];
+                        if (used.length === 0) suggestion = partner;
                       }
-                      theme={{ text, muted, modalBdr, inputBg, cardBg }}
-                    />
-                  </div>
-                );
-              })}
+                    }
 
-              {sameGroup && (
-                <div
-                  style={{
-                    marginTop: 8,
-                    fontSize: 11,
-                    color: "#FFB95E",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                  }}
-                >
-                  <span>⚠</span>
-                  <span>
-                    os 2 forms estão como <strong>{groupLabel(groups[0])}</strong>. Use o botão <em>trocar</em> em um deles pra formar o par Controle/Exposto.
-                  </span>
-                </div>
+                    return (
+                      <div key={fIdx} style={{ marginBottom: fIdx === 0 ? 10 : 0 }}>
+                        <FormPicker
+                          label={`Form ${fIdx + 1} do par`}
+                          forms={forms}
+                          formsById={formsById}
+                          mode={form.mode}
+                          formId={form.formId}
+                          url={form.url}
+                          groupOverride={form.groupOverride}
+                          effectiveGroup={getFormGroup(form, formsById)}
+                          disabled={emptyForms && form.mode === "list"}
+                          usageMap={usageMap}
+                          currentBlockIdx={idx}
+                          currentFormIdx={fIdx}
+                          suggestion={suggestion}
+                          onChange={(patch) =>
+                            updateForm(idx, fIdx, {
+                              mode: patch.mode ?? form.mode,
+                              formId: patch.formId ?? (patch.mode === "manual" ? "" : form.formId),
+                              url: patch.url ?? form.url,
+                              // Quando o admin troca o form por outro pela lista,
+                              // limpa override pra deixar a auto-detecção valer.
+                              ...(patch.formId !== undefined && patch.formId !== form.formId
+                                ? { groupOverride: null }
+                                : {}),
+                              ...(patch.groupOverride !== undefined
+                                ? { groupOverride: patch.groupOverride }
+                                : {}),
+                            })
+                          }
+                          theme={{ text, muted, modalBdr, inputBg, cardBg }}
+                        />
+                      </div>
+                    );
+                  })}
+
+                  {sameGroup && (
+                    <div
+                      style={{
+                        marginTop: 8,
+                        fontSize: 11,
+                        color: "#FFB95E",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <span>⚠</span>
+                      <span>
+                        os 2 forms estão como <strong>{groupLabel(groups[0])}</strong>. Use o botão <em>trocar</em> em um deles pra formar o par Controle/Exposto.
+                      </span>
+                    </div>
+                  )}
+                </>
               )}
 
               <FocusRowField
@@ -843,15 +943,28 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
   );
 };
 
-// Combina spans de respostas de todos os forms do bloco em um único intervalo
-// (min de firsts, max de lasts) — pra mostrar ao admin "tem dados de A a B"
-// como hint pra escolher o clientRange.
+// Combina spans de respostas de todos os forms/arquivos do bloco em um único
+// intervalo (min de firsts, max de lasts) — pra mostrar ao admin "tem dados
+// de A a B" como hint pra escolher o clientRange.
 function getCombinedResponseSpan(blocks, formsById, spanByForm) {
   let firstISO = null;
   let lastISO = null;
   let totalForms = 0;
   let formsWithData = 0;
   for (const b of blocks) {
+    if (b.tipo === "videoask") {
+      // VideoAsk: timestamps já vieram do XLSX parser, embutidos no bloco
+      for (const side of ["ctrl", "exp"]) {
+        const s = b.videoask?.[side];
+        if (!s?.fileName) continue;
+        totalForms++;
+        if (!s.firstAt && !s.lastAt) continue;
+        formsWithData++;
+        if (s.firstAt && (!firstISO || s.firstAt < firstISO)) firstISO = s.firstAt;
+        if (s.lastAt && (!lastISO || s.lastAt > lastISO)) lastISO = s.lastAt;
+      }
+      continue;
+    }
     for (const f of b.forms) {
       const id = f.mode === "list" ? f.formId : extractFormId(f.url);
       if (!id) continue;
@@ -1426,6 +1539,284 @@ function chipBtn(color) {
   };
 }
 
+// ─── TipoToggle ─────────────────────────────────────────────────────────────
+// Segmented control no header do bloco — alterna entre Typeform (forms da
+// pasta Survey via API) e VideoAsk (upload de XLSX exportado da plataforma).
+// Estado do tipo inativo é preservado no bloco — alternar não destrói dados.
+
+function TipoToggle({ value, onChange, theme }) {
+  const { muted, modalBdr, inputBg } = theme;
+  const base = {
+    padding: "4px 10px",
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: "pointer",
+    border: "none",
+    background: "transparent",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  };
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        background: inputBg,
+        border: `1px solid ${modalBdr}`,
+        borderRadius: 999,
+        padding: 2,
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => onChange("typeform")}
+        style={{
+          ...base,
+          borderRadius: 999,
+          background: value === "typeform" ? C.blue : "transparent",
+          color: value === "typeform" ? "#fff" : muted,
+        }}
+      >
+        Typeform
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("videoask")}
+        style={{
+          ...base,
+          borderRadius: 999,
+          background: value === "videoask" ? "#8E44AD" : "transparent",
+          color: value === "videoask" ? "#fff" : muted,
+        }}
+      >
+        VideoAsk
+      </button>
+    </div>
+  );
+}
+
+// ─── VideoaskUploads ────────────────────────────────────────────────────────
+// 2 uploads (Controle + Exposto) que aceitam o XLSX exportado pela VideoAsk.
+// Parser local (read-excel-file) extrai a 1ª coluna de pergunta (header
+// /^Q\d+\./) e conta valores categóricos. Preview mostra contagens parseadas.
+
+function VideoaskUploads({ videoask, onChange, theme }) {
+  const { text, muted, modalBdr, inputBg, cardBg } = theme;
+
+  // Union de keys ctrl + exp pra preview alinhado (mesma ordem nos 2 lados)
+  const allLabels = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const k of Object.keys(videoask?.ctrl?.counts || {})) {
+      if (!seen.has(k)) { seen.add(k); out.push(k); }
+    }
+    for (const k of Object.keys(videoask?.exp?.counts || {})) {
+      if (!seen.has(k)) { seen.add(k); out.push(k); }
+    }
+    return out;
+  }, [videoask]);
+
+  const ctrlTotal = videoask?.ctrl?.total || 0;
+  const expTotal  = videoask?.exp?.total  || 0;
+  const hasBoth = ctrlTotal > 0 && expTotal > 0;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <UploadSlot
+        side="ctrl"
+        label="Arquivo Controle"
+        accentColor="#27AE60"
+        state={videoask?.ctrl}
+        onParsed={(parsed) => onChange("ctrl", parsed)}
+        onClear={() => onChange("ctrl", { fileName: "", question: "", counts: {}, total: 0, firstAt: null, lastAt: null })}
+        theme={{ text, muted, modalBdr, inputBg }}
+      />
+      <UploadSlot
+        side="exp"
+        label="Arquivo Exposto"
+        accentColor={C.blue}
+        state={videoask?.exp}
+        onParsed={(parsed) => onChange("exp", parsed)}
+        onClear={() => onChange("exp", { fileName: "", question: "", counts: {}, total: 0, firstAt: null, lastAt: null })}
+        theme={{ text, muted, modalBdr, inputBg }}
+      />
+
+      {hasBoth && (
+        <div
+          style={{
+            marginTop: 4,
+            background: cardBg,
+            border: `1px solid ${modalBdr}`,
+            borderRadius: 8,
+            padding: "10px 12px",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              color: muted,
+              letterSpacing: 1,
+              textTransform: "uppercase",
+              marginBottom: 8,
+              display: "flex",
+              justifyContent: "space-between",
+            }}
+          >
+            <span>Preview das contagens</span>
+            <span>
+              {ctrlTotal.toLocaleString("pt-BR")} ctrl ·{" "}
+              {expTotal.toLocaleString("pt-BR")} exp
+            </span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", rowGap: 4, columnGap: 14, fontSize: 12 }}>
+            <div style={{ fontWeight: 700, color: muted, fontSize: 10, textTransform: "uppercase" }}>Resposta</div>
+            <div style={{ fontWeight: 700, color: muted, fontSize: 10, textTransform: "uppercase", textAlign: "right" }}>Ctrl</div>
+            <div style={{ fontWeight: 700, color: muted, fontSize: 10, textTransform: "uppercase", textAlign: "right" }}>Exp</div>
+            {allLabels.map((label) => {
+              const c = Number(videoask?.ctrl?.counts?.[label] || 0);
+              const e = Number(videoask?.exp?.counts?.[label]  || 0);
+              const cPct = ctrlTotal > 0 ? Math.round((c / ctrlTotal) * 100) : 0;
+              const ePct = expTotal  > 0 ? Math.round((e / expTotal)  * 100) : 0;
+              return (
+                <div key={`row-${label}`} style={{ display: "contents" }}>
+                  <div style={{ color: text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</div>
+                  <div style={{ color: text, textAlign: "right" }}>{c} <span style={{ color: muted, fontSize: 10 }}>({cPct}%)</span></div>
+                  <div style={{ color: text, textAlign: "right" }}>{e} <span style={{ color: muted, fontSize: 10 }}>({ePct}%)</span></div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UploadSlot({ label, accentColor, state, onParsed, onClear, theme }) {
+  const { text, muted, modalBdr, inputBg } = theme;
+  const [parsing, setParsing] = useState(false);
+  const [error, setError] = useState("");
+  const inputRef = useRef(null);
+
+  const handleFile = async (file) => {
+    if (!file) return;
+    setError("");
+    setParsing(true);
+    try {
+      const parsed = await parseVideoaskFile(file);
+      onParsed({
+        fileName: file.name,
+        question: parsed.question,
+        counts: parsed.counts,
+        total: parsed.total,
+        firstAt: parsed.firstAt,
+        lastAt: parsed.lastAt,
+      });
+    } catch (e) {
+      setError(e?.message || "Erro ao processar arquivo");
+    } finally {
+      setParsing(false);
+      // Reseta o input pra permitir re-upload do mesmo arquivo (browser
+      // não dispara onChange se o nome do arquivo for o mesmo).
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const hasFile = !!state?.fileName;
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: muted, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+        <span
+          style={{
+            display: "inline-block",
+            width: 8,
+            height: 8,
+            borderRadius: 2,
+            background: accentColor,
+          }}
+          aria-hidden
+        />
+        {label}
+      </div>
+      <div
+        style={{
+          background: inputBg,
+          border: `1px solid ${hasFile ? `${accentColor}80` : modalBdr}`,
+          borderRadius: 7,
+          padding: "9px 12px",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          flexWrap: "wrap",
+        }}
+      >
+        {hasFile ? (
+          <>
+            <span style={{ fontSize: 13, color: text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
+              {state.fileName}
+            </span>
+            <span style={{ fontSize: 11, color: muted }}>
+              {state.total || 0} respostas
+            </span>
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              style={{ background: "none", border: "none", color: C.blue, fontSize: 11, fontWeight: 600, cursor: "pointer", padding: 0 }}
+            >
+              trocar
+            </button>
+            <button
+              type="button"
+              onClick={onClear}
+              title="Remover arquivo"
+              style={{ background: "none", border: "none", color: muted, fontSize: 14, lineHeight: 1, cursor: "pointer", padding: 0 }}
+            >
+              ×
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            disabled={parsing}
+            style={{
+              background: "none",
+              border: "none",
+              color: parsing ? muted : C.blue,
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: parsing ? "wait" : "pointer",
+              padding: 0,
+              textAlign: "left",
+              flex: 1,
+            }}
+          >
+            {parsing ? "Processando…" : "📎 Selecionar .xlsx do VideoAsk"}
+          </button>
+        )}
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          onChange={(e) => handleFile(e.target.files?.[0])}
+          style={{ display: "none" }}
+        />
+      </div>
+      {error && (
+        <div style={{ fontSize: 11, color: "#E74C3C", marginTop: 4 }}>
+          ⚠ {error}
+        </div>
+      )}
+      {hasFile && state.question && (
+        <div style={{ fontSize: 11, color: muted, marginTop: 4, lineHeight: 1.4 }}>
+          Pergunta detectada: <span style={{ color: text }}>{state.question.length > 60 ? state.question.slice(0, 60) + "…" : state.question}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── FocusRowField ──────────────────────────────────────────────────────────
 // Resposta-foco para destaque visual no relatório. Sempre visível.
 //   - Loading da meta (sem rows ainda) → skeleton
@@ -1434,26 +1825,39 @@ function chipBtn(color) {
 
 function FocusRowField({ block, metaById, onChange, onRefreshMeta, theme, inputStyle }) {
   const { text, muted, modalBdr, inputBg } = theme;
+  const isVideoask = block.tipo === "videoask";
 
-  // Iterando forms[] genericamente — não importa qual é controle/exposto.
-  const metas = block.forms.map((f) =>
-    f.mode === "list" && f.formId ? metaById.get(f.formId) : null,
-  );
-
+  // Pra videoask, ignoramos metaById (que é Typeform) e usamos as keys das
+  // contagens do XLSX direto.
   const rows = useMemo(() => {
     const seen = new Set();
     const out = [];
-    for (const m of metas) {
+    if (isVideoask) {
+      const ctrlKeys = Object.keys(block.videoask?.ctrl?.counts || {});
+      const expKeys  = Object.keys(block.videoask?.exp?.counts  || {});
+      for (const k of [...ctrlKeys, ...expKeys]) {
+        const t = String(k).trim();
+        if (t && !seen.has(t)) { seen.add(t); out.push(t); }
+      }
+      return out;
+    }
+    for (const f of block.forms) {
+      const m = f.mode === "list" && f.formId ? metaById.get(f.formId) : null;
       for (const r of (m?.rows || [])) {
         const t = String(r).trim();
         if (t && !seen.has(t)) { seen.add(t); out.push(t); }
       }
     }
     return out;
-  }, [metas]);
+  }, [isVideoask, block.videoask, block.forms, metaById]);
 
-  const anyLoading = metas.some((m) => m?.loading);
-  const noListSlot = block.forms.every((f) => f.mode !== "list");
+  const anyLoading = !isVideoask && block.forms.some((f) => {
+    if (f.mode !== "list" || !f.formId) return false;
+    return metaById.get(f.formId)?.loading;
+  });
+  const noListSlot = isVideoask
+    ? !(block.videoask?.ctrl?.fileName || block.videoask?.exp?.fileName)
+    : block.forms.every((f) => f.mode !== "list");
 
   const wrapperStyle = {
     marginTop: 12,
@@ -1479,9 +1883,15 @@ function FocusRowField({ block, metaById, onChange, onRefreshMeta, theme, inputS
 
   if (rows.length > 0) {
     const focusInRows = !block.focusRow || rows.includes(block.focusRow);
-    const sourceLabel = metas.some((m) => m?.type === "matrix")
-      ? "linhas detectadas no form (matrix)"
-      : "opções de resposta detectadas no form";
+    const hasMatrix = !isVideoask && block.forms.some((f) => {
+      if (f.mode !== "list" || !f.formId) return false;
+      return metaById.get(f.formId)?.type === "matrix";
+    });
+    const sourceLabel = isVideoask
+      ? "opções de resposta detectadas no arquivo do VideoAsk"
+      : hasMatrix
+        ? "linhas detectadas no form (matrix)"
+        : "opções de resposta detectadas no form";
     return (
       <div style={wrapperStyle}>
         <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>
@@ -1545,10 +1955,12 @@ function FocusRowField({ block, metaById, onChange, onRefreshMeta, theme, inputS
       >
         <span>
           {noListSlot
-            ? "Selecione os forms da pasta Survey pra ver as opções em dropdown."
-            : "Não consegui detectar opções deste form — digite manualmente ou tente recarregar."}
+            ? (isVideoask
+                ? "Envie os arquivos do VideoAsk acima pra ver as opções em dropdown."
+                : "Selecione os forms da pasta Survey pra ver as opções em dropdown.")
+            : "Não consegui detectar opções — digite manualmente ou tente recarregar."}
         </span>
-        {!noListSlot && onRefreshMeta && (
+        {!noListSlot && !isVideoask && onRefreshMeta && (
           <button
             type="button"
             onClick={onRefreshMeta}
