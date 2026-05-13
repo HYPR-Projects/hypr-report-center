@@ -129,6 +129,14 @@ export function CampaignCardV2({
   const cpName = cp_email ? (teamMap[cp_email] || localPartFromEmail(cp_email)) : null;
   const csName = cs_email ? (teamMap[cs_email] || localPartFromEmail(cs_email)) : null;
 
+  // "Tem campanha desse formato?" — guia render condicional de DSP/VID/CTR/VTR.
+  // Pacing OU métrica de resultado existindo já indica presença do formato
+  // (campanha brand-new pode ter pacing sem CTR ainda, ou vice-versa em
+  // edge cases). Linha some inteira quando o formato não existe, em vez
+  // de mostrar "—", pra não poluir o scan com placeholders.
+  const hasDisplay = display_pacing != null || display_ctr != null;
+  const hasVideo   = video_pacing   != null || video_vtr   != null;
+
   return (
     <Card
       className={cn(
@@ -207,20 +215,28 @@ export function CampaignCardV2({
             coluna direita. Em campanha encerrada, mostra cinza pra não
             chamar atenção. Quando todos os pacings são null, esconde
             o bloco inteiro (campanha brand-new sem dados ainda). */}
-        {!ended && (display_pacing != null || video_pacing != null || display_ctr != null || video_vtr != null) && (
+        {!ended && (hasDisplay || hasVideo) && (
           <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 md:hidden border-t border-border/60 pt-3">
-            <PacingRow label="DSP" pacing={display_pacing} ended={ended} />
-            <ResultRow
-              label="CTR"
-              value={display_ctr != null ? formatPct(display_ctr, 2) : null}
-              colorClass={display_ctr != null ? ctrColorClass(display_ctr) : "text-fg-subtle"}
-            />
-            <PacingRow label="VID" pacing={video_pacing} ended={ended} />
-            <ResultRow
-              label="VTR"
-              value={video_vtr != null ? formatPct(video_vtr, 1) : null}
-              colorClass={video_vtr != null ? vtrColorClass(video_vtr) : "text-fg-subtle"}
-            />
+            {hasDisplay && (
+              <>
+                <PacingRow label="DSP" pacing={display_pacing} ended={ended} />
+                <ResultRow
+                  label="CTR"
+                  value={display_ctr != null ? formatPct(display_ctr, 2) : null}
+                  colorClass={display_ctr != null ? ctrColorClass(display_ctr) : "text-fg-subtle"}
+                />
+              </>
+            )}
+            {hasVideo && (
+              <>
+                <PacingRow label="VID" pacing={video_pacing} ended={ended} />
+                <ResultRow
+                  label="VTR"
+                  value={video_vtr != null ? formatPct(video_vtr, 1) : null}
+                  colorClass={video_vtr != null ? vtrColorClass(video_vtr) : "text-fg-subtle"}
+                />
+              </>
+            )}
           </div>
         )}
 
@@ -261,26 +277,35 @@ export function CampaignCardV2({
 
         <Divider />
 
-        {/* ── PACING (DSP row + VID row, separados) ────────────────── */}
+        {/* ── PACING (DSP row + VID row, separados) ──────────────────
+            Cada linha some quando o formato não existe na campanha — em
+            vez de "—" placeholder. Largura da coluna fica fixa pra
+            alinhamento entre cards continuar consistente. */}
         <div className="hidden md:flex flex-col justify-center gap-2 shrink-0 w-[160px]">
-          <PacingRow label="DSP" pacing={display_pacing} ended={ended} />
-          <PacingRow label="VID" pacing={video_pacing}   ended={ended} />
+          {hasDisplay && <PacingRow label="DSP" pacing={display_pacing} ended={ended} />}
+          {hasVideo   && <PacingRow label="VID" pacing={video_pacing}   ended={ended} />}
         </div>
 
         <Divider />
 
-        {/* ── RESULTADOS (CTR + VTR) ───────────────────────────────── */}
+        {/* ── RESULTADOS (CTR + VTR) ─────────────────────────────────
+            CTR só existe se há display; VTR só se há vídeo. Mesma régua
+            de visibilidade do bloco de pacing. */}
         <div className="hidden md:flex flex-col justify-center gap-2 shrink-0 w-[90px]">
-          <ResultRow
-            label="CTR"
-            value={display_ctr != null ? formatPct(display_ctr, 2) : null}
-            colorClass={ended ? "text-fg-subtle" : (display_ctr != null ? ctrColorClass(display_ctr) : "text-fg-subtle")}
-          />
-          <ResultRow
-            label="VTR"
-            value={video_vtr != null ? formatPct(video_vtr, 1) : null}
-            colorClass={ended ? "text-fg-subtle" : (video_vtr != null ? vtrColorClass(video_vtr) : "text-fg-subtle")}
-          />
+          {hasDisplay && (
+            <ResultRow
+              label="CTR"
+              value={display_ctr != null ? formatPct(display_ctr, 2) : null}
+              colorClass={ended ? "text-fg-subtle" : (display_ctr != null ? ctrColorClass(display_ctr) : "text-fg-subtle")}
+            />
+          )}
+          {hasVideo && (
+            <ResultRow
+              label="VTR"
+              value={video_vtr != null ? formatPct(video_vtr, 1) : null}
+              colorClass={ended ? "text-fg-subtle" : (video_vtr != null ? vtrColorClass(video_vtr) : "text-fg-subtle")}
+            />
+          )}
         </div>
 
         <Divider />
@@ -398,21 +423,54 @@ function AbsBadge() {
   );
 }
 
-/** Linha de pacing: label fixo · valor fixo · mini-barra fluida.
+/** Ícone minimalista do formato — substitui o label textual DSP/VID. */
+function FormatIcon({ label }) {
+  if (label === "DSP") {
+    // Image (lucide): retângulo + sol + montanha — universal pra display estático.
+    return (
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+        <circle cx="9" cy="9" r="2" />
+        <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+      </svg>
+    );
+  }
+  if (label === "VID") {
+    // Video (lucide): câmera com play — universal pra vídeo.
+    return (
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="m22 8-6 4 6 4V8Z" />
+        <rect x="2" y="6" width="14" height="12" rx="2" ry="2" />
+      </svg>
+    );
+  }
+  return null;
+}
+
+/** Linha de pacing: ícone do formato · valor fixo · mini-barra fluida.
  *
- *  Larguras de label e valor são fixas pra DSP e VID alinharem
+ *  Larguras de ícone e valor são fixas pra DSP e VID alinharem
  *  verticalmente. A barra ocupa o restante da coluna até o divisor.
- *  Quando não há valor: mostra "—" e oculta a barra (não há o que medir). */
+ *  Quando não há valor: mostra "—" e oculta a barra (não há o que medir).
+ *
+ *  Ícones (em vez de texto "DSP"/"VID"): operação reconhece formato por
+ *  símbolo mais rápido do que ler 3 letras, e libera espaço visual. O
+ *  label textual fica no `title` pra acessibilidade/hover. */
 function PacingRow({ label, pacing, ended }) {
   const has = pacing != null && !isNaN(pacing);
   const tier = ended ? "ended" : pacingTier(pacing);
   const colorClass = ended
     ? "text-fg-subtle"
     : (has ? pacingColorClass(pacing) : "text-fg-subtle");
+  const tooltip = label === "DSP" ? "Display" : label === "VID" ? "Vídeo" : label;
   return (
     <div className="flex items-center gap-2 leading-none">
-      <span className="text-[9px] uppercase tracking-[0.14em] font-semibold text-fg-subtle w-7 shrink-0">
-        {label}
+      <span
+        className="text-fg-subtle w-7 shrink-0 flex items-center"
+        title={tooltip}
+        aria-label={tooltip}
+      >
+        <FormatIcon label={label} />
       </span>
       <span className={cn("text-[13px] font-bold tabular-nums w-12 shrink-0 text-right", colorClass)}>
         {has ? formatPacingValue(pacing) : "—"}
