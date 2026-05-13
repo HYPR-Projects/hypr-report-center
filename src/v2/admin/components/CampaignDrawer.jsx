@@ -129,6 +129,11 @@ export function CampaignDrawer({
   // Mesmo padrão do CampaignHeaderV2 do report.
   const drawerToken = campaign?.short_token;
   const [negotiation, setNegotiation] = useState(null);
+  // Loading flag separado pra ocupar o slot do botão "Ver Negociado" desde
+  // que o drawer abre, com placeholder/spinner — evita layout shift quando
+  // o fetch resolve e empurra os botões abaixo (admin tava clicando errado
+  // porque o pin "pulava").
+  const [negotiationLoading, setNegotiationLoading] = useState(false);
   // reportData é necessário pro modal detectar features/táticas como
   // "Ativado" vs "Pendente". Sem ele, badges sempre caem em pendente
   // (mesma checagem usa totals/detail por tactic_type). Fetch só dispara
@@ -139,12 +144,15 @@ export function CampaignDrawer({
     if (!open || !drawerToken) {
       setNegotiation(null);
       setReportData(null);
+      setNegotiationLoading(false);
       return;
     }
     let cancelled = false;
+    setNegotiationLoading(true);
     getNegotiation(drawerToken).then((n) => {
       if (cancelled) return;
       setNegotiation(n);
+      setNegotiationLoading(false);
       if (!n) return;
       // pré-carrega reportData em background pra que o click em
       // "Ver Negociado" abra o modal já com badges Ativado/Pendente
@@ -313,13 +321,22 @@ export function CampaignDrawer({
               onClick={() => onCopyLink?.(campaign)}
             />
             <ActionButton icon={ICON.owner}  label="Gerenciar owner (CP/CS)" onClick={() => onOwner?.(campaign)} />
-            {negotiation && (
+            {/* Slot de "Ver Negociado": ocupado por placeholder enquanto o
+                fetch de getNegotiation tá em voo, pra evitar que o botão
+                apareça depois e empurre os de baixo (admin clicava errado).
+                Quando resolve sem negociação, o slot some — aceitável porque
+                o usuário ainda não terminou de processar o painel. */}
+            {(negotiationLoading || negotiation) && (
               <ActionButton
-                icon={negoBusy ? <Spinner /> : ICON.nego}
-                label={negoBusy ? "Carregando dados..." : "Ver Negociado"}
-                variant="highlight"
-                disabled={negoBusy}
-                onClick={handleNegoClick}
+                icon={(negotiationLoading || negoBusy) ? <Spinner /> : ICON.nego}
+                label={
+                  negotiationLoading ? "Carregando negociado…"
+                  : negoBusy ? "Carregando dados..."
+                  : "Ver Negociado"
+                }
+                variant={negotiationLoading ? "default" : "highlight"}
+                disabled={negotiationLoading || negoBusy}
+                onClick={negotiationLoading ? undefined : handleNegoClick}
               />
             )}
             <ActionButton
