@@ -1570,6 +1570,11 @@ def report_data(request):
         try:
             t0 = time.time()
             force_refresh = request.args.get("refresh") == "true"
+            # Refresh manual também invalida o cache da planilha de owners —
+            # sem isso, admin que consertou a planilha continua vendo "sem
+            # owner" porque o list_cache é rebuildado com sheet_cache stale.
+            if force_refresh:
+                owners.invalidate_cache()
             cached = None if force_refresh else _cache_get(_clients_cache, "all", _CLIENTS_CACHE_TTL)
             if cached is not None:
                 resp_headers = {**headers, "Cache-Control": "private, max-age=30"}
@@ -1621,6 +1626,11 @@ def report_data(request):
         try:
             t0 = time.time()
             force_refresh = request.args.get("refresh") == "true"
+            # Refresh manual também invalida o cache da planilha de owners —
+            # sem isso, admin que consertou a planilha continua vendo "sem
+            # owner" porque o list_cache é rebuildado com sheet_cache stale.
+            if force_refresh:
+                owners.invalidate_cache()
             campaigns, hit = _get_campaigns_list_cached(force_refresh=force_refresh)
             total_ms = int((time.time() - t0) * 1000)
             resp_headers = {
