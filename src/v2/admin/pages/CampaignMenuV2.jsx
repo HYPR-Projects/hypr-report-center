@@ -126,11 +126,12 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   const [clientsFetchedAt, setClientsFetchedAt] = useState(bootstrap.clients?.ts ?? null);
   const [clientsLoading, setClientsLoading]     = useState(false);
 
-  // Cold load (sem cache) entra no contador global → barrinha no topo
-  // só aparece se demorar > 200ms. Refresh em background (SWR) e fetch
-  // de listClients NÃO entram aqui de propósito: dados são atualizados
-  // 1x/dia às 6h, então o revalidate em mount é silencioso.
-  useLoadingTask(loading);
+  // Cold load + refresh em background entram no contador global → barrinha
+  // no topo só aparece se demorar > 200ms. Cobre o primeiro acesso do dia:
+  // dados atualizam 1x/dia às 6h, o backend leva alguns segundos pra
+  // recompor pacing/CTR/VTR, e o user vê feedback de que tá vindo.
+  // listClients NÃO entra aqui (lazy, só dispara na view client).
+  useLoadingTask(loading || refreshing);
 
   // ── Estado de UI ─────────────────────────────────────────────────────────
   const [layout, setLayout]               = useState(getInitialLayout);
