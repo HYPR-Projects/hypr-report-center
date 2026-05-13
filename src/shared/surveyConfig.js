@@ -94,14 +94,6 @@ export function serializeSurveyConfig(questions, clientRange) {
   return JSON.stringify(questions);
 }
 
-// Tipo da pergunta: "typeform" (padrão histórico) ou "videoask".
-// Ausência do campo = "typeform" pra retrocompat com surveys salvos antes
-// da v3. Caller usa pra rotear render path (fetch via proxy vs. counts
-// embutidos) e pra rotular badge no relatório.
-export function getQuestionTipo(q) {
-  return q?.tipo === "videoask" ? "videoask" : "typeform";
-}
-
 // Soma valores de um dicionário {label: count} para totais agregados.
 // Aceita counts numéricos ou strings numéricas (defensivo contra JSON
 // que veio serializado com tipos misturados).
@@ -115,11 +107,42 @@ export function sumCounts(counts) {
   return total;
 }
 
-// Pergunta videoask é renderizável se tem contagens válidas em AMBOS
-// lados (controle E exposto) — sem ambos, não dá pra calcular lift.
-export function isVideoaskQuestionRenderable(q) {
-  if (!q || q.tipo !== "videoask") return false;
-  return sumCounts(q.ctrlCounts) > 0 && sumCounts(q.expCounts) > 0;
+// Source ("tipo") por LADO da pergunta — "typeform" ou "videoask".
+// Schema novo (v3.1) usa campos `ctrlSource`/`expSource` independentes,
+// permitindo pareamentos mistos (ex: Typeform Controle × VideoAsk Exposto).
+// Legacy:
+//   - `tipo: "videoask"` → ambos lados videoask
+//   - sem `tipo` → ambos lados typeform
+// Sem campo *Source nem tipo, default = "typeform".
+export function getSideSource(q, side) {
+  if (!q) return "typeform";
+  const field = side === "ctrl" ? "ctrlSource" : "expSource";
+  if (q[field] === "typeform" || q[field] === "videoask") return q[field];
+  if (q.tipo === "videoask") return "videoask";
+  return "typeform";
+}
+
+// Diz se o lado tem dado utilizável pra renderizar (URL/form do Typeform
+// ou contagens do VideoAsk não-zero). Permite lados opcionais — pergunta
+// com só Controle, ou só Exposto, ainda é válida (sem cálculo de lift).
+export function hasSideData(q, side) {
+  if (!q) return false;
+  const source = getSideSource(q, side);
+  if (source === "videoask") {
+    const counts = side === "ctrl" ? q.ctrlCounts : q.expCounts;
+    return sumCounts(counts) > 0;
+  }
+  const url = side === "ctrl" ? q.ctrlUrl : q.expUrl;
+  const formId = side === "ctrl" ? q.ctrlFormId : q.expFormId;
+  return !!(formId || url);
+}
+
+// Pergunta renderizável: pelo menos UM lado preenchido. Com os dois lados
+// há cálculo de lift; com apenas um, mostra distribuição daquele grupo
+// sem comparativo.
+export function isQuestionRenderable(q) {
+  if (!q) return false;
+  return hasSideData(q, "ctrl") || hasSideData(q, "exp");
 }
 
 // Formata um clientRange pra exibição compacta em PT-BR.

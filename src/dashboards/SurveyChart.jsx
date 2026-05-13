@@ -1,6 +1,9 @@
 import { useEffect, useRef } from "react";
 import { useChart } from "../shared/useChart";
 
+// ctrl/exp opcionais — quando a pergunta tem só um lado, passa null/[] no
+// lado faltante e o chart oculta o dataset correspondente (em vez de
+// renderizar zeros enganosos).
 const SurveyChart=({id,labels,ctrl,exp})=>{
   const ref=useRef(null);
   const Chart=useChart();
@@ -8,15 +11,16 @@ const SurveyChart=({id,labels,ctrl,exp})=>{
     if(!ref.current||!Chart)return;
     const existing=ref.current._chartInstance;
     if(existing)existing.destroy();
+    const datasets=[];
+    if(Array.isArray(ctrl) && ctrl.length>0){
+      datasets.push({label:"Controle", data:ctrl, backgroundColor:"#E5EBF2", borderRadius:4});
+    }
+    if(Array.isArray(exp) && exp.length>0){
+      datasets.push({label:"Exposto",  data:exp,  backgroundColor:"#3397B9", borderRadius:4});
+    }
     const chart=new Chart(ref.current,{
       type:"bar",
-      data:{
-        labels,
-        datasets:[
-          {label:"Controle", data:ctrl, backgroundColor:"#E5EBF2", borderRadius:4},
-          {label:"Exposto",  data:exp,  backgroundColor:"#3397B9", borderRadius:4},
-        ]
-      },
+      data:{labels,datasets},
       options:{
         responsive:true,
         maintainAspectRatio:false,

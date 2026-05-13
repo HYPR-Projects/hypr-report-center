@@ -6,7 +6,7 @@ import TabChat from "../components/TabChat";
 import SurveyChart from "./SurveyChart";
 import DateRangeFilter from "../components/DateRangeFilter";
 import { ymd } from "../shared/dateFilter";
-import { parseSurveyConfig, fmtClientRange, sumCounts } from "../shared/surveyConfig";
+import { parseSurveyConfig, fmtClientRange, sumCounts, getSideSource, hasSideData } from "../shared/surveyConfig";
 
 const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
   const [questions,setQuestions]=useState(null);
@@ -41,40 +41,50 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
       setLoading(true);setError(null);
       try{
         if(!config){throw new Error("Configuração de survey inválida.");}
-        // Modelo moderno (Typeform v1/v2 + VideoAsk v3): array de questions.
-        // Cada item tem tipo "typeform" (default) com ctrlUrl/expUrl, ou
-        // "videoask" com ctrlCounts/expCounts já embutidos. Mesmo render.
+        // Modelo moderno: array de questions com lados independentes.
+        // Cada lado (ctrl/exp) pode ser Typeform (fetch via proxy) ou
+        // VideoAsk (counts embutidos), independentemente. Pode também
+        // ter só um lado preenchido — render mostra a distribuição
+        // sem cálculo de lift nesse caso.
         const hasModernQuestion = !config.isLegacyCsv
           && Array.isArray(config.questions)
-          && config.questions.some(q => q && (q.ctrlUrl || q.tipo === "videoask"));
+          && config.questions.some(q => q && (hasSideData(q, "ctrl") || hasSideData(q, "exp")));
         if(hasModernQuestion){
-          const results=await Promise.all(config.questions.map(async(q)=>{
-            // VideoAsk: contagens já vêm do XLSX parseado no setup — sem fetch.
-            // Mesma shape de saída de Typeform "choice" pra reusar render.
-            if(q.tipo === "videoask"){
-              const ctrl = q.ctrlCounts || {};
-              const exp = q.expCounts || {};
-              return {
-                nome: q.nome,
-                type: "choice",
-                source: "videoask",
-                focusRow: q.focusRow || null,
-                control_total: sumCounts(ctrl),
-                exposed_total: sumCounts(exp),
-                ctrl,
-                exp,
-              };
+          // Helper: fetcha um lado individual (typeform → API, videoask → counts embutidos).
+          // Retorna { type: "choice"|"matrix"|null, counts, total, rows? } ou null se lado ausente.
+          const fetchSide = async (q, side) => {
+            if (!hasSideData(q, side)) return null;
+            const source = getSideSource(q, side);
+            if (source === "videoask") {
+              const counts = side === "ctrl" ? (q.ctrlCounts || {}) : (q.expCounts || {});
+              return { type: "choice", counts, total: sumCounts(counts) };
             }
+            const url = side === "ctrl" ? q.ctrlUrl : q.expUrl;
+            const data = await fetchTypeformData(url);
+            return data;
+          };
+
+          const results = await Promise.all(config.questions.map(async (q) => {
             const [ctrlData, expData] = await Promise.all([
-              fetchTypeformData(q.ctrlUrl),
-              fetchTypeformData(q.expUrl),
+              fetchSide(q, "ctrl"),
+              fetchSide(q, "exp"),
             ]);
-            // Matrix: backend retorna {type:"matrix", rows:{row:{counts,total}}}
-            if(ctrlData.type === "matrix" && expData.type === "matrix"){
+            const ctrlSource = getSideSource(q, "ctrl");
+            const expSource  = getSideSource(q, "exp");
+            // Mixed-source labels pro badge — só ambos os lados preenchidos
+            // têm os dois rótulos; lado faltante fica null.
+            const sources = {
+              ctrl: ctrlData ? ctrlSource : null,
+              exp:  expData  ? expSource  : null,
+            };
+            // Matrix só quando AMBOS lados vieram matrix (lift por linha).
+            // Misturado matrix+choice não faz sentido — cai pra choice.
+            const isMatrix = ctrlData?.type === "matrix" && expData?.type === "matrix";
+            if (isMatrix) {
               return {
                 nome: q.nome,
                 type: "matrix",
-                source: "typeform",
+                sources,
                 focusRow: q.focusRow || null,
                 control_total: ctrlData.total,
                 exposed_total: expData.total,
@@ -82,20 +92,18 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
                 expRows: expData.rows || {},
               };
             }
-            // Choice: comportamento atual + focusRow propagado pra destacar
-            // a opção escolhida no card de lifts.
             return {
               nome: q.nome,
               type: "choice",
-              source: "typeform",
+              sources,
               focusRow: q.focusRow || null,
-              control_total: ctrlData.total,
-              exposed_total: expData.total,
-              ctrl: ctrlData.counts || {},
-              exp: expData.counts || {},
+              control_total: ctrlData?.total ?? null,
+              exposed_total: expData?.total  ?? null,
+              ctrl: ctrlData?.counts || null,
+              exp:  expData?.counts  || null,
             };
           }));
-          if(!cancelled)setQuestions(results);
+          if (!cancelled) setQuestions(results);
         } else if(config.isLegacyCsv){
           // Modelo antigo (CSV pré-Typeform) — retrocompatibilidade
           const s=config.legacyObject;
@@ -134,25 +142,39 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
   // Pergunta tipo choice/choices simples (Sim/Não/Talvez, etc).
   // focusRow (opcional): se preenchido e bater com algum dos labels, ordena
   // esse card primeiro e aplica destaque visual (borda azul, tint, ★).
+  //
+  // Lados (ctrl/exp) podem ser null — quando admin configurou só um, o
+  // gráfico mostra a distribuição daquele lado e os cards de lift somem
+  // (sem comparativo possível).
   const renderQuestion=(nome,ctrl,exp,ctrlTotal,expTotal,qIdx,isLegacy,legacyQ,focusRow)=>{
-    const baseKeys=isLegacy
-      ?[...new Set([...Object.keys(legacyQ.control),...Object.keys(legacyQ.exposed)])]
-      :[...new Set([...Object.keys(ctrl),...Object.keys(exp)])];
+    const ctrlMap = isLegacy ? legacyQ.control  : (ctrl || null);
+    const expMap  = isLegacy ? legacyQ.exposed  : (exp  || null);
+    const hasCtrl = !!ctrlMap && Object.keys(ctrlMap).length > 0;
+    const hasExp  = !!expMap  && Object.keys(expMap).length  > 0;
+    const hasBoth = hasCtrl && hasExp;
+    const baseKeys=[...new Set([
+      ...(ctrlMap ? Object.keys(ctrlMap) : []),
+      ...(expMap  ? Object.keys(expMap)  : []),
+    ])];
     // Sort: focusRow primeiro (quando bate com alguma label), demais preservam ordem.
     const allKeys = focusRow && baseKeys.includes(focusRow)
       ? [focusRow, ...baseKeys.filter(k=>k!==focusRow)]
       : baseKeys;
-    const ctrlMap=isLegacy?legacyQ.control:ctrl;
-    const expMap=isLegacy?legacyQ.exposed:exp;
-    const ctrlTot=isLegacy?Object.values(ctrlMap).reduce((a,b)=>a+b,0):ctrlTotal;
-    const expTot=isLegacy?Object.values(expMap).reduce((a,b)=>a+b,0):expTotal;
-    const ctrlPct=allKeys.map(k=>ctrlTot>0?Math.round((ctrlMap[k]||0)/ctrlTot*100):0);
-    const expPct=allKeys.map(k=>expTot>0?Math.round((expMap[k]||0)/expTot*100):0);
-    const lifts=allKeys.map((k,i)=>{
-      const abs=Math.round((expPct[i]-ctrlPct[i])*10)/10;
-      const rel=ctrlPct[i]>0?Math.round((abs/ctrlPct[i])*1000)/10:0;
+    const ctrlTot = hasCtrl
+      ? (isLegacy ? Object.values(ctrlMap).reduce((a,b)=>a+b,0) : (ctrlTotal || 0))
+      : 0;
+    const expTot  = hasExp
+      ? (isLegacy ? Object.values(expMap).reduce((a,b)=>a+b,0) : (expTotal || 0))
+      : 0;
+    const ctrlPct = hasCtrl ? allKeys.map(k=>ctrlTot>0?Math.round((ctrlMap[k]||0)/ctrlTot*100):0) : [];
+    const expPct  = hasExp  ? allKeys.map(k=>expTot>0?Math.round((expMap[k]||0)/expTot*100):0) : [];
+    const lifts = hasBoth ? allKeys.map((k,i)=>{
+      const cp = ctrlPct[i] ?? 0;
+      const ep = expPct[i]  ?? 0;
+      const abs=Math.round((ep-cp)*10)/10;
+      const rel=cp>0?Math.round((abs/cp)*1000)/10:0;
       return{key:k,abs,rel,isFocus:k===focusRow};
-    });
+    }) : [];
     return(
       <div key={qIdx} style={{border:`1px solid ${bdr}`,borderRadius:12,padding:20,marginBottom:16,background:bgCard}}>
         <div style={{fontSize:12,color:mt,marginBottom:2}}>{isLegacy?`Pergunta ${qIdx+1}`:nome}</div>
@@ -161,6 +183,14 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
         <div style={{display:"flex",gap:24,flexWrap:"wrap",alignItems:"flex-start"}}>
           <div style={{flex:2,minWidth:260}}>
             <SurveyChart id={`sc-${qIdx}`} labels={allKeys} ctrl={ctrlPct} exp={expPct}/>
+            {!hasBoth && (
+              <div style={{
+                marginTop:10,fontSize:11.5,color:mt,fontStyle:"italic",
+                padding:"8px 12px",borderRadius:6,background:bgInner,border:`1px dashed ${bdr}`,
+              }}>
+                Apenas {hasCtrl ? "Controle" : "Exposto"} configurado — sem comparativo de lift nesta pergunta.
+              </div>
+            )}
           </div>
           <div style={{flex:1,minWidth:160,display:"flex",flexDirection:"column",gap:10}}>
             {lifts.map((l,j)=>{
@@ -366,15 +396,14 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
   if(error)return<div style={{color:"#E74C3C",textAlign:"center",padding:40}}>{error}</div>;
   if(!questions)return null;
 
-  // Totais visíveis ao admin (somente quando há perguntas Typeform).
-  // Soma os totais de cada pergunta — caller pega total único independente
-  // do tipo (choice/matrix/legacy).
+  // Totais visíveis ao admin — soma só totais válidos (pula lados null
+  // pra não inflar com zeros de perguntas só-um-lado).
   const adminTotals = isAdmin && questions
     ? questions.reduce((acc,q)=>{
         if(q.legacy) return acc;
         return {
-          ctrl: acc.ctrl + (q.control_total||0),
-          exp:  acc.exp  + (q.exposed_total||0),
+          ctrl: acc.ctrl + (q.control_total ?? 0),
+          exp:  acc.exp  + (q.exposed_total ?? 0),
         };
       },{ctrl:0,exp:0})
     : null;
@@ -476,27 +505,17 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
                 <div style={{fontSize:13,fontWeight:700,color:C.blue,textTransform:"uppercase",letterSpacing:1.5}}>
                   {q.nome||`Pergunta ${i+1}`}
                 </div>
-                {q.source==="videoask"&&(
-                  <span
-                    title="Resultados vindos do export XLSX do VideoAsk"
-                    style={{
-                      fontSize:10,
-                      fontWeight:700,
-                      letterSpacing:0.8,
-                      textTransform:"uppercase",
-                      color:"#8E44AD",
-                      background:"#8E44AD18",
-                      border:"1px solid #8E44AD40",
-                      borderRadius:999,
-                      padding:"2px 7px",
-                    }}
-                  >VideoAsk</span>
-                )}
+                <SourceBadges sources={q.sources}/>
               </div>
               {isAdmin && (
                 <div style={{fontSize:11,color:mt,whiteSpace:"nowrap"}}>
-                  <span style={{color:txt,fontWeight:600}}>{(q.control_total||0).toLocaleString("pt-BR")}</span> ctrl ·{" "}
-                  <span style={{color:txt,fontWeight:600}}>{(q.exposed_total||0).toLocaleString("pt-BR")}</span> exp
+                  {q.control_total!=null && (
+                    <><span style={{color:txt,fontWeight:600}}>{q.control_total.toLocaleString("pt-BR")}</span> ctrl</>
+                  )}
+                  {q.control_total!=null && q.exposed_total!=null && " · "}
+                  {q.exposed_total!=null && (
+                    <><span style={{color:txt,fontWeight:600}}>{q.exposed_total.toLocaleString("pt-BR")}</span> exp</>
+                  )}
                 </div>
               )}
             </div>
@@ -513,5 +532,38 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
     </div>
   );
 };
+
+// Badge inline da fonte de cada lado da pergunta. Pra Typeform/Typeform
+// (caso comum) escondemos badges — sem ruído. Pra mistos ou só-VideoAsk,
+// renderizamos pra deixar claro de onde vieram os dados.
+const SOURCE_LABEL = { typeform: "Standard Survey", videoask: "Video Survey" };
+const SOURCE_TINT  = {
+  typeform: { fg: "#3397B9", bg: "#3397B918", bd: "#3397B940" },
+  videoask: { fg: "#8E44AD", bg: "#8E44AD18", bd: "#8E44AD40" },
+};
+function SourceBadges({ sources }) {
+  if (!sources) return null;
+  const c = sources.ctrl, e = sources.exp;
+  // Caso default: typeform×typeform — nada a mostrar
+  if ((c === "typeform" || c == null) && (e === "typeform" || e == null)) return null;
+  const pill = (label, kind) => {
+    const t = SOURCE_TINT[kind] || SOURCE_TINT.typeform;
+    return (
+      <span style={{
+        fontSize:10,fontWeight:700,letterSpacing:0.6,textTransform:"uppercase",
+        color:t.fg,background:t.bg,border:`1px solid ${t.bd}`,borderRadius:999,padding:"2px 7px",
+      }}>{label}</span>
+    );
+  };
+  // Mesmo source nos 2 lados → 1 pílula só
+  if (c && e && c === e) return pill(SOURCE_LABEL[c], c);
+  // Mixed ou single-side
+  return (
+    <span style={{display:"inline-flex",gap:6,alignItems:"center"}}>
+      {c && pill(`Ctrl: ${SOURCE_LABEL[c]}`, c)}
+      {e && pill(`Exp: ${SOURCE_LABEL[e]}`, e)}
+    </span>
+  );
+}
 
 export default SurveyTab;

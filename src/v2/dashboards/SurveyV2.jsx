@@ -20,31 +20,17 @@
 import SurveyTab from "../../dashboards/SurveyTab";
 import { useTheme } from "../hooks/useTheme";
 import { legacyThemeObj } from "../legacyThemeBridge";
-import { parseSurveyConfig, fmtClientRange, isVideoaskQuestionRenderable } from "../../shared/surveyConfig";
-
-// Espelha backend/_extract_typeform_form_id — aceita URL `typeform.com/to/<id>`
-// ou ID puro alfanumérico de 4-32 chars. Vazio = inválido.
-function extractTypeformFormId(value) {
-  if (!value) return "";
-  const s = String(value).trim();
-  if (!s) return "";
-  const m = s.match(/typeform\.com\/to\/([A-Za-z0-9]+)/i);
-  if (m) return m[1];
-  if (/^[A-Za-z0-9]{4,32}$/.test(s)) return s;
-  return "";
-}
+import { parseSurveyConfig, fmtClientRange, isQuestionRenderable } from "../../shared/surveyConfig";
 
 // Decide se um JSON de survey é "renderizável".
 // Caso típico de rejeição: token sem survey contratada — admin pode ter
-// salvo o JSON com placeholders ou strings que não passam na regex de
-// Typeform do backend. Em vez de mostrar "URL do Typeform inválida"
-// pro cliente, escondemos a seção inteira.
+// salvo o JSON com placeholders ou strings que não passam validação.
+// Em vez de mostrar erro pro cliente, escondemos a seção inteira.
 //
-// Regra: pra Typeform, AMBOS ctrlUrl e expUrl precisam ser URLs válidas
-// (lift = exposto vs controle, não dá pra calcular com só um lado).
-// Pra VideoAsk, AMBOS ctrlCounts/expCounts precisam ter pelo menos uma
-// contagem positiva.
-// Modelo legado (CSV pré-Typeform): sem URLs, mas com `questions`.
+// Regra: pelo menos UMA pergunta precisa ter pelo menos UM lado preenchido
+// (Controle ou Exposto). Sem ambos lados há distribuição mas não lift —
+// renderer trata graciosamente. Modelo legado (CSV pré-Typeform): sem URLs,
+// mas com `questions`.
 function isRenderableSurvey(json) {
   const cfg = parseSurveyConfig(json);
   if (!cfg) return false;
@@ -52,11 +38,7 @@ function isRenderableSurvey(json) {
     return !!(cfg.legacyObject && Array.isArray(cfg.legacyObject.questions) && cfg.legacyObject.questions.length);
   }
   if (!Array.isArray(cfg.questions)) return false;
-  return cfg.questions.some((q) => {
-    if (!q) return false;
-    if (q.tipo === "videoask") return isVideoaskQuestionRenderable(q);
-    return !!extractTypeformFormId(q.ctrlUrl) && !!extractTypeformFormId(q.expUrl);
-  });
+  return cfg.questions.some(isQuestionRenderable);
 }
 
 export default function SurveyV2({ token, data, isAdmin, adminJwt }) {
