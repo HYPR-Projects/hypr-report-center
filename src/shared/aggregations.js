@@ -18,7 +18,7 @@
  * sem mudança.
  */
 
-import { enrichDetailCosts } from "./enrichDetail";
+import { enrichDetailCosts, distributeLargestRemainder } from "./enrichDetail";
 import {
   inRange,
   daysInRange,
@@ -453,6 +453,75 @@ export function computeAggregates(data, mainRange, mainTactic = "ALL") {
       : recomputeTotalsProportional(detail0, totalsRaw, data.campaign, mainRange);
   }
 
+  // ─── Alinhamento contratual dos totals ─────────────────────────────
+  // Campanha encerrada com todas frentes >= 100% → Σ custo efetivo deve
+  // ser exatamente o budget contratado (regra do contrato: cliente paga
+  // o budget integral quando entrega ≥ 100%). Sem isso, Σ dos 4
+  // budgets-por-frente (cada um = contracted × cpm_neg / 1000, derivação
+  // com casas decimais) abre ±2 centavos contra `budget_contracted`.
+  //
+  // Aplicamos largest-remainder pra realocar os centavos entre as 4
+  // frentes preservando proporção — assim KPI agregado, parciais
+  // Display/Video, detalhamento diário e Google Sheets ficam todos
+  // consistentes ao centavo. Guard de 1 real evita mascarar mismatch
+  // real de checklist vs campaign_results.
+  //
+  // Skip quando filtrado: budget proporcional muda e a regra "entrega ≥
+  // 100% = paga tudo" não se aplica ao recorte.
+  const _camp = data.campaign;
+  const _budgetTotal = _camp?.budget_contracted || 0;
+  const _today = new Date();
+  const _isCampaignEnded = _camp?.end_date ? new Date(_camp.end_date) < _today : false;
+  const _allOverDelivered = totals.length > 0 && totals.every(t => (t.pacing || 0) >= 100);
+  const _sumCost = totals.reduce((s, t) => s + (t.effective_total_cost || 0), 0);
+  if (!isFiltered
+      && _isCampaignEnded
+      && _allOverDelivered
+      && _budgetTotal > 0
+      && Math.abs(_sumCost - _budgetTotal) < 1
+      && _sumCost > 0) {
+    // (a) Alinha effective_total_cost por linha → Σ == budget_contracted
+    const weights = totals.map(t => t.effective_total_cost || 0);
+    const alignedCost = distributeLargestRemainder(weights, _budgetTotal);
+
+    // (b) Alinha os 4 budgets-por-frente (denormalizados em cada linha).
+    // Sem isso, `pickBudget()` continua somando valores derivados de
+    // contracted×cpm (Display 99.999,99 + Video 100.000,08 = 200.000,07).
+    // Após alinhamento: Display + Video = budget_contracted exato, e o
+    // Budget de cada barra de pacing parcial bate com o Investido alinhado.
+    const _t0 = totals[0] || {};
+    const _budgetWeights = [
+      _t0.o2o_display_budget || 0,
+      _t0.ooh_display_budget || 0,
+      _t0.o2o_video_budget   || 0,
+      _t0.ooh_video_budget   || 0,
+    ];
+    const _budgetSum = _budgetWeights.reduce((s, w) => s + w, 0);
+    let alignedBudgets = _budgetWeights;
+    if (_budgetSum > 0 && Math.abs(_budgetSum - _budgetTotal) < 1) {
+      alignedBudgets = distributeLargestRemainder(_budgetWeights, _budgetTotal);
+    }
+    const [_o2oD, _oohD, _o2oV, _oohV] = alignedBudgets;
+
+    // total_invested por linha == budget da frente daquela linha
+    const _investedByKey = {
+      "DISPLAY|O2O": _o2oD,
+      "DISPLAY|OOH": _oohD,
+      "VIDEO|O2O":   _o2oV,
+      "VIDEO|OOH":   _oohV,
+    };
+
+    totals = totals.map((t, i) => ({
+      ...t,
+      effective_total_cost: alignedCost[i],
+      o2o_display_budget:   _o2oD,
+      ooh_display_budget:   _oohD,
+      o2o_video_budget:     _o2oV,
+      ooh_video_budget:     _oohV,
+      total_invested:       _investedByKey[`${t.media_type}|${t.tactic_type}`] ?? (t.total_invested || 0),
+    }));
+  }
+
   const daily  = daily0;
   const detail = enrichDetailCosts(detail0, totals);
 
@@ -519,6 +588,9 @@ export function computeAggregates(data, mainRange, mainTactic = "ALL") {
   const video   = enrich(totals.filter(t=>t.media_type==="VIDEO"));
 
   const totalImpressions=totals.reduce((s,t)=>s+(t.viewable_impressions||0),0);
+  // `totals.effective_total_cost` já passou pelo alinhamento contratual
+  // acima quando aplicável, então Σ aqui == budget_contracted exato em
+  // campanhas encerradas com over. Demais casos: Σ raw dos totals.
   const totalCusto=totals.reduce((s,t)=>s+(t.effective_total_cost||0),0);
   const totalCustoOver=totals.reduce((s,t)=>s+(t.effective_cost_with_over||0),0);
 

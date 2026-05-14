@@ -3274,7 +3274,16 @@ def query_totals(token, campaign_info):
             # Para display: CPM_efetivo * viewable / 1000
             # Para video: CPCV_efetivo * completions
             # effective_cost_with_over = valor a faturar (CPM_neg * entrega / 1000)
-            "effective_total_cost":     round(cpm_ef * viewable / 1000 if not is_video else cpcv_ef * completions, 2),
+            #
+            # Quando `over=True`, por definição cpm_ef = budget_prop/viewable*1000
+            # (idem cpcv_ef = budget_prop/completions). Então cpm_ef*viewable/1000
+            # colapsa em budget_prop algebricamente — mas em float IEEE754 acumula
+            # ±1 centavo por linha. Usar budget_prop direto preserva a identidade
+            # matemática sem deriva (custo entregue == budget contratado da frente).
+            "effective_total_cost":     round(
+                budget_prop if over else (cpcv_ef * completions if is_video else cpm_ef * viewable / 1000),
+                2,
+            ),
             "effective_cost_with_over": round(cost_with_over, 2),
             "ctr":           round(ctr,   4),
             "cpc":           round(cpc,   4),

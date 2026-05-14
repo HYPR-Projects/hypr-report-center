@@ -882,6 +882,47 @@ def _sort_merge_rows_by_date(rows: List[Dict]) -> List[Dict]:
     return sorted(rows, key=_key)
 
 
+def _distribute_largest_remainder(weights: List[float], target_total: float) -> List[float]:
+    """
+    Distribui `target_total` (em reais) entre N posições proporcionalmente a
+    `weights`, garantindo Σ resultado == round(target_total, 2) ao centavo
+    exato. Método dos restos (Hamilton/Hare).
+
+    Por que: arredondar `proportion × target` linha-a-linha acumula até R$1
+    de deriva em ~100 linhas. Esta função aloca cada centavo do alvo entre
+    as linhas — quem tem o maior resto descartado ganha o centavo extra.
+
+    Empate: índice menor primeiro (estável, reprodutível).
+    """
+    n = len(weights)
+    if n == 0:
+        return []
+    target_cents = round(target_total * 100)
+    if target_cents == 0:
+        return [0.0] * n
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        return [0.0] * n
+    raw_cents  = [(w / total_weight) * target_cents for w in weights]
+    floor_cents = [int(c) for c in raw_cents]   # floor de não-negativo
+    remainder = target_cents - sum(floor_cents)
+    # Ordena índices por maior fração descartada; tiebreaker: índice menor
+    order = sorted(range(n), key=lambda i: (-(raw_cents[i] - floor_cents[i]), i))
+    result = list(floor_cents)
+    k = 0
+    while remainder > 0 and k < n:
+        result[order[k]] += 1
+        remainder -= 1
+        k += 1
+    # Edge case target_cents < 0 (não deveria ocorrer, mas seguro)
+    k = 0
+    while remainder < 0 and k < n:
+        result[order[k]] -= 1
+        remainder += 1
+        k += 1
+    return [c / 100.0 for c in result]
+
+
 def _enrich_detail_costs(detail_rows: List[Dict], totals_rows: List[Dict]) -> List[Dict]:
     """
     Porta de src/shared/enrichDetail.js (frontend) pra Python.
@@ -902,6 +943,14 @@ def _enrich_detail_costs(detail_rows: List[Dict], totals_rows: List[Dict]) -> Li
     Sem isso, a sheet exibe ~46% menos do que o dash mostra (custos brutos
     do DSP costumam ser bem menores que custo HYPR negociado).
 
+    Largest-remainder
+    -----------------
+    Usa _distribute_largest_remainder pra garantir
+        Σ detail.effective_total_cost == round(tot.effective_total_cost, 2)
+    ao centavo. Substitui o `round(proportion × total, 2)` ingênuo que
+    acumulava ~R$0,77 de deriva contra o dashboard em campanhas com
+    ~100+ linhas de detail.
+
     Esta função DEVE ficar em sincronia com enrichDetail.js. Se um dia
     extrair pra serviço único compartilhado, atualizar ambos.
     """
@@ -914,32 +963,42 @@ def _enrich_detail_costs(detail_rows: List[Dict], totals_rows: List[Dict]) -> Li
         key = f"{t.get('media_type')}|{t.get('tactic_type')}"
         totals_map[key] = t
 
-    # Soma denominadores (vi pra display, v100 pra video) por grupo
-    group_sums = {}
-    for r in detail_rows:
+    # Indexa rows de cada grupo preservando ordem original
+    group_indices: Dict[str, List[int]] = {}
+    for idx, r in enumerate(detail_rows):
         key = f"{r.get('media_type')}|{r.get('tactic_type')}"
-        if key not in group_sums:
-            group_sums[key] = {"vi": 0, "v100": 0}
-        group_sums[key]["vi"]   += r.get("viewable_impressions") or 0
-        group_sums[key]["v100"] += r.get("video_view_100")       or 0
+        group_indices.setdefault(key, []).append(idx)
+
+    # Pré-aloca custo redistribuído por linha
+    cost_by_idx      = [0.0] * len(detail_rows)
+    cost_over_by_idx = [0.0] * len(detail_rows)
+
+    for key, idxs in group_indices.items():
+        tot = totals_map.get(key)
+        if not tot:
+            continue
+        is_video = key.startswith("VIDEO|")
+        weights = []
+        for i in idxs:
+            r = detail_rows[i]
+            w = (r.get("video_view_100") or 0) if is_video else (r.get("viewable_impressions") or 0)
+            weights.append(float(w))
+        shares_cost = _distribute_largest_remainder(weights, float(tot.get("effective_total_cost")     or 0))
+        shares_over = _distribute_largest_remainder(weights, float(tot.get("effective_cost_with_over") or 0))
+        for k, orig in enumerate(idxs):
+            cost_by_idx[orig]      = shares_cost[k]
+            cost_over_by_idx[orig] = shares_over[k]
 
     enriched = []
-    for r in detail_rows:
+    for idx, r in enumerate(detail_rows):
         key = f"{r.get('media_type')}|{r.get('tactic_type')}"
-        tot = totals_map.get(key)
-        grp = group_sums.get(key)
         new_row = dict(r)
-        if not tot or not grp:
+        if key not in totals_map:
             new_row["effective_total_cost"]     = 0
             new_row["effective_cost_with_over"] = 0
-            enriched.append(new_row)
-            continue
-        is_video = r.get("media_type") == "VIDEO"
-        delivered = (r.get("video_view_100") or 0) if is_video else (r.get("viewable_impressions") or 0)
-        total_delivered = grp["v100"] if is_video else grp["vi"]
-        proportion = (delivered / total_delivered) if total_delivered > 0 else 0
-        new_row["effective_total_cost"]     = round(proportion * (tot.get("effective_total_cost")     or 0), 2)
-        new_row["effective_cost_with_over"] = round(proportion * (tot.get("effective_cost_with_over") or 0), 2)
+        else:
+            new_row["effective_total_cost"]     = cost_by_idx[idx]
+            new_row["effective_cost_with_over"] = cost_over_by_idx[idx]
         enriched.append(new_row)
     return enriched
 
