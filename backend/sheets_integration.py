@@ -687,12 +687,16 @@ def sync_all_due(token_loader, merge_loader=None) -> Dict:
     Args
     ----
     token_loader : callable
-        `(short_token) -> (detail_rows, totals_rows)` — carrega as rows do
-        token único. Injetado por DI pra evitar import circular.
+        `(short_token) -> (detail_rows, totals_rows[, campaign])` — carrega
+        as rows do token único. Injetado por DI pra evitar import circular.
+        Tupla de 2 elementos aceita pra retrocompat; com 3, o terceiro é o
+        dict campaign (com budget_contracted/end_date) usado pra alinhar
+        Σ effective_total_cost com o budget contratado em campanhas
+        encerradas com over-delivery.
     merge_loader : callable | None
-        `(merge_id) -> list[(short_token, detail_rows, totals_rows, member_meta)]`
-        — carrega rows de cada membro do grupo já anotadas com a
-        identificação do mês/token. Se None, integrações com
+        `(merge_id) -> list[member_dict]` — carrega rows de cada membro do
+        grupo já anotadas. Cada member_dict deve incluir `campaign` quando
+        possível (mesma razão acima). Se None, integrações com
         target_type='merge' são puladas com warning.
 
     Retorna sumário com contagens. Erros individuais não interrompem o loop —
@@ -750,8 +754,16 @@ def sync_all_due(token_loader, merge_loader=None) -> Dict:
                 members = merge_loader(target_id) or []
                 sync_merge_sheet(target_id, members)
             else:
-                detail_rows, totals_rows = token_loader(target_id)
-                sync_sheet(target_id, detail_rows or [], totals_rows or [])
+                loaded = token_loader(target_id)
+                # Retrocompat: token_loader pode retornar tupla de 2 ou 3 elementos
+                if loaded is None:
+                    detail_rows, totals_rows, campaign = [], [], None
+                elif len(loaded) >= 3:
+                    detail_rows, totals_rows, campaign = loaded[0], loaded[1], loaded[2]
+                else:
+                    detail_rows, totals_rows = loaded
+                    campaign = None
+                sync_sheet(target_id, detail_rows or [], totals_rows or [], campaign=campaign)
             summary["synced"] += 1
         except PermissionError:
             summary["revoked"] += 1
@@ -921,6 +933,118 @@ def _distribute_largest_remainder(weights: List[float], target_total: float) -> 
         remainder += 1
         k += 1
     return [c / 100.0 for c in result]
+
+
+def _align_totals_to_contracted(
+    totals_rows: List[Dict],
+    campaign: Optional[Dict],
+) -> List[Dict]:
+    """
+    Porta de src/shared/aggregations.js (bloco "Alinhamento contratual dos
+    totals") pra Python.
+
+    Quando campanha encerrada + todas frentes >= 100% pacing + budget_contracted
+    disponível + |Σtotals - budget| < R$1, realoca os 4 totals via método dos
+    restos pra garantir Σ effective_total_cost == budget_contracted exato. Se
+    Σ Display e Σ Video estão a ≤ R$0,10 de inteiros que somam budget_contracted,
+    snap pra esses inteiros (reflete intenção do contrato: budgets fechados em
+    valores redondos como 100k cada mídia).
+
+    Esta função DEVE ficar em sincronia com aggregations.js. Sem ela, a sheet
+    mostra Σ = 200.000,08 enquanto o dashboard mostra 200.000,00 cravado.
+
+    Retorna `totals_rows` inalterado quando guards não passam (campanha em
+    andamento, frentes abaixo de 100%, divergência > R$1).
+    """
+    if not totals_rows or not campaign:
+        return totals_rows
+    budget_total = float(campaign.get("budget_contracted") or 0)
+    if budget_total <= 0:
+        return totals_rows
+    end_date_raw = campaign.get("end_date")
+    if not end_date_raw:
+        return totals_rows
+    # end_date pode vir como str ISO ou date
+    if isinstance(end_date_raw, str):
+        try:
+            end_date = date.fromisoformat(end_date_raw[:10])
+        except ValueError:
+            return totals_rows
+    elif isinstance(end_date_raw, datetime):
+        end_date = end_date_raw.date()
+    elif isinstance(end_date_raw, date):
+        end_date = end_date_raw
+    else:
+        return totals_rows
+    today = date.today()
+    if end_date >= today:
+        return totals_rows  # campanha em andamento
+    if not all((float(t.get("pacing") or 0) >= 100) for t in totals_rows):
+        return totals_rows
+    sum_cost = sum(float(t.get("effective_total_cost") or 0) for t in totals_rows)
+    if sum_cost <= 0 or abs(sum_cost - budget_total) >= 1:
+        return totals_rows
+
+    t0 = totals_rows[0]
+    o2o_d_raw = float(t0.get("o2o_display_budget") or 0)
+    ooh_d_raw = float(t0.get("ooh_display_budget") or 0)
+    o2o_v_raw = float(t0.get("o2o_video_budget")   or 0)
+    ooh_v_raw = float(t0.get("ooh_video_budget")   or 0)
+    display_raw = o2o_d_raw + ooh_d_raw
+    video_raw   = o2o_v_raw + ooh_v_raw
+
+    # Snap se distância ≤ R$0,10 do inteiro mais próximo
+    def _snap(x: float) -> Optional[float]:
+        r = round(x)
+        return float(r) if abs(x - r) <= 0.10 else None
+
+    d_snap = _snap(display_raw)
+    v_snap = _snap(video_raw)
+    if d_snap is not None and v_snap is not None and abs(d_snap + v_snap - budget_total) < 0.005:
+        display_target, video_target = d_snap, v_snap
+    else:
+        display_target, video_target = _distribute_largest_remainder(
+            [display_raw, video_raw], budget_total,
+        )
+
+    # Distribui target entre as 2 tactics por mídia
+    o2o_d, ooh_d = _distribute_largest_remainder([o2o_d_raw, ooh_d_raw], display_target)
+    o2o_v, ooh_v = _distribute_largest_remainder([o2o_v_raw, ooh_v_raw], video_target)
+
+    budget_by_key = {
+        "DISPLAY|O2O": o2o_d,
+        "DISPLAY|OOH": ooh_d,
+        "VIDEO|O2O":   o2o_v,
+        "VIDEO|OOH":   ooh_v,
+    }
+
+    # Redistribui effective_total_cost dentro de cada mídia (target = budget alinhado)
+    d_rows = [t for t in totals_rows if t.get("media_type") == "DISPLAY"]
+    v_rows = [t for t in totals_rows if t.get("media_type") == "VIDEO"]
+    d_shares = _distribute_largest_remainder(
+        [float(r.get("effective_total_cost") or 0) for r in d_rows], display_target,
+    )
+    v_shares = _distribute_largest_remainder(
+        [float(r.get("effective_total_cost") or 0) for r in v_rows], video_target,
+    )
+    cost_by_key: Dict[str, float] = {}
+    for r, share in zip(d_rows, d_shares):
+        cost_by_key[f"{r.get('media_type')}|{r.get('tactic_type')}"] = share
+    for r, share in zip(v_rows, v_shares):
+        cost_by_key[f"{r.get('media_type')}|{r.get('tactic_type')}"] = share
+
+    aligned: List[Dict] = []
+    for t in totals_rows:
+        k = f"{t.get('media_type')}|{t.get('tactic_type')}"
+        new_t = dict(t)
+        new_t["effective_total_cost"] = cost_by_key.get(k, float(t.get("effective_total_cost") or 0))
+        new_t["o2o_display_budget"]   = o2o_d
+        new_t["ooh_display_budget"]   = ooh_d
+        new_t["o2o_video_budget"]     = o2o_v
+        new_t["ooh_video_budget"]     = ooh_v
+        new_t["total_invested"]       = budget_by_key.get(k, float(t.get("total_invested") or 0))
+        aligned.append(new_t)
+    return aligned
 
 
 def _enrich_detail_costs(detail_rows: List[Dict], totals_rows: List[Dict]) -> List[Dict]:
@@ -1204,6 +1328,7 @@ def create_sheet_for_campaign(
     client_name: Optional[str],
     start_date: Optional[date],
     end_date: Optional[date],
+    campaign: Optional[Dict] = None,
 ) -> Dict:
     """
     Cria uma sheet nova no Drive do membro que ativou (via refresh_token),
@@ -1212,8 +1337,11 @@ def create_sheet_for_campaign(
 
     detail_rows é enriquecido internamente via _enrich_detail_costs(detail, totals)
     pra reproduzir os mesmos números do dash (que faz o enrich no frontend).
+    `campaign` (opcional) carrega budget_contracted/end_date pro alinhamento
+    contratual dos totals em campanhas encerradas com over-delivery.
     """
     ensure_table_exists()
+    totals_rows = _align_totals_to_contracted(totals_rows, campaign)
     detail_rows = _enrich_detail_costs(detail_rows, totals_rows)
     access_token = _refresh_access_token(refresh_token)
 
@@ -1279,7 +1407,8 @@ def create_sheet_for_merge(
     ends:   List[date] = []
     for m in members:
         st = m.get("short_token") or ""
-        detail = _enrich_detail_costs(m.get("detail_rows") or [], m.get("totals_rows") or [])
+        totals = _align_totals_to_contracted(m.get("totals_rows") or [], m.get("campaign"))
+        detail = _enrich_detail_costs(m.get("detail_rows") or [], totals)
         s_d = m.get("start_date")
         e_d = m.get("end_date")
         if s_d: starts.append(s_d)
@@ -1382,12 +1511,18 @@ def sync_sheet(
     short_token: str,
     detail_rows: List[Dict],
     totals_rows: List[Dict],
+    campaign: Optional[Dict] = None,
 ) -> Dict:
     """
     Re-popula a aba Base de Dados de uma sheet single-token existente.
     Usa refresh_token salvo. Atualiza last_synced_at; em caso de erro de
     auth, marca como revoked; outros erros marcam como error.
+
+    `campaign` (opcional, mas recomendado) é usado pra alinhar totals com
+    `budget_contracted` em campanhas encerradas com over-delivery. Sem ele,
+    a sheet pode somar 0.08 centavos a mais que o dashboard.
     """
+    totals_rows = _align_totals_to_contracted(totals_rows, campaign)
     detail_rows = _enrich_detail_costs(detail_rows, totals_rows)
     integ = get_integration(short_token, target_type=TARGET_TOKEN)
     if not integ:
@@ -1432,7 +1567,8 @@ def sync_merge_sheet(merge_id: str, members: List[Dict]) -> Dict:
     annotated_rows: List[Dict] = []
     for m in members:
         st = m.get("short_token") or ""
-        detail = _enrich_detail_costs(m.get("detail_rows") or [], m.get("totals_rows") or [])
+        totals = _align_totals_to_contracted(m.get("totals_rows") or [], m.get("campaign"))
+        detail = _enrich_detail_costs(m.get("detail_rows") or [], totals)
         annotated_rows.extend(_annotate_merge_rows(
             st, detail, m.get("start_date"), m.get("end_date"),
         ))

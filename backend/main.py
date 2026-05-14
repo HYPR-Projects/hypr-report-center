@@ -570,6 +570,7 @@ def report_data(request):
                         "totals_rows": pl.get("totals") or [],
                         "start_date":  _parse_iso_date_safe(camp.get("start_date")),
                         "end_date":    _parse_iso_date_safe(camp.get("end_date")),
+                        "campaign":    camp,
                     })
                 if not members_payload:
                     return (jsonify({"error": "Nenhum membro do grupo retornou dados"}), 404, headers)
@@ -611,6 +612,7 @@ def report_data(request):
                     client_name=client_name,
                     start_date=start_date_obj,
                     end_date=end_date_obj,
+                    campaign=campaign,
                 )
                 _cache_invalidate_token(target_id)
 
@@ -680,6 +682,7 @@ def report_data(request):
                         "totals_rows": pl.get("totals") or [],
                         "start_date":  _parse_iso_date_safe(camp.get("start_date")),
                         "end_date":    _parse_iso_date_safe(camp.get("end_date")),
+                        "campaign":    camp,
                     })
                 sheets_integration.sync_merge_sheet(target_id, members_payload)
                 # Invalida caches afetados
@@ -695,6 +698,7 @@ def report_data(request):
                     target_id,
                     payload.get("detail") or [],
                     payload.get("totals") or [],
+                    campaign=payload.get("campaign") or {},
                 )
                 _cache_invalidate_token(target_id)
 
@@ -721,8 +725,12 @@ def report_data(request):
                 # _get_report_cached retorna tupla (data, was_cached).
                 payload, _ = _get_report_cached(short_token, force_refresh=True)
                 if not payload:
-                    return ([], [])
-                return (payload.get("detail") or [], payload.get("totals") or [])
+                    return ([], [], None)
+                return (
+                    payload.get("detail") or [],
+                    payload.get("totals") or [],
+                    payload.get("campaign") or {},
+                )
 
             def _merge_loader(merge_id):
                 # Carrega grupo + detail/totals de cada membro, anotado com
@@ -742,6 +750,7 @@ def report_data(request):
                         "totals_rows": pl.get("totals") or [],
                         "start_date":  _parse_iso_date_safe(camp.get("start_date")),
                         "end_date":    _parse_iso_date_safe(camp.get("end_date")),
+                        "campaign":    camp,
                     })
                 return out
 
