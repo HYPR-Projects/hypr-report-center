@@ -480,46 +480,88 @@ export function computeAggregates(data, mainRange, mainTactic = "ALL") {
       && _budgetTotal > 0
       && Math.abs(_sumCost - _budgetTotal) < 1
       && _sumCost > 0) {
-    // (a) Alinha effective_total_cost por linha → Σ == budget_contracted
-    const weights = totals.map(t => t.effective_total_cost || 0);
-    const alignedCost = distributeLargestRemainder(weights, _budgetTotal);
-
-    // (b) Alinha os 4 budgets-por-frente (denormalizados em cada linha).
-    // Sem isso, `pickBudget()` continua somando valores derivados de
-    // contracted×cpm (Display 99.999,99 + Video 100.000,08 = 200.000,07).
-    // Após alinhamento: Display + Video = budget_contracted exato, e o
-    // Budget de cada barra de pacing parcial bate com o Investido alinhado.
+    // Hierarquia do alinhamento:
+    //   (a) Define o budget INTENCIONAL por mídia (Display vs Video).
+    //   (b) Aloca esse target entre as duas tactics (O2O / OOH) preservando
+    //       proporção via largest-remainder.
+    //   (c) Replica em todas as linhas (campos *_budget são denormalizados)
+    //       e ajusta effective_total_cost + total_invested pra bater.
+    //
+    // Por que snap-to-integer no (a): contratos costumam ser fechados em
+    // valores redondos (R$ 100k cada mídia, não R$ 99.999,99). A derivação
+    // `contracted × cpm / 1000` introduz centavos que NÃO existem no
+    // contrato real. Snap para inteiro mais próximo dentro de R$0,10 reflete
+    // a intenção do admin sem mascarar deltas reais (campanhas com budgets
+    // não-redondos como R$ 47.500,50 caem no fallback largest-remainder).
     const _t0 = totals[0] || {};
-    const _budgetWeights = [
-      _t0.o2o_display_budget || 0,
-      _t0.ooh_display_budget || 0,
-      _t0.o2o_video_budget   || 0,
-      _t0.ooh_video_budget   || 0,
-    ];
-    const _budgetSum = _budgetWeights.reduce((s, w) => s + w, 0);
-    let alignedBudgets = _budgetWeights;
-    if (_budgetSum > 0 && Math.abs(_budgetSum - _budgetTotal) < 1) {
-      alignedBudgets = distributeLargestRemainder(_budgetWeights, _budgetTotal);
-    }
-    const [_o2oD, _oohD, _o2oV, _oohV] = alignedBudgets;
+    const _o2oD_raw = _t0.o2o_display_budget || 0;
+    const _oohD_raw = _t0.ooh_display_budget || 0;
+    const _o2oV_raw = _t0.o2o_video_budget   || 0;
+    const _oohV_raw = _t0.ooh_video_budget   || 0;
+    const _displayRaw = _o2oD_raw + _oohD_raw;
+    const _videoRaw   = _o2oV_raw + _oohV_raw;
 
-    // total_invested por linha == budget da frente daquela linha
-    const _investedByKey = {
+    // Snap helper: arredonda pra inteiro mais próximo se distância ≤ R$0,10
+    const _snap = (x) => {
+      const r = Math.round(x);
+      return Math.abs(x - r) <= 0.10 ? r : null;
+    };
+    const _dSnap = _snap(_displayRaw);
+    const _vSnap = _snap(_videoRaw);
+
+    let _displayTarget, _videoTarget;
+    if (_dSnap !== null && _vSnap !== null && _dSnap + _vSnap === _budgetTotal) {
+      // Ambas as mídias snappam em inteiros que somam exato o budget contratado
+      _displayTarget = _dSnap;
+      _videoTarget   = _vSnap;
+    } else {
+      // Fallback: distribui budget_contracted entre as duas mídias
+      // proporcional ao que foi derivado de contracted×cpm
+      const [d, v] = distributeLargestRemainder([_displayRaw, _videoRaw], _budgetTotal);
+      _displayTarget = d;
+      _videoTarget   = v;
+    }
+
+    // (b) Distribui o target de cada mídia entre suas 2 tactics
+    const [_o2oD, _oohD] = distributeLargestRemainder([_o2oD_raw, _oohD_raw], _displayTarget);
+    const [_o2oV, _oohV] = distributeLargestRemainder([_o2oV_raw, _oohV_raw], _videoTarget);
+
+    // Aliases das tactics por mídia (= budget da frente daquela linha)
+    const _budgetByKey = {
       "DISPLAY|O2O": _o2oD,
       "DISPLAY|OOH": _oohD,
       "VIDEO|O2O":   _o2oV,
       "VIDEO|OOH":   _oohV,
     };
 
-    totals = totals.map((t, i) => ({
-      ...t,
-      effective_total_cost: alignedCost[i],
-      o2o_display_budget:   _o2oD,
-      ooh_display_budget:   _oohD,
-      o2o_video_budget:     _o2oV,
-      ooh_video_budget:     _oohV,
-      total_invested:       _investedByKey[`${t.media_type}|${t.tactic_type}`] ?? (t.total_invested || 0),
-    }));
+    // (c) effective_total_cost por linha = redistribui Σ por mídia (target)
+    // entre as linhas daquela mídia, proporcional ao custo original.
+    const _dRows = totals.filter(t => t.media_type === "DISPLAY");
+    const _vRows = totals.filter(t => t.media_type === "VIDEO");
+    const _dCostShares = distributeLargestRemainder(
+      _dRows.map(r => r.effective_total_cost || 0),
+      _displayTarget,
+    );
+    const _vCostShares = distributeLargestRemainder(
+      _vRows.map(r => r.effective_total_cost || 0),
+      _videoTarget,
+    );
+    const _costByRowKey = {};
+    _dRows.forEach((r, i) => { _costByRowKey[`${r.media_type}|${r.tactic_type}`] = _dCostShares[i]; });
+    _vRows.forEach((r, i) => { _costByRowKey[`${r.media_type}|${r.tactic_type}`] = _vCostShares[i]; });
+
+    totals = totals.map((t) => {
+      const k = `${t.media_type}|${t.tactic_type}`;
+      return {
+        ...t,
+        effective_total_cost: _costByRowKey[k] ?? (t.effective_total_cost || 0),
+        o2o_display_budget:   _o2oD,
+        ooh_display_budget:   _oohD,
+        o2o_video_budget:     _o2oV,
+        ooh_video_budget:     _oohV,
+        total_invested:       _budgetByKey[k] ?? (t.total_invested || 0),
+      };
+    });
   }
 
   const daily  = daily0;
