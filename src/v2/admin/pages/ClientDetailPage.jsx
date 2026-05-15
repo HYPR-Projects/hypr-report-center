@@ -347,6 +347,24 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
       .catch(() => { /* keep stale */ });
   }, [slug]);
 
+  // Fechamento manual — atualização otimista local pra contornar o
+  // read-after-write delay do BigQuery. Sobrescreve `closed_at` no objeto
+  // da campanha no array local; o getCampaignStatus do card já enxerga e
+  // troca o badge âmbar → cinza "encerrada" sem refresh da página.
+  const handleClosureSaved = useCallback((short_token) => {
+    const closedAtIso = new Date().toISOString();
+    setCampaigns((prev) =>
+      prev.map((c) =>
+        c.short_token === short_token ? { ...c, closed_at: closedAtIso } : c
+      )
+    );
+    setDrawerCampaign((prev) =>
+      prev && prev.short_token === short_token
+        ? { ...prev, closed_at: closedAtIso }
+        : prev
+    );
+  }, []);
+
   return (
     <div className="min-h-screen w-full bg-canvas text-fg transition-colors">
       {/* Topbar */}
@@ -543,7 +561,7 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
           setDrawerCampaign(null);
         }}
         onAbsChange={handleAbsSaved}
-        onClosureChange={handleAbsSaved}
+        onClosureChange={handleClosureSaved}
         onOpenReport={onOpenReport}
         teamMap={teamMap}
       />

@@ -537,6 +537,28 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
       .catch(() => { /* keep stale — toggle já mostrou "Salvo" */ });
   }, []);
 
+  // Fechamento manual da campanha — atualização otimista. NÃO refazemos a
+  // lista imediatamente porque BigQuery tem read-after-write lag (~segundos):
+  // o INSERT do `campaign_closures` pode não estar visível na próxima query,
+  // e a campanha voltaria sem `closed_at` (badge âmbar persistiria).
+  // Em vez disso, sobrescrevemos o estado local com closed_at=now — quando
+  // o user navegar e a lista re-buscar (ou refresh manual), o BQ já enxerga.
+  const handleClosureSaved = useCallback((short_token) => {
+    const closedAtIso = new Date().toISOString();
+    setCampaigns((prev) => {
+      const next = prev.map((c) =>
+        c.short_token === short_token ? { ...c, closed_at: closedAtIso } : c
+      );
+      writeCache("menu.campaigns", next);
+      return next;
+    });
+    setDrawerCampaign((prev) =>
+      prev && prev.short_token === short_token
+        ? { ...prev, closed_at: closedAtIso }
+        : prev
+    );
+  }, []);
+
   const handleNewCampaignConfirm = useCallback((tokenData) => {
     setCampaigns((prev) =>
       prev.find((c) => c.short_token === tokenData.short_token)
@@ -772,7 +794,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           handleCloseDrawer();
         }}
         onAbsChange={handleAbsSaved}
-        onClosureChange={handleAbsSaved}
+        onClosureChange={handleClosureSaved}
         onOpenReport={onOpenReport}
         teamMap={teamMap}
       />
