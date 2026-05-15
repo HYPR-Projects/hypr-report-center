@@ -230,13 +230,12 @@ export function CampaignDrawer({
     try {
       await saveCampaignClosure({ short_token, closed: true });
       setClosureBusy("done");
-      // Delay antes de propagar o "encerrou" pro pai: o handler otimista
-      // atualiza `closed_at` no drawerCampaign, o que faz `awaiting` virar
-      // false e desmontar o botão inteiro — matando a animação antes dela
-      // rodar. Esperamos a animação completar (~1.2s) antes de propagar.
-      setTimeout(() => {
-        onClosureChange?.(short_token);
-      }, 1200);
+      // Propaga na hora — o handler do pai atualiza só o array `campaigns`
+      // (card atrás reflete imediatamente). O drawerCampaign NÃO é tocado,
+      // então `awaiting` continua true, o botão fica montado e a animação
+      // de sucesso roda completa em paralelo. Quando o user fechar o drawer
+      // e reabrir, o campaign vem da lista atualizada com closed_at.
+      onClosureChange?.(short_token);
     } catch {
       setClosureBusy("error");
     }

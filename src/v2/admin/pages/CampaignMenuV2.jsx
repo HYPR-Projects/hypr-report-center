@@ -543,6 +543,12 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   // e a campanha voltaria sem `closed_at` (badge âmbar persistiria).
   // Em vez disso, sobrescrevemos o estado local com closed_at=now — quando
   // o user navegar e a lista re-buscar (ou refresh manual), o BQ já enxerga.
+  //
+  // NÃO mexemos no drawerCampaign de propósito: se o drawer estiver aberto
+  // pra essa campanha quando o user clicar "Marcar como encerrada", manter
+  // `awaiting=true` localmente garante que o botão fica montado e a animação
+  // de sucesso roda. Quando o user fechar e reabrir, o campaign vem da lista
+  // já com closed_at e o botão some naturalmente.
   const handleClosureSaved = useCallback((short_token) => {
     const closedAtIso = new Date().toISOString();
     setCampaigns((prev) => {
@@ -552,11 +558,6 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
       writeCache("menu.campaigns", next);
       return next;
     });
-    setDrawerCampaign((prev) =>
-      prev && prev.short_token === short_token
-        ? { ...prev, closed_at: closedAtIso }
-        : prev
-    );
   }, []);
 
   const handleNewCampaignConfirm = useCallback((tokenData) => {
