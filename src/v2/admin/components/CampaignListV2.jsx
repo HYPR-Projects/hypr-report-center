@@ -21,24 +21,27 @@ import { cn } from "../../../ui/cn";
 import { Avatar } from "../../../ui/Avatar";
 import { TokenChip } from "./TokenChip";
 import {
-  formatDateRange,
   formatPacingValue,
   formatPct,
   pacingColorClass,
   ctrColorClass,
   vtrColorClass,
-  isCampaignEnded,
+  getCampaignStatus,
+  getDateRangeParts,
+  endUrgencyClass,
   localPartFromEmail,
 } from "../lib/format";
 import { schedulePrefetch, cancelPrefetch } from "../../../lib/prefetchReport";
 
 // 4 tiers de health (ver CampaignCardV2 pra discussão de design); aqui
 // só precisamos dos dots — a Row é compacta e não usa glow.
+// `awaiting` = campanha terminou mas falta fechamento manual (badge âmbar).
 const HEALTH_DOT = {
   healthy:   "bg-success",
   over:      "bg-signature",
   attention: "bg-warning",
   critical:  "bg-danger",
+  awaiting:  "bg-warning",
   ended:     "bg-fg-subtle/60",
 };
 
@@ -118,6 +121,22 @@ export function CampaignListV2({ campaigns, onOpen, onOpenReport, teamMap = {} }
   );
 }
 
+/**
+ * Célula de período da list view densa. Destaca "→ hoje" (danger) ou
+ * "→ amanhã" (warning) quando aplicável, mesma régua do card.
+ */
+function DateRangeCell({ startISO, endISO }) {
+  const parts = getDateRangeParts(startISO, endISO);
+  if (!parts) {
+    return <span className="font-mono text-[10.5px] text-fg-muted tabular-nums" />;
+  }
+  return (
+    <span className="font-mono text-[10.5px] text-fg-muted tabular-nums">
+      {parts.startStr} → <span className={endUrgencyClass(parts.endUrgency)}>{parts.endStr}</span>
+    </span>
+  );
+}
+
 function Row({ campaign, onOpen, onOpenReport, teamMap }) {
   const {
     short_token,
@@ -132,10 +151,15 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
     cp_email,
     cs_email,
     merge_id,
+    closed_at,
   } = campaign;
 
-  const ended  = isCampaignEnded(end_date);
-  const health = ended ? "ended" : classifyHealth(display_pacing, video_pacing);
+  const status   = getCampaignStatus(end_date, closed_at);
+  const ended    = status === "ended";
+  const awaiting = status === "awaiting_closure";
+  const health   = ended    ? "ended"
+                 : awaiting ? "awaiting"
+                 : classifyHealth(display_pacing, video_pacing);
   const cpName = cp_email ? (teamMap[cp_email] || localPartFromEmail(cp_email)) : null;
   const csName = cs_email ? (teamMap[cs_email] || localPartFromEmail(cs_email)) : null;
 
@@ -173,7 +197,11 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
           "w-1.5 h-1.5 rounded-full",
           health ? HEALTH_DOT[health] : "bg-fg-subtle/30"
         )}
-        title={health ? `Status: ${health}` : "Sem dados"}
+        title={
+          health === "awaiting" ? "Aguardando fechamento"
+          : health ? `Status: ${health}`
+          : "Sem dados"
+        }
       />
 
       {/* Cliente · Campanha */}
@@ -189,14 +217,20 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
               grupo
             </span>
           )}
+          {awaiting && (
+            <span
+              className="text-[8.5px] uppercase tracking-widest font-bold text-warning px-1 rounded bg-warning-soft border border-warning/30"
+              title="Aguardando fechamento — marcar como encerrada no drawer"
+            >
+              fechar
+            </span>
+          )}
         </div>
         <p className="text-[11px] text-fg-muted truncate mt-0.5">{campaign_name}</p>
       </div>
 
-      {/* Período */}
-      <span className="font-mono text-[10.5px] text-fg-muted tabular-nums">
-        {formatDateRange(start_date, end_date)}
-      </span>
+      {/* Período — end com cor de urgência (hoje/amanhã) quando aplicável */}
+      <DateRangeCell startISO={start_date} endISO={end_date} />
 
       {/* DSP Pac */}
       <span className={cn("text-right tabular-nums font-semibold", colorPacing(display_pacing))}>

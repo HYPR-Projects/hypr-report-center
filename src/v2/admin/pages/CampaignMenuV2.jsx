@@ -772,6 +772,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           handleCloseDrawer();
         }}
         onAbsChange={handleAbsSaved}
+        onClosureChange={handleAbsSaved}
         onOpenReport={onOpenReport}
         teamMap={teamMap}
       />

@@ -21,14 +21,16 @@ import { cn } from "../../../ui/cn";
 import { Avatar } from "../../../ui/Avatar";
 import { AbsToggle } from "./AbsToggle";
 import { TokenChip } from "./TokenChip";
-import { getNegotiation, getCampaign } from "../../../lib/api";
+import { getNegotiation, getCampaign, saveCampaignClosure } from "../../../lib/api";
 import {
-  formatDateRange,
   formatPacingValue,
   formatPct,
   pacingColorClass,
   ctrColorClass,
   vtrColorClass,
+  getCampaignStatus,
+  getDateRangeParts,
+  endUrgencyClass,
   localPartFromEmail,
 } from "../lib/format";
 
@@ -104,6 +106,12 @@ const ICON = {
       <path d="M20 6 9 17l-5-5" />
     </svg>
   ),
+  closure: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <path d="m9 12 2 2 4-4" />
+    </svg>
+  ),
 };
 
 export function CampaignDrawer({
@@ -121,6 +129,7 @@ export function CampaignDrawer({
   onMerge,
   onNegotiation,       // chamado quando admin clica em "Negociado" — recebe (campaign, negotiation)
   onAbsChange,         // chamado após admin salvar override de ABS — pai refaz lista
+  onClosureChange,     // chamado após admin marcar campanha como encerrada — pai refaz lista
   onOpenReport,
   teamMap = {},
 }) {
@@ -140,6 +149,10 @@ export function CampaignDrawer({
   // depois que confirmamos que há negociação — não paga BigQuery à toa.
   const [reportData, setReportData] = useState(null);
   const [negoBusy, setNegoBusy] = useState(false);
+  // Estado local do botão "Marcar como encerrada" — idle | saving | done | error.
+  // Reseta toda vez que o drawer abre/troca de campanha.
+  const [closureBusy, setClosureBusy] = useState("idle");
+  useEffect(() => { setClosureBusy("idle"); }, [drawerToken, open]);
   useEffect(() => {
     if (!open || !drawerToken) {
       setNegotiation(null);
@@ -205,7 +218,23 @@ export function CampaignDrawer({
     merge_id,
     display_has_abs,
     video_has_abs,
+    closed_at,
   } = campaign;
+
+  const status = getCampaignStatus(end_date, closed_at);
+  const awaiting = status === "awaiting_closure";
+
+  const handleCloseCampaign = async () => {
+    if (!short_token || closureBusy === "saving") return;
+    setClosureBusy("saving");
+    try {
+      await saveCampaignClosure({ short_token, closed: true });
+      setClosureBusy("done");
+      onClosureChange?.(short_token);
+    } catch {
+      setClosureBusy("error");
+    }
+  };
 
   // Sinal automático veio do BQ pela CTE abs_signals (DV360 fee + Xandr DV/IAS
   // + override). Se já está true, é porque sistema detectou OU override já
@@ -253,13 +282,11 @@ export function CampaignDrawer({
             </div>
           )}
 
-          {/* Date range */}
+          {/* Date range — end destacado em vermelho/âmbar quando hoje/amanhã */}
           <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-1">
             Período
           </div>
-          <p className="text-sm font-mono tabular-nums text-fg mb-5">
-            {formatDateRange(start_date, end_date) || "—"}
-          </p>
+          <DrawerDateRange startISO={start_date} endISO={end_date} />
 
           {/* Métricas */}
           <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
@@ -304,6 +331,32 @@ export function CampaignDrawer({
             Ações
           </div>
           <div className="space-y-1.5">
+            {/* "Marcar como encerrada" — só aparece em campanhas aguardando
+                fechamento. Posicionado no topo porque é o CTA principal
+                quando o admin abre o drawer dessa campanha (ela apareceu
+                com badge âmbar justamente pra ele agir aqui). */}
+            {awaiting && (
+              <ActionButton
+                icon={
+                  closureBusy === "saving" ? <Spinner />
+                  : closureBusy === "done" ? ICON.check
+                  : ICON.closure
+                }
+                label={
+                  closureBusy === "saving" ? "Marcando como encerrada..."
+                  : closureBusy === "done"  ? "Encerrada!"
+                  : closureBusy === "error" ? "Erro — tentar de novo"
+                  : "Marcar como encerrada"
+                }
+                variant={
+                  closureBusy === "done"  ? "success"
+                  : closureBusy === "error" ? "danger"
+                  : "warning"
+                }
+                disabled={closureBusy === "saving" || closureBusy === "done"}
+                onClick={handleCloseCampaign}
+              />
+            )}
             <ActionButton
               icon={
                 copyState === "done"    ? ICON.check
@@ -372,6 +425,23 @@ export function CampaignDrawer({
   );
 }
 
+/**
+ * Linha de período no drawer com destaque de urgência. Quando o end_date
+ * é hoje/amanhã, a parte final vira "hoje" (danger) / "amanhã" (warning)
+ * em peso semibold. Senão renderiza igual antes.
+ */
+function DrawerDateRange({ startISO, endISO }) {
+  const parts = getDateRangeParts(startISO, endISO);
+  if (!parts) {
+    return <p className="text-sm font-mono tabular-nums text-fg mb-5">—</p>;
+  }
+  return (
+    <p className="text-sm font-mono tabular-nums text-fg mb-5">
+      {parts.startStr} → <span className={endUrgencyClass(parts.endUrgency)}>{parts.endStr}</span>
+    </p>
+  );
+}
+
 function DrawerStat({ label, value, colorClass }) {
   return (
     <div className="rounded-lg bg-surface border border-border px-3 py-2.5">
@@ -411,6 +481,10 @@ const ACTION_VARIANTS = {
   default:   "text-fg hover:bg-surface-strong border-border",
   success:   "text-success border-success/40 bg-success-soft",
   danger:    "text-danger border-danger/40 bg-danger-soft",
+  // Warning: campanha aguardando fechamento — destaque âmbar pra puxar
+  // atenção do admin (essa é a ação principal quando o drawer abriu pra
+  // uma campanha recém-finalizada).
+  warning:   "text-warning border-warning/40 bg-warning-soft hover:bg-warning/15",
   // Merge ativo: sinaliza que a campanha está mesclada sem agredir
   // visualmente (signature soft, não primário) — ainda navega ao clicar.
   highlight: "text-signature border-signature/40 bg-signature/5 hover:bg-signature/10",

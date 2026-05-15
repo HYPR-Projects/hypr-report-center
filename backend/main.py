@@ -96,6 +96,7 @@ _overrides_cache = {}     # "all" -> (timestamp, dict[short_token -> (cp, cs)])
 _aliases_cache   = {}     # "all" -> (timestamp, dict[alias_normalized -> canonical_normalized])
 _shares_cache    = {}     # "all" -> (timestamp, dict[short_token -> share_id])
 _merges_cache    = {}     # "all" -> (timestamp, dict[short_token -> {merge_id, rmnd_mode, pdooh_mode}])
+_closures_cache  = {}     # "all" -> (timestamp, dict[short_token -> closed_at_iso])
 # Cache da listagem de forms do Typeform — evita estourar rate-limit em cada
 # abertura do SurveyModal (admin abre o modal várias vezes editando blocos).
 # TTL curto (5min) porque o admin pode estar criando um form novo e querendo
@@ -139,6 +140,7 @@ def _cache_invalidate_token(short_token):
         _aliases_cache.pop("all", None)
         _shares_cache.pop("all", None)
         _merges_cache.pop("all", None)
+        _closures_cache.pop("all", None)
         # Merged report cache: drop tudo. Tabela de grupos é pequena, e
         # qualquer mutação que invalida um token pode tornar stale o
         # payload merged que o contém. Reidratação custa N fetches já
@@ -922,6 +924,27 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR save_abs_override] {e}")
             return (jsonify({"error": "Erro ao salvar override de ABS"}), 500, headers)
+
+    # ── Endpoint: marcar campanha como encerrada (ou reverter) ──────────────
+    # Body: {short_token, closed: bool}
+    # closed=true  → registra closed_at=NOW na tabela campaign_closures
+    # closed=false → remove o registro (volta ao estado derivado por end_date)
+    if request.method == "POST" and request.args.get("action") == "save_campaign_closure":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            closed      = bool(body.get("closed"))
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            save_campaign_closure(short_token, closed, closed_by=admin.get("email"))
+            _cache_invalidate_token(short_token)
+            return (jsonify({"ok": True}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR save_campaign_closure] {e}")
+            return (jsonify({"error": "Erro ao salvar fechamento da campanha"}), 500, headers)
 
     # ── Endpoint: salvar Alcance & Frequência (admin) ────────────────────────
     # Body: {target_type: "token"|"merge", target_id: <short_token|merge_id>,
@@ -2672,6 +2695,103 @@ def query_abs_override(short_token: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Campaign closure — admin marca campanha como "encerrada" depois de fazer o
+# fechamento (sheet final, relatório, faturamento). Tabela `campaign_closures`
+# guarda só os tokens fechados manualmente; ausência ≡ "ainda aberta".
+#
+# Combinado com end_date (que vem de query_campaigns_list), o frontend deriva
+# 3 estados:
+#   • in_flight        → end_date >= hoje
+#   • awaiting_closure → end_date < hoje, sem closed_at, ≤30 dias do fim
+#   • ended            → closed_at preenchido OU >30 dias do fim (auto-close)
+#
+# O auto-close de 30 dias é puro client-side — não persistimos closed_at
+# automaticamente, só derivamos visualmente. Mantém o backend simples e
+# permite reverter a regra sem migração.
+# ─────────────────────────────────────────────────────────────────────────────
+_closures_table_ensured = False
+_closures_ensure_lock = threading.Lock()
+
+
+def _closures_table_id() -> str:
+    return f"{PROJECT_ID}.{DATASET_ASSETS}.campaign_closures"
+
+
+def _ensure_closures_table() -> None:
+    """Cria a tabela `campaign_closures` se não existir. Idempotente."""
+    global _closures_table_ensured
+    if _closures_table_ensured:
+        return
+    with _closures_ensure_lock:
+        if _closures_table_ensured:
+            return
+        sql = f"""
+            CREATE TABLE IF NOT EXISTS `{_closures_table_id()}` (
+                short_token STRING NOT NULL,
+                closed_at   TIMESTAMP NOT NULL,
+                closed_by   STRING
+            )
+        """
+        bq.query(sql).result()
+        _closures_table_ensured = True
+
+
+def save_campaign_closure(short_token: str, closed: bool, closed_by: str | None = None):
+    """Marca/desmarca campanha como encerrada manualmente.
+
+    closed=True  → UPSERT com closed_at=NOW
+    closed=False → DELETE (volta pro estado derivado por end_date+30d)
+    """
+    _ensure_closures_table()
+    if closed:
+        sql = f"""
+            MERGE `{_closures_table_id()}` T
+            USING (SELECT @token AS short_token) S
+            ON T.short_token = S.short_token
+            WHEN MATCHED THEN
+                UPDATE SET closed_at = CURRENT_TIMESTAMP(), closed_by = @closed_by
+            WHEN NOT MATCHED THEN
+                INSERT (short_token, closed_at, closed_by)
+                VALUES (@token, CURRENT_TIMESTAMP(), @closed_by)
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("token",     "STRING", short_token),
+                bigquery.ScalarQueryParameter("closed_by", "STRING", closed_by),
+            ]
+        )
+    else:
+        sql = f"""
+            DELETE FROM `{_closures_table_id()}`
+            WHERE short_token = @token
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ScalarQueryParameter("token", "STRING", short_token)]
+        )
+    bq.query(sql, job_config=job_config).result()
+
+
+def query_all_closures() -> dict:
+    """Retorna {short_token: closed_at_iso} de todas as campanhas fechadas.
+    Tabela pequena (só fechadas) — full scan + cache atrelado ao TTL da lista.
+    Tolera tabela inexistente (deploy novo)."""
+    _ensure_closures_table()
+    sql = f"""
+        SELECT short_token, closed_at
+        FROM `{_closures_table_id()}`
+    """
+    out = {}
+    try:
+        for row in bq.query(sql).result():
+            ts = row["closed_at"]
+            if ts:
+                out[row["short_token"]] = ts.isoformat()
+    except Exception as e:
+        logger.warning(f"[WARN query_all_closures] {e}")
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Alcance & Frequência — salvar e buscar
 # ─────────────────────────────────────────────────────────────────────────────
 # Campos manuais (texto livre, formatados pelo admin) que o cliente vê no
@@ -3735,6 +3855,7 @@ def query_campaigns_list():
     fut_aliases  = _query_pool.submit(_safe_get_aliases)
     fut_shares   = _query_pool.submit(_safe_get_all_share_ids)
     fut_merges   = _query_pool.submit(_safe_get_merges)
+    fut_closures = _query_pool.submit(_safe_get_closures)
 
     rows           = fut_query.result()
     lookup_owners  = fut_owners.result()
@@ -3742,6 +3863,7 @@ def query_campaigns_list():
     aliases_map    = fut_aliases.result()
     share_ids_map  = fut_shares.result()
     merges_map     = fut_merges.result()
+    closures_map   = fut_closures.result()
 
     result = []
     for r in rows:
@@ -3927,6 +4049,14 @@ def query_campaigns_list():
         if contracted_total == 0 and bonus_total > 0:
             entry["is_bonus_only"] = True
 
+        # Fechamento manual — admin clicou em "Marcar como encerrada" no
+        # CampaignDrawer. Quando presente, força status="ended" no frontend
+        # (sai do limbo "aguardando fechamento"). Só emite quando preenchido
+        # — campanhas em vôo / aguardando fechamento não carregam o campo.
+        closed_at = closures_map.get(r["short_token"])
+        if closed_at:
+            entry["closed_at"] = closed_at
+
         result.append(entry)
 
     # Merge owners (lookup planilha + overrides BQ + aliases BQ) em Python.
@@ -4048,6 +4178,25 @@ def _safe_get_merges():
         logger.warning(f"[WARN _safe_get_merges] {e}")
         data = {}
     _cache_set(_merges_cache, "all", data)
+    return data
+
+
+def _safe_get_closures():
+    """Wrapper resiliente + cacheado pro dict de fechamentos manuais.
+
+    Tabela `campaign_closures` só tem rows pra tokens fechados manualmente
+    (~dezenas no máximo). Full scan + cache atrelado ao TTL da lista. Falha
+    em dict vazio — sem closed_at, frontend deriva ended por end_date+30d.
+    """
+    cached = _cache_get(_closures_cache, "all", _LIST_CACHE_TTL)
+    if cached is not None:
+        return cached
+    try:
+        data = query_all_closures()
+    except Exception as e:
+        logger.warning(f"[WARN _safe_get_closures] {e}")
+        data = {}
+    _cache_set(_closures_cache, "all", data)
     return data
 
 

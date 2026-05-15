@@ -133,6 +133,38 @@ export function isCampaignEnded(endISO) {
 }
 
 /**
+ * Status operacional da campanha, derivado de end_date + closed_at:
+ *
+ *   • "in_flight"        → end_date >= hoje (ou end_date ausente).
+ *                          Campanha em voo, operação ativa.
+ *   • "awaiting_closure" → end_date < hoje, sem closed_at, ≤30 dias do fim.
+ *                          Limbo: terminou mas ainda precisa de fechamento
+ *                          (sheet final, faturamento, relatório). Card NÃO
+ *                          esmaece — fica destacado pro admin atuar.
+ *   • "ended"            → closed_at preenchido OU >30 dias do fim.
+ *                          Histórico estabilizado, card esmaecido.
+ *
+ * O auto-close de 30 dias é safety net pra fechar visualmente campanhas
+ * antigas que o admin esqueceu de marcar — sem isso o badge âmbar
+ * acumularia eternamente.
+ */
+const AUTO_CLOSE_DAYS = 30;
+
+export function getCampaignStatus(endISO, closedAt) {
+  if (!endISO) return "in_flight";
+  const e = new Date(endISO);
+  if (isNaN(e.getTime())) return "in_flight";
+  const now = new Date();
+  const todayUTC = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  if (e.getTime() >= todayUTC) return "in_flight";
+  if (closedAt) return "ended";
+  // Dias completos passados desde o fim. end_date é UTC midnight; comparar
+  // com todayUTC dá o delta inteiro em dias (sem timezone drift).
+  const daysSinceEnd = Math.floor((todayUTC - e.getTime()) / 86400000);
+  return daysSinceEnd > AUTO_CLOSE_DAYS ? "ended" : "awaiting_closure";
+}
+
+/**
  * Display de pacing curto. Acima de 999% mostra "999%+" pra evitar
  * estouro de layout (caso raro mas existe — backfill de delivery).
  */
@@ -179,6 +211,72 @@ export function formatDateRange(startISO, endISO) {
   const sy = String(s.getUTCFullYear()).slice(-2);
   const ey = String(e.getUTCFullYear()).slice(-2);
   return `${sd}/${sm}/${sy} → ${ed}/${em}/${ey}`;
+}
+
+/**
+ * Urgência de finalização — sinal calendário (não confundir com health
+ * de pacing). Retorna:
+ *   "today"    → end_date é hoje (campanha encerra hoje, ação urgente)
+ *   "tomorrow" → end_date é amanhã (preparar fechamento)
+ *   null       → nenhum dos casos (passou, ainda longe, ou ausente)
+ *
+ * Usado pra colorir/destacar APENAS a data final no card — sem badge novo,
+ * sem borda, sem stripe extra. O destaque vem da própria informação que já
+ * estava lá (a data), virando "→ hoje" (danger) ou "→ amanhã" (warning).
+ */
+export function getEndUrgency(endISO) {
+  if (!endISO) return null;
+  const e = new Date(endISO);
+  if (isNaN(e.getTime())) return null;
+  const now = new Date();
+  const todayUTC = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  // end_date vem como YYYY-MM-DD → UTC midnight. Delta em dias é direto.
+  const diffDays = Math.round((e.getTime() - todayUTC) / 86400000);
+  if (diffDays === 0) return "today";
+  if (diffDays === 1) return "tomorrow";
+  return null;
+}
+
+/**
+ * Render-friendly split do date range — devolve as partes pra que o caller
+ * possa estilizar o `end` separadamente (cor de urgência) sem reimplementar
+ * a lógica de formato (mesmo-ano omite ano, etc).
+ *
+ * `endLabel` já vem com substituição semântica: "hoje" / "amanhã" / "DD/MM".
+ * `endUrgency` permite o caller pintar o span com a cor certa.
+ *
+ * Retorna { startStr, endStr, endUrgency } ou null se inputs inválidos.
+ */
+export function getDateRangeParts(startISO, endISO) {
+  if (!startISO || !endISO) return null;
+  const s = new Date(startISO);
+  const e = new Date(endISO);
+  if (isNaN(s.getTime()) || isNaN(e.getTime())) return null;
+  const sameYear = s.getUTCFullYear() === e.getUTCFullYear();
+  const sd = String(s.getUTCDate()).padStart(2, "0");
+  const sm = String(s.getUTCMonth() + 1).padStart(2, "0");
+  const ed = String(e.getUTCDate()).padStart(2, "0");
+  const em = String(e.getUTCMonth() + 1).padStart(2, "0");
+  const sy = String(s.getUTCFullYear()).slice(-2);
+  const ey = String(e.getUTCFullYear()).slice(-2);
+  const startStr = sameYear ? `${sd}/${sm}` : `${sd}/${sm}/${sy}`;
+  const urgency = getEndUrgency(endISO);
+  let endStr;
+  if (urgency === "today")        endStr = "hoje";
+  else if (urgency === "tomorrow") endStr = "amanhã";
+  else if (sameYear)              endStr = `${ed}/${em}`;
+  else                            endStr = `${ed}/${em}/${ey}`;
+  return { startStr, endStr, endUrgency: urgency };
+}
+
+/**
+ * Classe Tailwind de cor pra `endUrgency`. Centraliza a paleta pra ficar
+ * consistente entre card, lista e drawer.
+ */
+export function endUrgencyClass(urgency) {
+  if (urgency === "today")    return "text-danger font-semibold";
+  if (urgency === "tomorrow") return "text-warning font-semibold";
+  return "";
 }
 
 /**

@@ -540,6 +540,29 @@ export async function saveAbsOverride({ short_token, has_abs }) {
   );
 }
 
+// ── Campaign closure (admin) ────────────────────────────────────────────────
+
+/**
+ * Marca/desmarca campanha como "encerrada manualmente". Quando true, o
+ * backend grava closed_at=NOW na tabela campaign_closures; quando false,
+ * remove o registro (volta ao estado derivado por end_date + 30 dias).
+ *
+ * O frontend usa o campo `closed_at` da lista (junto com end_date) pra
+ * derivar 3 estados visuais: in_flight, awaiting_closure, ended.
+ *
+ * Lança em status != 2xx pra o caller propagar o erro pra UI.
+ */
+export async function saveCampaignClosure({ short_token, closed }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=save_campaign_closure`,
+    { short_token, closed: !!closed },
+    adminAuthHeaders(jwt),
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r;
+}
+
 // ── Survey (admin) ───────────────────────────────────────────────────────────
 
 /**

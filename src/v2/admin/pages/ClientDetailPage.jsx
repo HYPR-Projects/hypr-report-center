@@ -543,6 +543,7 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
           setDrawerCampaign(null);
         }}
         onAbsChange={handleAbsSaved}
+        onClosureChange={handleAbsSaved}
         onOpenReport={onOpenReport}
         teamMap={teamMap}
       />

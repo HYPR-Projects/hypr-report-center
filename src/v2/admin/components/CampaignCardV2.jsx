@@ -36,7 +36,6 @@ import { Card } from "../../../ui/Card";
 import { Avatar } from "../../../ui/Avatar";
 import { TokenChip } from "./TokenChip";
 import {
-  formatDateRange,
   formatPacingValue,
   formatPct,
   formatBRL,
@@ -44,18 +43,23 @@ import {
   ctrColorClass,
   vtrColorClass,
   ecpmBgClass,
-  isCampaignEnded,
+  getCampaignStatus,
+  getDateRangeParts,
+  endUrgencyClass,
   localPartFromEmail,
 } from "../lib/format";
 import { schedulePrefetch, cancelPrefetch } from "../../../lib/prefetchReport";
 
 // Mapas health → classe de cor. Mesma régua de format.js (pacing tiers),
 // reaproveitada pra stripe lateral e fill da barra de pacing.
+// `awaiting` = campanha terminou mas precisa de fechamento manual — stripe
+// âmbar puxa atenção do admin sem alarmar como crítico.
 const HEALTH_BAR = {
   healthy:   "bg-success",
   over:      "bg-signature",
   attention: "bg-warning",
   critical:  "bg-danger",
+  awaiting:  "bg-warning",
   ended:     "bg-fg-subtle/30",
 };
 
@@ -121,11 +125,18 @@ export function CampaignCardV2({
     // Card mostra um único selo "ABS" se qualquer das duas mídias tiver.
     display_has_abs,
     video_has_abs,
+    // Fechamento manual (admin clicou em "Marcar como encerrada" no drawer).
+    // Combinado com end_date define o estado visual do card via getCampaignStatus.
+    closed_at,
   } = campaign;
   const has_abs = display_has_abs || video_has_abs;
 
-  const ended  = isCampaignEnded(end_date);
-  const health = ended ? "ended" : classifyHealth(display_pacing, video_pacing);
+  const status  = getCampaignStatus(end_date, closed_at);
+  const ended   = status === "ended";
+  const awaiting = status === "awaiting_closure";
+  const health  = ended    ? "ended"
+                : awaiting ? "awaiting"
+                : classifyHealth(display_pacing, video_pacing);
   const cpName = cp_email ? (teamMap[cp_email] || localPartFromEmail(cp_email)) : null;
   const csName = cs_email ? (teamMap[cs_email] || localPartFromEmail(cs_email)) : null;
 
@@ -196,6 +207,7 @@ export function CampaignCardV2({
             {merge_id && <MergedBadge />}
             {is_bonus_only && <BonusBadge />}
             {has_abs && <AbsBadge />}
+            {awaiting && <AwaitingClosureBadge />}
             {ended && (
               <span className="text-[9px] uppercase tracking-widest font-bold text-fg-subtle">
                 encerrada
@@ -205,9 +217,7 @@ export function CampaignCardV2({
           <p className="text-[12.5px] text-fg-muted mt-1 truncate leading-snug">
             {campaign_name}
           </p>
-          <p className="text-[10.5px] text-fg-subtle mt-0.5 tabular-nums">
-            {formatDateRange(start_date, end_date)}
-          </p>
+          <DateRangeLine startISO={start_date} endISO={end_date} />
         </div>
 
         {/* ── KPIs mobile (visível só <md) ──────────────────────────────
@@ -356,6 +366,24 @@ function Divider() {
 }
 
 /**
+ * Linha de date range com destaque de urgência na data final. Quando o
+ * end_date é hoje ou amanhã, o texto vira "→ hoje" (danger semibold) ou
+ * "→ amanhã" (warning semibold) — usa o slot que já existia, sem badge
+ * novo ou borda extra. Operação enxerga urgência no scan vertical sem
+ * poluir o card.
+ */
+function DateRangeLine({ startISO, endISO }) {
+  const parts = getDateRangeParts(startISO, endISO);
+  if (!parts) return null;
+  const cls = endUrgencyClass(parts.endUrgency);
+  return (
+    <p className="text-[10.5px] text-fg-subtle mt-0.5 tabular-nums">
+      {parts.startStr} → <span className={cls}>{parts.endStr}</span>
+    </p>
+  );
+}
+
+/**
  * Badge "AGRUPADO" — pinta no header do card pra deixar claro que esse
  * token faz parte de um grupo. Sutil (signature soft, não gritando)
  * porque a campanha continua existindo enquanto admin — só o report
@@ -398,6 +426,27 @@ function BonusBadge() {
         <path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z" />
       </svg>
       bonificada
+    </span>
+  );
+}
+
+/**
+ * Badge "AGUARDANDO FECHAMENTO" — campanha passou da data final mas o admin
+ * ainda não marcou como encerrada (no drawer). Cor warning âmbar pra puxar
+ * atenção sem parecer erro. Some quando o admin marca como encerrada OU
+ * quando passaram 30 dias do fim (auto-close).
+ */
+function AwaitingClosureBadge() {
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-warning px-1.5 py-0.5 rounded bg-warning-soft border border-warning/40"
+      title="Campanha terminou — falta fazer o fechamento (sheet final, faturamento). Marcar como encerrada no drawer."
+    >
+      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="10" />
+        <polyline points="12 6 12 12 15 14" />
+      </svg>
+      aguardando fechamento
     </span>
   );
 }
