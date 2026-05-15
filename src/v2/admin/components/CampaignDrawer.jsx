@@ -339,7 +339,7 @@ export function CampaignDrawer({
               <ActionButton
                 icon={
                   closureBusy === "saving" ? <Spinner />
-                  : closureBusy === "done" ? ICON.check
+                  : closureBusy === "done" ? <ClosureSuccessIcon />
                   : ICON.closure
                 }
                 label={
@@ -517,6 +517,41 @@ function Spinner() {
       <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2.5" />
       <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
     </svg>
+  );
+}
+
+/**
+ * Ícone de sucesso do fechamento — check desenhado em stroke draw +
+ * halo verde que expande e some. Ambas animações disparam ao mount
+ * (quando closureBusy vira "done" e o React troca o ícone).
+ *
+ * Wrapper span é relative+fixed-size pra ancorar o halo absolutamente
+ * sem quebrar o layout do ActionButton (que renderiza `{icon}` dentro
+ * de um span shrink-0). pathLength=100 no SVG normaliza o comprimento
+ * da path, deixando a animação independente da geometria exata.
+ */
+function ClosureSuccessIcon() {
+  return (
+    <span className="relative inline-flex items-center justify-center w-[14px] h-[14px]">
+      <span
+        aria-hidden="true"
+        className="closure-halo absolute rounded-full bg-success pointer-events-none"
+        style={{ width: 22, height: 22 }}
+      />
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="relative"
+      >
+        <path className="closure-check-path" pathLength="100" d="M20 6 9 17l-5-5" />
+      </svg>
+    </span>
   );
 }
 

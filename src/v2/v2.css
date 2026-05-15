@@ -70,3 +70,42 @@
     animation: none;
   }
 }
+
+/* ───────────────────────────────────────────────────────────
+ * Closure success animation — check desenhado + halo verde
+ * ───────────────────────────────────────────────────────────
+ * Disparada ao marcar campanha como encerrada no CampaignDrawer.
+ * Duas animações paralelas, ambas montam junto quando o React
+ * troca o ícone do botão (de Spinner pra ClosureSuccessIcon):
+ *
+ *   1. Stroke draw do check — 420ms ease-out. pathLength=100 no SVG
+ *      normaliza o comprimento da path, evitando depender da geometria
+ *      exata pra calcular dasharray.
+ *   2. Halo verde — 800ms expand + fade. Scale de 0.5 até 2.6 (cresce
+ *      pra fora do botão), opacity peak em 25% (~200ms), depois fade.
+ *
+ * O check completa primeiro (sensação de "concluiu"), halo continua
+ * expandindo e some — leitura final: "deu certo, pode seguir".
+ */
+@keyframes closure-check-draw {
+  from { stroke-dashoffset: 100; }
+  to   { stroke-dashoffset: 0; }
+}
+@keyframes closure-halo {
+  0%   { transform: scale(0.5); opacity: 0; }
+  25%  { opacity: 0.7; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+.closure-check-path {
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  animation: closure-check-draw 420ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.closure-halo {
+  transform-origin: center;
+  animation: closure-halo 800ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .closure-check-path { animation: none; stroke-dashoffset: 0; }
+  .closure-halo       { animation: none; opacity: 0; }
+}
