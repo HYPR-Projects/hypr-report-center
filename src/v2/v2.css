@@ -92,20 +92,31 @@
   to   { stroke-dashoffset: 0; }
 }
 @keyframes closure-halo {
-  0%   { transform: scale(0.5); opacity: 0; }
-  25%  { opacity: 0.7; }
-  100% { transform: scale(2.6); opacity: 0; }
+  0%   { transform: scale(0.4); opacity: 0; }
+  15%  { opacity: 0.9; }
+  100% { transform: scale(3.2); opacity: 0; }
+}
+/* Pop sutil do ícone inteiro pra reforçar a entrada — escala de 0.85
+ * pra 1.0 com overshoot, dá uma sensação de "stamp" sem mover layout. */
+@keyframes closure-icon-pop {
+  0%   { transform: scale(0.7); }
+  60%  { transform: scale(1.12); }
+  100% { transform: scale(1);    }
 }
 .closure-check-path {
   stroke-dasharray: 100;
   stroke-dashoffset: 100;
-  animation: closure-check-draw 420ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: closure-check-draw 480ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 .closure-halo {
   transform-origin: center;
-  animation: closure-halo 800ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: closure-halo 900ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.closure-icon-pop {
+  animation: closure-icon-pop 360ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 @media (prefers-reduced-motion: reduce) {
   .closure-check-path { animation: none; stroke-dashoffset: 0; }
   .closure-halo       { animation: none; opacity: 0; }
+  .closure-icon-pop   { animation: none; }
 }

@@ -230,7 +230,13 @@ export function CampaignDrawer({
     try {
       await saveCampaignClosure({ short_token, closed: true });
       setClosureBusy("done");
-      onClosureChange?.(short_token);
+      // Delay antes de propagar o "encerrou" pro pai: o handler otimista
+      // atualiza `closed_at` no drawerCampaign, o que faz `awaiting` virar
+      // false e desmontar o botão inteiro — matando a animação antes dela
+      // rodar. Esperamos a animação completar (~1.2s) antes de propagar.
+      setTimeout(() => {
+        onClosureChange?.(short_token);
+      }, 1200);
     } catch {
       setClosureBusy("error");
     }
@@ -532,11 +538,11 @@ function Spinner() {
  */
 function ClosureSuccessIcon() {
   return (
-    <span className="relative inline-flex items-center justify-center w-[14px] h-[14px]">
+    <span className="closure-icon-pop relative inline-flex items-center justify-center w-[14px] h-[14px]">
       <span
         aria-hidden="true"
         className="closure-halo absolute rounded-full bg-success pointer-events-none"
-        style={{ width: 22, height: 22 }}
+        style={{ width: 26, height: 26 }}
       />
       <svg
         width="14"
@@ -544,7 +550,7 @@ function ClosureSuccessIcon() {
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
-        strokeWidth="2.4"
+        strokeWidth="2.8"
         strokeLinecap="round"
         strokeLinejoin="round"
         className="relative"
