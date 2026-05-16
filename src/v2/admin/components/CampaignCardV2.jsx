@@ -176,7 +176,7 @@ export function CampaignCardV2({
         "relative overflow-hidden cursor-pointer group",
         "transition-all duration-150",
         "hover:border-signature/40 hover:bg-surface hover:shadow-sm",
-        (ended || paused) && "opacity-65"
+        ended && "opacity-65"
       )}
       onClick={() => onOpen?.(campaign)}
       role="button"
@@ -384,6 +384,17 @@ export function CampaignCardV2({
           </button>
         </div>
       </div>
+
+      {/* Overlay de pausa — dima todo o conteúdo do card com tint da canvas,
+          equivalente visual a opacity-65 mas SEM o problema de cascade do
+          opacity CSS (que ofuscaria também o PausedBadge). O badge tem
+          z-10 e fica acima desse overlay, mantendo a cor original. */}
+      {paused && (
+        <div
+          aria-hidden
+          className="absolute inset-0 bg-canvas/35 pointer-events-none z-[5]"
+        />
+      )}
     </Card>
   );
 }
@@ -532,7 +543,7 @@ function EarlyEndedTooltipBody({ reason, date }) {
 function PausedBadge({ reason }) {
   const badge = (
     <span
-      className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-signature px-1.5 py-0.5 rounded bg-signature/8 border border-signature/30 cursor-help"
+      className="relative z-10 inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-signature px-1.5 py-0.5 rounded bg-signature/8 border border-signature/30 cursor-help"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
         <rect x="6"  y="4" width="4" height="16" rx="1" />
