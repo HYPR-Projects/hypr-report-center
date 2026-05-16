@@ -31,9 +31,10 @@ function push(kind, message, opts = {}) {
   const item = { id, kind, message, createdAt: Date.now(), duration };
   items = [...items, item];
   notify();
-  if (duration > 0) {
-    setTimeout(() => dismiss(id), duration);
-  }
+  // Auto-dismiss agora vive no ToastItem (components/Toast.jsx) pra que
+  // o timer dispare a animação de saída ANTES de chamar dismiss(). Antes
+  // o setTimeout daqui removia o item da array direto, e o componente
+  // sumia sem fade-out — visual hard-cut.
   return id;
 }
 

@@ -11,8 +11,56 @@
 // uma linha discreta de pills via SecondaryAlerts — preserva a função
 // de filtro do worklist sem competir com os números.
 
+import { useEffect, useRef, useState } from "react";
 import { cn } from "../../../ui/cn";
 import { formatBRL } from "../lib/format";
+
+/**
+ * Anima um valor numérico do anterior pro novo via requestAnimationFrame
+ * com easing ease-out-cubic. Usado nos KPIs do topo pra dar sensação de
+ * "atualizou" quando o refetch traz números novos — antes o valor pulava
+ * sem aviso (admin não sabia que houve refresh).
+ *
+ * - Primeiro render: sem animação (prev === target inicial, retorna direto)
+ * - target/prev null: sem animação (não dá pra animar de/para "—")
+ * - Mesmo valor: sem animação (early return)
+ */
+function useAnimatedNumber(target, duration = 600) {
+  const [value, setValue] = useState(target);
+  const prevTarget = useRef(target);
+
+  useEffect(() => {
+    if (target === prevTarget.current) return;
+    if (target == null || prevTarget.current == null) {
+      setValue(target);
+      prevTarget.current = target;
+      return;
+    }
+    const start = prevTarget.current;
+    const startTime = performance.now();
+    let raf;
+    const tick = (now) => {
+      const t = Math.min(1, (now - startTime) / duration);
+      const eased = 1 - Math.pow(1 - t, 3); // ease-out-cubic
+      setValue(start + (target - start) * eased);
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    prevTarget.current = target;
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration]);
+
+  return value;
+}
+
+/**
+ * Wrapper que aplica useAnimatedNumber + passa o valor interpolado pro
+ * formatter. Renderiza string formatada — MetricCard espera ReactNode.
+ */
+function AnimatedValue({ value, format }) {
+  const animated = useAnimatedNumber(value);
+  return format(animated);
+}
 
 function formatPct(value) {
   if (value == null || !Number.isFinite(value)) return "—";
@@ -147,26 +195,29 @@ export function MetricStrip({ summary, className }) {
       role="region"
       aria-label="Performance das campanhas ativas"
     >
-      <MetricCard label="Ativas" value={active_count} />
+      <MetricCard
+        label="Ativas"
+        value={<AnimatedValue value={active_count} format={(n) => n == null ? "—" : Math.round(n)} />}
+      />
       <MetricCard
         label="Pacing DSP"
-        value={formatPct(dsp_pacing)}
+        value={<AnimatedValue value={dsp_pacing} format={formatPct} />}
         tone={tonePacing(dsp_pacing)}
       />
       <MetricCard
         label="Pacing VID"
-        value={formatPct(vid_pacing)}
+        value={<AnimatedValue value={vid_pacing} format={formatPct} />}
         tone={tonePacing(vid_pacing)}
       />
       <MetricCard
         label="CTR"
-        value={formatPctTwo(ctr)}
+        value={<AnimatedValue value={ctr} format={formatPctTwo} />}
         tone={toneCtr(ctr)}
         footer={<MetricDelta current={ctr} previous={ctr_prev} goodDirection="up" />}
       />
       <MetricCard
         label="VTR"
-        value={formatPctTwo(vtr)}
+        value={<AnimatedValue value={vtr} format={formatPctTwo} />}
         tone={toneVtr(vtr)}
         footer={<MetricDelta current={vtr} previous={vtr_prev} goodDirection="up" />}
       />
@@ -174,19 +225,19 @@ export function MetricStrip({ summary, className }) {
         <>
           <MetricCard
             label="eCPM Display"
-            value={formatBRL(ecpm_display)}
+            value={<AnimatedValue value={ecpm_display} format={formatBRL} />}
             footer={<MetricDelta current={ecpm_display} previous={ecpm_display_prev} goodDirection="down" />}
           />
           <MetricCard
             label="eCPM Video"
-            value={formatBRL(ecpm_video)}
+            value={<AnimatedValue value={ecpm_video} format={formatBRL} />}
             footer={<MetricDelta current={ecpm_video} previous={ecpm_video_prev} goodDirection="down" />}
           />
         </>
       ) : (
         <MetricCard
           label="eCPM"
-          value={formatBRL(ecpm)}
+          value={<AnimatedValue value={ecpm} format={formatBRL} />}
           footer={<MetricDelta current={ecpm} previous={ecpm_prev} goodDirection="down" />}
         />
       )}

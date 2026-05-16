@@ -41,11 +41,31 @@ export function ToastContainer() {
 
 function ToastItem({ toast: t, onDismiss }) {
   const [visible, setVisible] = useState(false);
+  const [exiting, setExiting] = useState(false);
 
+  // Entrada — uma frame depois do mount pra forçar transition de 0 → 1
   useEffect(() => {
     const r = requestAnimationFrame(() => setVisible(true));
     return () => cancelAnimationFrame(r);
   }, []);
+
+  // Auto-dismiss — moved do singleton (lib/toast.js) pra cá pra que o
+  // timer dispare o estado "exiting" (animação de saída), depois o
+  // onDismiss real (que remove do singleton) só roda no onTransitionEnd.
+  useEffect(() => {
+    if (!t.duration || t.duration <= 0) return;
+    const timer = setTimeout(() => setExiting(true), t.duration);
+    return () => clearTimeout(timer);
+  }, [t.duration]);
+
+  const triggerExit = () => setExiting(true);
+
+  // Quando exiting=true, opacity vai pra 0 com transição. Ao terminar a
+  // transição de opacity, dispara o onDismiss real (remove do singleton).
+  // Filtra propertyName pra não disparar em outras transições do elemento.
+  const handleTransitionEnd = (e) => {
+    if (exiting && e.propertyName === "opacity") onDismiss();
+  };
 
   const palette = {
     success: { bg: "#1A2C24", border: "#2ECC7140", icon: "#2ECC71", iconChar: "✓" },
@@ -53,10 +73,13 @@ function ToastItem({ toast: t, onDismiss }) {
     info:    { bg: "#1A2535", border: "#3397B940", icon: "#3397B9", iconChar: "ℹ" },
   }[t.kind] || { bg: "#1A2535", border: "#3397B940", icon: "#3397B9", iconChar: "•" };
 
+  const isShown = visible && !exiting;
+
   return (
     <div
       role={t.kind === "error" ? "alert" : "status"}
       aria-live={t.kind === "error" ? "assertive" : "polite"}
+      onTransitionEnd={handleTransitionEnd}
       style={{
         pointerEvents: "auto",
         display: "flex",
@@ -73,9 +96,11 @@ function ToastItem({ toast: t, onDismiss }) {
         boxShadow: "0 8px 24px rgba(0,0,0,0.32)",
         fontSize: 13,
         lineHeight: 1.4,
-        opacity: visible ? 1 : 0,
-        transform: visible ? "translateX(0)" : "translateX(8px)",
-        transition: "opacity 150ms ease, transform 150ms ease",
+        // Entrada: 8px → 0px com fade. Saída: 0px → 8px com fade.
+        // 200ms expo-out — mesmo easing do design system pra coerência.
+        opacity: isShown ? 1 : 0,
+        transform: isShown ? "translateX(0)" : "translateX(8px)",
+        transition: "opacity 200ms cubic-bezier(0.16, 1, 0.3, 1), transform 200ms cubic-bezier(0.16, 1, 0.3, 1)",
       }}
     >
       <span
@@ -94,7 +119,7 @@ function ToastItem({ toast: t, onDismiss }) {
       <span style={{ flex: 1, wordBreak: "break-word" }}>{t.message}</span>
       <button
         type="button"
-        onClick={onDismiss}
+        onClick={triggerExit}
         aria-label="Fechar notificação"
         style={{
           background: "none",
