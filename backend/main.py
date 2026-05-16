@@ -1927,6 +1927,17 @@ def fetch_campaign_data(short_token):
         # futures saem de escopo. Custo desprezível pra um caso raro.
         return None
 
+    # Injeta early_end_date quando admin marcou encerramento antecipado.
+    # `end_date` no payload PERMANECE intocado (= contrato original) — o
+    # frontend cliente usa early_end_date só pra display do período. O
+    # pacing math em query_totals abaixo continua usando end_date original,
+    # mostrando a "perda" naturalmente (Opção B do design). `reason` e
+    # `ended_by` são admin-only e NÃO entram no payload do cliente.
+    early_map = _safe_get_early_ends()
+    early_for_token = early_map.get(short_token)
+    if early_for_token and early_for_token.get("early_end_date"):
+        campaign_info["early_end_date"] = early_for_token["early_end_date"]
+
     # totals é o único que depende de campaign_info — dispara agora
     fut_totals = _query_pool.submit(query_totals, short_token, campaign_info)
 

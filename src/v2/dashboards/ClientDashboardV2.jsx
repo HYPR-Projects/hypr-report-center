@@ -335,7 +335,11 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     if (!data || !mainPresetId || mainPresetId === "all") return;
     const camp = data.campaign;
     if (!camp?.start_date || !camp?.end_date) return;
-    const presets = buildPresets(new Date(), camp.start_date, camp.end_date);
+    // Presets como "Toda a campanha" devem respeitar early_end_date quando
+    // admin marcou encerramento antecipado — sem isso o usuário escolheria
+    // datas depois do fim real (sem dados, visual confuso).
+    const effEnd = camp.early_end_date || camp.end_date;
+    const presets = buildPresets(new Date(), camp.start_date, effEnd);
     const p = presets.find(x => x.id === mainPresetId);
     if (p && p.range) {
       const newRange = p.range;
@@ -356,7 +360,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     // Dependemos só dos limites da campanha + presetId. mainRange muda
     // como efeito da própria recomputação — incluí-lo aqui causaria loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.campaign?.start_date, data?.campaign?.end_date, mainPresetId]);
+  }, [data?.campaign?.start_date, data?.campaign?.end_date, data?.campaign?.early_end_date, mainPresetId]);
 
   // Core Product filter (Visão Geral): só faz sentido quando a campanha
   // tem AS DUAS frentes (O2O e OOH). Critério: contrato (incl. bonus) em
@@ -527,7 +531,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
             clientName={camp.client_name}
             logo={data.logo}
             startDate={camp.start_date}
-            endDate={camp.end_date}
+            endDate={camp.early_end_date || camp.end_date}
             shortToken={camp.short_token || token}
             mergeMeta={data.merge_meta}
             currentView={view}
@@ -628,7 +632,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                   value={mainRange}
                   presetId={mainPresetId}
                   campaignStart={camp.start_date}
-                  campaignEnd={camp.end_date}
+                  campaignEnd={camp.early_end_date || camp.end_date}
                   availableDates={aggregates.availableDates}
                   onChange={setMainRange}
                 />
