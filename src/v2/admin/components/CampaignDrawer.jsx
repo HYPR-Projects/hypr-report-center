@@ -21,7 +21,14 @@ import { cn } from "../../../ui/cn";
 import { Avatar } from "../../../ui/Avatar";
 import { AbsToggle } from "./AbsToggle";
 import { TokenChip } from "./TokenChip";
-import { getNegotiation, getCampaign, saveCampaignClosure, saveCampaignPause } from "../../../lib/api";
+import {
+  getNegotiation,
+  getCampaign,
+  saveCampaignClosure,
+  saveCampaignPause,
+  saveCampaignEarlyEnd,
+  clearCampaignEarlyEnd,
+} from "../../../lib/api";
 import {
   formatPacingValue,
   formatPct,
@@ -31,6 +38,7 @@ import {
   getCampaignStatus,
   getDateRangeParts,
   endUrgencyClass,
+  isEarlyEnded,
   localPartFromEmail,
 } from "../lib/format";
 
@@ -123,6 +131,18 @@ const ICON = {
       <polygon points="6 4 20 12 6 20 6 4" />
     </svg>
   ),
+  earlyEnd: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+    </svg>
+  ),
+  revert: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="1 4 1 10 7 10" />
+      <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+    </svg>
+  ),
 };
 
 export function CampaignDrawer({
@@ -142,6 +162,7 @@ export function CampaignDrawer({
   onAbsChange,         // chamado após admin salvar override de ABS — pai refaz lista
   onClosureChange,     // chamado após admin marcar campanha como encerrada — pai refaz lista
   onPauseChange,       // chamado após admin pausar/retomar campanha — pai atualiza otimisticamente
+  onEarlyEndChange,    // chamado após admin setar/reverter encerramento antecipado
   onOpenReport,
   teamMap = {},
 }) {
@@ -168,6 +189,18 @@ export function CampaignDrawer({
   // Mesmo padrão pro toggle de pausa — resetado quando o drawer abre/troca.
   const [pauseBusy, setPauseBusy] = useState("idle");
   useEffect(() => { setPauseBusy("idle"); }, [drawerToken, open]);
+  // Encerramento antecipado: form inline (data + motivo) com modo edição.
+  // showEarlyEndForm controla expansão do bloco de form abaixo do botão.
+  const [showEarlyEndForm, setShowEarlyEndForm] = useState(false);
+  const [earlyEndBusy, setEarlyEndBusy] = useState("idle");
+  const [earlyEndDateInput, setEarlyEndDateInput] = useState("");
+  const [earlyEndReasonInput, setEarlyEndReasonInput] = useState("");
+  useEffect(() => {
+    setShowEarlyEndForm(false);
+    setEarlyEndBusy("idle");
+    setEarlyEndDateInput("");
+    setEarlyEndReasonInput("");
+  }, [drawerToken, open]);
   useEffect(() => {
     if (!open || !drawerToken) {
       setNegotiation(null);
@@ -235,13 +268,27 @@ export function CampaignDrawer({
     video_has_abs,
     closed_at,
     paused_at,
+    early_end_date,
+    early_end_reason,
   } = campaign;
 
-  const status   = getCampaignStatus(end_date, closed_at, paused_at);
+  const status   = getCampaignStatus(end_date, closed_at, paused_at, early_end_date);
   const awaiting = status === "awaiting_closure";
   const paused   = status === "paused";
+  const earlyEnded = isEarlyEnded(early_end_date);
   // Pausa só faz sentido em vôo. Após end_date, o ciclo natural toma conta.
   const canPause = status === "in_flight" || status === "paused";
+  // Encerramento antecipado: faz sentido enquanto a campanha está em vôo
+  // ou aguardando fechamento (admin pode marcar retroativamente). Já com
+  // closed_at não faz sentido (campanha já fechada definitivamente).
+  const canEarlyEnd = !closed_at && !earlyEnded && (
+    status === "in_flight" || status === "paused" || status === "awaiting_closure"
+  );
+
+  // Limites do input de data: min = start_date, max = end_date original.
+  // O backend não valida o range — confiamos no input do navegador + UX.
+  const earlyEndDateMin = start_date || "";
+  const earlyEndDateMax = end_date   || "";
 
   const handleCloseCampaign = async () => {
     if (!short_token || closureBusy === "saving") return;
@@ -270,6 +317,51 @@ export function CampaignDrawer({
       onPauseChange?.(short_token, nextPaused);
     } catch {
       setPauseBusy("error");
+    }
+  };
+
+  const handleOpenEarlyEndForm = () => {
+    // Pré-popula com hoje (default mais comum — campanha encerrou hoje).
+    // Cap dentro da janela start/end caso hoje esteja fora.
+    const todayISO = new Date().toISOString().slice(0, 10);
+    let initial = todayISO;
+    if (earlyEndDateMax && todayISO > earlyEndDateMax) initial = earlyEndDateMax;
+    if (earlyEndDateMin && initial < earlyEndDateMin)  initial = earlyEndDateMin;
+    setEarlyEndDateInput(initial);
+    setEarlyEndReasonInput("");
+    setEarlyEndBusy("idle");
+    setShowEarlyEndForm(true);
+  };
+
+  const handleConfirmEarlyEnd = async () => {
+    if (!short_token || !earlyEndDateInput || earlyEndBusy === "saving") return;
+    setEarlyEndBusy("saving");
+    try {
+      await saveCampaignEarlyEnd({
+        short_token,
+        early_end_date: earlyEndDateInput,
+        reason: earlyEndReasonInput.trim(),
+      });
+      setEarlyEndBusy("idle");
+      setShowEarlyEndForm(false);
+      onEarlyEndChange?.(short_token, {
+        early_end_date:   earlyEndDateInput,
+        early_end_reason: earlyEndReasonInput.trim(),
+      });
+    } catch {
+      setEarlyEndBusy("error");
+    }
+  };
+
+  const handleRevertEarlyEnd = async () => {
+    if (!short_token || earlyEndBusy === "saving") return;
+    setEarlyEndBusy("saving");
+    try {
+      await clearCampaignEarlyEnd({ short_token });
+      setEarlyEndBusy("idle");
+      onEarlyEndChange?.(short_token, null);
+    } catch {
+      setEarlyEndBusy("error");
     }
   };
 
@@ -354,6 +446,17 @@ export function CampaignDrawer({
             />
           </div>
 
+          {/* Observação admin de encerramento antecipado — só aparece se
+              admin marcou. Mostra data definitiva + motivo (admin-only,
+              não vai pro report do cliente). */}
+          {earlyEnded && (
+            <EarlyEndedNote
+              date={early_end_date}
+              reason={early_end_reason}
+              originalEnd={end_date}
+            />
+          )}
+
           {/* Owners */}
           <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
             Owners
@@ -392,6 +495,44 @@ export function CampaignDrawer({
                 }
                 disabled={closureBusy === "saving" || closureBusy === "done"}
                 onClick={handleCloseCampaign}
+              />
+            )}
+            {/* Encerramento antecipado — admin define data real do fim
+                (≤ end_date original) + motivo. Form inline expande abaixo
+                do botão. Quando já encerrada antecipadamente, mostra
+                "Reverter" no lugar. */}
+            {canEarlyEnd && !showEarlyEndForm && (
+              <ActionButton
+                icon={ICON.earlyEnd}
+                label="Encerrar antecipadamente"
+                variant="default"
+                onClick={handleOpenEarlyEndForm}
+              />
+            )}
+            {showEarlyEndForm && (
+              <EarlyEndForm
+                dateValue={earlyEndDateInput}
+                onDateChange={setEarlyEndDateInput}
+                reasonValue={earlyEndReasonInput}
+                onReasonChange={setEarlyEndReasonInput}
+                dateMin={earlyEndDateMin}
+                dateMax={earlyEndDateMax}
+                busy={earlyEndBusy}
+                onConfirm={handleConfirmEarlyEnd}
+                onCancel={() => setShowEarlyEndForm(false)}
+              />
+            )}
+            {earlyEnded && (
+              <ActionButton
+                icon={earlyEndBusy === "saving" ? <Spinner /> : ICON.revert}
+                label={
+                  earlyEndBusy === "saving" ? "Revertendo..."
+                  : earlyEndBusy === "error" ? "Erro — tentar de novo"
+                  : "Reverter encerramento antecipado"
+                }
+                variant={earlyEndBusy === "error" ? "danger" : "default"}
+                disabled={earlyEndBusy === "saving"}
+                onClick={handleRevertEarlyEnd}
               />
             )}
             {/* Pausar/Retomar — toggle reversível, só faz sentido enquanto a
@@ -570,6 +711,119 @@ function ActionButton({ icon, label, variant = "default", onClick, disabled }) {
       <span className="shrink-0">{icon}</span>
       <span className="flex-1 text-left">{label}</span>
     </button>
+  );
+}
+
+/**
+ * Bloco "OBSERVAÇÃO ADMIN" — mostra dados do encerramento antecipado.
+ * Admin-only (não vai pro report do cliente). Cor danger soft pra
+ * comunicar "atenção/perda" sem ser alarme bloqueador.
+ */
+function EarlyEndedNote({ date, reason, originalEnd }) {
+  const fmt = (iso) => {
+    if (!iso) return "—";
+    // YYYY-MM-DD → DD/MM/YYYY (display PT-BR). Usa UTC pra evitar drift
+    // de timezone igual o resto do projeto.
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "—";
+    const dd = String(d.getUTCDate()).padStart(2, "0");
+    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const yy = d.getUTCFullYear();
+    return `${dd}/${mm}/${yy}`;
+  };
+  return (
+    <div className="mb-5 rounded-lg border border-danger/30 bg-danger-soft px-3 py-3">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-danger">{ICON.earlyEnd}</span>
+        <span className="text-[11px] uppercase tracking-widest font-bold text-danger">
+          Encerrada antes do previsto
+        </span>
+      </div>
+      <p className="text-[11.5px] text-fg-muted leading-snug">
+        <span className="font-semibold text-fg">Data definitiva:</span> {fmt(date)}
+        <span className="text-fg-subtle"> · original {fmt(originalEnd)}</span>
+      </p>
+      {reason && (
+        <p className="text-[11.5px] text-fg-muted leading-snug mt-1">
+          <span className="font-semibold text-fg">Motivo:</span> {reason}
+        </p>
+      )}
+      <p className="text-[10px] text-fg-subtle italic mt-2">
+        Observação admin — não aparece no report do cliente.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Form inline pra encerramento antecipado. Expande abaixo do botão "Encerrar
+ * antecipadamente" quando o admin clica. Dois campos: data (input date com
+ * min=start, max=end original) + motivo (textarea opcional).
+ */
+function EarlyEndForm({
+  dateValue, onDateChange,
+  reasonValue, onReasonChange,
+  dateMin, dateMax,
+  busy,
+  onConfirm, onCancel,
+}) {
+  const saving = busy === "saving";
+  const hasDate = !!dateValue;
+  return (
+    <div className="rounded-lg border border-danger/40 bg-danger-soft/60 px-3 py-3 space-y-2.5">
+      <div className="flex items-center gap-2">
+        <span className="text-danger">{ICON.earlyEnd}</span>
+        <span className="text-[11px] uppercase tracking-widest font-bold text-danger">
+          Encerrar antecipadamente
+        </span>
+      </div>
+      <label className="block">
+        <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+          Data definitiva do fim
+        </span>
+        <input
+          type="date"
+          value={dateValue}
+          onChange={(e) => onDateChange(e.target.value)}
+          min={dateMin || undefined}
+          max={dateMax || undefined}
+          disabled={saving}
+          className="mt-1 block w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm font-mono tabular-nums text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
+        />
+      </label>
+      <label className="block">
+        <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+          Motivo <span className="text-fg-subtle font-normal normal-case tracking-normal">(opcional, admin-only)</span>
+        </span>
+        <textarea
+          rows={2}
+          value={reasonValue}
+          onChange={(e) => onReasonChange(e.target.value)}
+          disabled={saving}
+          placeholder="Ex: cliente cancelou após problema na campanha X..."
+          className="mt-1 block w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm text-fg resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
+        />
+      </label>
+      <div className="flex items-center justify-end gap-2 pt-1">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={saving}
+          className="px-3 py-1.5 rounded-md text-xs font-semibold text-fg-muted hover:text-fg hover:bg-surface transition-colors disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+        >
+          Cancelar
+        </button>
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={saving || !hasDate}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-danger text-white hover:bg-danger/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+        >
+          {saving && <Spinner />}
+          {saving ? "Encerrando..." : busy === "error" ? "Tentar de novo" : "Confirmar"}
+        </button>
+      </div>
+    </div>
   );
 }
 

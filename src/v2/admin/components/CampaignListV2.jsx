@@ -29,6 +29,7 @@ import {
   getCampaignStatus,
   getDateRangeParts,
   endUrgencyClass,
+  isEarlyEnded,
   localPartFromEmail,
 } from "../lib/format";
 import { schedulePrefetch, cancelPrefetch } from "../../../lib/prefetchReport";
@@ -155,9 +156,12 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
     merge_id,
     closed_at,
     paused_at,
+    early_end_date,
   } = campaign;
 
-  const status   = getCampaignStatus(end_date, closed_at, paused_at);
+  const effectiveEndDate = early_end_date || end_date;
+  const earlyEnded = isEarlyEnded(early_end_date);
+  const status   = getCampaignStatus(end_date, closed_at, paused_at, early_end_date);
   const ended    = status === "ended";
   const awaiting = status === "awaiting_closure";
   const paused   = status === "paused";
@@ -239,12 +243,21 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
               fechar
             </span>
           )}
+          {earlyEnded && (
+            <span
+              className="text-[8.5px] uppercase tracking-widest font-bold text-danger px-1 rounded bg-danger-soft border border-danger/30"
+              title="Encerrada antes do previsto — motivo no drawer (admin)"
+            >
+              antecipada
+            </span>
+          )}
         </div>
         <p className="text-[11px] text-fg-muted truncate mt-0.5">{campaign_name}</p>
       </div>
 
-      {/* Período — end com cor de urgência (hoje/amanhã) quando aplicável */}
-      <DateRangeCell startISO={start_date} endISO={end_date} />
+      {/* Período — end com cor de urgência (hoje/amanhã) quando aplicável.
+          Usa effective end (early_end_date quando setada). */}
+      <DateRangeCell startISO={start_date} endISO={effectiveEndDate} />
 
       {/* DSP Pac */}
       <span className={cn("text-right tabular-nums font-semibold", colorPacing(display_pacing))}>

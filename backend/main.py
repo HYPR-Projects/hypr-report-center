@@ -98,6 +98,7 @@ _shares_cache    = {}     # "all" -> (timestamp, dict[short_token -> share_id])
 _merges_cache    = {}     # "all" -> (timestamp, dict[short_token -> {merge_id, rmnd_mode, pdooh_mode}])
 _closures_cache  = {}     # "all" -> (timestamp, dict[short_token -> closed_at_iso])
 _pauses_cache    = {}     # "all" -> (timestamp, dict[short_token -> paused_at_iso])
+_early_ends_cache= {}     # "all" -> (timestamp, dict[short_token -> {early_end_date, reason, ended_by}])
 # Cache da listagem de forms do Typeform — evita estourar rate-limit em cada
 # abertura do SurveyModal (admin abre o modal várias vezes editando blocos).
 # TTL curto (5min) porque o admin pode estar criando um form novo e querendo
@@ -143,6 +144,7 @@ def _cache_invalidate_token(short_token):
         _merges_cache.pop("all", None)
         _closures_cache.pop("all", None)
         _pauses_cache.pop("all", None)
+        _early_ends_cache.pop("all", None)
         # Merged report cache: drop tudo. Tabela de grupos é pequena, e
         # qualquer mutação que invalida um token pode tornar stale o
         # payload merged que o contém. Reidratação custa N fetches já
@@ -968,6 +970,56 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR save_campaign_pause] {e}")
             return (jsonify({"error": "Erro ao salvar pausa da campanha"}), 500, headers)
+
+    # ── Endpoint: encerramento antecipado ───────────────────────────────────
+    # Body: {short_token, early_end_date: "YYYY-MM-DD", reason?: str}
+    # Grava o registro em campaign_early_ends (upsert). Frontend usa pra
+    # exibir badge "antes do previsto" + ajustar período. Pacing continua
+    # contra contrato original (Opção B — mostra a perda).
+    if request.method == "POST" and request.args.get("action") == "save_campaign_early_end":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token    = (body.get("short_token")    or "").strip()
+            early_end_date = (body.get("early_end_date") or "").strip()
+            reason         = (body.get("reason")         or "").strip() or None
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            if not early_end_date:
+                return (jsonify({"error": "early_end_date é obrigatório (YYYY-MM-DD)"}), 400, headers)
+            # Validação leve do formato — BQ aborta se receber lixo, mas
+            # devolver erro 400 limpo é melhor UX que 500.
+            try:
+                date.fromisoformat(early_end_date)
+            except ValueError:
+                return (jsonify({"error": "early_end_date inválido — use YYYY-MM-DD"}), 400, headers)
+            save_campaign_early_end(short_token, early_end_date, reason, ended_by=admin.get("email"))
+            _cache_invalidate_token(short_token)
+            return (jsonify({"ok": True}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR save_campaign_early_end] {e}")
+            return (jsonify({"error": "Erro ao salvar encerramento antecipado"}), 500, headers)
+
+    # ── Endpoint: reverter encerramento antecipado ──────────────────────────
+    # Body: {short_token}. Remove o registro — campanha volta ao estado
+    # derivado pela end_date original.
+    if request.method == "POST" and request.args.get("action") == "delete_campaign_early_end":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            delete_campaign_early_end(short_token)
+            _cache_invalidate_token(short_token)
+            return (jsonify({"ok": True}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR delete_campaign_early_end] {e}")
+            return (jsonify({"error": "Erro ao reverter encerramento antecipado"}), 500, headers)
 
     # ── Endpoint: salvar Alcance & Frequência (admin) ────────────────────────
     # Body: {target_type: "token"|"merge", target_id: <short_token|merge_id>,
@@ -2903,6 +2955,112 @@ def query_all_pauses() -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Campaign early end — admin termina campanha antes da end_date original
+# (solicitação externa, cancelamento, etc). Difere de pause + closure:
+#   • Pause é reversível e temporária (campanha "ainda vai voltar")
+#   • Closure é só paperwork (campanha terminou natural, falta arrumar planilha)
+#   • Early end é DEFINITIVO — a campanha terminou, e antes do previsto.
+#
+# Decisão (Opção B): a end_date original NÃO é tocada no payload. O frontend
+# usa `early_end_date` pra display do período e pra status badge, mas o pacing
+# continua sendo calculado contra o contrato original (denominator = volume
+# negociado completo). Isso mostra a "perda" — o quanto da entrega contratada
+# o cliente perdeu por encerrar antes.
+#
+# Reason é admin-only (não vai pro report do cliente).
+# ─────────────────────────────────────────────────────────────────────────────
+_early_ends_table_ensured = False
+_early_ends_ensure_lock = threading.Lock()
+
+
+def _early_ends_table_id() -> str:
+    return f"{PROJECT_ID}.{DATASET_ASSETS}.campaign_early_ends"
+
+
+def _ensure_early_ends_table() -> None:
+    """Cria a tabela `campaign_early_ends` se não existir. Idempotente."""
+    global _early_ends_table_ensured
+    if _early_ends_table_ensured:
+        return
+    with _early_ends_ensure_lock:
+        if _early_ends_table_ensured:
+            return
+        sql = f"""
+            CREATE TABLE IF NOT EXISTS `{_early_ends_table_id()}` (
+                short_token    STRING NOT NULL,
+                early_end_date DATE NOT NULL,
+                reason         STRING,
+                ended_by       STRING,
+                updated_at     TIMESTAMP NOT NULL
+            )
+        """
+        bq.query(sql).result()
+        _early_ends_table_ensured = True
+
+
+def save_campaign_early_end(short_token: str, early_end_date: str, reason: str | None, ended_by: str | None = None):
+    """UPSERT do encerramento antecipado. `early_end_date` é STRING YYYY-MM-DD,
+    convertido pra DATE no SQL via DATE(). Reason opcional."""
+    _ensure_early_ends_table()
+    sql = f"""
+        MERGE `{_early_ends_table_id()}` T
+        USING (SELECT @token AS short_token) S
+        ON T.short_token = S.short_token
+        WHEN MATCHED THEN
+            UPDATE SET early_end_date = DATE(@early_end_date), reason = @reason,
+                       ended_by = @ended_by, updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+            INSERT (short_token, early_end_date, reason, ended_by, updated_at)
+            VALUES (@token, DATE(@early_end_date), @reason, @ended_by, CURRENT_TIMESTAMP())
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("token",          "STRING", short_token),
+            bigquery.ScalarQueryParameter("early_end_date", "STRING", early_end_date),
+            bigquery.ScalarQueryParameter("reason",         "STRING", reason),
+            bigquery.ScalarQueryParameter("ended_by",       "STRING", ended_by),
+        ]
+    )
+    bq.query(sql, job_config=job_config).result()
+
+
+def delete_campaign_early_end(short_token: str):
+    """Remove registro de encerramento antecipado (reverte)."""
+    _ensure_early_ends_table()
+    sql = f"""
+        DELETE FROM `{_early_ends_table_id()}`
+        WHERE short_token = @token
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("token", "STRING", short_token)]
+    )
+    bq.query(sql, job_config=job_config).result()
+
+
+def query_all_early_ends() -> dict:
+    """Retorna {short_token: {early_end_date_iso, reason, ended_by}} de
+    todos os encerramentos antecipados. Tabela pequena — full scan + cache."""
+    _ensure_early_ends_table()
+    sql = f"""
+        SELECT short_token, early_end_date, reason, ended_by
+        FROM `{_early_ends_table_id()}`
+    """
+    out = {}
+    try:
+        for row in bq.query(sql).result():
+            d = row["early_end_date"]
+            if d:
+                out[row["short_token"]] = {
+                    "early_end_date": d.isoformat(),
+                    "reason":         row["reason"]   or "",
+                    "ended_by":       row["ended_by"] or "",
+                }
+    except Exception as e:
+        logger.warning(f"[WARN query_all_early_ends] {e}")
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Alcance & Frequência — salvar e buscar
 # ─────────────────────────────────────────────────────────────────────────────
 # Campos manuais (texto livre, formatados pelo admin) que o cliente vê no
@@ -3968,6 +4126,7 @@ def query_campaigns_list():
     fut_merges   = _query_pool.submit(_safe_get_merges)
     fut_closures = _query_pool.submit(_safe_get_closures)
     fut_pauses   = _query_pool.submit(_safe_get_pauses)
+    fut_early    = _query_pool.submit(_safe_get_early_ends)
 
     rows           = fut_query.result()
     lookup_owners  = fut_owners.result()
@@ -3977,6 +4136,7 @@ def query_campaigns_list():
     merges_map     = fut_merges.result()
     closures_map   = fut_closures.result()
     pauses_map     = fut_pauses.result()
+    early_map      = fut_early.result()
 
     result = []
     for r in rows:
@@ -4179,6 +4339,21 @@ def query_campaigns_list():
         if paused_at:
             entry["paused_at"] = paused_at
 
+        # Encerramento antecipado — campanha terminou antes da end_date
+        # original (solicitação externa, cancelamento). Opção B: NÃO
+        # tocamos no end_date do payload — pacing continua sendo calculado
+        # contra o contrato original pra mostrar a "perda". Frontend usa
+        # early_end_date só pra display do período e badge de status.
+        # `early_end_reason` é admin-only — não vai pro report do cliente
+        # (que usa endpoint separado, /api?token=X).
+        early = early_map.get(r["short_token"])
+        if early:
+            entry["early_end_date"]   = early["early_end_date"]
+            if early.get("reason"):
+                entry["early_end_reason"] = early["reason"]
+            if early.get("ended_by"):
+                entry["early_ended_by"]   = early["ended_by"]
+
         result.append(entry)
 
     # Merge owners (lookup planilha + overrides BQ + aliases BQ) em Python.
@@ -4335,6 +4510,20 @@ def _safe_get_pauses():
         logger.warning(f"[WARN _safe_get_pauses] {e}")
         data = {}
     _cache_set(_pauses_cache, "all", data)
+    return data
+
+
+def _safe_get_early_ends():
+    """Wrapper resiliente + cacheado pro dict de encerramentos antecipados."""
+    cached = _cache_get(_early_ends_cache, "all", _LIST_CACHE_TTL)
+    if cached is not None:
+        return cached
+    try:
+        data = query_all_early_ends()
+    except Exception as e:
+        logger.warning(f"[WARN _safe_get_early_ends] {e}")
+        data = {}
+    _cache_set(_early_ends_cache, "all", data)
     return data
 
 

@@ -46,6 +46,7 @@ import {
   getCampaignStatus,
   getDateRangeParts,
   endUrgencyClass,
+  isEarlyEnded,
   localPartFromEmail,
 } from "../lib/format";
 import { schedulePrefetch, cancelPrefetch } from "../../../lib/prefetchReport";
@@ -134,10 +135,18 @@ export function CampaignCardV2({
     // Pausa temporária — admin clicou em "Pausar campanha" no drawer.
     // Só afeta o status enquanto end_date >= hoje.
     paused_at,
+    // Encerramento antecipado — quando setado, substitui end_date pra
+    // status/display. Pacing continua usando end_date original (Opção B).
+    early_end_date,
   } = campaign;
   const has_abs = display_has_abs || video_has_abs;
 
-  const status  = getCampaignStatus(end_date, closed_at, paused_at);
+  // Data efetiva pra display: early_end_date quando setada, senão end_date.
+  // Pacing math (PacingRow) continua usando end_date implícito do payload.
+  const effectiveEndDate = early_end_date || end_date;
+  const earlyEnded = isEarlyEnded(early_end_date);
+
+  const status  = getCampaignStatus(end_date, closed_at, paused_at, early_end_date);
   const ended   = status === "ended";
   const awaiting = status === "awaiting_closure";
   const paused  = status === "paused";
@@ -217,7 +226,8 @@ export function CampaignCardV2({
             {has_abs && <AbsBadge />}
             {paused && <PausedBadge />}
             {awaiting && <AwaitingClosureBadge />}
-            {ended && (
+            {earlyEnded && <EarlyEndedBadge />}
+            {ended && !earlyEnded && (
               <span className="text-[9px] uppercase tracking-widest font-bold text-fg-subtle">
                 encerrada
               </span>
@@ -226,7 +236,7 @@ export function CampaignCardV2({
           <p className="text-[12.5px] text-fg-muted mt-1 truncate leading-snug">
             {campaign_name}
           </p>
-          <DateRangeLine startISO={start_date} endISO={end_date} />
+          <DateRangeLine startISO={start_date} endISO={effectiveEndDate} />
         </div>
 
         {/* ── KPIs mobile (visível só <md) ──────────────────────────────
@@ -435,6 +445,28 @@ function BonusBadge() {
         <path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z" />
       </svg>
       bonificada
+    </span>
+  );
+}
+
+/**
+ * Badge "ENCERRADA ANTES DO PREVISTO" — campanha terminou antes da end_date
+ * original por decisão do admin (cancelamento, solicitação externa). Tom
+ * danger soft pra comunicar "perda/anomalia" sem alarmar como erro crítico.
+ * Substitui o label "encerrada" plain quando aplicável — a campanha É
+ * encerrada, só que antecipadamente.
+ */
+function EarlyEndedBadge() {
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-danger px-1.5 py-0.5 rounded bg-danger-soft border border-danger/30"
+      title="Encerramento antecipado — campanha finalizou antes da data original. Motivo no drawer (admin only)."
+    >
+      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="10" />
+        <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+      </svg>
+      antes do previsto
     </span>
   );
 }

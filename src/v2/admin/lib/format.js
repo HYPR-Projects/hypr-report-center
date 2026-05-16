@@ -133,39 +133,49 @@ export function isCampaignEnded(endISO) {
 }
 
 /**
- * Status operacional da campanha, derivado de end_date + closed_at + paused_at:
+ * Status operacional da campanha, derivado de end_date + closed_at +
+ * paused_at + early_end_date:
  *
- *   • "in_flight"        → end_date >= hoje, não pausada. Operação ativa.
- *   • "paused"           → end_date >= hoje + paused_at preenchido.
- *                          Pausa temporária (toggle reversível). Card NÃO
- *                          esmaece — campanha viva, só dormindo.
- *   • "awaiting_closure" → end_date < hoje, sem closed_at, ≤30 dias do fim.
- *                          Limbo: terminou mas ainda precisa de fechamento.
- *   • "ended"            → closed_at preenchido OU >30 dias do fim.
- *                          Histórico estabilizado, card esmaecido.
+ *   • "in_flight"        → effective_end >= hoje, não pausada. Operação ativa.
+ *   • "paused"           → effective_end >= hoje + paused_at. Reversível.
+ *   • "awaiting_closure" → effective_end < hoje, sem closed_at, ≤30 dias.
+ *   • "ended"            → closed_at OU >30 dias do fim OU early_end_date < hoje.
  *
- * Pausa só é um estado visível enquanto a campanha está em vôo. Quando
- * end_date passa, o ciclo natural (awaiting_closure → ended) toma conta
- * e a pausa vira metadata histórico (não bloqueia status post-flight).
+ * Onde `effective_end = early_end_date || end_date`. Quando admin define
+ * encerramento antecipado, essa data substitui a end_date pra cálculo de
+ * status. Encerramento antecipado IMPLICA "ended" — pula awaiting_closure
+ * (o admin já tomou a decisão de fechar quando setou a data).
+ *
+ * IMPORTANTE: `early_end_date` é só pra status/display. O pacing continua
+ * sendo calculado contra o contrato original (Opção B — mostra a perda).
  *
  * O auto-close de 30 dias é safety net pra fechar visualmente campanhas
- * antigas que o admin esqueceu de marcar — sem isso o badge âmbar
- * acumularia eternamente.
+ * antigas que o admin esqueceu de marcar.
  */
 const AUTO_CLOSE_DAYS = 30;
 
-export function getCampaignStatus(endISO, closedAt, pausedAt) {
-  if (!endISO) return pausedAt ? "paused" : "in_flight";
-  const e = new Date(endISO);
+export function getCampaignStatus(endISO, closedAt, pausedAt, earlyEndISO) {
+  // effective_end_date — se admin setou encerramento antecipado, ela manda
+  const effectiveISO = earlyEndISO || endISO;
+  if (!effectiveISO) return pausedAt ? "paused" : "in_flight";
+  const e = new Date(effectiveISO);
   if (isNaN(e.getTime())) return pausedAt ? "paused" : "in_flight";
   const now = new Date();
   const todayUTC = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
   if (e.getTime() >= todayUTC) return pausedAt ? "paused" : "in_flight";
-  if (closedAt) return "ended";
-  // Dias completos passados desde o fim. end_date é UTC midnight; comparar
-  // com todayUTC dá o delta inteiro em dias (sem timezone drift).
+  // Após effective_end_date: ended se admin marcou closed_at OU se foi
+  // encerrado antecipadamente (decisão explícita) OU passou auto-close.
+  if (closedAt || earlyEndISO) return "ended";
   const daysSinceEnd = Math.floor((todayUTC - e.getTime()) / 86400000);
   return daysSinceEnd > AUTO_CLOSE_DAYS ? "ended" : "awaiting_closure";
+}
+
+/**
+ * Helper booleano — campanha foi encerrada antecipadamente?
+ * Usado pra renderizar badge adicional "ANTES DO PREVISTO" no card.
+ */
+export function isEarlyEnded(earlyEndISO) {
+  return !!earlyEndISO;
 }
 
 /**

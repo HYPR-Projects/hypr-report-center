@@ -584,6 +584,27 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
     });
   }, []);
 
+  // Encerramento antecipado — update otimista. `payload` é null quando
+  // revertendo, ou {early_end_date, early_end_reason} quando setando.
+  // Atualiza array local + drawerCampaign aberto pra refletir o badge e
+  // o bloco de observação imediatamente.
+  const handleEarlyEndSaved = useCallback((short_token, payload) => {
+    const applyTo = (c) => {
+      if (c.short_token !== short_token) return c;
+      const { early_end_date: _d, early_end_reason: _r, ...rest } = c;
+      if (!payload) return rest;
+      const next = { ...rest, early_end_date: payload.early_end_date };
+      if (payload.early_end_reason) next.early_end_reason = payload.early_end_reason;
+      return next;
+    };
+    setCampaigns((prev) => {
+      const next = prev.map(applyTo);
+      writeCache("menu.campaigns", next);
+      return next;
+    });
+    setDrawerCampaign((prev) => (prev ? applyTo(prev) : prev));
+  }, []);
+
   const handleNewCampaignConfirm = useCallback((tokenData) => {
     setCampaigns((prev) =>
       prev.find((c) => c.short_token === tokenData.short_token)
@@ -821,6 +842,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
         onAbsChange={handleAbsSaved}
         onClosureChange={handleClosureSaved}
         onPauseChange={handlePauseSaved}
+        onEarlyEndChange={handleEarlyEndSaved}
         onOpenReport={onOpenReport}
         teamMap={teamMap}
       />

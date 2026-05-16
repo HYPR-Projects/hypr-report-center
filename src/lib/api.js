@@ -582,6 +582,46 @@ export async function saveCampaignPause({ short_token, paused }) {
   return r;
 }
 
+/**
+ * Encerramento antecipado da campanha — admin define a data real do fim
+ * (≤ end_date original) + motivo opcional. Backend grava em
+ * `campaign_early_ends` (upsert). Pacing original é mantido pra mostrar
+ * a "perda" (Opção B do design).
+ *
+ * `reason` é admin-only — sai no payload da lista admin mas NÃO no
+ * endpoint público `/api?token=X` que o cliente consome.
+ */
+export async function saveCampaignEarlyEnd({ short_token, early_end_date, reason }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=save_campaign_early_end`,
+    { short_token, early_end_date, reason: reason || "" },
+    adminAuthHeaders(jwt),
+  );
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  return r;
+}
+
+/**
+ * Reverte encerramento antecipado — apaga o registro em
+ * `campaign_early_ends`. Campanha volta ao estado derivado pela end_date
+ * original.
+ */
+export async function clearCampaignEarlyEnd({ short_token }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=delete_campaign_early_end`,
+    { short_token },
+    adminAuthHeaders(jwt),
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r;
+}
+
 // ── Survey (admin) ───────────────────────────────────────────────────────────
 
 /**

@@ -383,6 +383,20 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
     });
   }, []);
 
+  // Encerramento antecipado otimista — espelha CampaignMenuV2.handleEarlyEndSaved.
+  const handleEarlyEndSaved = useCallback((short_token, payload) => {
+    const applyTo = (c) => {
+      if (c.short_token !== short_token) return c;
+      const { early_end_date: _d, early_end_reason: _r, ...rest } = c;
+      if (!payload) return rest;
+      const next = { ...rest, early_end_date: payload.early_end_date };
+      if (payload.early_end_reason) next.early_end_reason = payload.early_end_reason;
+      return next;
+    };
+    setCampaigns((prev) => prev.map(applyTo));
+    setDrawerCampaign((prev) => (prev ? applyTo(prev) : prev));
+  }, []);
+
   return (
     <div className="min-h-screen w-full bg-canvas text-fg transition-colors">
       {/* Topbar */}
@@ -581,6 +595,7 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
         onAbsChange={handleAbsSaved}
         onClosureChange={handleClosureSaved}
         onPauseChange={handlePauseSaved}
+        onEarlyEndChange={handleEarlyEndSaved}
         onOpenReport={onOpenReport}
         teamMap={teamMap}
       />
