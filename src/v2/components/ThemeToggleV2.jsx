@@ -30,12 +30,20 @@ export function ThemeToggleV2({ className }) {
         "inline-flex items-center justify-center size-9 rounded-full",
         "border border-border bg-surface text-fg-muted",
         "hover:border-border-strong hover:bg-surface-strong hover:text-fg",
-        "transition-colors duration-150 cursor-pointer",
+        // transition-transform pra dar feedback de press (active:scale-90)
+        // sem perder a transição de cores. duration-150 cobre ambos.
+        "transition-[colors,transform] duration-150 cursor-pointer",
+        "active:scale-90",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
         className,
       )}
     >
-      {isDark ? <SunIcon /> : <MoonIcon />}
+      {/* `key` força React a desmontar/montar o span quando o tema muda,
+          disparando a animação `theme-icon-in` (rotate -45° + scale 0.7→1).
+          Sem `key`, o ícone seria só uma troca de SVG sem animação. */}
+      <span key={isDark ? "sun" : "moon"} className="theme-icon-in inline-flex">
+        {isDark ? <SunIcon /> : <MoonIcon />}
+      </span>
     </button>
   );
 }

@@ -223,3 +223,85 @@
     transform: none;
   }
 }
+
+/* ───────────────────────────────────────────────────────────
+ * Tab content — fade-in suave ao ativar tab
+ * ───────────────────────────────────────────────────────────
+ * Radix Tabs muda data-state=active mas não anima conteúdo —
+ * troca de aba é hard-cut. Aqui plugamos fade-in 180ms
+ * expo-out via seletor de atributo (mesmo padrão do drawer).
+ * Saída é instantânea porque Radix unmount conteúdo inativo
+ * — pra animar saída precisaria forceMount + handling extra.
+ */
+.tabs-content[data-state="active"] {
+  animation: fade-in 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tabs-content { animation: none; }
+}
+
+/* ───────────────────────────────────────────────────────────
+ * Badge entry — pop sutil ao aparecer
+ * ───────────────────────────────────────────────────────────
+ * Usado em todos os badges do CampaignCardV2 (Merged, Bonus,
+ * ABS, Paused, Awaiting, EarlyEnded). Quando o admin pausa
+ * uma campanha no drawer, o badge PAUSADA aparece no card —
+ * antes era instantâneo, agora pop. 160ms é curto suficiente
+ * pra não destoar quando 271 cards montam de uma vez (todos
+ * os badges relevantes animam em paralelo, dura ~150ms total).
+ */
+@keyframes badge-pop-in {
+  from { opacity: 0; transform: scale(0.85); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.badge-pop-in {
+  animation: badge-pop-in 160ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .badge-pop-in {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ───────────────────────────────────────────────────────────
+ * Content fade-in — skeleton → conteúdo real
+ * ───────────────────────────────────────────────────────────
+ * Aplicado no wrapper de conteúdo do CampaignMenuV2 que monta
+ * depois do skeleton sumir. Só opacity (sem translate) pra
+ * não competir com o stagger dos cards individuais lá dentro
+ * (cada card tem sua própria entrada via drawer-section-rise
+ * quando o drawer abre — listing ainda não anima por card por
+ * decisão de perf, ver PR3).
+ */
+.content-fade-in {
+  animation: fade-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .content-fade-in { animation: none; }
+}
+
+/* ───────────────────────────────────────────────────────────
+ * Theme toggle icon — swap sol/lua
+ * ───────────────────────────────────────────────────────────
+ * Quando admin clica no toggle, o ícone (Sun ou Moon) troca.
+ * Antes era hard-swap; agora o ícone novo gira de -45° + escala
+ * de 0.7 pra 1, dando sensação de "transformação" em vez de pop.
+ * Os tokens de cor do tema fazem o resto (canvas, fg, etc.
+ * já transicionam via transition-colors no main).
+ */
+@keyframes theme-icon-in {
+  from { opacity: 0; transform: rotate(-45deg) scale(0.7); }
+  to   { opacity: 1; transform: rotate(0deg) scale(1); }
+}
+.theme-icon-in {
+  animation: theme-icon-in 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .theme-icon-in {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}

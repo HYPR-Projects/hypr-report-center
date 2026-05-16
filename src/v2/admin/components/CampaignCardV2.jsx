@@ -431,7 +431,7 @@ function DateRangeLine({ startISO, endISO }) {
 function MergedBadge() {
   return (
     <span
-      className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-signature px-1.5 py-0.5 rounded bg-signature/8 border border-signature/30"
+      className="badge-pop-in inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-signature px-1.5 py-0.5 rounded bg-signature/8 border border-signature/30"
       title="Pertence a um grupo — o link do report unifica os tokens"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -454,7 +454,7 @@ function MergedBadge() {
 function BonusBadge() {
   return (
     <span
-      className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-warning px-1.5 py-0.5 rounded bg-warning-soft border border-warning/40"
+      className="badge-pop-in inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-warning px-1.5 py-0.5 rounded bg-warning-soft border border-warning/40"
       title="Campanha 100% bonificada — todo volume entregue é cortesia HYPR"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -482,7 +482,7 @@ function BonusBadge() {
 function EarlyEndedBadge({ reason, date }) {
   const badge = (
     <span
-      className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-danger px-1.5 py-0.5 rounded bg-danger-soft border border-danger/30 cursor-help"
+      className="badge-pop-in inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-danger px-1.5 py-0.5 rounded bg-danger-soft border border-danger/30 cursor-help"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="10" />
@@ -543,7 +543,7 @@ function EarlyEndedTooltipBody({ reason, date }) {
 function PausedBadge({ reason }) {
   const badge = (
     <span
-      className="relative z-10 inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-signature px-1.5 py-0.5 rounded bg-signature/8 border border-signature/30 cursor-help"
+      className="badge-pop-in relative z-10 inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-signature px-1.5 py-0.5 rounded bg-signature/8 border border-signature/30 cursor-help"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
         <rect x="6"  y="4" width="4" height="16" rx="1" />
@@ -580,7 +580,7 @@ function PausedBadge({ reason }) {
 function AwaitingClosureBadge() {
   return (
     <span
-      className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-warning px-1.5 py-0.5 rounded bg-warning-soft border border-warning/40"
+      className="badge-pop-in inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-warning px-1.5 py-0.5 rounded bg-warning-soft border border-warning/40"
       title="Campanha terminou — falta fazer o fechamento (sheet final, faturamento). Marcar como encerrada no drawer."
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -602,7 +602,7 @@ function AwaitingClosureBadge() {
 function AbsBadge() {
   return (
     <span
-      className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-success px-1.5 py-0.5 rounded bg-success-soft border border-success/30"
+      className="badge-pop-in inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-success px-1.5 py-0.5 rounded bg-success-soft border border-success/30"
       title="Brand Safety pre-bid (DV ABS / IAS) ativo — thresholds permissivos no scoring"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -705,7 +705,15 @@ function PacingBar({ pacing, tier }) {
       aria-label="Pacing"
     >
       <span
-        className={cn("absolute inset-y-0 left-0 rounded-full", HEALTH_BAR[tier])}
+        className={cn(
+          "absolute inset-y-0 left-0 rounded-full",
+          // Transição de width quando o pacing muda (refetch da lista
+          // atualizando dado). Antes a barra "pulava" pro novo valor —
+          // agora desliza em 500ms expo-out. Color (bg-*) também transiciona
+          // pra cobrir caso de o tier mudar junto (ex: 95% attention → 105% over).
+          "transition-[width,background-color] duration-500 ease-out",
+          HEALTH_BAR[tier]
+        )}
         style={{ width: `${fillPct}%` }}
       />
       <span

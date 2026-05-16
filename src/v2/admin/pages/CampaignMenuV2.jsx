@@ -773,35 +773,43 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           </div>
         )}
 
-        {/* Conteúdo principal por layout */}
+        {/* Conteúdo principal por layout.
+            Wrapper `content-fade-in` aplica fade-in 220ms quando o conteúdo
+            real monta (após o skeleton sumir, ou ao trocar de layout). A
+            `key={layout}` força remount ao trocar de aba, então a animação
+            roda em cada troca — antes era hard-cut, agora suaviza. */}
         {loading ? (
           <LoadingState layout={layout} />
-        ) : layout === "month" ? (
-          <MonthLayout
-            groups={monthGroups}
-            onOpen={handleOpenDrawer}
-            onOpenReport={onOpenReport}
-            teamMap={teamMap}
-            filterSignature={[search.trim(), ownerFilter.join(","), activeWorklist || ""]
-              .filter(Boolean)
-              .join("|")}
-          />
-        ) : layout === "client" ? (
-          // Lazy: se não temos clients ainda E está carregando, mostra
-          // skeleton em vez de empty state. Se temos cache (mesmo stale),
-          // mostra os cards e refetch corre em background.
-          clientsLoading && clients.length === 0
-            ? <LoadingState layout="client" />
-            : <ClientLayout clients={enrichedClients} onOpen={handleOpenClient} />
-        ) : layout === "performers" ? (
-          <PerformersLayout campaigns={campaigns} teamMap={teamMap} onOpenReport={onOpenReport} />
         ) : (
-          <CampaignListV2
-            campaigns={sortedCampaigns}
-            onOpen={handleOpenDrawer}
-            onOpenReport={onOpenReport}
-            teamMap={teamMap}
-          />
+          <div key={layout} className="content-fade-in">
+            {layout === "month" ? (
+              <MonthLayout
+                groups={monthGroups}
+                onOpen={handleOpenDrawer}
+                onOpenReport={onOpenReport}
+                teamMap={teamMap}
+                filterSignature={[search.trim(), ownerFilter.join(","), activeWorklist || ""]
+                  .filter(Boolean)
+                  .join("|")}
+              />
+            ) : layout === "client" ? (
+              // Lazy: se não temos clients ainda E está carregando, mostra
+              // skeleton em vez de empty state. Se temos cache (mesmo stale),
+              // mostra os cards e refetch corre em background.
+              clientsLoading && clients.length === 0
+                ? <LoadingState layout="client" />
+                : <ClientLayout clients={enrichedClients} onOpen={handleOpenClient} />
+            ) : layout === "performers" ? (
+              <PerformersLayout campaigns={campaigns} teamMap={teamMap} onOpenReport={onOpenReport} />
+            ) : (
+              <CampaignListV2
+                campaigns={sortedCampaigns}
+                onOpen={handleOpenDrawer}
+                onOpenReport={onOpenReport}
+                teamMap={teamMap}
+              />
+            )}
+          </div>
         )}
       </main>
 

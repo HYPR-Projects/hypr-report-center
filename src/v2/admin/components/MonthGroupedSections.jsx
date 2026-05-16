@@ -128,7 +128,24 @@ export function MonthGroupedSections({
                 {g.items.length} campanha{g.items.length === 1 ? "" : "s"}
               </span>
             </button>
-            {!isCollapsed && (
+            {/* Items wrapper:
+                - Quando canCollapse=true (meses normais), usamos o padrão
+                  action-expand (grid-template-rows 0fr↔1fr + opacity) pra
+                  animar smooth abrir/fechar. Trade-off: items ficam sempre
+                  montados (custo de render). Aceitável até ~300 cards;
+                  acima disso, considerar lazy mount por mês.
+                - Quando !canCollapse (grupo "no-date"), conditional render
+                  normal — não tem toggle, não precisa de animação.
+                - `inert` quando collapsed evita foco em items invisíveis (a11y). */}
+            {canCollapse ? (
+              <div className={cn("action-expand", !isCollapsed && "is-open")}>
+                <div className="action-expand-content" inert={isCollapsed || undefined}>
+                  <div className="space-y-2">
+                    {g.items.map((item, i) => renderItem(item, gi * 1000 + i))}
+                  </div>
+                </div>
+              </div>
+            ) : (
               <div className="space-y-2">
                 {g.items.map((item, i) => renderItem(item, gi * 1000 + i))}
               </div>
