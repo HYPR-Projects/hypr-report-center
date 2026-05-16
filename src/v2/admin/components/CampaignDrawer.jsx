@@ -210,6 +210,16 @@ export function CampaignDrawer({
     setEarlyEndDateInput("");
     setEarlyEndReasonInput("");
   }, [drawerToken, open]);
+  // Reset automático do "done" pra "idle" depois da animação de sucesso
+  // do toggle de pausa (~1.5s — janela do pop+halo). Mantido AQUI no topo
+  // do componente (antes do early-return) pra contar como hook estável —
+  // mover pra depois do `if (!campaign)` viola a regra dos hooks (count
+  // muda entre render com campaign=null e campaign=obj → React error #310).
+  useEffect(() => {
+    if (pauseBusy !== "done") return;
+    const t = setTimeout(() => setPauseBusy("idle"), 1500);
+    return () => clearTimeout(t);
+  }, [pauseBusy]);
   useEffect(() => {
     if (!open || !drawerToken) {
       setNegotiation(null);
@@ -359,14 +369,6 @@ export function CampaignDrawer({
       setPauseBusy("error");
     }
   };
-  // Reset automático do "done" pra "idle" depois que a animação de sucesso
-  // do toggle de pausa termina (~1.5s — janela suficiente pro pop+halo).
-  // Mantemos o setTimeout aqui pra que unmount do componente cancele.
-  useEffect(() => {
-    if (pauseBusy !== "done") return;
-    const t = setTimeout(() => setPauseBusy("idle"), 1500);
-    return () => clearTimeout(t);
-  }, [pauseBusy]);
 
   const handleOpenEarlyEndForm = () => {
     // Pré-popula com hoje (default mais comum — campanha encerrou hoje).
