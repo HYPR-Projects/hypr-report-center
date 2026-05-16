@@ -176,7 +176,7 @@ export function CampaignCardV2({
         "relative overflow-hidden cursor-pointer group",
         "transition-all duration-150",
         "hover:border-signature/40 hover:bg-surface hover:shadow-sm",
-        ended && "opacity-65"
+        (ended || paused) && "opacity-65"
       )}
       onClick={() => onOpen?.(campaign)}
       role="button"
