@@ -36,12 +36,14 @@ import { schedulePrefetch, cancelPrefetch } from "../../../lib/prefetchReport";
 // 4 tiers de health (ver CampaignCardV2 pra discussão de design); aqui
 // só precisamos dos dots — a Row é compacta e não usa glow.
 // `awaiting` = campanha terminou mas falta fechamento manual (badge âmbar).
+// `paused`   = pausa temporária (dot signature azul).
 const HEALTH_DOT = {
   healthy:   "bg-success",
   over:      "bg-signature",
   attention: "bg-warning",
   critical:  "bg-danger",
   awaiting:  "bg-warning",
+  paused:    "bg-signature",
   ended:     "bg-fg-subtle/60",
 };
 
@@ -152,13 +154,16 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
     cs_email,
     merge_id,
     closed_at,
+    paused_at,
   } = campaign;
 
-  const status   = getCampaignStatus(end_date, closed_at);
+  const status   = getCampaignStatus(end_date, closed_at, paused_at);
   const ended    = status === "ended";
   const awaiting = status === "awaiting_closure";
+  const paused   = status === "paused";
   const health   = ended    ? "ended"
                  : awaiting ? "awaiting"
+                 : paused   ? "paused"
                  : classifyHealth(display_pacing, video_pacing);
   const cpName = cp_email ? (teamMap[cp_email] || localPartFromEmail(cp_email)) : null;
   const csName = cs_email ? (teamMap[cs_email] || localPartFromEmail(cs_email)) : null;
@@ -199,6 +204,7 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
         )}
         title={
           health === "awaiting" ? "Aguardando fechamento"
+          : health === "paused" ? "Pausada"
           : health ? `Status: ${health}`
           : "Sem dados"
         }
@@ -215,6 +221,14 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
               title="Pertence a um grupo agrupado"
             >
               grupo
+            </span>
+          )}
+          {paused && (
+            <span
+              className="text-[8.5px] uppercase tracking-widest font-bold text-signature px-1 rounded bg-signature/10 border border-signature/30"
+              title="Pausada temporariamente — retomar no drawer"
+            >
+              pausada
             </span>
           )}
           {awaiting && (

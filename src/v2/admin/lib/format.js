@@ -133,16 +133,20 @@ export function isCampaignEnded(endISO) {
 }
 
 /**
- * Status operacional da campanha, derivado de end_date + closed_at:
+ * Status operacional da campanha, derivado de end_date + closed_at + paused_at:
  *
- *   • "in_flight"        → end_date >= hoje (ou end_date ausente).
- *                          Campanha em voo, operação ativa.
+ *   • "in_flight"        → end_date >= hoje, não pausada. Operação ativa.
+ *   • "paused"           → end_date >= hoje + paused_at preenchido.
+ *                          Pausa temporária (toggle reversível). Card NÃO
+ *                          esmaece — campanha viva, só dormindo.
  *   • "awaiting_closure" → end_date < hoje, sem closed_at, ≤30 dias do fim.
- *                          Limbo: terminou mas ainda precisa de fechamento
- *                          (sheet final, faturamento, relatório). Card NÃO
- *                          esmaece — fica destacado pro admin atuar.
+ *                          Limbo: terminou mas ainda precisa de fechamento.
  *   • "ended"            → closed_at preenchido OU >30 dias do fim.
  *                          Histórico estabilizado, card esmaecido.
+ *
+ * Pausa só é um estado visível enquanto a campanha está em vôo. Quando
+ * end_date passa, o ciclo natural (awaiting_closure → ended) toma conta
+ * e a pausa vira metadata histórico (não bloqueia status post-flight).
  *
  * O auto-close de 30 dias é safety net pra fechar visualmente campanhas
  * antigas que o admin esqueceu de marcar — sem isso o badge âmbar
@@ -150,13 +154,13 @@ export function isCampaignEnded(endISO) {
  */
 const AUTO_CLOSE_DAYS = 30;
 
-export function getCampaignStatus(endISO, closedAt) {
-  if (!endISO) return "in_flight";
+export function getCampaignStatus(endISO, closedAt, pausedAt) {
+  if (!endISO) return pausedAt ? "paused" : "in_flight";
   const e = new Date(endISO);
-  if (isNaN(e.getTime())) return "in_flight";
+  if (isNaN(e.getTime())) return pausedAt ? "paused" : "in_flight";
   const now = new Date();
   const todayUTC = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
-  if (e.getTime() >= todayUTC) return "in_flight";
+  if (e.getTime() >= todayUTC) return pausedAt ? "paused" : "in_flight";
   if (closedAt) return "ended";
   // Dias completos passados desde o fim. end_date é UTC midnight; comparar
   // com todayUTC dá o delta inteiro em dias (sem timezone drift).

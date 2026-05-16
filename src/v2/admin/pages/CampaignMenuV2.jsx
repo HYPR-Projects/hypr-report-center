@@ -560,6 +560,30 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
     });
   }, []);
 
+  // Pausa/retomada da campanha — update otimista similar ao closure.
+  // Quando `paused=true`, grava paused_at=now; quando false, remove o campo.
+  // Atualiza também o drawerCampaign aberto pra o botão refletir o novo
+  // estado (Pausar ↔ Retomar) imediatamente — diferente do closure, aqui
+  // não há animação de sucesso a preservar, e o botão DEVE virar pra refletir
+  // que o toggle aplicou.
+  const handlePauseSaved = useCallback((short_token, nextPaused) => {
+    const pausedAtIso = nextPaused ? new Date().toISOString() : null;
+    setCampaigns((prev) => {
+      const next = prev.map((c) => {
+        if (c.short_token !== short_token) return c;
+        const { paused_at: _omit, ...rest } = c;
+        return pausedAtIso ? { ...rest, paused_at: pausedAtIso } : rest;
+      });
+      writeCache("menu.campaigns", next);
+      return next;
+    });
+    setDrawerCampaign((prev) => {
+      if (!prev || prev.short_token !== short_token) return prev;
+      const { paused_at: _omit, ...rest } = prev;
+      return pausedAtIso ? { ...rest, paused_at: pausedAtIso } : rest;
+    });
+  }, []);
+
   const handleNewCampaignConfirm = useCallback((tokenData) => {
     setCampaigns((prev) =>
       prev.find((c) => c.short_token === tokenData.short_token)
@@ -796,6 +820,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
         }}
         onAbsChange={handleAbsSaved}
         onClosureChange={handleClosureSaved}
+        onPauseChange={handlePauseSaved}
         onOpenReport={onOpenReport}
         teamMap={teamMap}
       />

@@ -97,6 +97,7 @@ _aliases_cache   = {}     # "all" -> (timestamp, dict[alias_normalized -> canoni
 _shares_cache    = {}     # "all" -> (timestamp, dict[short_token -> share_id])
 _merges_cache    = {}     # "all" -> (timestamp, dict[short_token -> {merge_id, rmnd_mode, pdooh_mode}])
 _closures_cache  = {}     # "all" -> (timestamp, dict[short_token -> closed_at_iso])
+_pauses_cache    = {}     # "all" -> (timestamp, dict[short_token -> paused_at_iso])
 # Cache da listagem de forms do Typeform — evita estourar rate-limit em cada
 # abertura do SurveyModal (admin abre o modal várias vezes editando blocos).
 # TTL curto (5min) porque o admin pode estar criando um form novo e querendo
@@ -141,6 +142,7 @@ def _cache_invalidate_token(short_token):
         _shares_cache.pop("all", None)
         _merges_cache.pop("all", None)
         _closures_cache.pop("all", None)
+        _pauses_cache.pop("all", None)
         # Merged report cache: drop tudo. Tabela de grupos é pequena, e
         # qualquer mutação que invalida um token pode tornar stale o
         # payload merged que o contém. Reidratação custa N fetches já
@@ -945,6 +947,27 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR save_campaign_closure] {e}")
             return (jsonify({"error": "Erro ao salvar fechamento da campanha"}), 500, headers)
+
+    # ── Endpoint: pausar/retomar campanha ───────────────────────────────────
+    # Body: {short_token, paused: bool}
+    # paused=true  → registra paused_at=NOW (campanha pausada temporariamente)
+    # paused=false → remove o registro (retoma — campanha volta ao in_flight)
+    if request.method == "POST" and request.args.get("action") == "save_campaign_pause":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            paused      = bool(body.get("paused"))
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            save_campaign_pause(short_token, paused, paused_by=admin.get("email"))
+            _cache_invalidate_token(short_token)
+            return (jsonify({"ok": True}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR save_campaign_pause] {e}")
+            return (jsonify({"error": "Erro ao salvar pausa da campanha"}), 500, headers)
 
     # ── Endpoint: salvar Alcance & Frequência (admin) ────────────────────────
     # Body: {target_type: "token"|"merge", target_id: <short_token|merge_id>,
@@ -2792,6 +2815,94 @@ def query_all_closures() -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Campaign pause — admin pausa temporariamente uma campanha em vôo (campanha
+# travou no DSP, cliente pediu pra parar X dias, etc). Diferente de closure:
+# pausa é reversível (toggle) e só faz sentido enquanto end_date >= hoje.
+# Após end_date, o ciclo natural (awaiting_closure → ended) toma conta e a
+# pausa vira metadata histórico.
+# ─────────────────────────────────────────────────────────────────────────────
+_pauses_table_ensured = False
+_pauses_ensure_lock = threading.Lock()
+
+
+def _pauses_table_id() -> str:
+    return f"{PROJECT_ID}.{DATASET_ASSETS}.campaign_pauses"
+
+
+def _ensure_pauses_table() -> None:
+    """Cria a tabela `campaign_pauses` se não existir. Idempotente."""
+    global _pauses_table_ensured
+    if _pauses_table_ensured:
+        return
+    with _pauses_ensure_lock:
+        if _pauses_table_ensured:
+            return
+        sql = f"""
+            CREATE TABLE IF NOT EXISTS `{_pauses_table_id()}` (
+                short_token STRING NOT NULL,
+                paused_at   TIMESTAMP NOT NULL,
+                paused_by   STRING
+            )
+        """
+        bq.query(sql).result()
+        _pauses_table_ensured = True
+
+
+def save_campaign_pause(short_token: str, paused: bool, paused_by: str | None = None):
+    """Pausa/despausa campanha.
+
+    paused=True  → UPSERT com paused_at=NOW
+    paused=False → DELETE (retoma — volta ao estado in_flight)
+    """
+    _ensure_pauses_table()
+    if paused:
+        sql = f"""
+            MERGE `{_pauses_table_id()}` T
+            USING (SELECT @token AS short_token) S
+            ON T.short_token = S.short_token
+            WHEN MATCHED THEN
+                UPDATE SET paused_at = CURRENT_TIMESTAMP(), paused_by = @paused_by
+            WHEN NOT MATCHED THEN
+                INSERT (short_token, paused_at, paused_by)
+                VALUES (@token, CURRENT_TIMESTAMP(), @paused_by)
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("token",     "STRING", short_token),
+                bigquery.ScalarQueryParameter("paused_by", "STRING", paused_by),
+            ]
+        )
+    else:
+        sql = f"""
+            DELETE FROM `{_pauses_table_id()}`
+            WHERE short_token = @token
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ScalarQueryParameter("token", "STRING", short_token)]
+        )
+    bq.query(sql, job_config=job_config).result()
+
+
+def query_all_pauses() -> dict:
+    """Retorna {short_token: paused_at_iso} de todas as campanhas pausadas.
+    Mesmo padrão de query_all_closures."""
+    _ensure_pauses_table()
+    sql = f"""
+        SELECT short_token, paused_at
+        FROM `{_pauses_table_id()}`
+    """
+    out = {}
+    try:
+        for row in bq.query(sql).result():
+            ts = row["paused_at"]
+            if ts:
+                out[row["short_token"]] = ts.isoformat()
+    except Exception as e:
+        logger.warning(f"[WARN query_all_pauses] {e}")
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Alcance & Frequência — salvar e buscar
 # ─────────────────────────────────────────────────────────────────────────────
 # Campos manuais (texto livre, formatados pelo admin) que o cliente vê no
@@ -3856,6 +3967,7 @@ def query_campaigns_list():
     fut_shares   = _query_pool.submit(_safe_get_all_share_ids)
     fut_merges   = _query_pool.submit(_safe_get_merges)
     fut_closures = _query_pool.submit(_safe_get_closures)
+    fut_pauses   = _query_pool.submit(_safe_get_pauses)
 
     rows           = fut_query.result()
     lookup_owners  = fut_owners.result()
@@ -3864,6 +3976,7 @@ def query_campaigns_list():
     share_ids_map  = fut_shares.result()
     merges_map     = fut_merges.result()
     closures_map   = fut_closures.result()
+    pauses_map     = fut_pauses.result()
 
     result = []
     for r in rows:
@@ -4057,6 +4170,15 @@ def query_campaigns_list():
         if closed_at:
             entry["closed_at"] = closed_at
 
+        # Pausa temporária — admin clicou em "Pausar campanha" no drawer.
+        # Quando presente e a campanha ainda está em vôo, o frontend
+        # renderiza status="paused" (badge azul). Após end_date, a pausa
+        # vira metadata e o status natural (awaiting_closure / ended) toma
+        # conta. Só emite quando preenchido.
+        paused_at = pauses_map.get(r["short_token"])
+        if paused_at:
+            entry["paused_at"] = paused_at
+
         result.append(entry)
 
     # Merge owners (lookup planilha + overrides BQ + aliases BQ) em Python.
@@ -4197,6 +4319,22 @@ def _safe_get_closures():
         logger.warning(f"[WARN _safe_get_closures] {e}")
         data = {}
     _cache_set(_closures_cache, "all", data)
+    return data
+
+
+def _safe_get_pauses():
+    """Wrapper resiliente + cacheado pro dict de pausas ativas. Mesmo padrão
+    de _safe_get_closures — tabela pequena, full scan, cache atrelado ao TTL
+    da lista."""
+    cached = _cache_get(_pauses_cache, "all", _LIST_CACHE_TTL)
+    if cached is not None:
+        return cached
+    try:
+        data = query_all_pauses()
+    except Exception as e:
+        logger.warning(f"[WARN _safe_get_pauses] {e}")
+        data = {}
+    _cache_set(_pauses_cache, "all", data)
     return data
 
 

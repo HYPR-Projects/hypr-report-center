@@ -563,6 +563,25 @@ export async function saveCampaignClosure({ short_token, closed }) {
   return r;
 }
 
+/**
+ * Pausa/retoma campanha temporariamente. paused=true grava paused_at=NOW
+ * em `campaign_pauses`; paused=false remove o registro. Reversível.
+ *
+ * O frontend usa `paused_at` (junto com end_date e closed_at) pra derivar
+ * status="paused" via getCampaignStatus quando a campanha ainda está em
+ * vôo. Após end_date, pausa vira metadata e o ciclo natural toma conta.
+ */
+export async function saveCampaignPause({ short_token, paused }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=save_campaign_pause`,
+    { short_token, paused: !!paused },
+    adminAuthHeaders(jwt),
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r;
+}
+
 // ── Survey (admin) ───────────────────────────────────────────────────────────
 
 /**

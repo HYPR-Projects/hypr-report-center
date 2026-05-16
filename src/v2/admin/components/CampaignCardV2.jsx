@@ -54,12 +54,15 @@ import { schedulePrefetch, cancelPrefetch } from "../../../lib/prefetchReport";
 // reaproveitada pra stripe lateral e fill da barra de pacing.
 // `awaiting` = campanha terminou mas precisa de fechamento manual — stripe
 // âmbar puxa atenção do admin sem alarmar como crítico.
+// `paused` = pausa temporária — signature azul comunica "congelada,
+// vai voltar" sem virar alarme.
 const HEALTH_BAR = {
   healthy:   "bg-success",
   over:      "bg-signature",
   attention: "bg-warning",
   critical:  "bg-danger",
   awaiting:  "bg-warning",
+  paused:    "bg-signature",
   ended:     "bg-fg-subtle/30",
 };
 
@@ -128,14 +131,19 @@ export function CampaignCardV2({
     // Fechamento manual (admin clicou em "Marcar como encerrada" no drawer).
     // Combinado com end_date define o estado visual do card via getCampaignStatus.
     closed_at,
+    // Pausa temporária — admin clicou em "Pausar campanha" no drawer.
+    // Só afeta o status enquanto end_date >= hoje.
+    paused_at,
   } = campaign;
   const has_abs = display_has_abs || video_has_abs;
 
-  const status  = getCampaignStatus(end_date, closed_at);
+  const status  = getCampaignStatus(end_date, closed_at, paused_at);
   const ended   = status === "ended";
   const awaiting = status === "awaiting_closure";
+  const paused  = status === "paused";
   const health  = ended    ? "ended"
                 : awaiting ? "awaiting"
+                : paused   ? "paused"
                 : classifyHealth(display_pacing, video_pacing);
   const cpName = cp_email ? (teamMap[cp_email] || localPartFromEmail(cp_email)) : null;
   const csName = cs_email ? (teamMap[cs_email] || localPartFromEmail(cs_email)) : null;
@@ -207,6 +215,7 @@ export function CampaignCardV2({
             {merge_id && <MergedBadge />}
             {is_bonus_only && <BonusBadge />}
             {has_abs && <AbsBadge />}
+            {paused && <PausedBadge />}
             {awaiting && <AwaitingClosureBadge />}
             {ended && (
               <span className="text-[9px] uppercase tracking-widest font-bold text-fg-subtle">
@@ -426,6 +435,28 @@ function BonusBadge() {
         <path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z" />
       </svg>
       bonificada
+    </span>
+  );
+}
+
+/**
+ * Badge "PAUSADA" — campanha em vôo que foi pausada temporariamente pelo
+ * admin (ex: cliente pediu pra parar X dias, problema no DSP). Cor
+ * signature azul comunica "congelada, vai voltar" — distinto do warning
+ * (aguardando fechamento) e do danger (urgente). Card NÃO esmaece porque
+ * a campanha continua viva, só dormindo.
+ */
+function PausedBadge() {
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-signature px-1.5 py-0.5 rounded bg-signature/8 border border-signature/30"
+      title="Campanha pausada temporariamente — admin pode retomar a qualquer momento no drawer"
+    >
+      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="6"  y="4" width="4" height="16" rx="1" />
+        <rect x="14" y="4" width="4" height="16" rx="1" />
+      </svg>
+      pausada
     </span>
   );
 }

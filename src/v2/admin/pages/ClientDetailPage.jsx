@@ -364,6 +364,25 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
     );
   }, []);
 
+  // Pausa/retomada otimista — espelha CampaignMenuV2.handlePauseSaved.
+  // Atualiza array local + drawerCampaign aberto pra refletir Pausar↔Retomar
+  // sem esperar refresh do BQ (read-after-write delay).
+  const handlePauseSaved = useCallback((short_token, nextPaused) => {
+    const pausedAtIso = nextPaused ? new Date().toISOString() : null;
+    setCampaigns((prev) =>
+      prev.map((c) => {
+        if (c.short_token !== short_token) return c;
+        const { paused_at: _omit, ...rest } = c;
+        return pausedAtIso ? { ...rest, paused_at: pausedAtIso } : rest;
+      })
+    );
+    setDrawerCampaign((prev) => {
+      if (!prev || prev.short_token !== short_token) return prev;
+      const { paused_at: _omit, ...rest } = prev;
+      return pausedAtIso ? { ...rest, paused_at: pausedAtIso } : rest;
+    });
+  }, []);
+
   return (
     <div className="min-h-screen w-full bg-canvas text-fg transition-colors">
       {/* Topbar */}
@@ -561,6 +580,7 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
         }}
         onAbsChange={handleAbsSaved}
         onClosureChange={handleClosureSaved}
+        onPauseChange={handlePauseSaved}
         onOpenReport={onOpenReport}
         teamMap={teamMap}
       />

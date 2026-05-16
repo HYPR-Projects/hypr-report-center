@@ -21,7 +21,7 @@ import { cn } from "../../../ui/cn";
 import { Avatar } from "../../../ui/Avatar";
 import { AbsToggle } from "./AbsToggle";
 import { TokenChip } from "./TokenChip";
-import { getNegotiation, getCampaign, saveCampaignClosure } from "../../../lib/api";
+import { getNegotiation, getCampaign, saveCampaignClosure, saveCampaignPause } from "../../../lib/api";
 import {
   formatPacingValue,
   formatPct,
@@ -112,6 +112,17 @@ const ICON = {
       <path d="m9 12 2 2 4-4" />
     </svg>
   ),
+  pause: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="6"  y="4" width="4" height="16" rx="1" />
+      <rect x="14" y="4" width="4" height="16" rx="1" />
+    </svg>
+  ),
+  resume: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="6 4 20 12 6 20 6 4" />
+    </svg>
+  ),
 };
 
 export function CampaignDrawer({
@@ -130,6 +141,7 @@ export function CampaignDrawer({
   onNegotiation,       // chamado quando admin clica em "Negociado" — recebe (campaign, negotiation)
   onAbsChange,         // chamado após admin salvar override de ABS — pai refaz lista
   onClosureChange,     // chamado após admin marcar campanha como encerrada — pai refaz lista
+  onPauseChange,       // chamado após admin pausar/retomar campanha — pai atualiza otimisticamente
   onOpenReport,
   teamMap = {},
 }) {
@@ -153,6 +165,9 @@ export function CampaignDrawer({
   // Reseta toda vez que o drawer abre/troca de campanha.
   const [closureBusy, setClosureBusy] = useState("idle");
   useEffect(() => { setClosureBusy("idle"); }, [drawerToken, open]);
+  // Mesmo padrão pro toggle de pausa — resetado quando o drawer abre/troca.
+  const [pauseBusy, setPauseBusy] = useState("idle");
+  useEffect(() => { setPauseBusy("idle"); }, [drawerToken, open]);
   useEffect(() => {
     if (!open || !drawerToken) {
       setNegotiation(null);
@@ -219,10 +234,14 @@ export function CampaignDrawer({
     display_has_abs,
     video_has_abs,
     closed_at,
+    paused_at,
   } = campaign;
 
-  const status = getCampaignStatus(end_date, closed_at);
+  const status   = getCampaignStatus(end_date, closed_at, paused_at);
   const awaiting = status === "awaiting_closure";
+  const paused   = status === "paused";
+  // Pausa só faz sentido em vôo. Após end_date, o ciclo natural toma conta.
+  const canPause = status === "in_flight" || status === "paused";
 
   const handleCloseCampaign = async () => {
     if (!short_token || closureBusy === "saving") return;
@@ -238,6 +257,19 @@ export function CampaignDrawer({
       onClosureChange?.(short_token);
     } catch {
       setClosureBusy("error");
+    }
+  };
+
+  const handleTogglePause = async () => {
+    if (!short_token || pauseBusy === "saving") return;
+    const nextPaused = !paused; // inversão do estado atual
+    setPauseBusy("saving");
+    try {
+      await saveCampaignPause({ short_token, paused: nextPaused });
+      setPauseBusy("idle"); // toggle limpo — sem estado de "done" persistente
+      onPauseChange?.(short_token, nextPaused);
+    } catch {
+      setPauseBusy("error");
     }
   };
 
@@ -360,6 +392,31 @@ export function CampaignDrawer({
                 }
                 disabled={closureBusy === "saving" || closureBusy === "done"}
                 onClick={handleCloseCampaign}
+              />
+            )}
+            {/* Pausar/Retomar — toggle reversível, só faz sentido enquanto a
+                campanha está em vôo (in_flight ou paused). Após end_date o
+                fluxo natural (awaiting_closure → ended) toma conta. */}
+            {canPause && (
+              <ActionButton
+                icon={
+                  pauseBusy === "saving" ? <Spinner />
+                  : paused ? ICON.resume
+                  : ICON.pause
+                }
+                label={
+                  pauseBusy === "saving" ? (paused ? "Retomando..." : "Pausando...")
+                  : pauseBusy === "error" ? "Erro — tentar de novo"
+                  : paused ? "Retomar campanha"
+                  : "Pausar campanha"
+                }
+                variant={
+                  pauseBusy === "error" ? "danger"
+                  : paused ? "highlight"  // signature — campanha pausada destaca o "retomar"
+                  : "default"
+                }
+                disabled={pauseBusy === "saving"}
+                onClick={handleTogglePause}
               />
             )}
             <ActionButton
