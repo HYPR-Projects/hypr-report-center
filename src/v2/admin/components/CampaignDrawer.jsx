@@ -189,6 +189,15 @@ export function CampaignDrawer({
   // Mesmo padrão pro toggle de pausa — resetado quando o drawer abre/troca.
   const [pauseBusy, setPauseBusy] = useState("idle");
   useEffect(() => { setPauseBusy("idle"); }, [drawerToken, open]);
+  // Pausa com motivo: form inline igual o de encerramento antecipado.
+  // showPauseForm controla expansão da gaveta; só usado quando admin
+  // está PAUSANDO (não retomando — retomar é direto).
+  const [showPauseForm, setShowPauseForm] = useState(false);
+  const [pauseReasonInput, setPauseReasonInput] = useState("");
+  useEffect(() => {
+    setShowPauseForm(false);
+    setPauseReasonInput("");
+  }, [drawerToken, open]);
   // Encerramento antecipado: form inline (data + motivo) com modo edição.
   // showEarlyEndForm controla expansão do bloco de form abaixo do botão.
   const [showEarlyEndForm, setShowEarlyEndForm] = useState(false);
@@ -268,6 +277,7 @@ export function CampaignDrawer({
     video_has_abs,
     closed_at,
     paused_at,
+    paused_reason,
     early_end_date,
     early_end_reason,
   } = campaign;
@@ -311,16 +321,40 @@ export function CampaignDrawer({
     }
   };
 
-  const handleTogglePause = async () => {
+  // Pausar = abre form (motivo opcional). Retomar = direto, sem form.
+  // Separamos os dois fluxos porque a UX é diferente: pausar é uma
+  // decisão com contexto (vale registrar por quê); retomar é apenas
+  // voltar ao estado normal.
+  const handleOpenPauseForm = () => {
+    setPauseReasonInput("");
+    setPauseBusy("idle");
+    setShowPauseForm(true);
+  };
+
+  const handleConfirmPause = async () => {
     if (!short_token || pauseBusy === "saving") return;
-    const nextPaused = !paused; // inversão do estado atual
     setPauseBusy("saving");
     try {
-      await saveCampaignPause({ short_token, paused: nextPaused });
-      setPauseBusy("done"); // dispara animação de sucesso no botão
-      onPauseChange?.(short_token, nextPaused);
-      // Auto-reset pro estado idle depois da animação completar.
-      // useEffect abaixo agenda e cancela em unmount.
+      await saveCampaignPause({
+        short_token,
+        paused: true,
+        reason: pauseReasonInput.trim(),
+      });
+      setPauseBusy("done");
+      setShowPauseForm(false);
+      onPauseChange?.(short_token, true, pauseReasonInput.trim());
+    } catch {
+      setPauseBusy("error");
+    }
+  };
+
+  const handleResume = async () => {
+    if (!short_token || pauseBusy === "saving") return;
+    setPauseBusy("saving");
+    try {
+      await saveCampaignPause({ short_token, paused: false });
+      setPauseBusy("done");
+      onPauseChange?.(short_token, false, null);
     } catch {
       setPauseBusy("error");
     }
@@ -460,6 +494,12 @@ export function CampaignDrawer({
             />
           </div>
 
+          {/* Observação admin de pausa — quando campanha está pausada,
+              mostra desde quando + motivo. Some assim que o admin retoma. */}
+          {paused && (
+            <PausedNote pausedAt={paused_at} reason={paused_reason} />
+          )}
+
           {/* Observação admin de encerramento antecipado — só aparece se
               admin marcou. Mostra data definitiva + motivo (admin-only,
               não vai pro report do cliente). */}
@@ -561,14 +601,16 @@ export function CampaignDrawer({
             {/* Pausar/Retomar — toggle reversível, só faz sentido enquanto a
                 campanha está em vôo (in_flight ou paused). Após end_date o
                 fluxo natural (awaiting_closure → ended) toma conta. */}
-            {canPause && (
+            {/* Botão do toggle de pausa. Quando NÃO pausada, click abre o
+                form (motivo opcional). Quando pausada, é "Retomar" direto
+                (sem form — retomar é apenas voltar ao normal). Estado "done"
+                dispara animação check+halo no ícone (signature se pausou,
+                success se retomou). */}
+            {canPause && !showPauseForm && (
               <ActionButton
                 icon={
                   pauseBusy === "saving" ? <Spinner />
                   : pauseBusy === "done"
-                    // Após o toggle aplicar, `paused` reflete o NOVO estado.
-                    // Pausada → halo signature azul (cor da pausa). Retomada →
-                    // halo success verde (de volta ao ativo).
                     ? (paused ? <PauseSuccessIcon /> : <ResumeSuccessIcon />)
                   : paused ? ICON.resume
                   : ICON.pause
@@ -583,12 +625,28 @@ export function CampaignDrawer({
                 variant={
                   pauseBusy === "done"  ? (paused ? "highlight" : "success")
                   : pauseBusy === "error" ? "danger"
-                  : paused ? "highlight"  // signature — campanha pausada destaca o "retomar"
+                  : paused ? "highlight"
                   : "default"
                 }
                 disabled={pauseBusy === "saving" || pauseBusy === "done"}
-                onClick={handleTogglePause}
+                onClick={paused ? handleResume : handleOpenPauseForm}
               />
+            )}
+            {/* Form de pausa expande quando admin clica em "Pausar campanha".
+                Mesmo padrão do form de encerramento antecipado — gaveta
+                CSS grid-rows + inert quando colapsado. */}
+            {canPause && !paused && (
+              <div className={cn("action-expand", showPauseForm && "is-open")}>
+                <div className="action-expand-content" inert={!showPauseForm || undefined}>
+                  <PauseForm
+                    reasonValue={pauseReasonInput}
+                    onReasonChange={setPauseReasonInput}
+                    busy={pauseBusy}
+                    onConfirm={handleConfirmPause}
+                    onCancel={() => setShowPauseForm(false)}
+                  />
+                </div>
+              </div>
             )}
             <ActionButton
               icon={
@@ -781,6 +839,100 @@ function EarlyEndedNote({ date, reason, originalEnd }) {
       <p className="text-[10px] text-fg-subtle italic mt-2">
         Observação admin — não aparece no report do cliente.
       </p>
+    </div>
+  );
+}
+
+/**
+ * Bloco "OBSERVAÇÃO ADMIN" da pausa — mostra desde quando + motivo (se
+ * houver). Cor signature soft pra casar com a família visual da pausa.
+ */
+function PausedNote({ pausedAt, reason }) {
+  // pausedAt vem como ISO timestamp (não date) — formata pra "dd/mm/yyyy"
+  // ignorando horas (não relevante pro contexto operacional).
+  const fmt = (iso) => {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "—";
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yy = d.getFullYear();
+    return `${dd}/${mm}/${yy}`;
+  };
+  return (
+    <div className="mb-5 rounded-lg border border-signature/30 bg-signature/5 px-3 py-3">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-signature">{ICON.pause}</span>
+        <span className="text-[11px] uppercase tracking-widest font-bold text-signature">
+          Pausada
+        </span>
+      </div>
+      <p className="text-[11.5px] text-fg-muted leading-snug">
+        <span className="font-semibold text-fg">Desde:</span> {fmt(pausedAt)}
+      </p>
+      {reason && (
+        <p className="text-[11.5px] text-fg-muted leading-snug mt-1">
+          <span className="font-semibold text-fg">Motivo:</span> {reason}
+        </p>
+      )}
+      <p className="text-[10px] text-fg-subtle italic mt-2">
+        Observação admin — não aparece no report do cliente.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Form inline pra pausa. Expande abaixo do botão "Pausar campanha". Um
+ * campo só (motivo, opcional). Padrão visual igual o EarlyEndForm mas em
+ * signature blue (cor da família "pausada"), pra reforçar diferenciação.
+ */
+function PauseForm({
+  reasonValue, onReasonChange,
+  busy,
+  onConfirm, onCancel,
+}) {
+  const saving = busy === "saving";
+  return (
+    <div className="rounded-lg border border-signature/40 bg-signature/5 px-3 py-3 space-y-2.5">
+      <div className="flex items-center gap-2">
+        <span className="text-signature">{ICON.pause}</span>
+        <span className="text-[11px] uppercase tracking-widest font-bold text-signature">
+          Pausar campanha
+        </span>
+      </div>
+      <label className="block">
+        <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+          Motivo <span className="text-fg-subtle font-normal normal-case tracking-normal">(opcional, admin-only)</span>
+        </span>
+        <textarea
+          rows={2}
+          value={reasonValue}
+          onChange={(e) => onReasonChange(e.target.value)}
+          disabled={saving}
+          placeholder="Ex: cliente solicitou pausa enquanto revê creative..."
+          className="mt-1 block w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm text-fg resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature/50"
+        />
+      </label>
+      <div className="flex items-center justify-end gap-2 pt-1">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={saving}
+          className="px-3 py-1.5 rounded-md text-xs font-semibold text-fg-muted hover:text-fg hover:bg-surface transition-colors disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+        >
+          Cancelar
+        </button>
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={saving}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-signature text-white hover:bg-signature-hover transition-colors disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+        >
+          {saving && <Spinner />}
+          {saving ? "Pausando..." : busy === "error" ? "Tentar de novo" : "Confirmar pausa"}
+        </button>
+      </div>
     </div>
   );
 }

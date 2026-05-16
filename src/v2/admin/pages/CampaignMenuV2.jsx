@@ -69,6 +69,7 @@ import { CampaignListV2 } from "../components/CampaignListV2";
 import { CampaignDrawer } from "../components/CampaignDrawer";
 import { MonthGroupedSections } from "../components/MonthGroupedSections";
 import { formatMonthLabel } from "../lib/format";
+import { TooltipProvider } from "../../../ui/Tooltip";
 
 // localStorage key pra persistir o layout escolhido entre sessões.
 const LAYOUT_STORAGE_KEY = "hypr.admin.layout";
@@ -566,22 +567,23 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   // estado (Pausar ↔ Retomar) imediatamente — diferente do closure, aqui
   // não há animação de sucesso a preservar, e o botão DEVE virar pra refletir
   // que o toggle aplicou.
-  const handlePauseSaved = useCallback((short_token, nextPaused) => {
+  const handlePauseSaved = useCallback((short_token, nextPaused, reason) => {
     const pausedAtIso = nextPaused ? new Date().toISOString() : null;
+    const cleanReason = nextPaused && reason ? String(reason).trim() : "";
+    const applyTo = (c) => {
+      if (c.short_token !== short_token) return c;
+      const { paused_at: _a, paused_reason: _r, ...rest } = c;
+      if (!pausedAtIso) return rest; // retomada — remove ambos
+      const next = { ...rest, paused_at: pausedAtIso };
+      if (cleanReason) next.paused_reason = cleanReason;
+      return next;
+    };
     setCampaigns((prev) => {
-      const next = prev.map((c) => {
-        if (c.short_token !== short_token) return c;
-        const { paused_at: _omit, ...rest } = c;
-        return pausedAtIso ? { ...rest, paused_at: pausedAtIso } : rest;
-      });
+      const next = prev.map(applyTo);
       writeCache("menu.campaigns", next);
       return next;
     });
-    setDrawerCampaign((prev) => {
-      if (!prev || prev.short_token !== short_token) return prev;
-      const { paused_at: _omit, ...rest } = prev;
-      return pausedAtIso ? { ...rest, paused_at: pausedAtIso } : rest;
-    });
+    setDrawerCampaign((prev) => (prev ? applyTo(prev) : prev));
   }, []);
 
   // Encerramento antecipado — update otimista. `payload` é null quando
@@ -636,6 +638,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
+    <TooltipProvider delayDuration={200}>
     <div className="min-h-screen w-full bg-canvas text-fg transition-colors">
       {/* ── Topbar ──────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-30 bg-canvas-elevated border-b border-border">
@@ -924,6 +927,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
         reportData={negotiationModal?.reportData}
       />
     </div>
+    </TooltipProvider>
   );
 }
 

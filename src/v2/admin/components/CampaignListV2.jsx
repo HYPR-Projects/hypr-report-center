@@ -19,6 +19,7 @@
 
 import { cn } from "../../../ui/cn";
 import { Avatar } from "../../../ui/Avatar";
+import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
 import { TokenChip } from "./TokenChip";
 import {
   formatPacingValue,
@@ -156,7 +157,9 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
     merge_id,
     closed_at,
     paused_at,
+    paused_reason,
     early_end_date,
+    early_end_reason,
   } = campaign;
 
   const effectiveEndDate = early_end_date || end_date;
@@ -228,12 +231,28 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
             </span>
           )}
           {paused && (
-            <span
-              className="text-[8.5px] uppercase tracking-widest font-bold text-signature px-1 rounded bg-signature/10 border border-signature/30"
-              title="Pausada temporariamente — retomar no drawer"
-            >
-              pausada
-            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  className="text-[8.5px] uppercase tracking-widest font-bold text-signature px-1 rounded bg-signature/10 border border-signature/30 cursor-help"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  pausada
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                <div className="space-y-1 leading-snug">
+                  <p className="font-semibold text-signature">Pausada</p>
+                  {paused_reason ? (
+                    <p className="text-fg-muted">
+                      <span className="text-fg-subtle">Motivo:</span> {paused_reason}
+                    </p>
+                  ) : (
+                    <p className="text-fg-subtle italic">Sem motivo registrado.</p>
+                  )}
+                </div>
+              </TooltipContent>
+            </Tooltip>
           )}
           {awaiting && (
             <span
@@ -246,12 +265,40 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
           {/* Chip "antecipada" só após early_end_date passar (status=ended).
               Antes disso, o admin vê o estado no drawer mas não polui a row. */}
           {ended && earlyEnded && (
-            <span
-              className="text-[8.5px] uppercase tracking-widest font-bold text-danger px-1 rounded bg-danger-soft border border-danger/30"
-              title="Encerrada antes do previsto — motivo no drawer (admin)"
-            >
-              antecipada
-            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  className="text-[8.5px] uppercase tracking-widest font-bold text-danger px-1 rounded bg-danger-soft border border-danger/30 cursor-help"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  antecipada
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                <div className="space-y-1 leading-snug">
+                  <p className="font-semibold text-danger">Encerrada antes do previsto</p>
+                  {early_end_date && (
+                    <p className="text-fg-muted">
+                      <span className="text-fg-subtle">Data:</span>{" "}
+                      {(() => {
+                        const d = new Date(early_end_date);
+                        if (isNaN(d.getTime())) return "—";
+                        const dd = String(d.getUTCDate()).padStart(2, "0");
+                        const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+                        return `${dd}/${mm}/${d.getUTCFullYear()}`;
+                      })()}
+                    </p>
+                  )}
+                  {early_end_reason ? (
+                    <p className="text-fg-muted">
+                      <span className="text-fg-subtle">Motivo:</span> {early_end_reason}
+                    </p>
+                  ) : (
+                    <p className="text-fg-subtle italic">Sem motivo registrado.</p>
+                  )}
+                </div>
+              </TooltipContent>
+            </Tooltip>
           )}
         </div>
         <p className="text-[11px] text-fg-muted truncate mt-0.5">{campaign_name}</p>

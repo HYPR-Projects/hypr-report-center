@@ -34,6 +34,7 @@
 import { cn } from "../../../ui/cn";
 import { Card } from "../../../ui/Card";
 import { Avatar } from "../../../ui/Avatar";
+import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
 import { TokenChip } from "./TokenChip";
 import {
   formatPacingValue,
@@ -133,11 +134,15 @@ export function CampaignCardV2({
     // Combinado com end_date define o estado visual do card via getCampaignStatus.
     closed_at,
     // Pausa temporária — admin clicou em "Pausar campanha" no drawer.
-    // Só afeta o status enquanto end_date >= hoje.
+    // Só afeta o status enquanto end_date >= hoje. `paused_reason` é
+    // admin-only e vira tooltip ao passar o mouse no badge "PAUSADA".
     paused_at,
+    paused_reason,
     // Encerramento antecipado — quando setado, substitui end_date pra
     // status/display. Pacing continua usando end_date original (Opção B).
+    // `early_end_reason` é admin-only e vira tooltip no badge "ANTES DO PREVISTO".
     early_end_date,
+    early_end_reason,
   } = campaign;
   const has_abs = display_has_abs || video_has_abs;
 
@@ -224,13 +229,13 @@ export function CampaignCardV2({
             {merge_id && <MergedBadge />}
             {is_bonus_only && <BonusBadge />}
             {has_abs && <AbsBadge />}
-            {paused && <PausedBadge />}
+            {paused && <PausedBadge reason={paused_reason} />}
             {awaiting && <AwaitingClosureBadge />}
             {/* Badge "antes do previsto" só aparece quando a campanha já está
                 de fato encerrada (status="ended"). Setar early_end_date no
                 futuro ou em hoje (efetivo só amanhã) NÃO dispara o badge —
                 ele entra em cena assim que a data passa. */}
-            {ended && earlyEnded && <EarlyEndedBadge />}
+            {ended && earlyEnded && <EarlyEndedBadge reason={early_end_reason} date={early_end_date} />}
             {ended && !earlyEnded && (
               <span className="text-[9px] uppercase tracking-widest font-bold text-fg-subtle">
                 encerrada
@@ -459,12 +464,14 @@ function BonusBadge() {
  * danger soft pra comunicar "perda/anomalia" sem alarmar como erro crítico.
  * Substitui o label "encerrada" plain quando aplicável — a campanha É
  * encerrada, só que antecipadamente.
+ *
+ * Quando `reason` está presente, hover abre tooltip com o motivo + data
+ * definitiva. Sem reason, tooltip simples explicando o estado.
  */
-function EarlyEndedBadge() {
-  return (
+function EarlyEndedBadge({ reason, date }) {
+  const badge = (
     <span
-      className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-danger px-1.5 py-0.5 rounded bg-danger-soft border border-danger/30"
-      title="Encerramento antecipado — campanha finalizou antes da data original. Motivo no drawer (admin only)."
+      className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-danger px-1.5 py-0.5 rounded bg-danger-soft border border-danger/30 cursor-help"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="10" />
@@ -472,6 +479,44 @@ function EarlyEndedBadge() {
       </svg>
       antes do previsto
     </span>
+  );
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{badge}</TooltipTrigger>
+      <TooltipContent>
+        <EarlyEndedTooltipBody reason={reason} date={date} />
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function EarlyEndedTooltipBody({ reason, date }) {
+  const fmt = (iso) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    const dd = String(d.getUTCDate()).padStart(2, "0");
+    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const yy = d.getUTCFullYear();
+    return `${dd}/${mm}/${yy}`;
+  };
+  const dateStr = fmt(date);
+  return (
+    <div className="space-y-1 leading-snug">
+      <p className="font-semibold text-danger">Encerrada antes do previsto</p>
+      {dateStr && (
+        <p className="text-fg-muted">
+          <span className="text-fg-subtle">Data:</span> {dateStr}
+        </p>
+      )}
+      {reason ? (
+        <p className="text-fg-muted">
+          <span className="text-fg-subtle">Motivo:</span> {reason}
+        </p>
+      ) : (
+        <p className="text-fg-subtle italic">Sem motivo registrado.</p>
+      )}
+    </div>
   );
 }
 
@@ -481,12 +526,13 @@ function EarlyEndedBadge() {
  * signature azul comunica "congelada, vai voltar" — distinto do warning
  * (aguardando fechamento) e do danger (urgente). Card NÃO esmaece porque
  * a campanha continua viva, só dormindo.
+ *
+ * Hover abre tooltip com motivo da pausa (se admin registrou).
  */
-function PausedBadge() {
-  return (
+function PausedBadge({ reason }) {
+  const badge = (
     <span
-      className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-signature px-1.5 py-0.5 rounded bg-signature/8 border border-signature/30"
-      title="Campanha pausada temporariamente — admin pode retomar a qualquer momento no drawer"
+      className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-signature px-1.5 py-0.5 rounded bg-signature/8 border border-signature/30 cursor-help"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
         <rect x="6"  y="4" width="4" height="16" rx="1" />
@@ -494,6 +540,23 @@ function PausedBadge() {
       </svg>
       pausada
     </span>
+  );
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{badge}</TooltipTrigger>
+      <TooltipContent>
+        <div className="space-y-1 leading-snug">
+          <p className="font-semibold text-signature">Pausada</p>
+          {reason ? (
+            <p className="text-fg-muted">
+              <span className="text-fg-subtle">Motivo:</span> {reason}
+            </p>
+          ) : (
+            <p className="text-fg-subtle italic">Sem motivo registrado.</p>
+          )}
+        </div>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

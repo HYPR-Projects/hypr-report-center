@@ -951,8 +951,8 @@ def report_data(request):
             return (jsonify({"error": "Erro ao salvar fechamento da campanha"}), 500, headers)
 
     # ── Endpoint: pausar/retomar campanha ───────────────────────────────────
-    # Body: {short_token, paused: bool}
-    # paused=true  → registra paused_at=NOW (campanha pausada temporariamente)
+    # Body: {short_token, paused: bool, reason?: str}
+    # paused=true  → registra paused_at=NOW + reason (opcional)
     # paused=false → remove o registro (retoma — campanha volta ao in_flight)
     if request.method == "POST" and request.args.get("action") == "save_campaign_pause":
         admin = authenticate_admin(request)
@@ -962,9 +962,10 @@ def report_data(request):
             body = request.get_json(silent=True) or {}
             short_token = (body.get("short_token") or "").strip()
             paused      = bool(body.get("paused"))
+            reason      = (body.get("reason")      or "").strip() or None
             if not short_token:
                 return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
-            save_campaign_pause(short_token, paused, paused_by=admin.get("email"))
+            save_campaign_pause(short_token, paused, paused_by=admin.get("email"), reason=reason)
             _cache_invalidate_token(short_token)
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
@@ -2890,7 +2891,8 @@ def _pauses_table_id() -> str:
 
 
 def _ensure_pauses_table() -> None:
-    """Cria a tabela `campaign_pauses` se não existir. Idempotente."""
+    """Cria a tabela `campaign_pauses` se não existir + adiciona a coluna
+    `reason` em deploys que já tinham a tabela (idempotente)."""
     global _pauses_table_ensured
     if _pauses_table_ensured:
         return
@@ -2901,18 +2903,33 @@ def _ensure_pauses_table() -> None:
             CREATE TABLE IF NOT EXISTS `{_pauses_table_id()}` (
                 short_token STRING NOT NULL,
                 paused_at   TIMESTAMP NOT NULL,
-                paused_by   STRING
+                paused_by   STRING,
+                reason      STRING
             )
         """
         bq.query(sql).result()
+        # ALTER pra deploys que criaram a tabela antes do campo `reason`
+        # existir. ADD COLUMN IF NOT EXISTS é idempotente — não erra se
+        # a coluna já existe (deploy novo do CREATE acima).
+        alter_sql = f"""
+            ALTER TABLE `{_pauses_table_id()}`
+            ADD COLUMN IF NOT EXISTS reason STRING
+        """
+        try:
+            bq.query(alter_sql).result()
+        except Exception as e:
+            logger.warning(f"[WARN _ensure_pauses_table ALTER] {e}")
         _pauses_table_ensured = True
 
 
-def save_campaign_pause(short_token: str, paused: bool, paused_by: str | None = None):
+def save_campaign_pause(short_token: str, paused: bool, paused_by: str | None = None, reason: str | None = None):
     """Pausa/despausa campanha.
 
-    paused=True  → UPSERT com paused_at=NOW
+    paused=True  → UPSERT com paused_at=NOW e reason (opcional)
     paused=False → DELETE (retoma — volta ao estado in_flight)
+
+    `reason` permite que o admin registre o motivo da pausa, que vira tooltip
+    no badge e bloco "Observação" no drawer.
     """
     _ensure_pauses_table()
     if paused:
@@ -2921,15 +2938,18 @@ def save_campaign_pause(short_token: str, paused: bool, paused_by: str | None = 
             USING (SELECT @token AS short_token) S
             ON T.short_token = S.short_token
             WHEN MATCHED THEN
-                UPDATE SET paused_at = CURRENT_TIMESTAMP(), paused_by = @paused_by
+                UPDATE SET paused_at = CURRENT_TIMESTAMP(),
+                           paused_by = @paused_by,
+                           reason    = @reason
             WHEN NOT MATCHED THEN
-                INSERT (short_token, paused_at, paused_by)
-                VALUES (@token, CURRENT_TIMESTAMP(), @paused_by)
+                INSERT (short_token, paused_at, paused_by, reason)
+                VALUES (@token, CURRENT_TIMESTAMP(), @paused_by, @reason)
         """
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
                 bigquery.ScalarQueryParameter("token",     "STRING", short_token),
                 bigquery.ScalarQueryParameter("paused_by", "STRING", paused_by),
+                bigquery.ScalarQueryParameter("reason",    "STRING", reason),
             ]
         )
     else:
@@ -2944,11 +2964,12 @@ def save_campaign_pause(short_token: str, paused: bool, paused_by: str | None = 
 
 
 def query_all_pauses() -> dict:
-    """Retorna {short_token: paused_at_iso} de todas as campanhas pausadas.
-    Mesmo padrão de query_all_closures."""
+    """Retorna {short_token: {paused_at_iso, reason}} de todas as pausas
+    ativas. Mesma estrutura de query_all_early_ends — frontend usa pra
+    derivar paused_at (status) e paused_reason (tooltip)."""
     _ensure_pauses_table()
     sql = f"""
-        SELECT short_token, paused_at
+        SELECT short_token, paused_at, reason
         FROM `{_pauses_table_id()}`
     """
     out = {}
@@ -2956,7 +2977,10 @@ def query_all_pauses() -> dict:
         for row in bq.query(sql).result():
             ts = row["paused_at"]
             if ts:
-                out[row["short_token"]] = ts.isoformat()
+                out[row["short_token"]] = {
+                    "paused_at": ts.isoformat(),
+                    "reason":    row["reason"] or "",
+                }
     except Exception as e:
         logger.warning(f"[WARN query_all_pauses] {e}")
     return out
@@ -4363,10 +4387,13 @@ def query_campaigns_list():
         # Quando presente e a campanha ainda está em vôo, o frontend
         # renderiza status="paused" (badge azul). Após end_date, a pausa
         # vira metadata e o status natural (awaiting_closure / ended) toma
-        # conta. Só emite quando preenchido.
-        paused_at = pauses_map.get(r["short_token"])
-        if paused_at:
-            entry["paused_at"] = paused_at
+        # conta. Só emite quando preenchido. `paused_reason` é opcional e
+        # mostra como tooltip no badge + observação no drawer.
+        pause = pauses_map.get(r["short_token"])
+        if pause:
+            entry["paused_at"] = pause["paused_at"]
+            if pause.get("reason"):
+                entry["paused_reason"] = pause["reason"]
 
         # Encerramento antecipado — campanha terminou antes da end_date
         # original (solicitação externa, cancelamento). Opção B: NÃO

@@ -580,11 +580,11 @@ export async function saveCampaignClosure({ short_token, closed }) {
  * status="paused" via getCampaignStatus quando a campanha ainda está em
  * vôo. Após end_date, pausa vira metadata e o ciclo natural toma conta.
  */
-export async function saveCampaignPause({ short_token, paused }) {
+export async function saveCampaignPause({ short_token, paused, reason }) {
   const jwt = await getOrIssueAdminJwt();
   const r = await postJson(
     `${API_URL}?action=save_campaign_pause`,
-    { short_token, paused: !!paused },
+    { short_token, paused: !!paused, reason: reason || "" },
     adminAuthHeaders(jwt),
   );
   return throwIfNotOk(r);

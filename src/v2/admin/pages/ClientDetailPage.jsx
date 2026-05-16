@@ -47,6 +47,7 @@ import {
   pacingColorClass,
   slugToDisplay,
 } from "../lib/format";
+import { TooltipProvider } from "../../../ui/Tooltip";
 
 export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenReport }) {
   // Stale-while-revalidate via mesmas keys do menu (`menu.campaigns` /
@@ -367,20 +368,19 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
   // Pausa/retomada otimista — espelha CampaignMenuV2.handlePauseSaved.
   // Atualiza array local + drawerCampaign aberto pra refletir Pausar↔Retomar
   // sem esperar refresh do BQ (read-after-write delay).
-  const handlePauseSaved = useCallback((short_token, nextPaused) => {
+  const handlePauseSaved = useCallback((short_token, nextPaused, reason) => {
     const pausedAtIso = nextPaused ? new Date().toISOString() : null;
-    setCampaigns((prev) =>
-      prev.map((c) => {
-        if (c.short_token !== short_token) return c;
-        const { paused_at: _omit, ...rest } = c;
-        return pausedAtIso ? { ...rest, paused_at: pausedAtIso } : rest;
-      })
-    );
-    setDrawerCampaign((prev) => {
-      if (!prev || prev.short_token !== short_token) return prev;
-      const { paused_at: _omit, ...rest } = prev;
-      return pausedAtIso ? { ...rest, paused_at: pausedAtIso } : rest;
-    });
+    const cleanReason = nextPaused && reason ? String(reason).trim() : "";
+    const applyTo = (c) => {
+      if (c.short_token !== short_token) return c;
+      const { paused_at: _a, paused_reason: _r, ...rest } = c;
+      if (!pausedAtIso) return rest;
+      const next = { ...rest, paused_at: pausedAtIso };
+      if (cleanReason) next.paused_reason = cleanReason;
+      return next;
+    };
+    setCampaigns((prev) => prev.map(applyTo));
+    setDrawerCampaign((prev) => (prev ? applyTo(prev) : prev));
   }, []);
 
   // Encerramento antecipado otimista — espelha CampaignMenuV2.handleEarlyEndSaved.
@@ -398,6 +398,7 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
   }, []);
 
   return (
+    <TooltipProvider delayDuration={200}>
     <div className="min-h-screen w-full bg-canvas text-fg transition-colors">
       {/* Topbar */}
       <header className="sticky top-0 z-30 bg-canvas-elevated border-b border-border">
@@ -650,6 +651,7 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
         reportData={negotiationModal?.reportData}
       />
     </div>
+    </TooltipProvider>
   );
 }
 
