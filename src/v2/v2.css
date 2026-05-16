@@ -126,12 +126,18 @@
  * antecipado" no CampaignDrawer pra expandir suavemente quando
  * o admin clica no botão. Truque clássico do grid-template-rows
  * de 0fr → 1fr permite animar height: auto sem JS de medida.
+ *
+ * Grid-rows e opacity sincronizadas (ambas 300ms expo-out) pra
+ * que o "puxar a gaveta" e o "aparecer o conteúdo" terminem
+ * juntos — antes opacity completava 120ms antes do height, o
+ * que dava sensação de "o conteúdo apareceu e depois o espaço
+ * acabou de empurrar". Agora é um movimento só.
  * ─────────────────────────────────────────────────────────── */
 .action-expand {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows 320ms cubic-bezier(0.16, 1, 0.3, 1),
-              opacity 200ms ease-out;
+  transition: grid-template-rows 300ms cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 300ms cubic-bezier(0.16, 1, 0.3, 1);
   opacity: 0;
 }
 .action-expand.is-open {
@@ -144,4 +150,76 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .action-expand { transition: none; }
+}
+
+/* ───────────────────────────────────────────────────────────
+ * Drawer — entrance animations
+ * ───────────────────────────────────────────────────────────
+ * O Drawer base (src/ui/Drawer.jsx) é construído sobre
+ * Radix Dialog, que já aplica `data-state="open"` / `closed`
+ * no overlay e content. As classes abaixo plugam keyframes
+ * registrados em theme.css (`slide-in-from-right`, `fade-in`)
+ * via seletor de atributo — sem depender de Tailwind utilities
+ * (que com v4 sem `tailwindcss-animate` não funcionavam pra
+ * essas keyframes).
+ *
+ * Easing escolhido: `cubic-bezier(0.16, 1, 0.3, 1)` — expo-out
+ * de fato "premium" que decelera mais suave que o standard
+ * `(0.2, 0.8, 0.2, 1)`. Duração 320ms (vs 220ms anterior)
+ * dá tempo do olho acompanhar sem virar lento — diferença
+ * sutil mas perceptível como mais elegante.
+ *
+ * Saída fica em 200ms (mais snappy) pra não atrasar o admin
+ * que está fechando o drawer pra clicar em algo embaixo.
+ */
+.drawer-content[data-state="open"] {
+  animation: slide-in-from-right 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.drawer-content[data-state="closed"] {
+  animation: slide-out-to-right 200ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+.drawer-overlay[data-state="open"] {
+  animation: fade-in 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.drawer-overlay[data-state="closed"] {
+  animation: fade-out 200ms ease-in both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .drawer-content,
+  .drawer-overlay {
+    animation: none;
+  }
+}
+
+/* ───────────────────────────────────────────────────────────
+ * Drawer body — stagger interno das seções
+ * ───────────────────────────────────────────────────────────
+ * Quando o drawer abre, o painel inteiro slide da direita, mas
+ * o conteúdo interno ficava parado (parecia "pop"). Stagger
+ * dá sensação de orquestração — cada seção sobe levemente +
+ * fade-in com offset crescente. Total settle: ~480ms (200ms
+ * último delay + 280ms anim), em paralelo com o slide do painel.
+ *
+ * Translate de 8px é sutil — o olho percebe motion sem parecer
+ * que a seção "veio de longe". Easing igual ao do drawer pra
+ * consistência (expo-out elegante).
+ */
+@keyframes drawer-section-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.drawer-section-rise {
+  animation: drawer-section-rise 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.drawer-stagger-1 { animation-delay:  40ms; }
+.drawer-stagger-2 { animation-delay:  80ms; }
+.drawer-stagger-3 { animation-delay: 120ms; }
+.drawer-stagger-4 { animation-delay: 160ms; }
+.drawer-stagger-5 { animation-delay: 200ms; }
+@media (prefers-reduced-motion: reduce) {
+  .drawer-section-rise {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
 }

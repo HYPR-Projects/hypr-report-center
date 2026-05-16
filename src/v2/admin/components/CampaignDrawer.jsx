@@ -452,7 +452,7 @@ export function CampaignDrawer({
               continuam afetando ESTE token, mas o report público mostra
               dados unificados de todos os membros do grupo. */}
           {merge_id && (
-            <div className="mb-4 px-3 py-2 rounded-lg bg-signature/8 border border-signature/30 flex items-center gap-2">
+            <div className="drawer-section-rise mb-4 px-3 py-2 rounded-lg bg-signature/8 border border-signature/30 flex items-center gap-2">
               <span className="text-signature shrink-0">{ICON.merge}</span>
               <p className="text-xs text-fg-muted leading-snug">
                 <span className="text-fg font-semibold">Agrupado</span> com outros tokens deste cliente.
@@ -461,26 +461,33 @@ export function CampaignDrawer({
             </div>
           )}
 
-          {/* Date range — end destacado em vermelho/âmbar quando hoje/amanhã */}
-          <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-1">
-            Período
+          {/* Date range — end destacado em vermelho/âmbar quando hoje/amanhã.
+              Stagger interno: cada seção sobe 6px + fade com offset crescente
+              de 40ms entre elas. Roda em paralelo com o slide do painel
+              (drawer-content), dando sensação de "orquestrado, vivo" ao abrir. */}
+          <div className="drawer-section-rise">
+            <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-1">
+              Período
+            </div>
+            <DrawerDateRange startISO={start_date} endISO={end_date} />
           </div>
-          <DrawerDateRange startISO={start_date} endISO={end_date} />
 
           {/* Métricas */}
-          <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
-            Performance
-          </div>
-          <div className="grid grid-cols-2 gap-2 mb-5">
-            {display_pacing != null && <DrawerStat label="DSP Pacing" value={formatPacingValue(display_pacing)} colorClass={pacingColorClass(display_pacing)} />}
-            {video_pacing   != null && <DrawerStat label="VID Pacing" value={formatPacingValue(video_pacing)}   colorClass={pacingColorClass(video_pacing)} />}
-            {display_ctr    != null && <DrawerStat label="CTR"        value={formatPct(display_ctr, 2)} colorClass={ctrColorClass(display_ctr)} />}
-            {video_vtr      != null && <DrawerStat label="VTR"        value={formatPct(video_vtr, 1)}  colorClass={vtrColorClass(video_vtr)} />}
-            {(display_pacing == null && video_pacing == null) && (
-              <p className="col-span-2 text-xs text-fg-subtle italic">
-                Sem delivery ainda — campanha pode não ter começado.
-              </p>
-            )}
+          <div className="drawer-section-rise drawer-stagger-1">
+            <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
+              Performance
+            </div>
+            <div className="grid grid-cols-2 gap-2 mb-5">
+              {display_pacing != null && <DrawerStat label="DSP Pacing" value={formatPacingValue(display_pacing)} colorClass={pacingColorClass(display_pacing)} />}
+              {video_pacing   != null && <DrawerStat label="VID Pacing" value={formatPacingValue(video_pacing)}   colorClass={pacingColorClass(video_pacing)} />}
+              {display_ctr    != null && <DrawerStat label="CTR"        value={formatPct(display_ctr, 2)} colorClass={ctrColorClass(display_ctr)} />}
+              {video_vtr      != null && <DrawerStat label="VTR"        value={formatPct(video_vtr, 1)}  colorClass={vtrColorClass(video_vtr)} />}
+              {(display_pacing == null && video_pacing == null) && (
+                <p className="col-span-2 text-xs text-fg-subtle italic">
+                  Sem delivery ainda — campanha pode não ter começado.
+                </p>
+              )}
+            </div>
           </div>
 
           {/* Brand Safety pre-bid (ABS) — toggle pra cobrir casos onde o sinal
@@ -488,7 +495,7 @@ export function CampaignDrawer({
               Refetch da lista admin é responsabilidade do componente pai via
               onChange — backend já invalida o _list_cache, então só precisa
               forçar re-render. */}
-          <div className="mb-5">
+          <div className="drawer-section-rise drawer-stagger-2 mb-5">
             <AbsToggle
               shortToken={short_token}
               autoDetected={autoDetected}
@@ -499,34 +506,41 @@ export function CampaignDrawer({
           {/* Observação admin de pausa — quando campanha está pausada,
               mostra desde quando + motivo. Some assim que o admin retoma. */}
           {paused && (
-            <PausedNote pausedAt={paused_at} reason={paused_reason} />
+            <div className="drawer-section-rise drawer-stagger-3">
+              <PausedNote pausedAt={paused_at} reason={paused_reason} />
+            </div>
           )}
 
           {/* Observação admin de encerramento antecipado — só aparece se
               admin marcou. Mostra data definitiva + motivo (admin-only,
               não vai pro report do cliente). */}
           {earlyEnded && (
-            <EarlyEndedNote
-              date={early_end_date}
-              reason={early_end_reason}
-              originalEnd={end_date}
-            />
+            <div className="drawer-section-rise drawer-stagger-3">
+              <EarlyEndedNote
+                date={early_end_date}
+                reason={early_end_reason}
+                originalEnd={end_date}
+              />
+            </div>
           )}
 
           {/* Owners */}
-          <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
-            Owners
-          </div>
-          <div className="space-y-2 mb-5">
-            <OwnerRow role="cp" name={cpName} email={cp_email} />
-            <OwnerRow role="cs" name={csName} email={cs_email} />
+          <div className="drawer-section-rise drawer-stagger-4">
+            <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
+              Owners
+            </div>
+            <div className="space-y-2 mb-5">
+              <OwnerRow role="cp" name={cpName} email={cp_email} />
+              <OwnerRow role="cs" name={csName} email={cs_email} />
+            </div>
           </div>
 
           {/* Ações */}
-          <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
-            Ações
-          </div>
-          <div className="space-y-1.5">
+          <div className="drawer-section-rise drawer-stagger-5">
+            <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
+              Ações
+            </div>
+            <div className="space-y-1.5">
             {/* "Marcar como encerrada" — só aparece em campanhas aguardando
                 fechamento. Posicionado no topo porque é o CTA principal
                 quando o admin abre o drawer dessa campanha (ela apareceu
@@ -696,6 +710,7 @@ export function CampaignDrawer({
             <ActionButton icon={ICON.logo}   label="Trocar logo"               onClick={() => onLogo?.(short_token)} />
             <ActionButton icon={ICON.rmnd}   label="Gerenciar RMND (Amazon Ads)" onClick={() => onRmnd?.(short_token)} />
             <ActionButton icon={ICON.pdooh}  label="Gerenciar PDOOH"            onClick={() => onPdooh?.(short_token)} />
+          </div>
           </div>
         </DrawerBody>
 
@@ -913,7 +928,7 @@ function PauseForm({
           onChange={(e) => onReasonChange(e.target.value)}
           disabled={saving}
           placeholder="Ex: cliente solicitou pausa enquanto revê creative..."
-          className="mt-1 block w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm text-fg resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature/50"
+          className="mt-1 block w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm text-fg resize-none transition-shadow duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature/50"
         />
       </label>
       <div className="flex items-center justify-end gap-2 pt-1">
@@ -972,7 +987,7 @@ function EarlyEndForm({
           min={dateMin || undefined}
           max={dateMax || undefined}
           disabled={saving}
-          className="mt-1 block w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm font-mono tabular-nums text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
+          className="mt-1 block w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm font-mono tabular-nums text-fg transition-shadow duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
         />
       </label>
       <label className="block">
@@ -985,7 +1000,7 @@ function EarlyEndForm({
           onChange={(e) => onReasonChange(e.target.value)}
           disabled={saving}
           placeholder="Ex: cliente cancelou após problema na campanha X..."
-          className="mt-1 block w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm text-fg resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
+          className="mt-1 block w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm text-fg resize-none transition-shadow duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
         />
       </label>
       <div className="flex items-center justify-end gap-2 pt-1">

@@ -44,12 +44,12 @@ export const DrawerContent = forwardRef(function DrawerContent(
 ) {
   return (
     <Dialog.Portal>
-      {/* Backdrop sutil — admin V2 já usa cor escura, então 40% basta */}
+      {/* Backdrop sutil — admin V2 já usa cor escura, então 40% basta.
+          Animation via classe `drawer-overlay` (v2.css) que pluga as
+          keyframes do theme.css com easing expo-out 280ms. */}
       <Dialog.Overlay
         className={cn(
-          "fixed inset-0 z-40 bg-black/40 backdrop-blur-[2px]",
-          "data-[state=open]:animate-in data-[state=closed]:animate-out",
-          "data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0"
+          "drawer-overlay fixed inset-0 z-40 bg-black/40 backdrop-blur-[2px]"
         )}
       />
       <Dialog.Content
@@ -60,10 +60,11 @@ export const DrawerContent = forwardRef(function DrawerContent(
           widthClass,
           "bg-canvas-elevated border-l border-border shadow-2xl",
           "flex flex-col outline-none",
-          // Animations via tailwindcss-animate (já registrado no theme.css)
-          "data-[state=open]:animate-in data-[state=closed]:animate-out",
-          "data-[state=open]:slide-in-from-right data-[state=closed]:slide-out-to-right",
-          "duration-200 ease-out",
+          // Animation: classe `drawer-content` (v2.css) pluga slide-in
+          // expo-out 320ms quando data-state=open. Tailwind v4 sem
+          // `tailwindcss-animate` não registra `animate-in/slide-*` como
+          // utilities — então deixamos a animação no CSS dedicado.
+          "drawer-content",
           className
         )}
         {...rest}
