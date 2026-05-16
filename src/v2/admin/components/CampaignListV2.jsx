@@ -243,7 +243,9 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
               fechar
             </span>
           )}
-          {earlyEnded && (
+          {/* Chip "antecipada" só após early_end_date passar (status=ended).
+              Antes disso, o admin vê o estado no drawer mas não polui a row. */}
+          {ended && earlyEnded && (
             <span
               className="text-[8.5px] uppercase tracking-widest font-bold text-danger px-1 rounded bg-danger-soft border border-danger/30"
               title="Encerrada antes do previsto — motivo no drawer (admin)"

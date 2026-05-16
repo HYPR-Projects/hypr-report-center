@@ -989,12 +989,20 @@ def report_data(request):
                 return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
             if not early_end_date:
                 return (jsonify({"error": "early_end_date é obrigatório (YYYY-MM-DD)"}), 400, headers)
-            # Validação leve do formato — BQ aborta se receber lixo, mas
-            # devolver erro 400 limpo é melhor UX que 500.
+            # Validação de formato + range (start_date ≤ early ≤ end_date original).
+            # Backend é a fonte de verdade — frontend aplica o mesmo cap como UX,
+            # mas API direto via curl/Postman precisa rejeitar lixo.
             try:
-                date.fromisoformat(early_end_date)
+                early_d = date.fromisoformat(early_end_date)
             except ValueError:
                 return (jsonify({"error": "early_end_date inválido — use YYYY-MM-DD"}), 400, headers)
+            campaign_range = _get_campaign_date_range(short_token)
+            if campaign_range:
+                start_d, end_d = campaign_range
+                if start_d and early_d < start_d:
+                    return (jsonify({"error": "early_end_date não pode ser anterior ao início da campanha"}), 400, headers)
+                if end_d and early_d > end_d:
+                    return (jsonify({"error": "early_end_date não pode ser posterior ao fim original da campanha"}), 400, headers)
             save_campaign_early_end(short_token, early_end_date, reason, ended_by=admin.get("email"))
             _cache_invalidate_token(short_token)
             return (jsonify({"ok": True}), 200, headers)
@@ -3037,6 +3045,27 @@ def delete_campaign_early_end(short_token: str):
     bq.query(sql, job_config=job_config).result()
 
 
+def _get_campaign_date_range(short_token: str):
+    """Retorna (start_date, end_date) da campanha em `campaign_results` ou
+    None se token não existe / sem dados. Usado pra validar range do
+    encerramento antecipado no endpoint. Datas vêm como `date` (BQ DATE)."""
+    sql = f"""
+        SELECT MAX(start_date) AS start_date, MAX(end_date) AS end_date
+        FROM {table_ref()}
+        WHERE short_token = @token
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("token", "STRING", short_token)]
+    )
+    try:
+        rows = list(bq.query(sql, job_config=job_config).result())
+        if rows and rows[0]["start_date"] and rows[0]["end_date"]:
+            return (rows[0]["start_date"], rows[0]["end_date"])
+    except Exception as e:
+        logger.warning(f"[WARN _get_campaign_date_range] {e}")
+    return None
+
+
 def query_all_early_ends() -> dict:
     """Retorna {short_token: {early_end_date_iso, reason, ended_by}} de
     todos os encerramentos antecipados. Tabela pequena — full scan + cache."""
@@ -4345,14 +4374,13 @@ def query_campaigns_list():
         # contra o contrato original pra mostrar a "perda". Frontend usa
         # early_end_date só pra display do período e badge de status.
         # `early_end_reason` é admin-only — não vai pro report do cliente
-        # (que usa endpoint separado, /api?token=X).
+        # (que usa endpoint separado, /api?token=X). `ended_by` fica só no
+        # banco — não tem UI consumindo, sai do payload pra economizar bytes.
         early = early_map.get(r["short_token"])
         if early:
             entry["early_end_date"]   = early["early_end_date"]
             if early.get("reason"):
                 entry["early_end_reason"] = early["reason"]
-            if early.get("ended_by"):
-                entry["early_ended_by"]   = early["ended_by"]
 
         result.append(entry)
 

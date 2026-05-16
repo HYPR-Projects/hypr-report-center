@@ -226,7 +226,11 @@ export function CampaignCardV2({
             {has_abs && <AbsBadge />}
             {paused && <PausedBadge />}
             {awaiting && <AwaitingClosureBadge />}
-            {earlyEnded && <EarlyEndedBadge />}
+            {/* Badge "antes do previsto" só aparece quando a campanha já está
+                de fato encerrada (status="ended"). Setar early_end_date no
+                futuro ou em hoje (efetivo só amanhã) NÃO dispara o badge —
+                ele entra em cena assim que a data passa. */}
+            {ended && earlyEnded && <EarlyEndedBadge />}
             {ended && !earlyEnded && (
               <span className="text-[9px] uppercase tracking-widest font-bold text-fg-subtle">
                 encerrada

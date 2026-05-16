@@ -552,6 +552,16 @@ export async function saveAbsOverride({ short_token, has_abs }) {
  *
  * Lança em status != 2xx pra o caller propagar o erro pra UI.
  */
+/** Lê o `error` do body em respostas != 2xx pra dar mensagem útil pro caller
+ *  (ex: "early_end_date não pode ser posterior ao fim..."). Fallback pra
+ *  HTTP status quando o body não é JSON. */
+async function throwIfNotOk(r) {
+  if (r.ok) return r;
+  let msg = `HTTP ${r.status}`;
+  try { const d = await r.json(); if (d?.error) msg = d.error; } catch { /* ignore */ }
+  throw new Error(msg);
+}
+
 export async function saveCampaignClosure({ short_token, closed }) {
   const jwt = await getOrIssueAdminJwt();
   const r = await postJson(
@@ -559,8 +569,7 @@ export async function saveCampaignClosure({ short_token, closed }) {
     { short_token, closed: !!closed },
     adminAuthHeaders(jwt),
   );
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r;
+  return throwIfNotOk(r);
 }
 
 /**
@@ -578,8 +587,7 @@ export async function saveCampaignPause({ short_token, paused }) {
     { short_token, paused: !!paused },
     adminAuthHeaders(jwt),
   );
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r;
+  return throwIfNotOk(r);
 }
 
 /**
@@ -598,12 +606,7 @@ export async function saveCampaignEarlyEnd({ short_token, early_end_date, reason
     { short_token, early_end_date, reason: reason || "" },
     adminAuthHeaders(jwt),
   );
-  if (!r.ok) {
-    let msg = `HTTP ${r.status}`;
-    try { const d = await r.json(); if (d?.error) msg = d.error; } catch { /* ignore */ }
-    throw new Error(msg);
-  }
-  return r;
+  return throwIfNotOk(r);
 }
 
 /**
@@ -618,8 +621,7 @@ export async function clearCampaignEarlyEnd({ short_token }) {
     { short_token },
     adminAuthHeaders(jwt),
   );
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r;
+  return throwIfNotOk(r);
 }
 
 // ── Survey (admin) ───────────────────────────────────────────────────────────

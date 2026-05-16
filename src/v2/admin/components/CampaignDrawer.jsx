@@ -285,10 +285,14 @@ export function CampaignDrawer({
     status === "in_flight" || status === "paused" || status === "awaiting_closure"
   );
 
-  // Limites do input de data: min = start_date, max = end_date original.
-  // O backend não valida o range — confiamos no input do navegador + UX.
+  // Limites do input de data: min = start_date, max = min(end_date, hoje).
+  // "Antecipado" implica que a campanha já terminou — não faz sentido
+  // agendar pro futuro. Backend valida o mesmo range; o cap aqui é UX.
+  const todayISO = new Date().toISOString().slice(0, 10);
   const earlyEndDateMin = start_date || "";
-  const earlyEndDateMax = end_date   || "";
+  const earlyEndDateMax = end_date
+    ? (end_date < todayISO ? end_date : todayISO)
+    : todayISO;
 
   const handleCloseCampaign = async () => {
     if (!short_token || closureBusy === "saving") return;
