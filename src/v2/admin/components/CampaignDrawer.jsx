@@ -317,12 +317,22 @@ export function CampaignDrawer({
     setPauseBusy("saving");
     try {
       await saveCampaignPause({ short_token, paused: nextPaused });
-      setPauseBusy("idle"); // toggle limpo — sem estado de "done" persistente
+      setPauseBusy("done"); // dispara animação de sucesso no botão
       onPauseChange?.(short_token, nextPaused);
+      // Auto-reset pro estado idle depois da animação completar.
+      // useEffect abaixo agenda e cancela em unmount.
     } catch {
       setPauseBusy("error");
     }
   };
+  // Reset automático do "done" pra "idle" depois que a animação de sucesso
+  // do toggle de pausa termina (~1.5s — janela suficiente pro pop+halo).
+  // Mantemos o setTimeout aqui pra que unmount do componente cancele.
+  useEffect(() => {
+    if (pauseBusy !== "done") return;
+    const t = setTimeout(() => setPauseBusy("idle"), 1500);
+    return () => clearTimeout(t);
+  }, [pauseBusy]);
 
   const handleOpenEarlyEndForm = () => {
     // Pré-popula com hoje (default mais comum — campanha encerrou hoje).
@@ -513,18 +523,27 @@ export function CampaignDrawer({
                 onClick={handleOpenEarlyEndForm}
               />
             )}
-            {showEarlyEndForm && (
-              <EarlyEndForm
-                dateValue={earlyEndDateInput}
-                onDateChange={setEarlyEndDateInput}
-                reasonValue={earlyEndReasonInput}
-                onReasonChange={setEarlyEndReasonInput}
-                dateMin={earlyEndDateMin}
-                dateMax={earlyEndDateMax}
-                busy={earlyEndBusy}
-                onConfirm={handleConfirmEarlyEnd}
-                onCancel={() => setShowEarlyEndForm(false)}
-              />
+            {/* Form de encerramento antecipado: sempre montado quando o botão
+                "Encerrar" é elegível, mas com grid-rows=0fr quando fechado.
+                Truque permite animar height: auto sem JS de medida — entrada
+                fica fluida tipo "abriu uma gaveta". `inert` evita foco em
+                inputs invisíveis (a11y). */}
+            {canEarlyEnd && (
+              <div className={cn("action-expand", showEarlyEndForm && "is-open")}>
+                <div className="action-expand-content" inert={!showEarlyEndForm || undefined}>
+                  <EarlyEndForm
+                    dateValue={earlyEndDateInput}
+                    onDateChange={setEarlyEndDateInput}
+                    reasonValue={earlyEndReasonInput}
+                    onReasonChange={setEarlyEndReasonInput}
+                    dateMin={earlyEndDateMin}
+                    dateMax={earlyEndDateMax}
+                    busy={earlyEndBusy}
+                    onConfirm={handleConfirmEarlyEnd}
+                    onCancel={() => setShowEarlyEndForm(false)}
+                  />
+                </div>
+              </div>
             )}
             {earlyEnded && (
               <ActionButton
@@ -546,21 +565,28 @@ export function CampaignDrawer({
               <ActionButton
                 icon={
                   pauseBusy === "saving" ? <Spinner />
+                  : pauseBusy === "done"
+                    // Após o toggle aplicar, `paused` reflete o NOVO estado.
+                    // Pausada → halo signature azul (cor da pausa). Retomada →
+                    // halo success verde (de volta ao ativo).
+                    ? (paused ? <PauseSuccessIcon /> : <ResumeSuccessIcon />)
                   : paused ? ICON.resume
                   : ICON.pause
                 }
                 label={
                   pauseBusy === "saving" ? (paused ? "Retomando..." : "Pausando...")
+                  : pauseBusy === "done"  ? (paused ? "Pausada!" : "Retomada!")
                   : pauseBusy === "error" ? "Erro — tentar de novo"
                   : paused ? "Retomar campanha"
                   : "Pausar campanha"
                 }
                 variant={
-                  pauseBusy === "error" ? "danger"
+                  pauseBusy === "done"  ? (paused ? "highlight" : "success")
+                  : pauseBusy === "error" ? "danger"
                   : paused ? "highlight"  // signature — campanha pausada destaca o "retomar"
                   : "default"
                 }
-                disabled={pauseBusy === "saving"}
+                disabled={pauseBusy === "saving" || pauseBusy === "done"}
                 onClick={handleTogglePause}
               />
             )}
@@ -851,6 +877,66 @@ function Spinner() {
  * da path, deixando a animação independente da geometria exata.
  */
 function ClosureSuccessIcon() {
+  return (
+    <span className="closure-icon-pop relative inline-flex items-center justify-center w-[14px] h-[14px]">
+      <span
+        aria-hidden="true"
+        className="closure-halo absolute rounded-full bg-success pointer-events-none"
+        style={{ width: 26, height: 26 }}
+      />
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="relative"
+      >
+        <path className="closure-check-path" pathLength="100" d="M20 6 9 17l-5-5" />
+      </svg>
+    </span>
+  );
+}
+
+/**
+ * Ícone animado disparado quando o admin acabou de pausar uma campanha.
+ * Reusa as mesmas keyframes do ClosureSuccessIcon (check draw + halo +
+ * pop) mas com halo em signature blue, casando com a cor da família
+ * "pausada" e diferenciando visualmente do fechamento (verde).
+ */
+function PauseSuccessIcon() {
+  return (
+    <span className="closure-icon-pop relative inline-flex items-center justify-center w-[14px] h-[14px]">
+      <span
+        aria-hidden="true"
+        className="closure-halo absolute rounded-full bg-signature pointer-events-none"
+        style={{ width: 26, height: 26 }}
+      />
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="relative"
+      >
+        <path className="closure-check-path" pathLength="100" d="M20 6 9 17l-5-5" />
+      </svg>
+    </span>
+  );
+}
+
+/**
+ * Ícone animado disparado quando o admin acabou de retomar uma campanha.
+ * Halo success green sugere "voltou ao ativo, bom".
+ */
+function ResumeSuccessIcon() {
   return (
     <span className="closure-icon-pop relative inline-flex items-center justify-center w-[14px] h-[14px]">
       <span

@@ -120,3 +120,28 @@
   .closure-halo       { animation: none; opacity: 0; }
   .closure-icon-pop   { animation: none; }
 }
+
+/* ───────────────────────────────────────────────────────────
+ * Action expand-collapse — usado pelo form de "Encerramento
+ * antecipado" no CampaignDrawer pra expandir suavemente quando
+ * o admin clica no botão. Truque clássico do grid-template-rows
+ * de 0fr → 1fr permite animar height: auto sem JS de medida.
+ * ─────────────────────────────────────────────────────────── */
+.action-expand {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 320ms cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 200ms ease-out;
+  opacity: 0;
+}
+.action-expand.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.action-expand > .action-expand-content {
+  overflow: hidden;
+  min-height: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .action-expand { transition: none; }
+}
