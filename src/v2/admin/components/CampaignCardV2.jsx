@@ -48,6 +48,7 @@ import {
   getDateRangeParts,
   endUrgencyClass,
   isEarlyEnded,
+  isRecentlyStarted,
   localPartFromEmail,
 } from "../lib/format";
 import { schedulePrefetch, cancelPrefetch } from "../../../lib/prefetchReport";
@@ -119,6 +120,11 @@ export function CampaignCardV2({
     // campo em endpoints admin-gated; quando ausente (campanha sem dado
     // de custo no DSP), a coluna mostra "—" mantendo o alinhamento.
     admin_ecpm,
+    // Split por mídia — backend recente. Quando presente, a célula eCPM
+    // do card mostra DSP e VID empilhados com tier próprio (display vs
+    // video tem ordem de grandeza diferente). admin_ecpm vira fallback.
+    display_ecpm,
+    video_ecpm,
     // Merge Reports — quando presente, indica que o token pertence a um
     // grupo unificado. UI sinaliza com badge discreto no header do card.
     merge_id,
@@ -155,6 +161,10 @@ export function CampaignCardV2({
   const ended   = status === "ended";
   const awaiting = status === "awaiting_closure";
   const paused  = status === "paused";
+  // NEW badge: in-flight ou pausada (campanha viva) + start_date ≤ 2 dias atrás.
+  // Não aparece em encerrada/awaiting — não faz sentido sinalizar "nova" em
+  // campanha que já terminou.
+  const isNew   = !ended && !awaiting && isRecentlyStarted(start_date);
   const health  = ended    ? "ended"
                 : awaiting ? "awaiting"
                 : paused   ? "paused"
@@ -169,6 +179,40 @@ export function CampaignCardV2({
   // de mostrar "—", pra não poluir o scan com placeholders.
   const hasDisplay = display_pacing != null || display_ctr != null;
   const hasVideo   = video_pacing   != null || video_vtr   != null;
+
+  // Linhas de eCPM a exibir na célula. Régua:
+  //   • Mix (DSP + VID): mostra split (display_ecpm + video_ecpm) com tier
+  //     próprio por mídia. Sem split disponível → fallback usando admin_ecpm
+  //     no tier de display (rótulo neutro, sem DSP/VID).
+  //   • Só display: 1 linha, sem rótulo, tier display (com ABS se aplicável).
+  //   • Só vídeo: 1 linha, sem rótulo, tier video.
+  // Quando label === null, a linha não mostra prefixo DSP/VID — usado pra
+  // single-format ou fallback legado pra não poluir o card.
+  const ecpmRows = (() => {
+    if (hasDisplay && hasVideo) {
+      const dVal = display_ecpm ?? null;
+      const vVal = video_ecpm ?? null;
+      // Se backend ainda não manda split nessa campanha, cai pra admin_ecpm
+      // único (tier display — escolha conservadora) sem rótulo.
+      if (dVal == null && vVal == null && admin_ecpm != null) {
+        return [{ label: null, value: admin_ecpm, kind: display_has_abs ? "displayAbs" : "display" }];
+      }
+      return [
+        { label: "DSP", value: dVal, kind: display_has_abs ? "displayAbs" : "display" },
+        { label: "VID", value: vVal, kind: "video" },
+      ];
+    }
+    if (hasDisplay) {
+      return [{ label: null, value: display_ecpm ?? admin_ecpm, kind: display_has_abs ? "displayAbs" : "display" }];
+    }
+    if (hasVideo) {
+      return [{ label: null, value: video_ecpm ?? admin_ecpm, kind: "video" }];
+    }
+    // Nenhum formato detectado (campanha brand-new sem dados): mostra a célula
+    // vazia com "—" pra manter alinhamento entre linhas.
+    return [{ label: null, value: null, kind: "display" }];
+  })();
+  const ecpmIsSplit = ecpmRows.length > 1;
 
   return (
     <Card
@@ -226,6 +270,7 @@ export function CampaignCardV2({
               {client_name}
             </h3>
             <TokenChip token={short_token} variant="card" />
+            {isNew && <NewBadge />}
             {merge_id && <MergedBadge />}
             {is_bonus_only && <BonusBadge />}
             {has_abs && <AbsBadge />}
@@ -281,36 +326,78 @@ export function CampaignCardV2({
         <Divider />
 
         {/* ── eCPM REAL (admin-only, destaque) ─────────────────────────
-            Coluna com bg pastel sinalizando o tier (verde/amarelo/vermelho
-            soft do design system, alpha 0.15 → naturalmente pastel).
-            Texto fica neutro — a cor do box é que comunica saúde, deixa
-            o número clean. Encerrada vira bg-surface neutro pra não
-            alarmar campanha histórica. Quando admin_ecpm é null mostra
-            "—" pra manter alinhamento entre linhas. */}
-        <div
-          className={cn(
-            "hidden md:flex flex-col justify-center shrink-0 w-[96px]",
-            "px-2.5 py-1.5 rounded-md transition-colors",
-            ended ? "bg-surface" : ecpmBgClass(admin_ecpm)
+            Layout dual:
+              • Single-format ou fallback legado: bloco grande tintado
+                (recipe original) — uma linha visual.
+              • Mix DSP+VID: header "eCPM ADM" + 2 mini-pills empilhadas,
+                cada uma tintada com seu próprio tier (display vs video).
+            Tier vem de `ecpmBgClass(value, kind)` — display/displayAbs/video
+            tem réguas em ordem de grandeza diferente (R$ 0,80 é catastrófico
+            em display, ótimo em vídeo). Encerrada vira bg-surface neutro.
+            Largura cresce 96→112px quando split pra acomodar "VID R$ 0,00". */}
+        <div className={cn(
+          "hidden md:flex flex-col justify-center shrink-0",
+          ecpmIsSplit ? "w-[112px]" : "w-[96px]"
+        )}>
+          {ecpmIsSplit ? (
+            <>
+              <div className="flex items-baseline gap-1 leading-none px-1 mb-1">
+                <span className="text-[9px] uppercase tracking-[0.14em] font-bold text-fg-muted">
+                  eCPM
+                </span>
+                <span
+                  className="text-[7.5px] uppercase tracking-widest font-semibold text-fg-subtle/70"
+                  title="Custo bruto do DSP / impressions × 1000 — não exibir para o cliente"
+                >
+                  adm
+                </span>
+              </div>
+              <div className="flex flex-col gap-1">
+                {ecpmRows.map((row) => (
+                  <div
+                    key={row.label}
+                    className={cn(
+                      "flex items-center justify-between gap-1.5 px-1.5 py-0.5 rounded transition-colors",
+                      ended ? "bg-surface" : ecpmBgClass(row.value, row.kind)
+                    )}
+                  >
+                    <span className="text-[8.5px] uppercase tracking-widest font-bold text-fg-subtle">
+                      {row.label}
+                    </span>
+                    <span className={cn(
+                      "text-[12px] font-bold tabular-nums tracking-tight",
+                      ended ? "text-fg-subtle" : "text-fg"
+                    )}>
+                      {formatBRL(row.value)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className={cn(
+              "px-2.5 py-1.5 rounded-md transition-colors",
+              ended ? "bg-surface" : ecpmBgClass(ecpmRows[0].value, ecpmRows[0].kind)
+            )}>
+              <div className="flex items-baseline gap-1 leading-none">
+                <span className="text-[9px] uppercase tracking-[0.14em] font-bold text-fg-muted">
+                  eCPM
+                </span>
+                <span
+                  className="text-[7.5px] uppercase tracking-widest font-semibold text-fg-subtle/70"
+                  title="Custo bruto do DSP / impressions × 1000 — não exibir para o cliente"
+                >
+                  adm
+                </span>
+              </div>
+              <span className={cn(
+                "text-[14px] font-bold tabular-nums tracking-tight mt-1 block",
+                ended ? "text-fg-subtle" : "text-fg"
+              )}>
+                {formatBRL(ecpmRows[0].value)}
+              </span>
+            </div>
           )}
-        >
-          <div className="flex items-baseline gap-1 leading-none">
-            <span className="text-[9px] uppercase tracking-[0.14em] font-bold text-fg-muted">
-              eCPM
-            </span>
-            <span
-              className="text-[7.5px] uppercase tracking-widest font-semibold text-fg-subtle/70"
-              title="Custo bruto do DSP / impressions × 1000 — não exibir para o cliente"
-            >
-              adm
-            </span>
-          </div>
-          <span className={cn(
-            "text-[14px] font-bold tabular-nums tracking-tight mt-1",
-            ended ? "text-fg-subtle" : "text-fg"
-          )}>
-            {formatBRL(admin_ecpm)}
-          </span>
         </div>
 
         <Divider />
@@ -419,6 +506,37 @@ function DateRangeLine({ startISO, endISO }) {
     <p className="text-[10.5px] text-fg-subtle mt-0.5 tabular-nums">
       {parts.startStr} → <span className={cls}>{parts.endStr}</span>
     </p>
+  );
+}
+
+/**
+ * Badge "NEW" — campanha entrou em vôo nas últimas 48h. Visualmente
+ * diferente dos outros badges (que são bordered-soft pastel) por design:
+ * recipe FILLED com gradient signature + texto branco + shine sweep
+ * contínuo (CSS em v2.css `.badge-new`). A inversão de recipe carrega
+ * o sinal "isto é diferente, repare aqui" sem precisar de cor extra.
+ *
+ * Sumir automaticamente: a flag vem de `isRecentlyStarted(start_date)`,
+ * que recalcula a cada render. Não há mutation/cron — após 48h do start
+ * o badge simplesmente para de renderizar.
+ */
+function NewBadge() {
+  return (
+    <span
+      className="badge-new badge-pop-in relative overflow-hidden inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-white px-1.5 py-0.5 rounded"
+      title="Campanha nova — está em vôo há ≤ 2 dias"
+    >
+      <svg
+        className="relative z-[1]"
+        width="9" height="9"
+        viewBox="0 0 24 24"
+        fill="currentColor"
+        aria-hidden="true"
+      >
+        <path d="M12 1.5l2.6 6.3 6.4.6-4.9 4.4 1.5 6.3L12 15.8 6.4 19.1l1.5-6.3L3 8.4l6.4-.6L12 1.5z" />
+      </svg>
+      <span className="relative z-[1]">new</span>
+    </span>
   );
 }
 

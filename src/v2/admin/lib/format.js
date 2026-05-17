@@ -93,22 +93,57 @@ export function vtrColorClass(vtr) {
  *   amarelo:         /12 (saturação do warning é mais baixa, precisa um
  *                         pouco mais de alpha pra não sumir contra fundo)
  *
- * Usado no card admin (Por mês + Por cliente) pra sinalizar saúde
- * via tint do box em vez do texto — mais minimalista, deixa o número
- * neutro pra leitura limpa.
+ * Thresholds por mídia (em R$):
+ *   display              <0,70 verde · 0,70–0,80 amarelo · ≥0,80 vermelho
+ *   display+ABS          <1,50 verde · 1,50–1,80 amarelo · ≥1,80 vermelho
+ *   video                <3,00 verde · 3,00–3,50 amarelo · ≥3,50 vermelho
  *
- * Tiers (em R$):
- *   < 0,70   verde   (abaixo do alvo — ótima margem)
- *   0,70–0,80  amarelo (atenção — perto do teto)
- *   ≥ 0,80   vermelho (acima do alvo — margem comprimida)
+ * Por que régua separada por mídia:
+ *   • Display com ABS (DV/IAS pre-bid) tem CPM estruturalmente ~2x mais
+ *     caro — usar a régua de display sem ABS pintava tudo vermelho injustamente.
+ *   • Vídeo (instream/CTV) opera em ordem de grandeza diferente — eCPM de
+ *     R$ 2,50 é ótimo em vídeo mas catastrófico em display.
  *
- * Sem dado / sem dinheiro → bg-surface neutro (não polui visualmente).
+ * Em campanhas mistas (display+vídeo) o caller deve chamar este helper
+ * uma vez por mídia com o eCPM separado (display_ecpm / video_ecpm),
+ * não com o blended admin_ecpm.
+ *
+ * `kind`: "display" (default) | "displayAbs" | "video"
+ * Sem dado → bg-surface neutro (não polui visualmente).
  */
-export function ecpmBgClass(ecpm) {
+const ECPM_TIERS = {
+  display:    { healthy: 0.70, warning: 0.80 },
+  displayAbs: { healthy: 1.50, warning: 1.80 },
+  video:      { healthy: 3.00, warning: 3.50 },
+};
+
+export function ecpmBgClass(ecpm, kind = "display") {
   if (ecpm == null || isNaN(ecpm)) return "bg-surface";
-  if (ecpm < 0.70) return "bg-success/8";
-  if (ecpm < 0.80) return "bg-warning/12";
+  const tiers = ECPM_TIERS[kind] || ECPM_TIERS.display;
+  if (ecpm < tiers.healthy) return "bg-success/8";
+  if (ecpm < tiers.warning) return "bg-warning/12";
   return "bg-danger/8";
+}
+
+/**
+ * Campanha recém-iniciada — true quando today − start_date ∈ [0, 2] dias.
+ *
+ * Usado pelo NewBadge no card admin. Some sozinho 48h depois do start_date,
+ * sem precisar de cron — re-render diário recalcula. start_date no futuro
+ * NÃO marca como nova (espera o vôo começar).
+ *
+ * Não temos `created_at` no payload, então start_date é a melhor proxy —
+ * de qualquer forma é o que importa pra operação (campanha em vôo há ≤2d
+ * = monitora atentamente as primeiras impressões).
+ */
+export function isRecentlyStarted(startISO) {
+  if (!startISO) return false;
+  const s = new Date(startISO);
+  if (isNaN(s.getTime())) return false;
+  const now = new Date();
+  const todayUTC = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const daysSinceStart = Math.floor((todayUTC - s.getTime()) / 86400000);
+  return daysSinceStart >= 0 && daysSinceStart <= 2;
 }
 
 /**
