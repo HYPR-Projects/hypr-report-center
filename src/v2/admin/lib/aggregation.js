@@ -508,8 +508,12 @@ function scoreCampaignDetailed(c) {
 
 export function computeTopPerformers(campaigns, ownerKey = "cs_email") {
   const today = TODAY();
+  // Campanha entra no ranking quando está EM VÔO: end_date >= hoje + não pausada.
+  // Paused (paused_at != null) tem performance congelada no momento da pausa —
+  // entrar no score do owner premia/penaliza algo que não está sob ação ativa.
+  // Quando a campanha despausar, volta automaticamente ao cálculo.
   const active = (campaigns || []).filter(
-    (c) => c.end_date && c.end_date.slice(0, 10) >= today
+    (c) => c.end_date && c.end_date.slice(0, 10) >= today && !c.paused_at
   );
 
   const byOwner = new Map();
