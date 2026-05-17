@@ -329,51 +329,49 @@ export function CampaignCardV2({
             Layout dual:
               • Single-format ou fallback legado: bloco grande tintado
                 (recipe original) — uma linha visual.
-              • Mix DSP+VID: header "eCPM ADM" + 2 mini-pills empilhadas,
+              • Mix DSP+VID: header "eCPM ADM" + 2 mini-pills LADO A LADO,
                 cada uma tintada com seu próprio tier (display vs video).
             Tier vem de `ecpmBgClass(value, kind)` — display/displayAbs/video
             tem réguas em ordem de grandeza diferente (R$ 0,80 é catastrófico
             em display, ótimo em vídeo). Encerrada vira bg-surface neutro.
-            Largura cresce 96→112px quando split pra acomodar "VID R$ 0,00". */}
+            Split: cada mini-pill ≈72px (um pouco mais estreito que o single
+            96px) lado a lado, total 148px. Mesmo recipe visual do single
+            (label superior + valor centrado) — só com label do formato
+            substituindo "ECPM ADM" em cada pill. */}
         <div className={cn(
           "hidden md:flex flex-col justify-center shrink-0",
-          ecpmIsSplit ? "w-[112px]" : "w-[96px]"
+          ecpmIsSplit ? "w-[148px]" : "w-[96px]"
         )}>
           {ecpmIsSplit ? (
-            <>
-              <div className="flex items-baseline gap-1 leading-none px-1 mb-1">
-                <span className="text-[9px] uppercase tracking-[0.14em] font-bold text-fg-muted">
-                  eCPM
-                </span>
-                <span
-                  className="text-[7.5px] uppercase tracking-widest font-semibold text-fg-subtle/70"
-                  title="Custo bruto do DSP / impressions × 1000 — não exibir para o cliente"
+            <div className="flex gap-1">
+              {ecpmRows.map((row) => (
+                <div
+                  key={row.label}
+                  className={cn(
+                    "flex-1 min-w-0 px-2 py-1.5 rounded-md transition-colors",
+                    ended ? "bg-surface" : ecpmBgClass(row.value, row.kind)
+                  )}
                 >
-                  adm
-                </span>
-              </div>
-              <div className="flex flex-col gap-1">
-                {ecpmRows.map((row) => (
-                  <div
-                    key={row.label}
-                    className={cn(
-                      "flex items-center justify-between gap-1.5 px-1.5 py-0.5 rounded transition-colors",
-                      ended ? "bg-surface" : ecpmBgClass(row.value, row.kind)
-                    )}
-                  >
-                    <span className="text-[8.5px] uppercase tracking-widest font-bold text-fg-subtle">
+                  <div className="flex items-baseline gap-1 leading-none">
+                    <span className="text-[9px] uppercase tracking-[0.14em] font-bold text-fg-muted">
                       {row.label}
                     </span>
-                    <span className={cn(
-                      "text-[12px] font-bold tabular-nums tracking-tight",
-                      ended ? "text-fg-subtle" : "text-fg"
-                    )}>
-                      {formatBRL(row.value)}
+                    <span
+                      className="text-[7.5px] uppercase tracking-widest font-semibold text-fg-subtle/70"
+                      title="Custo bruto do DSP / impressions × 1000 — não exibir para o cliente"
+                    >
+                      adm
                     </span>
                   </div>
-                ))}
-              </div>
-            </>
+                  <span className={cn(
+                    "text-[12px] font-bold tabular-nums tracking-tight mt-1 block",
+                    ended ? "text-fg-subtle" : "text-fg"
+                  )}>
+                    {formatBRL(row.value)}
+                  </span>
+                </div>
+              ))}
+            </div>
           ) : (
             <div className={cn(
               "px-2.5 py-1.5 rounded-md transition-colors",
