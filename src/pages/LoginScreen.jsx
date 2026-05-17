@@ -55,16 +55,27 @@ const LoginScreen = ({ onLogin }) => {
     });
   },[]);
   return (
-    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:`radial-gradient(ellipse at 30% 50%,${C.dark3},${C.dark})`,padding:24}}>
+    <div className="login-bg" style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:`radial-gradient(ellipse at 30% 50%,${C.dark3},${C.dark})`,padding:24}}>
       <GlobalStyle/>
-      <div className="fade-in" style={{background:C.dark2,border:`1px solid ${C.dark3}`,borderRadius:20,padding:"56px 48px",maxWidth:400,width:"100%",textAlign:"center",boxShadow:`0 32px 80px #00000060`}}>
-        <div style={{display:"flex",justifyContent:"center",color:"#FFFFFF"}}>
+      <style>{`
+        @keyframes login-bg-in{from{opacity:0}to{opacity:1}}
+        @keyframes login-card-in{from{opacity:0;transform:translateY(16px) scale(0.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+        @keyframes login-item-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+        .login-bg{animation:login-bg-in 420ms ease-out both}
+        .login-card{animation:login-card-in 560ms cubic-bezier(0.16,1,0.3,1) 80ms both}
+        .login-item{animation:login-item-in 420ms cubic-bezier(0.16,1,0.3,1) both;opacity:0}
+        @media(prefers-reduced-motion:reduce){
+          .login-bg,.login-card,.login-item{animation:none;opacity:1;transform:none}
+        }
+      `}</style>
+      <div className="login-card" style={{background:C.dark2,border:`1px solid ${C.dark3}`,borderRadius:20,padding:"56px 48px",maxWidth:400,width:"100%",textAlign:"center",boxShadow:`0 32px 80px #00000060`}}>
+        <div className="login-item" style={{display:"flex",justifyContent:"center",color:"#FFFFFF",animationDelay:"260ms"}}>
           <HyprReportCenterLogo height={36}/>
         </div>
-        <div style={{margin:"40px 0",height:1,background:C.dark3}}/>
-        <p style={{color:C.muted,fontSize:14,marginBottom:32,lineHeight:1.6}}>Acesso restrito à equipe HYPR.<br/>Faça login com seu email <strong style={{color:C.blueLight}}>@hypr.mobi</strong>.</p>
-        <div id="gbtn" style={{display:"flex",justifyContent:"center"}}/>
-        <p style={{marginTop:24,fontSize:12,color:`${C.muted}80`}}>Apenas contas @hypr.mobi são autorizadas</p>
+        <div className="login-item" style={{margin:"40px 0",height:1,background:C.dark3,animationDelay:"360ms"}}/>
+        <p className="login-item" style={{color:C.muted,fontSize:14,marginBottom:32,lineHeight:1.6,animationDelay:"420ms"}}>Acesso restrito à equipe HYPR.<br/>Faça login com seu email <strong style={{color:C.blueLight}}>@hypr.mobi</strong>.</p>
+        <div className="login-item" id="gbtn" style={{display:"flex",justifyContent:"center",animationDelay:"500ms"}}/>
+        <p className="login-item" style={{marginTop:24,fontSize:12,color:`${C.muted}80`,animationDelay:"580ms"}}>Apenas contas @hypr.mobi são autorizadas</p>
       </div>
     </div>
   );
