@@ -1870,6 +1870,14 @@ def report_data(request):
     # GET ?action=report_analytics — admin-only. Devolve TUDO que o modal
     # precisa em 1 round-trip (kpis + series + tabs + devices + heatmap +
     # sessions + tracking_start_date). Range em dias (default 30).
+    #
+    # PERFORMANCE: cada query no BQ leva 1-4s. Em sequência seriam 15s
+    # totais. Disparamos as 7 em PARALELO via _query_pool (já existe pra
+    # fetch_campaign_data) — tempo total = max(query individual) ≈ 3-4s.
+    #
+    # Cache em memória 60s: admin abre o mesmo modal várias vezes na
+    # sessão (ex: troca de campanha e volta) — primeira é cold, próximas
+    # são instantâneas. Cache key = (short_token, range_days, include_internal).
     if request.method == "GET" and request.args.get("action") == "report_analytics":
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
@@ -1884,15 +1892,30 @@ def report_data(request):
             range_days = max(1, min(range_days, 365))
             include_internal = request.args.get("include_internal", "").lower() == "true"
 
-            payload = {
-                "summary":              access_tracking.query_summary(short_token, range_days, include_internal),
-                "timeline":             access_tracking.query_timeline(short_token, range_days, include_internal),
-                "tabs":                 access_tracking.query_tabs_breakdown(short_token, range_days, include_internal),
-                "devices":              access_tracking.query_devices_breakdown(short_token, range_days, include_internal),
-                "heatmap":              access_tracking.query_heatmap(short_token, range_days, include_internal),
-                "recent_sessions":      access_tracking.query_recent_sessions(short_token, 8, include_internal),
-                "tracking_start_date":  access_tracking.query_tracking_start_date(),
+            # Cache hit? Retorna na hora. TTL curto pra não atrasar
+            # demais o reflexo de novos events (60s é bom trade-off:
+            # admin clicando rápido em modais não bate BQ várias vezes,
+            # mas dados ficam frescos o suficiente pra demos ao vivo).
+            cache_key = (short_token, range_days, include_internal)
+            cached = _cache_get(_analytics_cache, cache_key, _ANALYTICS_TTL)
+            if cached is not None:
+                return (jsonify(cached), 200, headers)
+
+            # Paralelização: 7 queries independentes disparadas no pool
+            # existente (16 workers). Tempo total ≈ max(query) em vez de
+            # sum(queries).
+            futures = {
+                "summary":             _query_pool.submit(access_tracking.query_summary,            short_token, range_days, include_internal),
+                "timeline":            _query_pool.submit(access_tracking.query_timeline,           short_token, range_days, include_internal),
+                "tabs":                _query_pool.submit(access_tracking.query_tabs_breakdown,     short_token, range_days, include_internal),
+                "devices":             _query_pool.submit(access_tracking.query_devices_breakdown,  short_token, range_days, include_internal),
+                "heatmap":             _query_pool.submit(access_tracking.query_heatmap,            short_token, range_days, include_internal),
+                "recent_sessions":     _query_pool.submit(access_tracking.query_recent_sessions,    short_token, 8, include_internal),
+                "tracking_start_date": _query_pool.submit(access_tracking.query_tracking_start_date),
             }
+            payload = {k: f.result() for k, f in futures.items()}
+
+            _cache_set(_analytics_cache, cache_key, payload)
             return (jsonify(payload), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR report_analytics] {e}")
@@ -5008,6 +5031,14 @@ def _fetch_typeform_form_def(form_id, token):
 _TYPEFORM_LIST_TTL = 300  # 5 min — listagem muda pouco no horizonte de uma sessão
 _TYPEFORM_META_TTL = 600  # 10 min — definição de form muda menos ainda
 _typeform_meta_cache = {}  # form_id -> (timestamp, payload)
+
+# Cache do report_analytics — endpoint pesado (7 queries BQ paralelas).
+# Hit cacheia a estrutura completa do modal por 60s. Cobre o caso comum
+# de admin fechar/reabrir o mesmo modal rápido + trocar range e voltar.
+# 60s é trade-off com frescor: events recentes refletem em até 1min,
+# aceitável pra um dashboard de engagement (não é real-time analytics).
+_ANALYTICS_TTL = 60
+_analytics_cache = {}  # (short_token, range_days, include_internal) -> (timestamp, payload)
 
 
 def _fetch_typeform_form_meta(form_id, token):

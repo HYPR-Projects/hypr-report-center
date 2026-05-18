@@ -589,6 +589,19 @@ def query_summary(short_token: str, range_days: int = 30, include_internal: bool
                 SUM(IF({today_session_filter}, active_duration_sec, 0)) AS sum_weighted_dur
             FROM today_sessions
         )
+        ,
+        -- last_access_at: combinado na MESMA query pra eliminar 2º round trip.
+        -- Antes era um SELECT separado depois — economiza ~1-2s de latência.
+        -- Filtra pelos events do dia mais recente (today se houve, senão
+        -- o último dia do rollup) — cluster por short_token + partition
+        -- por DAY deixa esse access cheap.
+        last_access AS (
+            SELECT MAX(e.created_at) AS last_at
+            FROM {_events_table_ref()} e, daily_agg d, today_agg t
+            WHERE e.short_token = @token
+              AND DATE(e.created_at, "America/Sao_Paulo") = IF(t.unique_sessions > 0, CURRENT_DATE("America/Sao_Paulo"), d.last_day)
+              AND ({"" if include_internal else "COALESCE(e.is_internal, FALSE) = FALSE"} {"AND TRUE" if include_internal else ""})
+        )
         SELECT
             d.total_pageviews + t.total_pageviews AS total_pageviews,
             d.unique_sessions + t.unique_sessions AS unique_sessions,
@@ -596,7 +609,8 @@ def query_summary(short_token: str, range_days: int = 30, include_internal: bool
                 d.sum_weighted_dur + t.sum_weighted_dur,
                 NULLIF(d.unique_sessions + t.unique_sessions, 0)
             ) AS avg_duration_sec,
-            IF(t.unique_sessions > 0, CURRENT_DATE("America/Sao_Paulo"), d.last_day) AS last_day
+            IF(t.unique_sessions > 0, CURRENT_DATE("America/Sao_Paulo"), d.last_day) AS last_day,
+            (SELECT last_at FROM last_access) AS last_access_at
         FROM daily_agg d CROSS JOIN today_agg t
     """
     job_config = bigquery.QueryJobConfig(
@@ -607,28 +621,9 @@ def query_summary(short_token: str, range_days: int = 30, include_internal: bool
     )
     row = next(iter(bq.query(sql, job_config=job_config).result()), None)
 
-    # last_access_at: granularidade hora/min, vem de events crus do
-    # dia mais recente que tem dado. Quando hoje tem evento, busca em
-    # CURRENT_DATE; senão usa o last_day do rollup.
     last_access_at = None
-    if row and row["last_day"]:
-        last_sql = f"""
-            SELECT MAX(created_at) AS last_at
-            FROM {_events_table_ref()}
-            WHERE short_token = @token
-              AND DATE(created_at, "America/Sao_Paulo") = @day
-              AND (@include_internal OR COALESCE(is_internal, FALSE) = FALSE)
-        """
-        last_job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("token", "STRING", short_token),
-                bigquery.ScalarQueryParameter("day", "DATE", row["last_day"]),
-                bigquery.ScalarQueryParameter("include_internal", "BOOL", include_internal),
-            ]
-        )
-        last_row = next(iter(bq.query(last_sql, job_config=last_job_config).result()), None)
-        if last_row and last_row["last_at"]:
-            last_access_at = last_row["last_at"].isoformat()
+    if row and row["last_access_at"]:
+        last_access_at = row["last_access_at"].isoformat()
 
     return {
         "total_pageviews":  int(row["total_pageviews"]) if row else 0,
