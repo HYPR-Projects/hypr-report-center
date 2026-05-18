@@ -43,13 +43,28 @@ function useReportAnalyticsData(shortToken, rangeDays, isOpen) {
     changelog: [],
   });
 
+  // Trackeia inputs anteriores pra detectar mudança DURANTE o render e
+  // resetar o state na mesma fase de commit. Sem isso, o reset acontece
+  // só no useEffect — que roda depois do render — e o admin vê 1 frame
+  // com dados da campanha anterior. Padrão "derived state from props"
+  // oficial do React (https://react.dev/learn/you-might-not-need-an-effect).
+  const [prevInputs, setPrevInputs] = useState({ shortToken, rangeDays, isOpen });
+  const inputsChanged =
+    prevInputs.shortToken !== shortToken ||
+    prevInputs.rangeDays !== rangeDays ||
+    prevInputs.isOpen !== isOpen;
+  if (inputsChanged) {
+    setPrevInputs({ shortToken, rangeDays, isOpen });
+    // Só reseta se reabrir com token válido — caso contrário deixa state
+    // como está (modal fechando não precisa zerar).
+    if (isOpen && shortToken) {
+      setState({ loading: true, error: null, analytics: null, changelog: [] });
+    }
+  }
+
   useEffect(() => {
     if (!isOpen || !shortToken) return;
     let cancelled = false;
-    // Reset COMPLETO ao trocar shortToken/range — sem isso, dados da
-    // campanha anterior ficam visíveis enquanto a nova request resolve.
-    // Era o que fazia admin ver "dados de KIA na view de PARAMOUNT".
-    setState({ loading: true, error: null, analytics: null, changelog: [] });
 
     Promise.allSettled([
       getReportAnalytics({ short_token: shortToken, range_days: rangeDays }),

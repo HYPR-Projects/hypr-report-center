@@ -90,9 +90,6 @@ export async function prefetchAccessSummaries(tokens) {
     return now - entry.fetchedAt > TTL_MS;
   });
   if (toFetch.length === 0) return;
-  // Emit loading state — badge re-renderiza pra skeleton enquanto
-  // inflight=true
-  emit();
 
   // Se já tem um batch em voo, espera ele resolver antes de pedir o
   // resto. Reduz o caso patológico de 2 prefetches paralelos que cobrem
@@ -106,6 +103,10 @@ export async function prefetchAccessSummaries(tokens) {
   });
   if (stillNeeded.length === 0) return;
 
+  // CRÍTICO: seta `inflight` ANTES de emit. Os listeners (badges)
+  // checam isLoadingSummary() que depende de inflight != null —
+  // sem essa ordem, o primeiro emit não conta como loading e os
+  // badges pulam direto pro número final sem mostrar skeleton.
   inflight = getAccessSummariesBatch(stillNeeded)
     .then((summaries) => {
       const at = Date.now();
@@ -134,6 +135,9 @@ export async function prefetchAccessSummaries(tokens) {
       inflight = null;
     });
 
+  // Emit DEPOIS de inflight estar setado pros listeners vejam loading=true.
+  // Sem isso, badges não trocam pra skeleton.
+  emit();
   await inflight;
 }
 
