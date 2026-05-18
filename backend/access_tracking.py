@@ -435,39 +435,78 @@ def query_summary_batch(short_tokens: list[str], range_days: int = 30) -> dict[s
     ensure_tables_exist()
     if not short_tokens:
         return {}
-    # ATENÇÃO: CTE não pode se chamar `rollup_*` — ROLLUP é keyword
-    # reservada no BQ Standard SQL e o parser quebra em CTEs e aliases
-    # com esse prefixo (mesmo lowercase). Usar `summary_*` em vez.
+    # Híbrido raw+daily, agora batched por N tokens. Dias passados vêm
+    # do rollup; dia atual é live agg dos events. Soma os dois e retorna
+    # um summary por token.
     sql = f"""
-        WITH day_rows AS (
-            SELECT * FROM {_daily_table_ref()}
-            WHERE short_token IN UNNEST(@tokens)
-              AND day >= DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL @range DAY)
-        ),
-        summary_per_token AS (
+        WITH daily_per_token AS (
+            -- Dias passados (excluindo hoje pra não duplicar com today)
             SELECT
                 short_token,
                 SUM(total_pageviews) AS total_pageviews,
                 SUM(external_sessions) AS unique_sessions,
                 MAX(day) AS last_day
-            FROM day_rows
+            FROM {_daily_table_ref()}
+            WHERE short_token IN UNNEST(@tokens)
+              AND day >= DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL @range DAY)
+              AND day < CURRENT_DATE("America/Sao_Paulo")
             GROUP BY short_token
         ),
+        today_sessions AS (
+            SELECT
+                short_token,
+                session_id,
+                COALESCE(MAX(is_internal), FALSE) AS is_internal
+            FROM {_events_table_ref()}
+            WHERE short_token IN UNNEST(@tokens)
+              AND DATE(created_at, "America/Sao_Paulo") = CURRENT_DATE("America/Sao_Paulo")
+            GROUP BY short_token, session_id
+        ),
+        today_pageviews AS (
+            SELECT short_token, COUNT(*) AS total_pageviews
+            FROM {_events_table_ref()}
+            WHERE short_token IN UNNEST(@tokens)
+              AND event_type = 'pageview'
+              AND DATE(created_at, "America/Sao_Paulo") = CURRENT_DATE("America/Sao_Paulo")
+              AND COALESCE(is_internal, FALSE) = FALSE
+            GROUP BY short_token
+        ),
+        today_per_token AS (
+            SELECT
+                ts.short_token,
+                COALESCE(tp.total_pageviews, 0) AS total_pageviews,
+                COUNTIF(NOT ts.is_internal) AS unique_sessions
+            FROM today_sessions ts
+            LEFT JOIN today_pageviews tp USING(short_token)
+            GROUP BY ts.short_token, tp.total_pageviews
+        ),
+        combined AS (
+            SELECT
+                COALESCE(d.short_token, t.short_token) AS short_token,
+                COALESCE(d.total_pageviews, 0) + COALESCE(t.total_pageviews, 0) AS total_pageviews,
+                COALESCE(d.unique_sessions, 0) + COALESCE(t.unique_sessions, 0) AS unique_sessions,
+                IF(COALESCE(t.unique_sessions, 0) > 0,
+                   CURRENT_DATE("America/Sao_Paulo"),
+                   d.last_day) AS last_day
+            FROM daily_per_token d
+            FULL OUTER JOIN today_per_token t USING(short_token)
+        ),
         last_access AS (
-            -- Último timestamp granular (hora/min) pra cada token — único
-            -- access ao tabelão raw, mas filtrado por (token, last_day)
-            -- pra ficar barato via cluster.
+            -- Último timestamp granular pra cada token — pega o MAX de
+            -- events do dia mais recente que tem dado (today se há, ou
+            -- last_day do rollup). Cluster por short_token + filtro por
+            -- partition deixa essa query cheap.
             SELECT
                 e.short_token,
                 MAX(e.created_at) AS last_at
             FROM {_events_table_ref()} e
-            JOIN summary_per_token r USING(short_token)
-            WHERE DATE(e.created_at, "America/Sao_Paulo") = r.last_day
+            JOIN combined c USING(short_token)
+            WHERE DATE(e.created_at, "America/Sao_Paulo") = c.last_day
               AND COALESCE(e.is_internal, FALSE) = FALSE
             GROUP BY e.short_token
         )
-        SELECT r.short_token, r.total_pageviews, r.unique_sessions, l.last_at
-        FROM summary_per_token r
+        SELECT c.short_token, c.total_pageviews, c.unique_sessions, l.last_at
+        FROM combined c
         LEFT JOIN last_access l USING(short_token)
     """
     job_config = bigquery.QueryJobConfig(
@@ -500,27 +539,65 @@ def query_summary_batch(short_tokens: list[str], range_days: int = 30) -> dict[s
 def query_summary(short_token: str, range_days: int = 30, include_internal: bool = False) -> dict:
     """Resumo agregado pro card de acessos no menu admin + KPIs do modal.
 
-    Lê do rollup diário (não dos events crus) — barato e rápido. Modal
-    pode passar range_days={7,30,90}.
+    Híbrido raw+daily: dias passados vêm do rollup (`report_access_daily`),
+    dia atual vem dos events crus (`report_access_events`). Garante
+    latência segundo-real pra eventos do dia, sem custo significativo —
+    o range do dia atual é pequeno e o cluster por short_token deixa o
+    scan cheap.
 
-    Retorna { total_pageviews, unique_sessions, last_access_at, range_days }.
-    Quando não há dados, valores são zero/null mas o objeto SEMPRE existe
-    — frontend usa pra exibir o estado "0 acessos · tracking iniciado…"
+    Retorna { total_pageviews, unique_sessions, avg_duration_sec,
+    last_access_at, range_days }.
     """
     ensure_tables_exist()
     field_sessions = "unique_sessions" if include_internal else "external_sessions"
+    today_session_filter = "TRUE" if include_internal else "NOT is_internal"
+    today_pageview_filter = "" if include_internal else "AND COALESCE(is_internal, FALSE) = FALSE"
+
     sql = f"""
-        WITH day_rows AS (
-            SELECT * FROM {_daily_table_ref()}
+        WITH daily_agg AS (
+            -- Dias passados: lê do rollup. Exclui CURRENT_DATE pra não
+            -- duplicar com today_agg (mesmo dia em ambas as fontes).
+            SELECT
+                COALESCE(SUM(total_pageviews), 0) AS total_pageviews,
+                COALESCE(SUM({field_sessions}), 0) AS unique_sessions,
+                COALESCE(SUM(avg_duration_sec * {field_sessions}), 0) AS sum_weighted_dur,
+                MAX(day) AS last_day
+            FROM {_daily_table_ref()}
             WHERE short_token = @token
               AND day >= DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL @range DAY)
+              AND day < CURRENT_DATE("America/Sao_Paulo")
+        ),
+        today_sessions AS (
+            SELECT
+                session_id,
+                COALESCE(MAX(is_internal), FALSE) AS is_internal,
+                LEAST(4 * 3600, COUNTIF(event_type = 'heartbeat') * 60 + 30) AS active_duration_sec
+            FROM {_events_table_ref()}
+            WHERE short_token = @token
+              AND DATE(created_at, "America/Sao_Paulo") = CURRENT_DATE("America/Sao_Paulo")
+            GROUP BY session_id
+        ),
+        today_agg AS (
+            SELECT
+                (SELECT COUNT(*) FROM {_events_table_ref()}
+                 WHERE short_token = @token
+                   AND event_type = 'pageview'
+                   AND DATE(created_at, "America/Sao_Paulo") = CURRENT_DATE("America/Sao_Paulo")
+                   {today_pageview_filter}
+                ) AS total_pageviews,
+                COUNTIF({today_session_filter}) AS unique_sessions,
+                SUM(IF({today_session_filter}, active_duration_sec, 0)) AS sum_weighted_dur
+            FROM today_sessions
         )
         SELECT
-            COALESCE(SUM(total_pageviews), 0) AS total_pageviews,
-            COALESCE(SUM({field_sessions}), 0) AS unique_sessions,
-            SAFE_DIVIDE(SUM(avg_duration_sec * {field_sessions}), NULLIF(SUM({field_sessions}), 0)) AS avg_duration_sec,
-            MAX(day) AS last_day
-        FROM day_rows
+            d.total_pageviews + t.total_pageviews AS total_pageviews,
+            d.unique_sessions + t.unique_sessions AS unique_sessions,
+            SAFE_DIVIDE(
+                d.sum_weighted_dur + t.sum_weighted_dur,
+                NULLIF(d.unique_sessions + t.unique_sessions, 0)
+            ) AS avg_duration_sec,
+            IF(t.unique_sessions > 0, CURRENT_DATE("America/Sao_Paulo"), d.last_day) AS last_day
+        FROM daily_agg d CROSS JOIN today_agg t
     """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
@@ -530,9 +607,9 @@ def query_summary(short_token: str, range_days: int = 30, include_internal: bool
     )
     row = next(iter(bq.query(sql, job_config=job_config).result()), None)
 
-    # last_access_at vem do MAX(day) do rollup — granularidade dia. Pra
-    # "último acesso" mais preciso (hora/minuto), consultamos events crus
-    # do dia mais recente; é 1 query barata cluster-aware.
+    # last_access_at: granularidade hora/min, vem de events crus do
+    # dia mais recente que tem dado. Quando hoje tem evento, busca em
+    # CURRENT_DATE; senão usa o last_day do rollup.
     last_access_at = None
     if row and row["last_day"]:
         last_sql = f"""
@@ -571,9 +648,11 @@ def query_timeline(short_token: str, range_days: int = 30, include_internal: boo
     """
     ensure_tables_exist()
     sessions_field = "unique_sessions" if include_internal else "external_sessions"
-    # ATENÇÃO: CTE não pode se chamar `rollup` — ROLLUP é keyword reservada
-    # no BQ Standard SQL (parser quebra com "Expected SELECT but got
-    # ROLLUP"). Usar `daily_data` em vez.
+    today_session_filter = "TRUE" if include_internal else "NOT is_internal"
+    today_pageview_filter = "" if include_internal else "AND COALESCE(is_internal, FALSE) = FALSE"
+    # Híbrido raw+daily: pros dias passados, rollup. Pro dia atual,
+    # agregação live de events. ATENÇÃO: nomes de CTE não podem ser
+    # palavras reservadas (rollup, window) — ver fix em query_summary.
     sql = f"""
         WITH days AS (
             SELECT day FROM UNNEST(
@@ -588,13 +667,33 @@ def query_timeline(short_token: str, range_days: int = 30, include_internal: boo
             FROM {_daily_table_ref()}
             WHERE short_token = @token
               AND day >= DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL @range - 1 DAY)
+              AND day < CURRENT_DATE("America/Sao_Paulo")
+        ),
+        today_sessions AS (
+            SELECT session_id, COALESCE(MAX(is_internal), FALSE) AS is_internal
+            FROM {_events_table_ref()}
+            WHERE short_token = @token
+              AND DATE(created_at, "America/Sao_Paulo") = CURRENT_DATE("America/Sao_Paulo")
+            GROUP BY session_id
+        ),
+        today_data AS (
+            SELECT
+                CURRENT_DATE("America/Sao_Paulo") AS day,
+                (SELECT COUNT(*) FROM {_events_table_ref()}
+                 WHERE short_token = @token AND event_type = 'pageview'
+                   AND DATE(created_at, "America/Sao_Paulo") = CURRENT_DATE("America/Sao_Paulo")
+                   {today_pageview_filter}
+                ) AS total_pageviews,
+                COUNTIF({today_session_filter}) AS sessions
+            FROM today_sessions
         )
         SELECT
             days.day AS day,
-            COALESCE(daily_data.total_pageviews, 0) AS accesses,
-            COALESCE(daily_data.sessions, 0) AS sessions
+            COALESCE(daily_data.total_pageviews, today_data.total_pageviews, 0) AS accesses,
+            COALESCE(daily_data.sessions, today_data.sessions, 0) AS sessions
         FROM days
         LEFT JOIN daily_data USING(day)
+        LEFT JOIN today_data USING(day)
         ORDER BY day ASC
     """
     job_config = bigquery.QueryJobConfig(
