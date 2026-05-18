@@ -254,9 +254,21 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   const [displayCreativeLines, setDisplayCreativeLines] = useState([]);
   const [videoCreativeLines, setVideoCreativeLines] = useState([]);
 
+  // Hook de tracking — moved up pra que `trackCta` esteja disponível
+  // nos setters dos filtros logo abaixo. Hook tem skip-admin interno e
+  // early return em !shortToken — inerte enquanto data não chega.
+  // Ainda fica ANTES dos early returns (regra dos hooks).
+  const { trackCta } = useReportTracking({
+    shortToken:   data?.campaign?.short_token || null,
+    shareId:      typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("share") : null,
+    isAdmin,
+    currentTabId: tab,
+  });
+
   // setMainRange aceita opcionalmente o presetId que originou esse range.
   // Click em preset → passa o id; ajuste no calendar → passa null (custom).
   const setMainRange = (r, presetId = null) => {
+    trackCta("period_change");
     setMainRangeState(r);
     setMainPresetIdState(presetId);
     writeRangeToUrl(r);
@@ -275,10 +287,12 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     writeTacticToUrl("video_tactic", t);
   };
   const setMainCore = (c) => {
+    trackCta("core_product_change");
     setMainCoreState(c);
     writeCoreToUrl(c);
   };
   const setView = (v) => {
+    trackCta("merge_view_change");
     setViewState(v);
     writeViewToUrl(v);
   };
@@ -431,27 +445,6 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
       setTimeout(() => setShareState("idle"), 2000);
     }
   };
-
-  // Tracking de acesso do report compartilhado. CRÍTICO: este hook PRECISA
-  // ficar ANTES de qualquer early return condicional (error, !data). Mover
-  // pra depois quebra a regra dos hooks do React — a contagem de hooks
-  // muda entre renders (skeleton → data carregada) e dispara
-  // "Rendered more hooks than during the previous render", capturado pelo
-  // ErrorBoundary como "Algo deu errado ao carregar o report".
-  //
-  // shortToken = data?.campaign?.short_token quando carregado, null antes.
-  // Hook tem early return interno em `!shortToken`, então fica inerte
-  // enquanto data não chega — primeira disparada de pageview acontece
-  // quando o backend resolve o token (única vez que muda de null → string).
-  // Hook agora retorna { trackCta } — propagado pra árvore via Context
-  // pra qualquer componente filho (SheetsIntegrationCardV2, DataTableV2,
-  // etc) chamar sem prop drilling.
-  const { trackCta } = useReportTracking({
-    shortToken:   data?.campaign?.short_token || null,
-    shareId:      typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("share") : null,
-    isAdmin,
-    currentTabId: tab,
-  });
 
   if (error) {
     return (

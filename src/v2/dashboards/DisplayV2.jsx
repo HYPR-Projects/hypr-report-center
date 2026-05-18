@@ -45,6 +45,7 @@ import { Button } from "../../ui/Button";
 
 import { AudienceFilterV2 } from "../components/AudienceFilterV2";
 import { CreativeLineFilterV2 } from "../components/CreativeLineFilterV2";
+import { useReportTrackingContext } from "../contexts/ReportTrackingContext";
 import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
 import { ComparisonCardV2 } from "../components/ComparisonCardV2";
 import { DailyAggregateTableV2 } from "../components/DailyAggregateTableV2";
@@ -81,6 +82,8 @@ export default function DisplayV2({
   setCreativeLines,
 }) {
   const camp = data.campaign;
+  // trackCta vem do contexto montado pelo ClientDashboardV2. Noop fora dele.
+  const { trackCta } = useReportTrackingContext();
 
   // Tactics disponíveis: O2O e OOH só aparecem se houver contrato (incl.
   // bônus) OU entrega real pra essa frente. Evita mostrar segmento
@@ -186,6 +189,7 @@ export default function DisplayV2({
             options={availableTactics}
             value={effectiveTactic}
             onChange={(t) => {
+              trackCta("tactic_change_display");
               setTactic(t);
               setLines([]);
               setCreativeLines([]);
@@ -199,12 +203,12 @@ export default function DisplayV2({
             <CreativeLineFilterV2
               lines={creativeLineOptions}
               selected={creativeLines}
-              onChange={setCreativeLines}
+              onChange={(v) => { trackCta("creative_line_change"); setCreativeLines(v); }}
             />
             <AudienceFilterV2
               lines={lineOptions}
               selected={lines}
-              onChange={setLines}
+              onChange={(v) => { trackCta("audience_filter_change"); setLines(v); }}
             />
           </div>
         )}

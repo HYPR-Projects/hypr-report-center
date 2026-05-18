@@ -44,6 +44,7 @@ import { fmt, fmtP, fmtP2, fmtR } from "../../shared/format";
 
 import { AudienceFilterV2 } from "../components/AudienceFilterV2";
 import { CreativeLineFilterV2 } from "../components/CreativeLineFilterV2";
+import { useReportTrackingContext } from "../contexts/ReportTrackingContext";
 import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
 import { ComparisonCardV2 } from "../components/ComparisonCardV2";
 import { DailyAggregateTableV2 } from "../components/DailyAggregateTableV2";
@@ -87,6 +88,7 @@ export default function VideoV2({
   setCreativeLines,
 }) {
   const camp = data.campaign;
+  const { trackCta } = useReportTrackingContext();
 
   // Tactics disponíveis: ver comentário equivalente em DisplayV2.
   const t0Video = (data.totals || [])[0] || {};
@@ -185,6 +187,7 @@ export default function VideoV2({
             options={availableTactics}
             value={effectiveTactic}
             onChange={(t) => {
+              trackCta("tactic_change_video");
               setTactic(t);
               setLines([]);
               setCreativeLines([]);
@@ -198,12 +201,12 @@ export default function VideoV2({
             <CreativeLineFilterV2
               lines={creativeLineOptions}
               selected={creativeLines}
-              onChange={setCreativeLines}
+              onChange={(v) => { trackCta("creative_line_change"); setCreativeLines(v); }}
             />
             <AudienceFilterV2
               lines={lineOptions}
               selected={lines}
-              onChange={setLines}
+              onChange={(v) => { trackCta("audience_filter_change"); setLines(v); }}
             />
           </div>
         )}

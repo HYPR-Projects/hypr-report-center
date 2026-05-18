@@ -17,6 +17,7 @@
 //   resultando em dashboard renderizando recursivo dentro do iframe).
 
 import { Card } from "../../ui/Card";
+import { useReportTrackingContext } from "../contexts/ReportTrackingContext";
 
 const LOOM_URL_RE = /^https?:\/\/(?:www\.)?loom\.com\/(?:share|embed)\/([a-zA-Z0-9]+)/i;
 
@@ -65,17 +66,59 @@ export default function LoomV2({ loomUrl }) {
   }
 
   return (
-    <Card className="overflow-hidden bg-canvas-deeper border-border">
-      <div className="relative w-full" style={{ paddingTop: "56.25%" }}>
-        <iframe
-          src={embedUrl}
-          frameBorder="0"
-          allowFullScreen
-          className="absolute inset-0 w-full h-full"
-          title="Vídeo explicativo da campanha"
-        />
-      </div>
-    </Card>
+    <div className="space-y-3">
+      <Card className="overflow-hidden bg-canvas-deeper border-border">
+        <div className="relative w-full" style={{ paddingTop: "56.25%" }}>
+          <iframe
+            src={embedUrl}
+            frameBorder="0"
+            allowFullScreen
+            className="absolute inset-0 w-full h-full"
+            title="Vídeo explicativo da campanha"
+          />
+        </div>
+      </Card>
+      {/* Botão externo — necessário pra trackear interesse no vídeo
+          (o play DENTRO do iframe Loom é sandbox cross-origin e a
+          navegador bloqueia acesso a events do player). */}
+      <LoomExternalLink loomUrl={loomUrl} />
+    </div>
+  );
+}
+
+function LoomExternalLink({ loomUrl }) {
+  const { trackCta } = useReportTrackingContext();
+  return (
+    <div className="flex justify-end">
+      <a
+        href={loomUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={() => trackCta("loom_open_external")}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md text-fg-muted hover:text-fg hover:bg-surface-strong transition-colors cursor-pointer"
+      >
+        Abrir no Loom
+        <ExternalIcon className="size-3" />
+      </a>
+    </div>
+  );
+}
+
+function ExternalIcon({ className }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      <path d="M15 3h6v6M10 14 21 3" />
+    </svg>
   );
 }
 

@@ -208,8 +208,16 @@ function adaptAnalytics(payload, changelog) {
 // linhas aqui quando um CTA novo for plugado no frontend. IDs não
 // listados caem pro fallback (o próprio cta_id como label).
 const CTA_LABELS = {
-  sheets_open:   "Abrir no Google Sheets",
-  csv_download:  "Download CSV",
+  sheets_open:           "Abrir no Google Sheets",
+  csv_download:          "Download CSV",
+  loom_open_external:    "Abrir no Loom",
+  period_change:         "Filtro de período",
+  tactic_change_display: "Filtro de tática (Display)",
+  tactic_change_video:   "Filtro de tática (Vídeo)",
+  core_product_change:   "Filtro de Core Product",
+  audience_filter_change:"Filtro de audiência",
+  creative_line_change:  "Filtro de linha criativa",
+  merge_view_change:     "Trocar visão (agregada/mês)",
 };
 
 const ANNOTATION_EVENT_TYPES = {
