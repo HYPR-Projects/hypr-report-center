@@ -22,11 +22,13 @@
 // O componente recebe `campaigns` e o `teamMap` e calcula internamente
 // os rankings de CS e CP — assim o caller só precisa passar dados crus.
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { cn } from "../../../ui/cn";
 import { formatBRL } from "../lib/format";
 import { computeTopPerformers } from "../lib/aggregation";
 import { saveDailySnapshot, getPreviousScore, loadSnapshots } from "../lib/scoreSnapshots";
+import { PERIOD_PRESETS, resolvePeriod, formatPeriodLabel } from "../lib/period";
+import { listPerformersForPeriod } from "../../../lib/api";
 import { PerformerDrawer } from "./PerformerDrawer";
 
 function localPartFromEmail(email) {
@@ -267,24 +269,73 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
   const [snapshots, setSnapshots] = useState(() => loadSnapshots());
   const [selected, setSelected] = useState(null); // performer email selecionado
 
-  const performers = useMemo(
-    () => computeTopPerformers(campaigns, role === "cs" ? "cs_email" : "cp_email"),
-    [campaigns, role]
-  );
+  // Filtro de período. preset="now" (default) usa props.campaigns sem fetch
+  // — comportamento original mantido. Qualquer outro preset dispara fetch ao
+  // backend e re-agrega métricas dentro da janela.
+  const [preset, setPreset] = useState("now");
+  const [custom, setCustom] = useState({ from: "", to: "" });
+  const [periodCampaigns, setPeriodCampaigns] = useState(null); // null = não fetcheado ainda
+  const [loading, setLoading] = useState(false);
+  const [fetchError, setFetchError] = useState(null);
+  // SeqRef pra evitar race condition quando user troca de preset rápido —
+  // resposta de fetch lento de um preset anterior não pode sobrescrever a do
+  // preset atual.
+  const fetchSeqRef = useRef(0);
+
+  const isHistorical = preset !== "now";
+  const { from, to } = useMemo(() => resolvePeriod(preset, custom), [preset, custom]);
+
+  // Dispara fetch quando entra em modo histórico OU muda janela. Em modo
+  // "now" limpa o cache local — voltar a "Agora" deve ser instantâneo (props).
+  useEffect(() => {
+    if (!isHistorical) {
+      setPeriodCampaigns(null);
+      setLoading(false);
+      setFetchError(null);
+      return;
+    }
+    if (!from || !to) return; // custom ainda incompleto
+    const seq = ++fetchSeqRef.current;
+    setLoading(true);
+    setFetchError(null);
+    listPerformersForPeriod({ from, to })
+      .then((data) => {
+        if (seq !== fetchSeqRef.current) return; // resposta obsoleta
+        setPeriodCampaigns(data);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (seq !== fetchSeqRef.current) return;
+        setFetchError(err.message || "Erro ao carregar período");
+        setLoading(false);
+      });
+  }, [isHistorical, from, to]);
+
+  // Fonte ativa: props.campaigns no modo Agora, periodCampaigns no histórico.
+  const sourceCampaigns = isHistorical ? periodCampaigns : campaigns;
+
+  const performers = useMemo(() => {
+    if (!sourceCampaigns) return [];
+    return computeTopPerformers(
+      sourceCampaigns,
+      role === "cs" ? "cs_email" : "cp_email",
+      { requireCurrentlyActive: !isHistorical },
+    );
+  }, [sourceCampaigns, role, isHistorical]);
 
   const selectedPerformer = useMemo(
     () => (selected ? performers.find((p) => p.email === selected) : null),
     [selected, performers]
   );
 
-  // Salva snapshot diário 1x por dia por role na primeira vez que os
-  // performers desse role aparecem na sessão. saveDailySnapshot é
-  // idempotente — chamadas extras no mesmo dia não sobrescrevem.
+  // Snapshot diário só faz sentido em modo "Agora" — em modo histórico, o
+  // score reflete uma janela passada e não deve poluir a série de deltas
+  // (que assume "score do dia atual").
   useEffect(() => {
-    if (!performers.length) return;
+    if (isHistorical || !performers.length) return;
     const next = saveDailySnapshot(role, performers);
     setSnapshots(next);
-  }, [role, performers]);
+  }, [role, performers, isHistorical]);
 
   if (!campaigns || !campaigns.length) {
     return (
@@ -294,6 +345,11 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
     );
   }
 
+  const periodLabel = isHistorical ? formatPeriodLabel(preset, from, to) : null;
+  const subtitleSuffix = isHistorical
+    ? `com entrega no período (${periodLabel})`
+    : "com campanhas ativas";
+
   return (
     <div className="space-y-4">
       {/* Header com toggle CS/CP + descrição */}
@@ -301,32 +357,72 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
         <div>
           <h2 className="text-base font-bold text-fg">
             Top Performers — {role === "cs" ? "CS" : "CP"}
+            {loading && (
+              <span className="ml-2 text-[11px] font-medium text-fg-subtle">
+                carregando…
+              </span>
+            )}
           </h2>
           <p className="text-[11px] text-fg-subtle mt-0.5">
             Ranking entre {performers.length}{" "}
             {role === "cs" ? "Customer Success" : "Customer Planner"}{" "}
-            com campanhas ativas
+            {subtitleSuffix}
           </p>
         </div>
         <RoleToggle value={role} onChange={setRole} />
       </div>
 
+      {/* Filtro de período */}
+      <PeriodPicker
+        preset={preset}
+        onPresetChange={setPreset}
+        custom={custom}
+        onCustomChange={setCustom}
+      />
+
       {/* Lista */}
-      {performers.length === 0 ? (
+      {fetchError ? (
+        <div className="rounded-xl border border-border bg-surface p-8 text-center">
+          <p className="text-sm text-danger">Erro ao carregar período: {fetchError}</p>
+          <button
+            type="button"
+            onClick={() => {
+              // Força refetch incrementando o seq — useEffect roda de novo
+              // ao mudar `from`/`to` (não muda aqui), então a forma simples é
+              // setar custom de novo ou alternar preset. Mais limpo: dispara
+              // o efeito manualmente via re-render do mesmo preset:
+              setPreset((p) => p);
+              fetchSeqRef.current++; // garante que próximo fetch é "novo"
+            }}
+            className="mt-2 text-xs text-signature hover:underline"
+          >
+            Tentar de novo
+          </button>
+        </div>
+      ) : loading && !performers.length ? (
+        <PerformerSkeleton />
+      ) : performers.length === 0 ? (
         <div className="rounded-xl border border-border bg-surface p-8 text-center">
           <p className="text-sm text-fg-muted">
-            Nenhum {role === "cs" ? "CS" : "CP"} com campanhas ativas no momento.
+            {isHistorical
+              ? `Nenhum ${role === "cs" ? "CS" : "CP"} teve entrega no período (${periodLabel}).`
+              : `Nenhum ${role === "cs" ? "CS" : "CP"} com campanhas ativas no momento.`}
           </p>
         </div>
       ) : (
-        <div className="rounded-xl border border-border bg-surface overflow-hidden">
+        <div className={cn(
+          "rounded-xl border border-border bg-surface overflow-hidden",
+          loading && "opacity-60 transition-opacity"
+        )}>
           {performers.map((p, i) => (
             <PerformerRow
               key={p.email}
               rank={i + 1}
               performer={p}
               displayName={teamMap[p.email]}
-              scorePrev={getPreviousScore(snapshots, role, p.email)}
+              // Delta vs ontem só faz sentido em modo "Agora" — em histórico,
+              // os snapshots locais não pareiam com a janela escolhida.
+              scorePrev={isHistorical ? null : getPreviousScore(snapshots, role, p.email)}
               onClick={() => setSelected(p.email)}
             />
           ))}
@@ -356,6 +452,104 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
         agregadas via Σnumerador / Σdenominador sobre as campanhas ativas
         do owner.
       </p>
+    </div>
+  );
+}
+
+function PeriodPicker({ preset, onPresetChange, custom, onCustomChange }) {
+  const isCustom = preset === "custom";
+  return (
+    <div className="flex flex-col gap-2">
+      <div
+        role="tablist"
+        aria-label="Período do ranking"
+        className="inline-flex flex-wrap gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border w-fit"
+      >
+        {PERIOD_PRESETS.map((opt) => {
+          const active = preset === opt.id;
+          return (
+            <button
+              key={opt.id}
+              role="tab"
+              type="button"
+              aria-selected={active}
+              onClick={() => onPresetChange(opt.id)}
+              className={cn(
+                "inline-flex items-center px-3 h-7 rounded-md cursor-pointer",
+                "text-xs font-medium",
+                "transition-colors duration-150",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
+                active
+                  ? "bg-canvas-elevated text-fg shadow-sm"
+                  : "text-fg-muted hover:text-fg hover:bg-surface-strong"
+              )}
+            >
+              {opt.shortLabel}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Inputs custom — só aparecem quando preset === "custom". Os dois
+          inputs ficam controlados pelo caller (useState no PerformersLayout)
+          pra que mudar from sem to ainda não dispare fetch (effect espera
+          ambos preenchidos). */}
+      {isCustom && (
+        <div className="flex items-center gap-2 text-xs text-fg-muted">
+          <label className="flex items-center gap-1.5">
+            <span>De</span>
+            <input
+              type="date"
+              value={custom.from}
+              onChange={(e) => onCustomChange({ ...custom, from: e.target.value })}
+              className="h-7 px-2 rounded-md border border-border bg-canvas-elevated text-fg text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature"
+            />
+          </label>
+          <label className="flex items-center gap-1.5">
+            <span>até</span>
+            <input
+              type="date"
+              value={custom.to}
+              onChange={(e) => onCustomChange({ ...custom, to: e.target.value })}
+              className="h-7 px-2 rounded-md border border-border bg-canvas-elevated text-fg text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature"
+            />
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Skeleton enquanto o fetch da janela acontece. 6 rows com bloquinhos
+// pulsantes — mesmo padrão visual do PerformerRow pra não dar shift de
+// layout quando a lista real renderizar.
+function PerformerSkeleton() {
+  return (
+    <div className="rounded-xl border border-border bg-surface overflow-hidden">
+      {[...Array(6)].map((_, i) => (
+        <div
+          key={i}
+          className="flex items-center gap-4 px-4 py-4 border-t border-border/40 first:border-t-0 animate-pulse"
+        >
+          <div className="w-5 h-3 bg-surface-strong rounded" />
+          <div className="flex items-center gap-3 w-[220px]">
+            <div className="w-9 h-9 rounded-full bg-surface-strong" />
+            <div className="flex flex-col gap-1.5 flex-1">
+              <div className="h-3 w-24 bg-surface-strong rounded" />
+              <div className="h-2 w-16 bg-surface-strong rounded" />
+            </div>
+          </div>
+          <div className="flex-1 grid grid-cols-6 gap-3">
+            {[...Array(6)].map((__, j) => (
+              <div key={j} className="h-4 bg-surface-strong rounded" />
+            ))}
+          </div>
+          <div className="w-[200px] flex items-center gap-3">
+            <div className="flex-1 h-1.5 bg-surface-strong rounded-full" />
+            <div className="w-12 h-4 bg-surface-strong rounded" />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

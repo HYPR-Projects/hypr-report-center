@@ -506,15 +506,22 @@ function scoreCampaignDetailed(c) {
 }
 
 
-export function computeTopPerformers(campaigns, ownerKey = "cs_email") {
+export function computeTopPerformers(campaigns, ownerKey = "cs_email", options = {}) {
+  const { requireCurrentlyActive = true } = options;
   const today = TODAY();
-  // Campanha entra no ranking quando está EM VÔO: end_date >= hoje + não pausada.
-  // Paused (paused_at != null) tem performance congelada no momento da pausa —
-  // entrar no score do owner premia/penaliza algo que não está sob ação ativa.
-  // Quando a campanha despausar, volta automaticamente ao cálculo.
-  const active = (campaigns || []).filter(
-    (c) => c.end_date && c.end_date.slice(0, 10) >= today && !c.paused_at
-  );
+  // Modo "Agora": campanha entra no ranking quando está EM VÔO (end_date >= hoje
+  // + não pausada). Paused (paused_at != null) tem performance congelada no
+  // momento da pausa — entrar no score premia/penaliza algo que não está sob
+  // ação ativa. Quando a campanha despausar, volta automaticamente ao cálculo.
+  //
+  // Modo histórico (requireCurrentlyActive=false): a janela já foi aplicada
+  // pelo backend (só vêm campanhas com delivery no período), e o status atual
+  // não importa — campanha encerrada que rodou na janela deve pontuar.
+  const active = requireCurrentlyActive
+    ? (campaigns || []).filter(
+        (c) => c.end_date && c.end_date.slice(0, 10) >= today && !c.paused_at
+      )
+    : (campaigns || []);
 
   const byOwner = new Map();
   for (const c of active) {

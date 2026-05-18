@@ -264,6 +264,40 @@ export async function listClients() {
   };
 }
 
+/**
+ * Lista campanhas com métricas agregadas dentro de uma janela [from, to].
+ * Usado pelo Top Performers do menu admin pra evolução histórica do score.
+ *
+ * Diferenças do `listCampaigns()`:
+ *   - métricas recalculadas só com delivery dentro da janela
+ *   - pacing = realized / (daily_rate × overlap_days_da_janela_com_contrato)
+ *   - inclui SÓ campanhas com viewable_impressions > 0 na janela
+ *   - payload mais enxuto (sem pauses/closures/early_ends/merges/share_ids)
+ *
+ * Lança em 401/403 (recarrega login), 4xx/5xx, ou resposta malformada.
+ * Caller deve tratar erro — pattern stale-while-revalidate é o recomendado.
+ */
+export async function listPerformersForPeriod({ from, to } = {}) {
+  if (!from || !to) throw new Error("listPerformersForPeriod: from/to obrigatórios");
+  const jwt = await getOrIssueAdminJwt();
+  if (!jwt) throw new Error("no admin jwt");
+  const qs = new URLSearchParams({ action: "performers", from, to }).toString();
+  const r = await fetch(`${API_URL}?${qs}`, {
+    headers: { ...adminAuthHeaders(jwt) },
+  });
+  if (r.status === 401 || r.status === 403) {
+    try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
+    window.location.reload();
+    throw new Error("admin session expired");
+  }
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  if (!Array.isArray(d?.campaigns)) {
+    throw new Error("malformed response: campaigns missing");
+  }
+  return d.campaigns;
+}
+
 function emptyWorklist() {
   return {
     pacing_critical:    { count: 0, tokens: [] },

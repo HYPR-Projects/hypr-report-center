@@ -106,6 +106,13 @@ _early_ends_cache= {}     # "all" -> (timestamp, dict[short_token -> {early_end_
 # TTL curto (5min) porque o admin pode estar criando um form novo e querendo
 # vê-lo no dropdown sem esperar muito.
 _typeform_forms_cache = {} # "all" -> (timestamp, list[{id,title,last_updated_at,_links}])
+# Performers histórico por janela — admin escolhe presets 7d/30d/90d/mês passado.
+# Key = "from|to" (ISO YYYY-MM-DD). Para janelas que terminam no passado o
+# resultado é virtualmente imutável (delivery histórica não muda), então TTL
+# longo. Janelas que tocam hoje ainda se beneficiam dos 5min — o pipeline
+# de ingestão diária só atualiza poucas vezes ao dia.
+_PERFORMERS_PERIOD_CACHE_TTL = 600
+_performers_period_cache = {} # "from|to" -> (timestamp, list[campaign])
 _cache_lock      = threading.Lock()
 
 
@@ -1908,6 +1915,7 @@ def report_data(request):
                 "summary":             _query_pool.submit(access_tracking.query_summary,            short_token, range_days, include_internal),
                 "timeline":            _query_pool.submit(access_tracking.query_timeline,           short_token, range_days, include_internal),
                 "tabs":                _query_pool.submit(access_tracking.query_tabs_breakdown,     short_token, range_days, include_internal),
+                "ctas":                _query_pool.submit(access_tracking.query_ctas_breakdown,     short_token, range_days, include_internal),
                 "devices":             _query_pool.submit(access_tracking.query_devices_breakdown,  short_token, range_days, include_internal),
                 "heatmap":             _query_pool.submit(access_tracking.query_heatmap,            short_token, range_days, include_internal),
                 "recent_sessions":     _query_pool.submit(access_tracking.query_recent_sessions,    short_token, 8, include_internal),
@@ -1996,6 +2004,69 @@ def report_data(request):
     #
     # Reusa o cache de query_campaigns_list quando válido — sem custo BQ
     # extra além da query de sparkline (1x por hit).
+    # ── Endpoint: performers por período (admin) ─────────────────────────────
+    # Top Performers do menu admin com filtro de janela temporal. Reagregar
+    # campaign_results + unified_daily_performance_metrics restringindo `date`
+    # à janela [from, to]. Resposta tem o mesmo shape do ?list=true pros
+    # campos consumidos por computeTopPerformers — o front passa direto pra
+    # função existente sem ramificação.
+    #
+    # Pacing histórico = realized/(daily_rate × overlap_days da janela com
+    # contrato). 100% = entregou no ritmo do contrato durante a janela.
+    if request.args.get("action") == "performers":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            from_raw = (request.args.get("from") or "").strip()
+            to_raw   = (request.args.get("to")   or "").strip()
+            if not from_raw or not to_raw:
+                return (jsonify({"error": "Parâmetros 'from' e 'to' são obrigatórios (YYYY-MM-DD)"}), 400, headers)
+            try:
+                window_from = datetime.strptime(from_raw, "%Y-%m-%d").date()
+                window_to   = datetime.strptime(to_raw,   "%Y-%m-%d").date()
+            except ValueError:
+                return (jsonify({"error": "Formato inválido — use YYYY-MM-DD"}), 400, headers)
+            if window_from > window_to:
+                return (jsonify({"error": "'from' precisa ser ≤ 'to'"}), 400, headers)
+            # Janela máxima 365d. Sem teto, um admin curioso poderia escanear
+            # anos de delivery numa request — escala BQ rapidamente.
+            if (window_to - window_from).days > 365:
+                return (jsonify({"error": "Janela máxima de 365 dias"}), 400, headers)
+
+            t0 = time.time()
+            force_refresh = request.args.get("refresh") == "true"
+            cache_key = f"{from_raw}|{to_raw}"
+            cached = None if force_refresh else _cache_get(_performers_period_cache, cache_key, _PERFORMERS_PERIOD_CACHE_TTL)
+            if cached is not None:
+                total_ms = int((time.time() - t0) * 1000)
+                resp_headers = {
+                    **headers,
+                    "Cache-Control": "private, max-age=60",
+                    "Server-Timing": f"performers;dur={total_ms};desc=\"hit\"",
+                }
+                return _etag_response(
+                    {"campaigns": cached, "from": from_raw, "to": to_raw, "_cache": "hit"},
+                    request,
+                    resp_headers,
+                )
+
+            campaigns = query_performers_for_period(window_from, window_to)
+            _cache_set(_performers_period_cache, cache_key, campaigns)
+            total_ms = int((time.time() - t0) * 1000)
+            resp_headers = {
+                **headers,
+                "Cache-Control": "private, max-age=60",
+                "Server-Timing": f"performers;dur={total_ms};desc=\"miss\"",
+            }
+            return _etag_response(
+                {"campaigns": campaigns, "from": from_raw, "to": to_raw, "_cache": "miss"},
+                request,
+                resp_headers,
+            )
+        except Exception as e:
+            logger.error(f"[ERROR performers] {e}")
+            return (jsonify({"error": "Erro ao calcular performers"}), 500, headers)
+
     if request.args.get("action") == "list_clients":
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
@@ -4764,6 +4835,310 @@ def query_campaigns_list():
             c["merge_id"]   = info["merge_id"]
             c["rmnd_mode"]  = info["rmnd_mode"]
             c["pdooh_mode"] = info["pdooh_mode"]
+
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Performers por período — agregação histórica filtrada por janela de tempo.
+#
+# Usado pelo Top Performers do menu admin pra "evolução por mês/semana". Por
+# que função separada em vez de parâmetro opcional em query_campaigns_list:
+#   • Pacing usa fórmula diferente (realized/expected da janela, não snapshot
+#     calendar-based contra o contrato inteiro).
+#   • Driving table é `unified` filtrada (só campanhas com delivery na janela)
+#     em vez de `base` (todas).
+#   • Payload mais enxuto — não precisa de pauses/closures/early_ends/merges
+#     (campanha pausada que entregou na janela continua pontuando).
+# ─────────────────────────────────────────────────────────────────────────────
+def query_performers_for_period(window_from: date, window_to: date):
+    """Retorna lista de campanhas com métricas agregadas dentro da janela
+    [window_from, window_to]. Schema do output bate com query_campaigns_list
+    pros campos consumidos por computeTopPerformers (front).
+
+    Filtros:
+      • Apenas campanhas com viewable_impressions > 0 na janela (driver = unified)
+      • SURVEY/CONTROLE/EXPOSTO line_names excluídos (mesma regra das outras queries)
+
+    Pacing histórico = realized / (daily_rate × dias da janela que sobrepõem
+    o contrato da campanha). 100% = entregou conforme contrato naquele período.
+    """
+    sql = f"""
+        WITH checklist AS (
+            SELECT
+                short_token,
+                MAX(contracted_o2o_display_impressions) AS contracted_o2o_display,
+                MAX(contracted_ooh_display_impressions) AS contracted_ooh_display,
+                MAX(contracted_o2o_video_completions)   AS contracted_o2o_video,
+                MAX(contracted_ooh_video_completions)   AS contracted_ooh_video,
+                MAX(bonus_o2o_display_impressions)      AS bonus_o2o_display,
+                MAX(bonus_ooh_display_impressions)      AS bonus_ooh_display,
+                MAX(bonus_o2o_video_completions)        AS bonus_o2o_video,
+                MAX(bonus_ooh_video_completions)        AS bonus_ooh_video
+            FROM `site-hypr.prod_assets.checklist_info`
+            GROUP BY short_token
+        ),
+        base AS (
+            SELECT
+                short_token, client_name, campaign_name,
+                MAX(start_date) AS start_date,
+                MAX(end_date)   AS end_date
+            FROM {table_ref()}
+            GROUP BY short_token, client_name, campaign_name
+        ),
+        -- Dedup por (date, line_name, creative_name) preservando media_type.
+        -- Filtra date dentro da janela — clicks acumulam só do período.
+        dedup AS (
+            SELECT
+                short_token, media_type, date, line_name, creative_name,
+                MAX(viewable_impressions) AS vi,
+                MAX(clicks)               AS clicks
+            FROM {table_ref()}
+            WHERE date BETWEEN @from_date AND @to_date
+              AND media_type IN ('DISPLAY', 'VIDEO')
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+            GROUP BY short_token, media_type, date, line_name, creative_name
+        ),
+        agg AS (
+            SELECT
+                short_token,
+                SUM(IF(media_type='DISPLAY', vi,     0)) AS d_vi,
+                SUM(IF(media_type='DISPLAY', clicks, 0)) AS d_clicks,
+                SUM(IF(media_type='VIDEO',   vi,     0)) AS v_vi,
+                SUM(IF(media_type='VIDEO',   clicks, 0)) AS v_clicks
+            FROM dedup
+            GROUP BY short_token
+        ),
+        -- unified filtrada pela janela. É o driver: campanha sem delivery
+        -- aqui sai do ranking ("ativa no período" = teve entrega na janela).
+        unified AS (
+            SELECT
+                short_token,
+                SUM(IF(media_type='VIDEO' AND impressions > 0,
+                        video_view_100_complete * (viewable_impressions / impressions),
+                        0))                                       AS v_viewable_completions,
+                SUM(IF(media_type='VIDEO', viewable_impressions, 0)) AS v_viewable_impressions,
+                SUM(IF(media_type='DISPLAY', viewable_impressions, 0)) AS d_viewable_impressions,
+                SUM(total_cost)  AS admin_total_cost,
+                SUM(impressions) AS admin_impressions,
+                SUM(IF(media_type='DISPLAY', total_cost,  0)) AS d_admin_total_cost,
+                SUM(IF(media_type='DISPLAY', impressions, 0)) AS d_admin_impressions,
+                SUM(IF(media_type='VIDEO',   total_cost,  0)) AS v_admin_total_cost,
+                SUM(IF(media_type='VIDEO',   impressions, 0)) AS v_admin_impressions
+            FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+            WHERE date BETWEEN @from_date AND @to_date
+              AND media_type IN ('DISPLAY', 'VIDEO')
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+            GROUP BY short_token
+        ),
+        -- ABS detection: mesma estrutura de query_campaigns_list. Não filtra
+        -- por janela — flag de ABS é propriedade da campanha (Brand Safety
+        -- pre-bid foi contratado ou não), não do período.
+        abs_signals AS (
+            SELECT m.short_token, d.media_type
+            FROM `site-hypr.prod_assets.dv360_daily_costs` d
+            JOIN (
+                SELECT DISTINCT short_token, line_item_id
+                FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+                WHERE line_item_id IS NOT NULL
+            ) m USING (line_item_id)
+            WHERE d.doubleverify_pre_bid_fee_advertiser_currency > 0
+            GROUP BY m.short_token, d.media_type
+
+            UNION ALL
+
+            SELECT m.short_token, p.media_type
+            FROM `site-hypr.prod_assets.xandr_daily_costs` c
+            JOIN `site-hypr.prod_assets.xandr_daily_performance_metrics` p
+              ON CAST(c.line_item_id AS STRING) = CAST(p.line_item_id AS STRING)
+            JOIN (
+                SELECT DISTINCT short_token, line_item_id
+                FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+                WHERE source = 'XANDR' AND line_item_id IS NOT NULL
+            ) m ON CAST(c.line_item_id AS STRING) = m.line_item_id
+            WHERE c.data_provider_name IN ('DOUBLEVERIFY', 'INTEGRAL AD SCIENCE - WEB')
+            GROUP BY m.short_token, p.media_type
+
+            UNION ALL
+
+            SELECT short_token, m AS media_type
+            FROM `site-hypr.prod_assets.campaign_abs_overrides`,
+                 UNNEST(['DISPLAY', 'VIDEO']) AS m
+            WHERE has_abs = TRUE
+        ),
+        campaign_abs AS (
+            SELECT
+                short_token,
+                MAX(IF(media_type = 'DISPLAY', TRUE, FALSE)) AS display_has_abs,
+                MAX(IF(media_type = 'VIDEO',   TRUE, FALSE)) AS video_has_abs
+            FROM abs_signals
+            GROUP BY short_token
+        )
+        SELECT
+            u.short_token,
+            b.client_name, b.campaign_name, b.start_date, b.end_date,
+            a.d_vi, a.d_clicks, a.v_vi, a.v_clicks,
+            u.v_viewable_completions, u.v_viewable_impressions, u.d_viewable_impressions,
+            u.admin_total_cost, u.admin_impressions,
+            u.d_admin_total_cost, u.d_admin_impressions,
+            u.v_admin_total_cost, u.v_admin_impressions,
+            c.contracted_o2o_display, c.contracted_ooh_display,
+            c.contracted_o2o_video,   c.contracted_ooh_video,
+            c.bonus_o2o_display,      c.bonus_ooh_display,
+            c.bonus_o2o_video,        c.bonus_ooh_video,
+            ab.display_has_abs, ab.video_has_abs
+        FROM unified u
+        JOIN base b USING (short_token)
+        LEFT JOIN agg          a USING (short_token)
+        LEFT JOIN checklist    c USING (short_token)
+        LEFT JOIN campaign_abs ab USING (short_token)
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("from_date", "DATE", window_from),
+            bigquery.ScalarQueryParameter("to_date",   "DATE", window_to),
+        ]
+    )
+
+    # Paraleliza query + owners (Sheets+overrides+aliases). Performers não
+    # precisa de share_ids/merges/closures/pauses/early_ends — só do enrichment
+    # de cp_email/cs_email pro agrupamento.
+    fut_query     = _query_pool.submit(lambda: list(bq.query(sql, job_config=job_config).result()))
+    fut_owners    = _query_pool.submit(_safe_get_owners_lookup)
+    fut_overrides = _query_pool.submit(_safe_get_overrides)
+    fut_aliases   = _query_pool.submit(_safe_get_aliases)
+
+    rows           = fut_query.result()
+    lookup_owners  = fut_owners.result()
+    overrides_map  = fut_overrides.result()
+    aliases_map    = fut_aliases.result()
+
+    # Janela em date (não datetime) pra arithmetic limpa.
+    wf = window_from
+    wt = window_to
+    window_days = (wt - wf).days + 1
+
+    def expected_in_window(negotiated, sd, ed):
+        """Quantos impressions/completions a campanha 'deveria' ter
+        entregue dentro da janela, dado seu contrato linear.
+
+        daily_rate × dias_de_overlap_entre_contrato_e_janela. Retorna None
+        quando não dá pra calcular (contrato zero ou datas faltando)."""
+        if negotiated <= 0 or not sd or not ed:
+            return None
+        s = sd.date() if hasattr(sd, "date") else sd
+        e = ed.date() if hasattr(ed, "date") else ed
+        total_days = (e - s).days + 1
+        if total_days <= 0:
+            return None
+        # Overlap entre contrato e janela.
+        ovf = max(s, wf)
+        ovt = min(e, wt)
+        if ovf > ovt:
+            return 0
+        overlap_days = (ovt - ovf).days + 1
+        return negotiated / total_days * overlap_days
+
+    result = []
+    for r in rows:
+        start_date = r["start_date"]
+        end_date   = r["end_date"]
+
+        d_vi              = float(r["d_vi"]                   or 0)
+        d_clicks          = float(r["d_clicks"]               or 0)
+        v_vi              = float(r["v_vi"]                   or 0)
+        v_clicks          = float(r["v_clicks"]               or 0)
+        v_viewable_comp   = float(r["v_viewable_completions"] or 0)
+        v_viewable_impr   = float(r["v_viewable_impressions"] or 0)
+        d_viewable_impr   = float(r["d_viewable_impressions"] or 0)
+
+        d_neg = (
+            float(r["contracted_o2o_display"] or 0) +
+            float(r["contracted_ooh_display"] or 0) +
+            float(r["bonus_o2o_display"]      or 0) +
+            float(r["bonus_ooh_display"]      or 0)
+        )
+        v_neg = (
+            float(r["contracted_o2o_video"] or 0) +
+            float(r["contracted_ooh_video"] or 0) +
+            float(r["bonus_o2o_video"]      or 0) +
+            float(r["bonus_ooh_video"]      or 0)
+        )
+
+        d_expected = expected_in_window(d_neg, start_date, end_date)
+        v_expected = expected_in_window(v_neg, start_date, end_date)
+
+        display_pacing = round(d_viewable_impr / d_expected     * 100, 1) if d_expected and d_expected > 0 else None
+        video_pacing   = round(v_viewable_comp  / v_expected    * 100, 1) if v_expected and v_expected > 0 else None
+        display_ctr    = round(d_clicks         / d_vi          * 100, 2) if d_vi             > 0       else None
+        video_vtr      = round(v_viewable_comp  / v_viewable_impr * 100, 2) if v_viewable_impr > 0       else None
+
+        entry = {
+            "short_token":   r["short_token"],
+            "client_name":   r["client_name"],
+            "campaign_name": r["campaign_name"],
+            "start_date":    str(start_date) if start_date else None,
+            "end_date":      str(end_date)   if end_date   else None,
+        }
+        if display_pacing is not None: entry["display_pacing"] = display_pacing
+        if video_pacing   is not None: entry["video_pacing"]   = video_pacing
+        if display_ctr    is not None: entry["display_ctr"]    = display_ctr
+        if video_vtr      is not None: entry["video_vtr"]      = video_vtr
+
+        # Brutos pra computeTopPerformers refazer agregação correta no front
+        # (Σ numerador / Σ denominador por owner). Os mesmos campos que o
+        # endpoint atual já emite, agora com escopo da janela.
+        if d_vi            > 0: entry["display_impressions"]          = int(d_vi)
+        if d_clicks        > 0: entry["display_clicks"]               = int(d_clicks)
+        if d_viewable_impr > 0: entry["display_viewable_impressions"] = int(d_viewable_impr)
+        if d_expected and d_expected > 0: entry["display_expected_impressions"] = int(d_expected)
+        if v_vi            > 0: entry["video_impressions"]            = int(v_vi)
+        if v_clicks        > 0: entry["video_clicks"]                 = int(v_clicks)
+        if v_viewable_impr > 0: entry["video_viewable_impressions"]   = int(v_viewable_impr)
+        if v_viewable_comp > 0: entry["video_viewable_completions"]   = int(v_viewable_comp)
+        if v_expected and v_expected > 0: entry["video_expected_completions"] = int(v_expected)
+
+        # ADMIN-ONLY: custo cru DSP pra eCPM. Mesmo gating dos outros admin_*.
+        admin_total_cost   = float(r["admin_total_cost"]   or 0)
+        admin_impressions  = int(r["admin_impressions"]    or 0)
+        if admin_impressions > 0 and admin_total_cost > 0:
+            entry["admin_total_cost"] = round(admin_total_cost, 2)
+            entry["admin_impressions"] = admin_impressions
+            entry["admin_ecpm"] = round(admin_total_cost / admin_impressions * 1000, 2)
+
+        d_admin_cost = float(r["d_admin_total_cost"] or 0)
+        d_admin_impr = int(r["d_admin_impressions"]  or 0)
+        v_admin_cost = float(r["v_admin_total_cost"] or 0)
+        v_admin_impr = int(r["v_admin_impressions"]  or 0)
+        if d_admin_impr > 0:
+            entry["d_admin_total_cost"] = round(d_admin_cost, 2)
+            entry["d_admin_impressions"] = d_admin_impr
+            if d_admin_cost > 0:
+                entry["display_ecpm"] = round(d_admin_cost / d_admin_impr * 1000, 2)
+        if v_admin_impr > 0:
+            entry["v_admin_total_cost"] = round(v_admin_cost, 2)
+            entry["v_admin_impressions"] = v_admin_impr
+            if v_admin_cost > 0:
+                entry["video_ecpm"] = round(v_admin_cost / v_admin_impr * 1000, 2)
+
+        if r["display_has_abs"]:
+            entry["display_has_abs"] = True
+        if r["video_has_abs"]:
+            entry["video_has_abs"] = True
+
+        result.append(entry)
+
+    # Enrichment de owners — mesmo pipeline da listagem atual (override BQ
+    # vence sobre lookup Sheets; alias resolve antes de buscar no lookup).
+    for c in result:
+        token = c.get("short_token")
+        ov_cp, ov_cs = overrides_map.get(token, (None, None))
+        lk_cp, lk_cs = owners.resolve_owner_for_client(
+            c.get("client_name"), lookup_owners, aliases_map
+        )
+        c["cp_email"] = ov_cp or lk_cp
+        c["cs_email"] = ov_cs or lk_cs
 
     return result
 
