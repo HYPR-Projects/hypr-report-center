@@ -431,6 +431,24 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     }
   };
 
+  // Tracking de acesso do report compartilhado. CRÍTICO: este hook PRECISA
+  // ficar ANTES de qualquer early return condicional (error, !data). Mover
+  // pra depois quebra a regra dos hooks do React — a contagem de hooks
+  // muda entre renders (skeleton → data carregada) e dispara
+  // "Rendered more hooks than during the previous render", capturado pelo
+  // ErrorBoundary como "Algo deu errado ao carregar o report".
+  //
+  // shortToken = data?.campaign?.short_token quando carregado, null antes.
+  // Hook tem early return interno em `!shortToken`, então fica inerte
+  // enquanto data não chega — primeira disparada de pageview acontece
+  // quando o backend resolve o token (única vez que muda de null → string).
+  useReportTracking({
+    shortToken:   data?.campaign?.short_token || null,
+    shareId:      typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("share") : null,
+    isAdmin,
+    currentTabId: tab,
+  });
+
   if (error) {
     return (
       <div className="min-h-screen bg-canvas text-fg font-sans flex items-center justify-center p-6">
@@ -513,16 +531,6 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     (tab === "survey" && !showSurvey)
       ? "overview"
       : tab;
-
-  // Tracking de acesso do report compartilhado. Hook é no-op pra admins.
-  // shortToken vem de camp (resolved pelo backend); shareId vem da URL
-  // quando o cliente abriu por link compartilhado (vs admin direto).
-  useReportTracking({
-    shortToken:   camp?.short_token || token,
-    shareId:      typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("share") : null,
-    isAdmin,
-    currentTabId: effectiveTab,
-  });
 
   return (
     <TooltipProvider delayDuration={200}>
