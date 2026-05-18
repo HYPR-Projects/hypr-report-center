@@ -138,8 +138,8 @@ export function OwnerFilter({ selected, onChange, teamMembers }) {
               </div>
             ) : (
               <>
-                <Group label="CPs" people={teamMembers?.cps} selected={selected} onToggle={toggle} />
                 <Group label="CSs" people={teamMembers?.css} selected={selected} onToggle={toggle} />
+                <Group label="CPs" people={teamMembers?.cps} selected={selected} onToggle={toggle} />
               </>
             )}
           </div>
