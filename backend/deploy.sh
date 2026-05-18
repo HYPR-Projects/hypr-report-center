@@ -75,6 +75,7 @@ GOOGLE_OAUTH_CLIENT_SECRET=$(extract_env "GOOGLE_OAUTH_CLIENT_SECRET")
 CRON_SECRET=$(extract_env "CRON_SECRET")
 SENDGRID_API_KEY=$(extract_env "SENDGRID_API_KEY")
 SHEETS_ALERT_FROM=$(extract_env "SHEETS_ALERT_FROM")
+ACCESS_TRACKING_IP_SALT=$(extract_env "ACCESS_TRACKING_IP_SALT")
 
 if [ -z "$JWT_SECRET" ]; then
   echo "✗ JWT_SECRET não encontrado na revisão $ACTIVE_REV. Abortando."
@@ -105,6 +106,13 @@ else
 fi
 if [ -n "$SHEETS_ALERT_FROM" ]; then
   echo "  ✓ SHEETS_ALERT_FROM capturado"
+fi
+if [ -n "$ACCESS_TRACKING_IP_SALT" ]; then
+  echo "  ✓ ACCESS_TRACKING_IP_SALT capturado"
+else
+  echo "  ⚠ ACCESS_TRACKING_IP_SALT ausente — IP hash do tracking vai usar default inseguro"
+  echo "    Configure: gcloud functions deploy report_data --gen2 --region=southamerica-east1 \\"
+  echo "                 --update-env-vars ACCESS_TRACKING_IP_SALT=\$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 fi
 
 # ── 2. Montar arquivo YAML com todas as envvars ──────────────────────────────
@@ -137,6 +145,9 @@ if [ -n "$SENDGRID_API_KEY" ]; then
 fi
 if [ -n "$SHEETS_ALERT_FROM" ]; then
   echo "SHEETS_ALERT_FROM: '${SHEETS_ALERT_FROM}'" >> "$ENV_FILE"
+fi
+if [ -n "$ACCESS_TRACKING_IP_SALT" ]; then
+  echo "ACCESS_TRACKING_IP_SALT: '${ACCESS_TRACKING_IP_SALT}'" >> "$ENV_FILE"
 fi
 
 # ── 3. Deploy ────────────────────────────────────────────────────────────────

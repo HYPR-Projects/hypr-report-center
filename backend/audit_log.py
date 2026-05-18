@@ -39,6 +39,7 @@ leitura típica filtra "últimos 30d de um token" e ambos os critérios
 batem com o partition pruning + cluster scan.
 """
 
+import json
 import logging
 import os
 import threading
@@ -153,8 +154,10 @@ def write_event(
         "actor_email": actor_email,
         "event_type":  event_type,
         "message":     message,
-        # JSON column aceita dict direto via insert_rows_json — BQ serializa
-        "payload":     payload,
+        # Coluna do tipo JSON exige string serializada via streaming insert
+        # (`insert_rows_json` trata dict como RECORD/STRUCT e BQ rejeita
+        # com "This field: payload is not a record"). json.dumps resolve.
+        "payload":     json.dumps(payload) if payload is not None else None,
         "synthetic":   bool(synthetic),
         # ISO 8601 com timezone — formato canônico do BQ
         "created_at":  ts.isoformat(),

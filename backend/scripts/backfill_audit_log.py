@@ -338,7 +338,11 @@ def main():
             inserted += 1
             continue
         try:
-            audit_log.write_event(
+            # write_event retorna event_id em caso de sucesso, None em
+            # caso de falha (não propaga exceção). Contador deve checar
+            # retorno — antes ficava sempre "inserted=N" mesmo quando
+            # 100% das inserções falhavam no streaming.
+            result = audit_log.write_event(
                 short_token=ev["short_token"],
                 event_type=ev["event_type"],
                 actor_email=ev.get("actor_email"),
@@ -347,9 +351,11 @@ def main():
                 synthetic=True,
                 when=ev.get("when") or datetime.now(timezone.utc),
             )
-            inserted += 1
-            # Marca como visto na sessão atual também
-            seen.add(key)
+            if result:
+                inserted += 1
+                seen.add(key)
+            else:
+                failed += 1
         except Exception as e:
             logger.error(f"Falha em {ev['short_token']}/{ev['event_type']}: {e}")
             failed += 1
