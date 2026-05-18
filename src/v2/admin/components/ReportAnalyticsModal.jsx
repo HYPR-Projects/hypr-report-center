@@ -288,12 +288,12 @@ const fmtRelative = (minutesAgo) => {
 // ─── Componente principal ──────────────────────────────────────────────
 export function ReportAnalyticsModal({ open, onOpenChange, campaign }) {
   const [range, setRange] = useState(30); // 7 | 30 | 90
-  const [internalFilter, setInternalFilter] = useState("external"); // "all" | "external"
 
-  // Fetch real do backend. Internal filter atualmente é só UI — backend
-  // já retorna external-only por default; expandir pra "Todos" exige
-  // re-fetch com include_internal=true. Deixei o estado pronto pra
-  // amarrar quando a feature de toggle for liberada pra admin.
+  // Toggle Externo/Todos foi removido — admin não dispara tracking (hook
+  // tem `if (isAdmin) return`), então 100% dos eventos já são externos.
+  // Botão "Todos" não mudava nada nos dados. Quando time HYPR começar a
+  // abrir reports em modo cliente pra QA, restaurar passando
+  // include_internal=true no fetch.
   const { loading, error, analytics, changelog } = useReportAnalyticsData(
     campaign?.short_token,
     range,
@@ -338,8 +338,6 @@ export function ReportAnalyticsModal({ open, onOpenChange, campaign }) {
             campaign={campaign}
             range={range}
             onRangeChange={setRange}
-            internalFilter={internalFilter}
-            onInternalFilterChange={setInternalFilter}
           />
           <div className="flex-1 overflow-y-auto px-6 md:px-8 pb-8 pt-6 space-y-7">
             {error && !loading && <ErrorBanner />}
@@ -383,7 +381,7 @@ function SkelBox({ className }) {
 }
 
 // ─── Header ────────────────────────────────────────────────────────────
-function Header({ campaign, range, onRangeChange, internalFilter, onInternalFilterChange }) {
+function Header({ campaign, range, onRangeChange }) {
   return (
     <div className="px-6 md:px-8 pt-6 pb-5 border-b border-border bg-surface-2/60 relative">
       <div
@@ -416,8 +414,6 @@ function Header({ campaign, range, onRangeChange, internalFilter, onInternalFilt
           </Dialog.Description>
           <div className="mt-3.5 flex items-center gap-3 flex-wrap">
             <RangeToggle value={range} onChange={onRangeChange} />
-            <span className="h-4 w-px bg-border" aria-hidden />
-            <InternalFilter value={internalFilter} onChange={onInternalFilterChange} />
           </div>
         </div>
         <Dialog.Close
@@ -461,35 +457,6 @@ function RangeToggle({ value, onChange }) {
           {o.label}
         </button>
       ))}
-    </div>
-  );
-}
-
-function InternalFilter({ value, onChange }) {
-  const opts = [
-    { v: "external", label: "Externo" },
-    { v: "all",      label: "Todos" },
-  ];
-  return (
-    <div className="inline-flex items-center gap-2">
-      <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">Acessos:</span>
-      <div className="inline-flex items-center gap-0.5 p-0.5 rounded-md bg-surface border border-border">
-        {opts.map((o) => (
-          <button
-            key={o.v}
-            type="button"
-            onClick={() => onChange(o.v)}
-            className={cn(
-              "px-2.5 py-1 rounded text-[11px] font-semibold transition-colors cursor-pointer",
-              value === o.v
-                ? "bg-signature text-white"
-                : "text-fg-muted hover:text-fg hover:bg-surface-strong",
-            )}
-          >
-            {o.label}
-          </button>
-        ))}
-      </div>
     </div>
   );
 }
