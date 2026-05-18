@@ -435,13 +435,16 @@ def query_summary_batch(short_tokens: list[str], range_days: int = 30) -> dict[s
     ensure_tables_exist()
     if not short_tokens:
         return {}
+    # ATENÇÃO: CTE não pode se chamar `rollup_*` — ROLLUP é keyword
+    # reservada no BQ Standard SQL e o parser quebra em CTEs e aliases
+    # com esse prefixo (mesmo lowercase). Usar `summary_*` em vez.
     sql = f"""
         WITH window_rows AS (
             SELECT * FROM {_daily_table_ref()}
             WHERE short_token IN UNNEST(@tokens)
               AND day >= DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL @range DAY)
         ),
-        rollup_per_token AS (
+        summary_per_token AS (
             SELECT
                 short_token,
                 SUM(total_pageviews) AS total_pageviews,
@@ -458,13 +461,13 @@ def query_summary_batch(short_tokens: list[str], range_days: int = 30) -> dict[s
                 e.short_token,
                 MAX(e.created_at) AS last_at
             FROM {_events_table_ref()} e
-            JOIN rollup_per_token r USING(short_token)
+            JOIN summary_per_token r USING(short_token)
             WHERE DATE(e.created_at, "America/Sao_Paulo") = r.last_day
               AND COALESCE(e.is_internal, FALSE) = FALSE
             GROUP BY e.short_token
         )
         SELECT r.short_token, r.total_pageviews, r.unique_sessions, l.last_at
-        FROM rollup_per_token r
+        FROM summary_per_token r
         LEFT JOIN last_access l USING(short_token)
     """
     job_config = bigquery.QueryJobConfig(
@@ -568,6 +571,9 @@ def query_timeline(short_token: str, range_days: int = 30, include_internal: boo
     """
     ensure_tables_exist()
     sessions_field = "unique_sessions" if include_internal else "external_sessions"
+    # ATENÇÃO: CTE não pode se chamar `rollup` — ROLLUP é keyword reservada
+    # no BQ Standard SQL (parser quebra com "Expected SELECT but got
+    # ROLLUP"). Usar `daily_data` em vez.
     sql = f"""
         WITH days AS (
             SELECT day FROM UNNEST(
@@ -577,7 +583,7 @@ def query_timeline(short_token: str, range_days: int = 30, include_internal: boo
                 )
             ) AS day
         ),
-        rollup AS (
+        daily_data AS (
             SELECT day, total_pageviews, {sessions_field} AS sessions
             FROM {_daily_table_ref()}
             WHERE short_token = @token
@@ -585,10 +591,10 @@ def query_timeline(short_token: str, range_days: int = 30, include_internal: boo
         )
         SELECT
             days.day AS day,
-            COALESCE(rollup.total_pageviews, 0) AS accesses,
-            COALESCE(rollup.sessions, 0) AS sessions
+            COALESCE(daily_data.total_pageviews, 0) AS accesses,
+            COALESCE(daily_data.sessions, 0) AS sessions
         FROM days
-        LEFT JOIN rollup USING(day)
+        LEFT JOIN daily_data USING(day)
         ORDER BY day ASC
     """
     job_config = bigquery.QueryJobConfig(
