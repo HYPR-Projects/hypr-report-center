@@ -439,7 +439,7 @@ def query_summary_batch(short_tokens: list[str], range_days: int = 30) -> dict[s
     # reservada no BQ Standard SQL e o parser quebra em CTEs e aliases
     # com esse prefixo (mesmo lowercase). Usar `summary_*` em vez.
     sql = f"""
-        WITH window_rows AS (
+        WITH day_rows AS (
             SELECT * FROM {_daily_table_ref()}
             WHERE short_token IN UNNEST(@tokens)
               AND day >= DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL @range DAY)
@@ -450,7 +450,7 @@ def query_summary_batch(short_tokens: list[str], range_days: int = 30) -> dict[s
                 SUM(total_pageviews) AS total_pageviews,
                 SUM(external_sessions) AS unique_sessions,
                 MAX(day) AS last_day
-            FROM window_rows
+            FROM day_rows
             GROUP BY short_token
         ),
         last_access AS (
@@ -510,7 +510,7 @@ def query_summary(short_token: str, range_days: int = 30, include_internal: bool
     ensure_tables_exist()
     field_sessions = "unique_sessions" if include_internal else "external_sessions"
     sql = f"""
-        WITH window_rows AS (
+        WITH day_rows AS (
             SELECT * FROM {_daily_table_ref()}
             WHERE short_token = @token
               AND day >= DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL @range DAY)
@@ -520,7 +520,7 @@ def query_summary(short_token: str, range_days: int = 30, include_internal: bool
             COALESCE(SUM({field_sessions}), 0) AS unique_sessions,
             SAFE_DIVIDE(SUM(avg_duration_sec * {field_sessions}), NULLIF(SUM({field_sessions}), 0)) AS avg_duration_sec,
             MAX(day) AS last_day
-        FROM window_rows
+        FROM day_rows
     """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
