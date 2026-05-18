@@ -277,6 +277,11 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
   const [periodCampaigns, setPeriodCampaigns] = useState(null); // null = não fetcheado ainda
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState(null);
+  // Trigger pra forçar refetch manual sem mudar preset (botão "Tentar de novo").
+  // Mudar este state re-dispara o useEffect mesmo quando o resto das deps é
+  // idêntico — alternativa a tentar reusar o setPreset, que o React bail-out
+  // ignora quando o valor é o mesmo.
+  const [refetchKey, setRefetchKey] = useState(0);
   // SeqRef pra evitar race condition quando user troca de preset rápido —
   // resposta de fetch lento de um preset anterior não pode sobrescrever a do
   // preset atual.
@@ -285,8 +290,14 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
   const isHistorical = preset !== "now";
   const { from, to } = useMemo(() => resolvePeriod(preset, custom), [preset, custom]);
 
-  // Dispara fetch quando entra em modo histórico OU muda janela. Em modo
-  // "now" limpa o cache local — voltar a "Agora" deve ser instantâneo (props).
+  // Dispara fetch quando entra em modo histórico OU muda janela OU refetchKey
+  // muda (botão de retry). Em modo "now" limpa o cache local — voltar a
+  // "Agora" deve ser instantâneo (props.campaigns continua sendo a fonte).
+  //
+  // periodCampaigns(null) no início do fetch força o skeleton a aparecer
+  // durante a transição entre presets — sem isso, a UI mostrava o subtitle do
+  // novo período mas a lista do anterior (com opacity reduzida), criando
+  // mismatch entre o que o cabeçalho prometia e o que a lista entregava.
   useEffect(() => {
     if (!isHistorical) {
       setPeriodCampaigns(null);
@@ -296,6 +307,7 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
     }
     if (!from || !to) return; // custom ainda incompleto
     const seq = ++fetchSeqRef.current;
+    setPeriodCampaigns(null);
     setLoading(true);
     setFetchError(null);
     listPerformersForPeriod({ from, to })
@@ -309,7 +321,7 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
         setFetchError(err.message || "Erro ao carregar período");
         setLoading(false);
       });
-  }, [isHistorical, from, to]);
+  }, [isHistorical, from, to, refetchKey]);
 
   // Fonte ativa: props.campaigns no modo Agora, periodCampaigns no histórico.
   const sourceCampaigns = isHistorical ? periodCampaigns : campaigns;
@@ -386,14 +398,7 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
           <p className="text-sm text-danger">Erro ao carregar período: {fetchError}</p>
           <button
             type="button"
-            onClick={() => {
-              // Força refetch incrementando o seq — useEffect roda de novo
-              // ao mudar `from`/`to` (não muda aqui), então a forma simples é
-              // setar custom de novo ou alternar preset. Mais limpo: dispara
-              // o efeito manualmente via re-render do mesmo preset:
-              setPreset((p) => p);
-              fetchSeqRef.current++; // garante que próximo fetch é "novo"
-            }}
+            onClick={() => setRefetchKey((k) => k + 1)}
             className="mt-2 text-xs text-signature hover:underline"
           >
             Tentar de novo
@@ -449,8 +454,18 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
         = 90 · 100% Video = 45 · 50/50 = 67.5); score é normalizado pelo
         max da campanha. Score do CS é a média ponderada por impressões
         das campanhas ativas. Métricas exibidas (Pacing/CTR/VTR/eCPM) são
-        agregadas via Σnumerador / Σdenominador sobre as campanhas ativas
-        do owner.
+        agregadas via Σnumerador / Σdenominador sobre as campanhas
+        {isHistorical ? " com entrega no período" : " ativas"} do owner.
+        {isHistorical && (
+          <>
+            {" "}
+            <span className="text-warning">No modo histórico</span>, pacing
+            = entregue na janela ÷ (contrato/dia × dias da janela que
+            sobrepõem o contrato) — assume distribuição linear da entrega.
+            Campanhas com entrega muito concentrada (front-loaded ou
+            back-loaded) podem ter pacing distorcido na janela.
+          </>
+        )}
       </p>
     </div>
   );
