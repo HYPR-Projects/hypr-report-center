@@ -29,6 +29,10 @@ import { getAccessSummariesBatch } from "../../../lib/api";
 const TTL_MS = 5 * 60 * 1000;
 const cache = new Map(); // token → { summary, fetchedAt }
 let inflight = null;     // Promise da request em voo, pra dedup
+// Tokens que entraram em alguma prefetch — usado pelo badge pra
+// distinguir "estado de loading" (não rolou prefetch ainda) de
+// "0 acessos confirmado" (prefetch resolveu, valor é 0 real).
+const requestedTokens = new Set();
 
 const listeners = new Set();
 
@@ -52,12 +56,32 @@ export function getCachedSummary(shortToken) {
 }
 
 /**
+ * True quando temos um prefetch em voo OU o token nunca foi requested.
+ * False quando já temos dado em cache (mesmo que valor zero, é dado
+ * confirmado). Badge usa pra decidir entre skeleton e número real.
+ */
+export function isLoadingSummary(shortToken) {
+  if (!shortToken) return false;
+  if (cache.has(shortToken)) {
+    // Já tem dado — verifica se ainda é válido (TTL)
+    const entry = cache.get(shortToken);
+    if (Date.now() - entry.fetchedAt <= TTL_MS) return false;
+  }
+  // Não tem cache válido. Loading = se foi requested e tem inflight,
+  // OU se nunca foi requested mas tem inflight (provavelmente está nele).
+  return inflight != null;
+}
+
+/**
  * Dispara um batch fetch dos tokens fornecidos. Tokens já cacheados
  * (válidos) são filtrados out — só pede o que falta. Dedupe em voo:
  * múltiplas chamadas simultâneas viram 1 só.
  */
 export async function prefetchAccessSummaries(tokens) {
   if (!Array.isArray(tokens) || tokens.length === 0) return;
+  for (const t of tokens) {
+    if (t) requestedTokens.add(t);
+  }
   const now = Date.now();
   const toFetch = tokens.filter((t) => {
     if (!t) return false;
@@ -66,6 +90,9 @@ export async function prefetchAccessSummaries(tokens) {
     return now - entry.fetchedAt > TTL_MS;
   });
   if (toFetch.length === 0) return;
+  // Emit loading state — badge re-renderiza pra skeleton enquanto
+  // inflight=true
+  emit();
 
   // Se já tem um batch em voo, espera ele resolver antes de pedir o
   // resto. Reduz o caso patológico de 2 prefetches paralelos que cobrem
@@ -117,13 +144,22 @@ export async function prefetchAccessSummaries(tokens) {
 import { useEffect, useState } from "react";
 
 export function useCachedAccessSummary(shortToken) {
-  const [summary, setSummary] = useState(() => getCachedSummary(shortToken));
+  const [state, setState] = useState(() => ({
+    summary: getCachedSummary(shortToken),
+    loading: isLoadingSummary(shortToken),
+  }));
   useEffect(() => {
-    setSummary(getCachedSummary(shortToken));
+    setState({
+      summary: getCachedSummary(shortToken),
+      loading: isLoadingSummary(shortToken),
+    });
     const unsub = subscribe(() => {
-      setSummary(getCachedSummary(shortToken));
+      setState({
+        summary: getCachedSummary(shortToken),
+        loading: isLoadingSummary(shortToken),
+      });
     });
     return unsub;
   }, [shortToken]);
-  return summary;
+  return state;
 }

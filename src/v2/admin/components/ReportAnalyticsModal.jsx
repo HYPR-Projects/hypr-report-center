@@ -46,7 +46,10 @@ function useReportAnalyticsData(shortToken, rangeDays, isOpen) {
   useEffect(() => {
     if (!isOpen || !shortToken) return;
     let cancelled = false;
-    setState((s) => ({ ...s, loading: true, error: null }));
+    // Reset COMPLETO ao trocar shortToken/range — sem isso, dados da
+    // campanha anterior ficam visíveis enquanto a nova request resolve.
+    // Era o que fazia admin ver "dados de KIA na view de PARAMOUNT".
+    setState({ loading: true, error: null, analytics: null, changelog: [] });
 
     Promise.allSettled([
       getReportAnalytics({ short_token: shortToken, range_days: rangeDays }),
@@ -324,34 +327,30 @@ export function ReportAnalyticsModal({ open, onOpenChange, campaign }) {
             onInternalFilterChange={setInternalFilter}
           />
           <div className="flex-1 overflow-y-auto px-6 md:px-8 pb-8 pt-6 space-y-7">
-            {loading && <LoadingBanner />}
             {error && !loading && <ErrorBanner />}
-            <KpiRow kpis={data.kpis} />
-            <TimelineCard series={data.series} annotations={data.annotations} range={range} />
+            <KpiRow kpis={data.kpis} loading={loading} />
+            <TimelineCard
+              series={data.series}
+              annotations={data.annotations}
+              range={range}
+              loading={loading}
+            />
             <div className="grid grid-cols-1 md:grid-cols-5 gap-5">
               <div className="md:col-span-3">
-                <TabsCard tabs={data.tabs} />
+                <TabsCard tabs={data.tabs} loading={loading} />
               </div>
               <div className="md:col-span-2">
-                <DeviceCard devices={data.devices} />
+                <DeviceCard devices={data.devices} loading={loading} />
               </div>
             </div>
-            <HeatmapCard heatmap={data.heatmap} />
-            <SessionsCard sessions={data.sessions} />
-            <AdminChangelogCard changelog={data.changelog} />
+            <HeatmapCard heatmap={data.heatmap} loading={loading} />
+            <SessionsCard sessions={data.sessions} loading={loading} />
+            <AdminChangelogCard changelog={data.changelog} loading={loading} />
             <TrackingStartDisclaimer date={data.trackingStartDate} />
           </div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
-  );
-}
-
-function LoadingBanner() {
-  return (
-    <div className="rounded-lg border border-dashed border-border bg-canvas-deeper/40 px-3 py-2.5 text-[11px] text-fg-subtle">
-      Carregando dados de acesso...
-    </div>
   );
 }
 
@@ -361,6 +360,11 @@ function ErrorBanner() {
       <strong>Não foi possível carregar.</strong> Dados podem estar desatualizados ou o tracking ainda não está disponível pra essa campanha.
     </div>
   );
+}
+
+/** Bloco shimmering reusável — bg sutil com animate-pulse. */
+function SkelBox({ className }) {
+  return <div className={cn("rounded-md bg-fg-subtle/10 animate-pulse", className)} />;
 }
 
 // ─── Header ────────────────────────────────────────────────────────────
@@ -476,7 +480,24 @@ function InternalFilter({ value, onChange }) {
 }
 
 // ─── KPIs ──────────────────────────────────────────────────────────────
-function KpiRow({ kpis }) {
+function KpiRow({ kpis, loading }) {
+  if (loading) {
+    return (
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="rounded-xl border border-border bg-surface px-4 py-3.5">
+            <SkelBox className="h-2.5 w-20" />
+            <SkelBox className="h-7 w-24 mt-2" />
+            <SkelBox className="h-2.5 w-32 mt-2" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return _KpiRowImpl({ kpis });
+}
+
+function _KpiRowImpl({ kpis }) {
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
       <Kpi
@@ -544,7 +565,28 @@ function fmtDayMonth(daysAgo) {
   return `${dd}/${mm}`;
 }
 
-function TimelineCard({ series, annotations, range }) {
+function TimelineCard({ series, annotations, range, loading }) {
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-border bg-surface px-5 py-4">
+        <SkelBox className="h-4 w-48 mb-2" />
+        <SkelBox className="h-3 w-32" />
+        <div className="relative mt-5">
+          <div className="h-[24px] mb-1" />
+          <SkelBox className="h-[120px] w-full" />
+        </div>
+        <div className="mt-2 flex justify-between">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <SkelBox key={i} className="h-2 w-8" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+  return _TimelineCardImpl({ series, annotations, range });
+}
+
+function _TimelineCardImpl({ series, annotations, range }) {
   const values = series.map((d) => d.accesses);
   const max = Math.max(...values);
 
@@ -655,7 +697,23 @@ function TimelineCard({ series, annotations, range }) {
 }
 
 // ─── Abas mais vistas ──────────────────────────────────────────────────
-function TabsCard({ tabs }) {
+function TabsCard({ tabs, loading }) {
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-border bg-surface px-5 py-4 h-full">
+        <SkelBox className="h-4 w-40 mb-4" />
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} className="mb-3 last:mb-0">
+            <div className="flex justify-between mb-1">
+              <SkelBox className="h-3 w-24" />
+              <SkelBox className="h-3 w-6" />
+            </div>
+            <SkelBox className="h-1.5 w-full" />
+          </div>
+        ))}
+      </div>
+    );
+  }
   // Math.max([]) = -Infinity → divisão dá -0 mas vira string "0%" OK.
   // Empty state explícito é mais honesto pro admin que vê o card vazio.
   if (!tabs || tabs.length === 0) {
@@ -696,12 +754,27 @@ function TabsCard({ tabs }) {
 }
 
 // ─── Device breakdown ──────────────────────────────────────────────────
-function DeviceCard({ devices }) {
+function DeviceCard({ devices, loading }) {
   const TONE = {
     Desktop: "bg-signature",
     Mobile:  "bg-success",
     Tablet:  "bg-warning",
   };
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-border bg-surface px-5 py-4 h-full">
+        <SkelBox className="h-4 w-32 mb-4" />
+        <SkelBox className="h-2 w-full mb-3" />
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="flex items-center gap-2.5 mb-2 last:mb-0">
+            <SkelBox className="w-2 h-2 rounded-sm" />
+            <SkelBox className="h-3 w-20 flex-1" />
+            <SkelBox className="h-3 w-10" />
+          </div>
+        ))}
+      </div>
+    );
+  }
   if (!devices || devices.length === 0) {
     return (
       <div className="rounded-xl border border-border bg-surface px-5 py-4 h-full">
@@ -740,7 +813,28 @@ function DeviceCard({ devices }) {
 }
 
 // ─── Heatmap dia × hora ────────────────────────────────────────────────
-function HeatmapCard({ heatmap }) {
+function HeatmapCard({ heatmap, loading }) {
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-border bg-surface px-5 py-4">
+        <div className="flex justify-between mb-3">
+          <SkelBox className="h-4 w-36" />
+          <SkelBox className="h-3 w-32" />
+        </div>
+        <div className="grid grid-cols-[32px_repeat(24,minmax(0,1fr))] gap-0.5">
+          {Array.from({ length: 7 * 25 }).map((_, i) => (
+            i % 25 === 0
+              ? <SkelBox key={i} className="h-3 w-6" />
+              : <SkelBox key={i} className="aspect-square" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+  return _HeatmapCardImpl({ heatmap });
+}
+
+function _HeatmapCardImpl({ heatmap }) {
   const DAYS = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
   const TONE = [
     "bg-canvas-deeper",
@@ -793,7 +887,30 @@ function HeatmapCard({ heatmap }) {
 }
 
 // ─── Sessões recentes ──────────────────────────────────────────────────
-function SessionsCard({ sessions }) {
+function SessionsCard({ sessions, loading }) {
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-border bg-surface px-5 py-4">
+        <div className="flex justify-between mb-3">
+          <SkelBox className="h-4 w-32" />
+          <SkelBox className="h-3 w-24" />
+        </div>
+        <div className="divide-y divide-border">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="py-2.5 flex items-center gap-3">
+              <SkelBox className="h-3 w-16" />
+              <SkelBox className="h-3 w-20" />
+              <SkelBox className="h-3 w-14" />
+              <div className="flex gap-1 flex-1">
+                <SkelBox className="h-4 w-16" />
+                <SkelBox className="h-4 w-14" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
   if (!sessions || sessions.length === 0) {
     return (
       <div className="rounded-xl border border-border bg-surface px-5 py-4">
@@ -969,8 +1086,28 @@ const fmtDaysAgo = (d) => {
 // disclosure mantém o card compacto por default e dá controle ao admin.
 const CHANGELOG_DEFAULT_LIMIT = 6;
 
-function AdminChangelogCard({ changelog }) {
+function AdminChangelogCard({ changelog, loading }) {
   const [expanded, setExpanded] = useState(false);
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-border bg-surface px-5 py-4">
+        <div className="flex justify-between mb-3">
+          <SkelBox className="h-4 w-40" />
+          <SkelBox className="h-3 w-28" />
+        </div>
+        <div className="relative">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="relative pl-6 py-2 flex items-start gap-3">
+              <SkelBox className="absolute left-0 top-3 w-[11px] h-[11px] rounded-full" />
+              <SkelBox className="h-3 w-12" />
+              <SkelBox className="h-3 w-3" />
+              <SkelBox className="h-3 flex-1 max-w-[280px]" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
   const hasMore = changelog.length > CHANGELOG_DEFAULT_LIMIT;
   const visible = expanded ? changelog : changelog.slice(0, CHANGELOG_DEFAULT_LIMIT);
   const hiddenCount = changelog.length - CHANGELOG_DEFAULT_LIMIT;

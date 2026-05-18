@@ -508,7 +508,23 @@ function Divider() {
  * listCampaigns. Render sync — null vira `0` sem flash.
  */
 function AccessBadge({ shortToken, ended }) {
-  const summary = useCachedAccessSummary(shortToken);
+  const { summary, loading } = useCachedAccessSummary(shortToken);
+
+  // Skeleton enquanto loading + sem dado em cache. Pulse animation
+  // discreta no slot do badge mantém o alinhamento da coluna (admin
+  // não vê "0" piscando e virando o número real).
+  if (loading && !summary) {
+    return (
+      <div
+        className="inline-flex items-center justify-end gap-1 w-[44px] cursor-default"
+        aria-label="Carregando acessos..."
+      >
+        <span className="block w-3 h-3 rounded-sm bg-fg-subtle/15 animate-pulse" />
+        <span className="block w-4 h-2.5 rounded-sm bg-fg-subtle/15 animate-pulse" />
+      </div>
+    );
+  }
+
   const totalAccesses  = summary?.total_pageviews ?? 0;
   const uniqueSessions = summary?.unique_sessions ?? 0;
   const lastAccessAt   = summary?.last_access_at || null;
