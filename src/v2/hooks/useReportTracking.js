@@ -29,7 +29,7 @@
 // O caller passa currentTabId — quando ele muda, hook emite tab_change
 // automaticamente. Mantém o hook stateless do ponto de vista do consumer.
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { API_URL } from "../../shared/config";
 
 // Cadência do heartbeat. Backend tolera retries duplicados via event_id,
@@ -276,4 +276,19 @@ export function useReportTracking({ shortToken, shareId, isAdmin, currentTabId }
       window.removeEventListener("pagehide", flush);
     };
   }, [shortToken, shareId, isAdmin]);
+
+  // Função exposta pros componentes do report disparar tracking de
+  // cliques em CTAs específicos (Abrir Sheets, Download CSV, etc).
+  // Aceita um cta_id string que vai pro backend gravado em `tab_id`
+  // (reuso de coluna). Skip-admin idêntico aos outros events.
+  const trackCta = useCallback((ctaId) => {
+    if (!shortToken || isAdmin || !ctaId) return;
+    const session = sessionRef.current;
+    if (!session) return;
+    send(buildPayload(session, shortToken, shareId, "cta_click", {
+      tab_id: String(ctaId),
+    }));
+  }, [shortToken, shareId, isAdmin]);
+
+  return { trackCta };
 }

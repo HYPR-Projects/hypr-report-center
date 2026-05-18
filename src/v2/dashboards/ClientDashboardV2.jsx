@@ -51,6 +51,7 @@ import {
 import { TopBarV2 } from "../components/TopBarV2";
 import { CampaignHeaderV2 } from "../components/CampaignHeaderV2";
 import { useReportTracking } from "../hooks/useReportTracking";
+import { ReportTrackingProvider } from "../contexts/ReportTrackingContext";
 import { DateRangeFilterV2 } from "../components/DateRangeFilterV2";
 import { CoreProductFilterV2 } from "../components/CoreProductFilterV2";
 
@@ -442,7 +443,10 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   // Hook tem early return interno em `!shortToken`, então fica inerte
   // enquanto data não chega — primeira disparada de pageview acontece
   // quando o backend resolve o token (única vez que muda de null → string).
-  useReportTracking({
+  // Hook agora retorna { trackCta } — propagado pra árvore via Context
+  // pra qualquer componente filho (SheetsIntegrationCardV2, DataTableV2,
+  // etc) chamar sem prop drilling.
+  const { trackCta } = useReportTracking({
     shortToken:   data?.campaign?.short_token || null,
     shareId:      typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("share") : null,
     isAdmin,
@@ -533,6 +537,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
       : tab;
 
   return (
+    <ReportTrackingProvider value={{ trackCta }}>
     <TooltipProvider delayDuration={200}>
       <div className="min-h-screen bg-canvas text-fg font-sans">
         {/* Barra de progresso vem do GlobalProgressBar (montado no main.jsx),
@@ -744,6 +749,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
         </div>
       </div>
     </TooltipProvider>
+    </ReportTrackingProvider>
   );
 }
 

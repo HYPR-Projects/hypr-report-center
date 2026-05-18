@@ -28,6 +28,7 @@ import { useState } from "react";
 import { fmt } from "../../shared/format";
 import { cn } from "../../ui/cn";
 import { Button } from "../../ui/Button";
+import { useReportTrackingContext } from "../contexts/ReportTrackingContext";
 
 const COLUMNS = [
   { key: "date",                     label: "Data" },
@@ -55,7 +56,12 @@ export function DataTableV2({ detail, campaignName }) {
   const filtered = filter === "ALL" ? detail : detail.filter((r) => r.media_type === filter);
   const visible = filtered.slice(0, ROW_LIMIT);
 
+  // trackCta vem do contexto montado pelo ClientDashboardV2; noop fora
+  // dele (preview/teste isolado).
+  const { trackCta } = useReportTrackingContext();
+
   const downloadCSV = () => {
+    trackCta("csv_download");
     const header = COLUMNS.map((c) => c.key).join(",");
     const rows = filtered.map((r) =>
       COLUMNS.map((c) => `"${(r[c.key] ?? "").toString().replace(/"/g, '""')}"`).join(","),

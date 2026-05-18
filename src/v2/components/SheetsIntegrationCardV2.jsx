@@ -28,6 +28,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { API_URL, GOOGLE_CLIENT_ID } from "../../shared/config";
 import { adminAuthHeaders } from "../../shared/auth";
+import { useReportTrackingContext } from "../contexts/ReportTrackingContext";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function loadGisScript() {
@@ -129,6 +130,10 @@ export default function SheetsIntegrationCardV2({
   // target_type/target_id efetivos (compat: cai em token/{token} se não passado)
   const targetType = targetTypeProp || "token";
   const targetId   = targetIdProp   || token;
+
+  // trackCta vem do contexto montado pelo ClientDashboardV2. Fora desse
+  // dashboard (ex: preview/teste isolado) cai em noop default — sem erro.
+  const { trackCta } = useReportTrackingContext();
 
   const [integration, setIntegration] = useState(initialIntegration || null);
   const [busy, setBusy]               = useState(false);
@@ -353,6 +358,7 @@ export default function SheetsIntegrationCardV2({
                 href={integration.spreadsheet_url}
                 target="_blank"
                 rel="noopener noreferrer"
+                onClick={() => trackCta("sheets_open")}
                 className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-signature text-canvas hover:opacity-90 transition cursor-pointer"
               >
                 Abrir no Google Sheets

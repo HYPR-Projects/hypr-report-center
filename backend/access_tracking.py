@@ -335,6 +335,9 @@ ALLOWED_EVENT_TYPES = frozenset({
     "heartbeat",     # tick a cada 60s enquanto a aba está visível
     "tab_change",    # admin/cliente trocou de aba dentro do report
     "session_end",   # último evento (sendBeacon em pagehide)
+    "cta_click",     # clique em CTA específico (Google Sheets, Download CSV, etc)
+                     # — o id do CTA é gravado no campo tab_id (reuso de coluna
+                     # pra evitar ALTER TABLE; semanticamente é "string opaca")
 })
 
 
@@ -736,6 +739,39 @@ def query_tabs_breakdown(short_token: str, range_days: int = 30, include_interna
     )
     rows = bq.query(sql, job_config=job_config).result()
     return [{"tab_id": r["tab_id"], "views": int(r["views"])} for r in rows]
+
+
+def query_ctas_breakdown(short_token: str, range_days: int = 30, include_internal: bool = False) -> list[dict]:
+    """Ranking de cliques em CTAs (Abrir Sheets, Download CSV, etc).
+
+    Lê events crus filtrando `event_type = 'cta_click'`. O id do CTA fica
+    em `tab_id` (reuso de coluna — sem ALTER TABLE). Aceitar novos CTAs
+    no futuro é só passar IDs novos no frontend; query continua a mesma.
+    """
+    ensure_tables_exist()
+    sql = f"""
+        SELECT
+            tab_id AS cta_id,
+            COUNT(*) AS clicks
+        FROM {_events_table_ref()}
+        WHERE short_token = @token
+          AND event_type = 'cta_click'
+          AND tab_id IS NOT NULL
+          AND DATE(created_at, "America/Sao_Paulo") >= DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL @range - 1 DAY)
+          AND (@include_internal OR COALESCE(is_internal, FALSE) = FALSE)
+        GROUP BY tab_id
+        ORDER BY clicks DESC
+        LIMIT 10
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("token", "STRING", short_token),
+            bigquery.ScalarQueryParameter("range", "INT64", range_days),
+            bigquery.ScalarQueryParameter("include_internal", "BOOL", include_internal),
+        ]
+    )
+    rows = bq.query(sql, job_config=job_config).result()
+    return [{"cta_id": r["cta_id"], "clicks": int(r["clicks"])} for r in rows]
 
 
 def query_devices_breakdown(short_token: str, range_days: int = 30, include_internal: bool = False) -> list[dict]:

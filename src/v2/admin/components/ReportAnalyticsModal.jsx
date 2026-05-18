@@ -96,6 +96,7 @@ function adaptAnalytics(payload, changelog) {
       series:      [],
       annotations: [],
       tabs:        [],
+      ctas:        [],
       devices:     [],
       heatmap:     Array.from({ length: 7 }, () => Array(24).fill(0)),
       sessions:    [],
@@ -159,6 +160,13 @@ function adaptAnalytics(payload, changelog) {
       name:  t.tab_id || "—",
       views: Number(t.views) || 0,
     })),
+    // CTAs: backend devolve { cta_id, clicks }. Adapter humaniza o ID
+    // pra label legível ("sheets_open" → "Abrir no Google Sheets").
+    ctas: (payload.ctas || []).map((c) => ({
+      id:     c.cta_id,
+      label:  CTA_LABELS[c.cta_id] || c.cta_id,
+      clicks: Number(c.clicks) || 0,
+    })),
     devices: (payload.devices || []).map((d) => ({
       name:  d.device_family || "Unknown",
       share: Number(d.share) || 0,
@@ -196,6 +204,14 @@ function adaptAnalytics(payload, changelog) {
 // Mapa de event_type → annotation visual no timeline. Só os "destacáveis"
 // viram anotações — outras ações ficam no changelog mas não no chart pra
 // não poluir.
+// Labels humanizados pros IDs de CTA gravados no backend. Adicionar
+// linhas aqui quando um CTA novo for plugado no frontend. IDs não
+// listados caem pro fallback (o próprio cta_id como label).
+const CTA_LABELS = {
+  sheets_open:   "Abrir no Google Sheets",
+  csv_download:  "Download CSV",
+};
+
 const ANNOTATION_EVENT_TYPES = {
   loom_added:        { label: "Loom adicionado",    tone: "signature" },
   loom_replaced:     { label: "Loom atualizado",    tone: "signature" },
@@ -356,6 +372,7 @@ export function ReportAnalyticsModal({ open, onOpenChange, campaign }) {
                 <DeviceCard devices={data.devices} loading={loading} />
               </div>
             </div>
+            <CtasCard ctas={data.ctas} loading={loading} />
             <HeatmapCard heatmap={data.heatmap} loading={loading} />
             <SessionsCard sessions={data.sessions} loading={loading} />
             <AdminChangelogCard changelog={data.changelog} loading={loading} />
@@ -724,6 +741,65 @@ function TabsCard({ tabs, loading }) {
               <div className="h-1.5 rounded-full bg-canvas-deeper overflow-hidden">
                 <div
                   className="h-full rounded-full bg-signature/80"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── CTAs clicados ────────────────────────────────────────────────────
+// Card "Cliques em ações" — ranking de cliques em botões trackáveis do
+// report (Abrir Sheets, Download CSV, etc). Mesma estrutura visual do
+// TabsCard pra consistência. Skeleton enquanto loading; empty state
+// explícito quando não houve cliques no período.
+function CtasCard({ ctas, loading }) {
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-border bg-surface px-5 py-4">
+        <SkelBox className="h-4 w-40 mb-4" />
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="mb-3 last:mb-0">
+            <div className="flex justify-between mb-1">
+              <SkelBox className="h-3 w-32" />
+              <SkelBox className="h-3 w-6" />
+            </div>
+            <SkelBox className="h-1.5 w-full" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (!ctas || ctas.length === 0) {
+    return (
+      <div className="rounded-xl border border-border bg-surface px-5 py-4">
+        <h3 className="text-sm font-semibold text-fg mb-2">Cliques em ações</h3>
+        <p className="text-[12px] text-fg-subtle italic py-1">
+          Nenhum CTA clicado no período.
+        </p>
+      </div>
+    );
+  }
+  const max = Math.max(...ctas.map((c) => c.clicks), 1);
+  return (
+    <div className="rounded-xl border border-border bg-surface px-5 py-4">
+      <h3 className="text-sm font-semibold text-fg mb-3">Cliques em ações</h3>
+      <div className="space-y-2.5">
+        {ctas.map((c) => {
+          const pct = (c.clicks / max) * 100;
+          return (
+            <div key={c.id}>
+              <div className="flex items-baseline justify-between mb-1">
+                <span className="text-[12px] text-fg">{c.label}</span>
+                <span className="text-[11px] font-semibold text-fg-muted tabular-nums">{c.clicks}</span>
+              </div>
+              <div className="h-1.5 rounded-full bg-canvas-deeper overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-success/80"
                   style={{ width: `${pct}%` }}
                 />
               </div>
