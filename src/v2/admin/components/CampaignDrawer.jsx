@@ -143,6 +143,12 @@ const ICON = {
       <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
     </svg>
   ),
+  analytics: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 3v18h18" />
+      <path d="M7 14l4-4 3 3 5-6" />
+    </svg>
+  ),
 };
 
 export function CampaignDrawer({
@@ -158,6 +164,7 @@ export function CampaignDrawer({
   onPdooh,
   onOwner,
   onMerge,
+  onAnalytics,         // chamado quando admin clica em "Analytics de acessos"
   onNegotiation,       // chamado quando admin clica em "Negociado" — recebe (campaign, negotiation)
   onAbsChange,         // chamado após admin salvar override de ABS — pai refaz lista
   onClosureChange,     // chamado após admin marcar campanha como encerrada — pai refaz lista
@@ -472,18 +479,24 @@ export function CampaignDrawer({
             <DrawerDateRange startISO={start_date} endISO={end_date} />
           </div>
 
-          {/* Métricas */}
+          {/* Performance — strip inline de 4 colunas. Substitui o grid de
+              4 cards (~120px de altura) por uma linha enxuta (~60px). As
+              cores carregam o sinal de saúde, sem precisar de chrome de
+              card pra cada métrica. */}
           <div className="drawer-section-rise drawer-stagger-1">
             <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
               Performance
             </div>
-            <div className="grid grid-cols-2 gap-2 mb-5">
-              {display_pacing != null && <DrawerStat label="DSP Pacing" value={formatPacingValue(display_pacing)} colorClass={pacingColorClass(display_pacing)} />}
-              {video_pacing   != null && <DrawerStat label="VID Pacing" value={formatPacingValue(video_pacing)}   colorClass={pacingColorClass(video_pacing)} />}
-              {display_ctr    != null && <DrawerStat label="CTR"        value={formatPct(display_ctr, 2)} colorClass={ctrColorClass(display_ctr)} />}
-              {video_vtr      != null && <DrawerStat label="VTR"        value={formatPct(video_vtr, 1)}  colorClass={vtrColorClass(video_vtr)} />}
-              {(display_pacing == null && video_pacing == null) && (
-                <p className="col-span-2 text-xs text-fg-subtle italic">
+            <div className="mb-5">
+              {(display_pacing != null || video_pacing != null || display_ctr != null || video_vtr != null) ? (
+                <div className="rounded-lg bg-surface border border-border px-3 py-2.5 grid grid-cols-4 gap-2">
+                  {display_pacing != null && <DrawerInlineStat label="DSP" value={formatPacingValue(display_pacing)} colorClass={pacingColorClass(display_pacing)} />}
+                  {video_pacing   != null && <DrawerInlineStat label="VID" value={formatPacingValue(video_pacing)}   colorClass={pacingColorClass(video_pacing)} />}
+                  {display_ctr    != null && <DrawerInlineStat label="CTR" value={formatPct(display_ctr, 2)} colorClass={ctrColorClass(display_ctr)} />}
+                  {video_vtr      != null && <DrawerInlineStat label="VTR" value={formatPct(video_vtr, 1)}  colorClass={vtrColorClass(video_vtr)} />}
+                </div>
+              ) : (
+                <p className="text-xs text-fg-subtle italic">
                   Sem delivery ainda — campanha pode não ter começado.
                 </p>
               )}
@@ -524,146 +537,27 @@ export function CampaignDrawer({
             </div>
           )}
 
-          {/* Owners */}
+          {/* Owners — agora em duas colunas side-by-side. Email completo
+              fica no tooltip (title) pra não comer largura, e cada pill
+              cai pra ~40px de altura (vs ~50px do card antigo). Total da
+              seção encolhe de ~110px → ~60px. */}
           <div className="drawer-section-rise drawer-stagger-4">
             <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
               Owners
             </div>
-            <div className="space-y-2 mb-5">
-              <OwnerRow role="cp" name={cpName} email={cp_email} />
-              <OwnerRow role="cs" name={csName} email={cs_email} />
+            <div className="grid grid-cols-2 gap-2 mb-5">
+              <OwnerPill role="cp" name={cpName} email={cp_email} />
+              <OwnerPill role="cs" name={csName} email={cs_email} />
             </div>
           </div>
 
-          {/* Ações */}
-          <div className="drawer-section-rise drawer-stagger-5">
-            <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
-              Ações
-            </div>
-            <div className="space-y-1.5">
-            {/* "Marcar como encerrada" — só aparece em campanhas aguardando
-                fechamento. Posicionado no topo porque é o CTA principal
-                quando o admin abre o drawer dessa campanha (ela apareceu
-                com badge âmbar justamente pra ele agir aqui). */}
-            {awaiting && (
-              <ActionButton
-                icon={
-                  closureBusy === "saving" ? <Spinner />
-                  : closureBusy === "done" ? <ClosureSuccessIcon />
-                  : ICON.closure
-                }
-                label={
-                  closureBusy === "saving" ? "Marcando como encerrada..."
-                  : closureBusy === "done"  ? "Encerrada!"
-                  : closureBusy === "error" ? "Erro — tentar de novo"
-                  : "Marcar como encerrada"
-                }
-                variant={
-                  closureBusy === "done"  ? "success"
-                  : closureBusy === "error" ? "danger"
-                  : "warning"
-                }
-                disabled={closureBusy === "saving" || closureBusy === "done"}
-                onClick={handleCloseCampaign}
-              />
-            )}
-            {/* Encerramento antecipado — admin define data real do fim
-                (≤ end_date original) + motivo. Form inline expande abaixo
-                do botão. Quando já encerrada antecipadamente, mostra
-                "Reverter" no lugar. */}
-            {canEarlyEnd && !showEarlyEndForm && (
-              <ActionButton
-                icon={ICON.earlyEnd}
-                label="Encerrar antecipadamente"
-                variant="default"
-                onClick={handleOpenEarlyEndForm}
-              />
-            )}
-            {/* Form de encerramento antecipado: sempre montado quando o botão
-                "Encerrar" é elegível, mas com grid-rows=0fr quando fechado.
-                Truque permite animar height: auto sem JS de medida — entrada
-                fica fluida tipo "abriu uma gaveta". `inert` evita foco em
-                inputs invisíveis (a11y). */}
-            {canEarlyEnd && (
-              <div className={cn("action-expand", showEarlyEndForm && "is-open")}>
-                <div className="action-expand-content" inert={!showEarlyEndForm || undefined}>
-                  <EarlyEndForm
-                    dateValue={earlyEndDateInput}
-                    onDateChange={setEarlyEndDateInput}
-                    reasonValue={earlyEndReasonInput}
-                    onReasonChange={setEarlyEndReasonInput}
-                    dateMin={earlyEndDateMin}
-                    dateMax={earlyEndDateMax}
-                    busy={earlyEndBusy}
-                    onConfirm={handleConfirmEarlyEnd}
-                    onCancel={() => setShowEarlyEndForm(false)}
-                  />
-                </div>
-              </div>
-            )}
-            {earlyEnded && (
-              <ActionButton
-                icon={earlyEndBusy === "saving" ? <Spinner /> : ICON.revert}
-                label={
-                  earlyEndBusy === "saving" ? "Revertendo..."
-                  : earlyEndBusy === "error" ? "Erro — tentar de novo"
-                  : "Reverter encerramento antecipado"
-                }
-                variant={earlyEndBusy === "error" ? "danger" : "default"}
-                disabled={earlyEndBusy === "saving"}
-                onClick={handleRevertEarlyEnd}
-              />
-            )}
-            {/* Pausar/Retomar — toggle reversível, só faz sentido enquanto a
-                campanha está em vôo (in_flight ou paused). Após end_date o
-                fluxo natural (awaiting_closure → ended) toma conta. */}
-            {/* Botão do toggle de pausa. Quando NÃO pausada, click abre o
-                form (motivo opcional). Quando pausada, é "Retomar" direto
-                (sem form — retomar é apenas voltar ao normal). Estado "done"
-                dispara animação check+halo no ícone (signature se pausou,
-                success se retomou). */}
-            {canPause && !showPauseForm && (
-              <ActionButton
-                icon={
-                  pauseBusy === "saving" ? <Spinner />
-                  : pauseBusy === "done"
-                    ? (paused ? <PauseSuccessIcon /> : <ResumeSuccessIcon />)
-                  : paused ? ICON.resume
-                  : ICON.pause
-                }
-                label={
-                  pauseBusy === "saving" ? (paused ? "Retomando..." : "Pausando...")
-                  : pauseBusy === "done"  ? (paused ? "Pausada!" : "Retomada!")
-                  : pauseBusy === "error" ? "Erro — tentar de novo"
-                  : paused ? "Retomar campanha"
-                  : "Pausar campanha"
-                }
-                variant={
-                  pauseBusy === "done"  ? (paused ? "highlight" : "success")
-                  : pauseBusy === "error" ? "danger"
-                  : paused ? "highlight"
-                  : "default"
-                }
-                disabled={pauseBusy === "saving" || pauseBusy === "done"}
-                onClick={paused ? handleResume : handleOpenPauseForm}
-              />
-            )}
-            {/* Form de pausa expande quando admin clica em "Pausar campanha".
-                Mesmo padrão do form de encerramento antecipado — gaveta
-                CSS grid-rows + inert quando colapsado. */}
-            {canPause && !paused && (
-              <div className={cn("action-expand", showPauseForm && "is-open")}>
-                <div className="action-expand-content" inert={!showPauseForm || undefined}>
-                  <PauseForm
-                    reasonValue={pauseReasonInput}
-                    onReasonChange={setPauseReasonInput}
-                    busy={pauseBusy}
-                    onConfirm={handleConfirmPause}
-                    onCancel={() => setShowPauseForm(false)}
-                  />
-                </div>
-              </div>
-            )}
+          {/* Ações agrupadas por intenção. Ordem das seções segue frequência
+              de uso esperada — Link primeiro (copiar pro cliente é a ação
+              mais comum), Lifecycle (encerrar/pausar) logo depois quando
+              relevante, e o resto em ordem decrescente de uso. */}
+
+          {/* ── 1. LINK DO CLIENTE — Copiar + Analytics ─────────────── */}
+          <ActionGroup label="Link do cliente" className="drawer-section-rise drawer-stagger-5">
             <ActionButton
               icon={
                 copyState === "done"    ? ICON.check
@@ -680,12 +574,146 @@ export function CampaignDrawer({
               disabled={copyState === "loading"}
               onClick={() => onCopyLink?.(campaign)}
             />
-            <ActionButton icon={ICON.owner}  label="Gerenciar owner (CP/CS)" onClick={() => onOwner?.(campaign)} />
+            <ActionButton
+              icon={ICON.analytics}
+              label="Analytics de acessos"
+              onClick={() => onAnalytics?.(campaign)}
+            />
+          </ActionGroup>
+
+          {/* ── 2. LIFECYCLE — Encerrar / Pausar ─────────────────────────
+              Renderiza só quando há alguma ação de ciclo disponível, pra
+              não sobrar um header "Status" vazio em campanhas onde tudo já
+              tá resolvido (encerrada e não pausável). */}
+          {(awaiting || canEarlyEnd || earlyEnded || canPause) && (
+            <ActionGroup label="Status" className="drawer-section-rise drawer-stagger-5">
+              {/* "Marcar como encerrada" — só aparece em campanhas aguardando
+                  fechamento. CTA âmbar pra puxar atenção (foi por isso que
+                  o admin abriu o drawer dessa campanha). */}
+              {awaiting && (
+                <ActionButton
+                  icon={
+                    closureBusy === "saving" ? <Spinner />
+                    : closureBusy === "done" ? <ClosureSuccessIcon />
+                    : ICON.closure
+                  }
+                  label={
+                    closureBusy === "saving" ? "Marcando como encerrada..."
+                    : closureBusy === "done"  ? "Encerrada!"
+                    : closureBusy === "error" ? "Erro — tentar de novo"
+                    : "Marcar como encerrada"
+                  }
+                  variant={
+                    closureBusy === "done"  ? "success"
+                    : closureBusy === "error" ? "danger"
+                    : "warning"
+                  }
+                  disabled={closureBusy === "saving" || closureBusy === "done"}
+                  onClick={handleCloseCampaign}
+                />
+              )}
+              {canEarlyEnd && !showEarlyEndForm && (
+                <ActionButton
+                  icon={ICON.earlyEnd}
+                  label="Encerrar antecipadamente"
+                  variant="default"
+                  onClick={handleOpenEarlyEndForm}
+                />
+              )}
+              {canEarlyEnd && (
+                <div className={cn("action-expand", showEarlyEndForm && "is-open")}>
+                  <div className="action-expand-content" inert={!showEarlyEndForm || undefined}>
+                    <EarlyEndForm
+                      dateValue={earlyEndDateInput}
+                      onDateChange={setEarlyEndDateInput}
+                      reasonValue={earlyEndReasonInput}
+                      onReasonChange={setEarlyEndReasonInput}
+                      dateMin={earlyEndDateMin}
+                      dateMax={earlyEndDateMax}
+                      busy={earlyEndBusy}
+                      onConfirm={handleConfirmEarlyEnd}
+                      onCancel={() => setShowEarlyEndForm(false)}
+                    />
+                  </div>
+                </div>
+              )}
+              {earlyEnded && (
+                <ActionButton
+                  icon={earlyEndBusy === "saving" ? <Spinner /> : ICON.revert}
+                  label={
+                    earlyEndBusy === "saving" ? "Revertendo..."
+                    : earlyEndBusy === "error" ? "Erro — tentar de novo"
+                    : "Reverter encerramento antecipado"
+                  }
+                  variant={earlyEndBusy === "error" ? "danger" : "default"}
+                  disabled={earlyEndBusy === "saving"}
+                  onClick={handleRevertEarlyEnd}
+                />
+              )}
+              {canPause && !showPauseForm && (
+                <ActionButton
+                  icon={
+                    pauseBusy === "saving" ? <Spinner />
+                    : pauseBusy === "done"
+                      ? (paused ? <PauseSuccessIcon /> : <ResumeSuccessIcon />)
+                    : paused ? ICON.resume
+                    : ICON.pause
+                  }
+                  label={
+                    pauseBusy === "saving" ? (paused ? "Retomando..." : "Pausando...")
+                    : pauseBusy === "done"  ? (paused ? "Pausada!" : "Retomada!")
+                    : pauseBusy === "error" ? "Erro — tentar de novo"
+                    : paused ? "Retomar campanha"
+                    : "Pausar campanha"
+                  }
+                  variant={
+                    pauseBusy === "done"  ? (paused ? "highlight" : "success")
+                    : pauseBusy === "error" ? "danger"
+                    : paused ? "highlight"
+                    : "default"
+                  }
+                  disabled={pauseBusy === "saving" || pauseBusy === "done"}
+                  onClick={paused ? handleResume : handleOpenPauseForm}
+                />
+              )}
+              {canPause && !paused && (
+                <div className={cn("action-expand", showPauseForm && "is-open")}>
+                  <div className="action-expand-content" inert={!showPauseForm || undefined}>
+                    <PauseForm
+                      reasonValue={pauseReasonInput}
+                      onReasonChange={setPauseReasonInput}
+                      busy={pauseBusy}
+                      onConfirm={handleConfirmPause}
+                      onCancel={() => setShowPauseForm(false)}
+                    />
+                  </div>
+                </div>
+              )}
+            </ActionGroup>
+          )}
+
+          {/* ── 3. CONTEÚDO DO REPORT — o que o cliente vê dentro do report. */}
+          <ActionGroup label="Conteúdo do report" className="drawer-section-rise drawer-stagger-5">
+            <ActionButton icon={ICON.loom}   label="Adicionar/editar Loom" onClick={() => onLoom?.(short_token)} />
+            <ActionButton icon={ICON.survey} label="Gerenciar Survey"      onClick={() => onSurvey?.(short_token)} />
+            <ActionButton icon={ICON.logo}   label="Trocar logo"           onClick={() => onLogo?.(short_token)} />
+          </ActionGroup>
+
+          {/* ── 4. ATRIBUIÇÕES — owner, agrupamento, e "Ver Negociado"
+              (quando existe registro no Sales Center). Tudo aqui é
+              metadado admin-only — não muda o que o cliente vê. */}
+          <ActionGroup label="Atribuições" className="drawer-section-rise drawer-stagger-5">
+            <ActionButton icon={ICON.owner} label="Gerenciar owner (CP/CS)" onClick={() => onOwner?.(campaign)} />
+            <ActionButton
+              icon={ICON.merge}
+              label={merge_id ? "Gerenciar agrupamento" : "Agrupar com outros tokens"}
+              variant={merge_id ? "highlight" : "default"}
+              onClick={() => onMerge?.(campaign)}
+            />
             {/* Slot de "Ver Negociado": ocupado por placeholder enquanto o
-                fetch de getNegotiation tá em voo, pra evitar que o botão
-                apareça depois e empurre os de baixo (admin clicava errado).
-                Quando resolve sem negociação, o slot some — aceitável porque
-                o usuário ainda não terminou de processar o painel. */}
+                fetch de getNegotiation tá em voo, pra evitar layout shift
+                quando resolve e empurra os de baixo. Quando resolve sem
+                negociação o slot some. */}
             {(negotiationLoading || negotiation) && (
               <ActionButton
                 icon={(negotiationLoading || negoBusy) ? <Spinner /> : ICON.nego}
@@ -699,19 +727,14 @@ export function CampaignDrawer({
                 onClick={negotiationLoading ? undefined : handleNegoClick}
               />
             )}
-            <ActionButton
-              icon={ICON.merge}
-              label={merge_id ? "Gerenciar agrupamento" : "Agrupar com outros tokens"}
-              variant={merge_id ? "highlight" : "default"}
-              onClick={() => onMerge?.(campaign)}
-            />
-            <ActionButton icon={ICON.loom}   label="Adicionar/editar Loom"    onClick={() => onLoom?.(short_token)} />
-            <ActionButton icon={ICON.survey} label="Gerenciar Survey"          onClick={() => onSurvey?.(short_token)} />
-            <ActionButton icon={ICON.logo}   label="Trocar logo"               onClick={() => onLogo?.(short_token)} />
-            <ActionButton icon={ICON.rmnd}   label="Gerenciar RMND (Amazon Ads)" onClick={() => onRmnd?.(short_token)} />
-            <ActionButton icon={ICON.pdooh}  label="Gerenciar PDOOH"            onClick={() => onPdooh?.(short_token)} />
-          </div>
-          </div>
+          </ActionGroup>
+
+          {/* ── 5. MÍDIAS EXTERNAS — uploads de plataformas adjacentes
+              (Amazon Ads, PDOOH). Última seção porque uso é nichado. */}
+          <ActionGroup label="Mídias externas" className="drawer-section-rise drawer-stagger-5">
+            <ActionButton icon={ICON.rmnd}  label="Gerenciar RMND (Amazon Ads)" onClick={() => onRmnd?.(short_token)} />
+            <ActionButton icon={ICON.pdooh} label="Gerenciar PDOOH"             onClick={() => onPdooh?.(short_token)} />
+          </ActionGroup>
         </DrawerBody>
 
         <DrawerFooter>
@@ -759,6 +782,55 @@ function DrawerStat({ label, value, colorClass }) {
   );
 }
 
+/**
+ * Versão inline do DrawerStat — usada na strip compacta de Performance.
+ * Layout: label tiny em cima (10px uppercase), valor bold em baixo. Cada
+ * coluna do grid 4-col cai aqui. Sem borda/bg (o wrapper já tem).
+ */
+function DrawerInlineStat({ label, value, colorClass }) {
+  return (
+    <div className="text-center">
+      <div className="text-[9.5px] uppercase tracking-widest font-bold text-fg-subtle">{label}</div>
+      <div className={cn("text-[15px] font-bold tracking-tight tabular-nums leading-tight mt-0.5", colorClass)}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Versão compacta do OwnerRow — pensada pra grid 2-col side-by-side.
+ * Avatar size sm, nome truncado em 1 linha, role acima como caption.
+ * Email completo fica no `title` (tooltip nativo).
+ */
+function OwnerPill({ role, name, email }) {
+  if (!email) {
+    return (
+      <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-surface border border-border border-dashed min-w-0">
+        <div className="w-6 h-6 rounded-full bg-surface-strong flex items-center justify-center shrink-0">
+          <span className="text-fg-subtle text-[10px]">?</span>
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[9px] uppercase tracking-widest font-bold text-fg-subtle leading-none">{role.toUpperCase()}</div>
+          <p className="text-[11px] text-fg-subtle italic truncate leading-tight mt-0.5">Sem owner</p>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div
+      className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-surface border border-border min-w-0"
+      title={email}
+    >
+      <Avatar name={name} role={role} size="sm" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[9px] uppercase tracking-widest font-bold text-fg-subtle leading-none">{role.toUpperCase()}</div>
+        <p className="text-[11px] text-fg truncate font-medium leading-tight mt-0.5">{name}</p>
+      </div>
+    </div>
+  );
+}
+
 function OwnerRow({ role, name, email }) {
   if (!email) {
     return (
@@ -797,6 +869,23 @@ const ACTION_VARIANTS = {
   // visualmente (signature soft, não primário) — ainda navega ao clicar.
   highlight: "text-signature border-signature/40 bg-signature/5 hover:bg-signature/10",
 };
+
+/**
+ * Wrapper de uma sub-seção de ações no drawer. Cada grupo tem um label
+ * uppercase 10px (mesmo padrão de PERÍODO / PERFORMANCE / OWNERS) e
+ * stack interno com gap-1.5 entre os botões. Margin-bottom de 5 separa
+ * grupos sem precisar de divider explícito.
+ */
+function ActionGroup({ label, className, children }) {
+  return (
+    <div className={cn("mb-5", className)}>
+      <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
+        {label}
+      </div>
+      <div className="space-y-1.5">{children}</div>
+    </div>
+  );
+}
 
 function ActionButton({ icon, label, variant = "default", onClick, disabled }) {
   return (

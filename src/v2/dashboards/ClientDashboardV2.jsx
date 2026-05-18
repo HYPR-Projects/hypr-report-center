@@ -50,6 +50,7 @@ import {
 
 import { TopBarV2 } from "../components/TopBarV2";
 import { CampaignHeaderV2 } from "../components/CampaignHeaderV2";
+import { useReportTracking } from "../hooks/useReportTracking";
 import { DateRangeFilterV2 } from "../components/DateRangeFilterV2";
 import { CoreProductFilterV2 } from "../components/CoreProductFilterV2";
 
@@ -513,6 +514,16 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
       ? "overview"
       : tab;
 
+  // Tracking de acesso do report compartilhado. Hook é no-op pra admins.
+  // shortToken vem de camp (resolved pelo backend); shareId vem da URL
+  // quando o cliente abriu por link compartilhado (vs admin direto).
+  useReportTracking({
+    shortToken:   camp?.short_token || token,
+    shareId:      typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("share") : null,
+    isAdmin,
+    currentTabId: effectiveTab,
+  });
+
   return (
     <TooltipProvider delayDuration={200}>
       <div className="min-h-screen bg-canvas text-fg font-sans">
@@ -539,6 +550,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
             isBonusOnly={isBonusOnly}
             legacyTotals={(data.totals || [])[0]}
             reportData={data}
+            isAdmin={isAdmin}
           />
 
           {/* Tabs com filtro de período alinhado à direita.

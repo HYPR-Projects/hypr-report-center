@@ -52,6 +52,7 @@ import {
   localPartFromEmail,
 } from "../lib/format";
 import { schedulePrefetch, cancelPrefetch } from "../../../lib/prefetchReport";
+import { useCachedAccessSummary } from "../lib/accessSummaryCache";
 
 // Mapas health → classe de cor. Mesma régua de format.js (pacing tiers),
 // reaproveitada pra stripe lateral e fill da barra de pacing.
@@ -433,7 +434,7 @@ export function CampaignCardV2({
 
         <Divider />
 
-        {/* ── Owners (slot fixo) + CTA (min-w fixo) ──────────────────
+        {/* ── Owners (slot fixo) + Acessos + CTA (min-w fixo) ──────
             Mobile: ocupa a row toda (justify-between distribui avatares
             à esquerda e CTA à direita) abaixo dos KPIs.
             Desktop: shrink-fit ao final da row horizontal. */}
@@ -445,6 +446,7 @@ export function CampaignCardV2({
             {cpName && <Avatar name={cpName} role="cp" size="sm" title={`CP: ${cpName}`} />}
             {csName && <Avatar name={csName} role="cs" size="sm" className={cpName ? "-ml-1.5" : ""} title={`CS: ${csName}`} />}
           </div>
+          <AccessBadge shortToken={short_token} ended={ended} />
           <button
             type="button"
             onClick={(e) => {
@@ -487,6 +489,91 @@ export function CampaignCardV2({
 /** Divisor vertical entre colunas. Some no mobile (md:block). */
 function Divider() {
   return <div className="w-px bg-border self-stretch hidden md:block" />;
+}
+
+/**
+ * Badge minimalista de acessos do report compartilhado.
+ *
+ * Estados visuais:
+ *   - Saudável (acessou recente): ícone + número em fg-muted
+ *   - Stale (≥7d sem acesso):     ícone + número em warning + texto "há Xd"
+ *   - Nunca acessado:             ícone + "—" em fg-subtle (mais apagado)
+ *
+ * Pra campanhas encerradas, render ainda acontece mas com menos peso visual
+ * (acessos pós-fechamento ainda são úteis pra entender se o cliente
+ * consumiu o histórico).
+ *
+ * Fonte: cache em módulo (`accessSummaryCache`) populado por
+ * prefetchAccessSummaries() chamado pelo CampaignMenuV2 logo após
+ * listCampaigns. Render sync — null vira `0` sem flash.
+ */
+function AccessBadge({ shortToken, ended }) {
+  const summary = useCachedAccessSummary(shortToken);
+  const totalAccesses  = summary?.total_pageviews ?? 0;
+  const uniqueSessions = summary?.unique_sessions ?? 0;
+  const lastAccessAt   = summary?.last_access_at || null;
+
+  // Derivações do summary: dias desde último acesso (granularidade dia),
+  // flag de stale (>=7d sem acesso) e neverAccessed (sem nenhum evento).
+  const neverAccessed = totalAccesses === 0;
+  const daysSinceLast = lastAccessAt
+    ? Math.max(0, Math.floor((Date.now() - new Date(lastAccessAt).getTime()) / 86_400_000))
+    : null;
+  const stale = !neverAccessed && (daysSinceLast == null || daysSinceLast >= 7);
+
+  // Cor + label do estado
+  const tone = neverAccessed ? "subtle" : (stale && !ended ? "warning" : "muted");
+  const colorClass =
+    tone === "warning" ? "text-warning"
+    : tone === "subtle" ? "text-fg-subtle"
+    : "text-fg-muted";
+
+  // Slot do badge tem largura fixa pra que CTAs ("Ver Report" / "Histórico")
+  // alinhem em coluna entre todas as linhas — admin escaneia vertical e
+  // qualquer drift visual cansa. Slot dimensionado pra caber até 3 dígitos
+  // (999 acessos em 30d é teto realista). Conteúdo right-aligned cola o
+  // valor no lado do botão; números curtos deixam padding à esquerda do
+  // ícone, mantendo o slot estável.
+  //
+  // Sinal de "stale" e "nunca acessou" sai 100% pela COR + tooltip — sem
+  // sub-texto inline ("· há Xd"), que era a fonte principal de misalignment.
+  const tooltipBody = neverAccessed
+    ? "Sem acessos registrados nos últimos 30d"
+    : `${totalAccesses} acessos · ${uniqueSessions} sessões únicas · último ${daysSinceLast === 0 ? "hoje" : `há ${daysSinceLast}d`}${stale && !ended ? " (sem acesso há +7d)" : ""}`;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div
+          className={cn(
+            "inline-flex items-center justify-end gap-1 w-[44px] text-[11px] font-semibold tabular-nums whitespace-nowrap cursor-default",
+            colorClass,
+            ended && !stale && "opacity-60",
+          )}
+          aria-label={tooltipBody}
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="shrink-0"
+          >
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+          <span>{totalAccesses}</span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-[220px] text-[11.5px]">
+        {tooltipBody}
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 /**

@@ -67,6 +67,8 @@ import { ClientCard } from "../components/ClientCard";
 import { CampaignCardV2 } from "../components/CampaignCardV2";
 import { CampaignListV2 } from "../components/CampaignListV2";
 import { CampaignDrawer } from "../components/CampaignDrawer";
+import { ReportAnalyticsModal } from "../components/ReportAnalyticsModal";
+import { prefetchAccessSummaries } from "../lib/accessSummaryCache";
 import { MonthGroupedSections } from "../components/MonthGroupedSections";
 import { formatMonthLabel } from "../lib/format";
 import { TooltipProvider } from "../../../ui/Tooltip";
@@ -167,6 +169,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   const [rmndModal, setRmndModal]         = useState(null);
   const [pdoohModal, setPdoohModal]       = useState(null);
   const [negotiationModal, setNegotiationModal] = useState(null); // { short_token, negotiation }
+  const [analyticsModal, setAnalyticsModal] = useState(null); // campaign obj
   const [adminJwtForUploads, setAdminJwtForUploads] = useState(null);
 
   // Theme — single source of truth via hook V2 (aplica data-theme no
@@ -242,6 +245,10 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
         // Recalcula worklist client-side — paridade com backend
         // (testada em aggregation.js).
         setWorklist(computeWorklist(campsR.value));
+        // Dispara prefetch dos access summaries pra alimentar os badges
+        // dos cards. 1 request batched, dedup interno via cache.
+        const tokens = (campsR.value || []).map((c) => c.short_token).filter(Boolean);
+        prefetchAccessSummaries(tokens).catch(() => { /* silencioso */ });
       } else {
         errors.push(`campaigns: ${campsR.reason?.message || campsR.reason}`);
       }
@@ -846,6 +853,10 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           setMergeModal(c);
           handleCloseDrawer();
         }}
+        onAnalytics={(c) => {
+          setAnalyticsModal(c);
+          handleCloseDrawer();
+        }}
         onNegotiation={(c, n, rd) => {
           setNegotiationModal({ short_token: c.short_token, negotiation: n, reportData: rd });
           handleCloseDrawer();
@@ -933,6 +944,11 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
         members={negotiationModal ? [{ short_token: negotiationModal.short_token }] : []}
         defaultActiveToken={negotiationModal?.short_token}
         reportData={negotiationModal?.reportData}
+      />
+      <ReportAnalyticsModal
+        open={!!analyticsModal}
+        onOpenChange={(o) => !o && setAnalyticsModal(null)}
+        campaign={analyticsModal}
       />
     </div>
     </TooltipProvider>

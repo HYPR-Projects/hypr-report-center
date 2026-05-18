@@ -19,6 +19,7 @@ import { useLogoAnalysis } from "../hooks/useLogoAnalysis";
 import { useTheme } from "../hooks/useTheme";
 import { TokenChip } from "../admin/components/TokenChip";
 import { NegotiationModal } from "./NegotiationModal";
+import { ReportAnalyticsModal } from "../admin/components/ReportAnalyticsModal";
 import { getNegotiation } from "../../lib/api";
 
 const fmtDateShort = (ymd) => {
@@ -77,7 +78,13 @@ export function CampaignHeaderV2({
   // se cada feature/tactic do "negociado" já está ATIVADA (entrega real
   // OU cadastro paralelo) ou PENDENTE.
   reportData = null,
+  // Admin-only — quando true, mostra atalho de Analytics no canto direito
+  // do header. Sem o flag, o botão nem renderiza (cliente não vê).
+  isAdmin = false,
 }) {
+  // State do modal de analytics. Local ao header — não precisa subir, o
+  // header já é admin-aware via isAdmin e o modal é self-contained.
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const status = deriveStatus(startDate, endDate);
   const start = fmtDateShort(startDate);
   const end = fmtDateShort(endDate);
@@ -163,7 +170,12 @@ export function CampaignHeaderV2({
         }}
       />
 
-      <div className="relative grid grid-cols-1 md:grid-cols-[1fr_auto] gap-6 items-start">
+      {/* Grid em duas colunas: conteúdo (1fr) + slot direito (logo + atalho
+          admin). Sem `items-start` pra que a coluna direita estique até a
+          altura do card — assim podemos jogar o logo no topo e o chip de
+          Analytics no rodapé, ficando alinhado com a linha das pills de
+          mês (MergeViewSwitcher) que vivem na base da coluna esquerda. */}
+      <div className="relative grid grid-cols-1 md:grid-cols-[1fr_auto] gap-6">
         <div className="min-w-0">
           {/* Eyebrow: barra azul + nome do cliente + status */}
           <div className="flex items-center gap-2 mb-3 flex-wrap">
@@ -263,26 +275,43 @@ export function CampaignHeaderV2({
 
             Padding generoso (px-6 py-4) dá margem pra logo respirar dentro
             do espaço alocado em vez de encostar nas bordas. */}
-        {(logo || clientName) && (
-          <div
-            className={`hidden md:flex items-center justify-center w-44 h-24 rounded-lg overflow-hidden transition-colors ${
-              logo
-                ? "px-4 py-2"
-                : "border border-border bg-white/[0.03] p-3"
-            }`}
-          >
-            {logo ? (
-              <img
-                src={logo}
-                alt={clientName ? `Logo ${clientName}` : "Logo do cliente"}
-                className="max-w-full max-h-full object-contain transition-[filter] duration-200"
-                style={logoFilter ? { filter: logoFilter } : undefined}
-                loading="eager"
-              />
+        {/* Coluna direita: logo no topo + (admin) atalho de Analytics no
+            rodapé. `justify-between` distribui os dois nas extremidades
+            verticais, fazendo o Analytics descer e alinhar com a linha de
+            pills de mês (MergeViewSwitcher) que vive no fim da coluna
+            esquerda. Cliente não vê o botão; quando não há logo e o user
+            não é admin, o slot inteiro some. */}
+        {(logo || clientName || isAdmin) && (
+          <div className="hidden md:flex flex-col items-end justify-between gap-2">
+            {(logo || clientName) ? (
+              <div
+                className={`flex items-center justify-center w-44 h-24 rounded-lg overflow-hidden transition-colors ${
+                  logo
+                    ? "px-4 py-2"
+                    : "border border-border bg-white/[0.03] p-3"
+                }`}
+              >
+                {logo ? (
+                  <img
+                    src={logo}
+                    alt={clientName ? `Logo ${clientName}` : "Logo do cliente"}
+                    className="max-w-full max-h-full object-contain transition-[filter] duration-200"
+                    style={logoFilter ? { filter: logoFilter } : undefined}
+                    loading="eager"
+                  />
+                ) : (
+                  <span className="text-fg-muted font-semibold text-sm tracking-wide truncate">
+                    {clientName}
+                  </span>
+                )}
+              </div>
             ) : (
-              <span className="text-fg-muted font-semibold text-sm tracking-wide truncate">
-                {clientName}
-              </span>
+              // Spacer pra preservar o slot topo quando há admin mas não há logo —
+              // mantém o botão Analytics encostado no rodapé via justify-between.
+              <div aria-hidden />
+            )}
+            {isAdmin && (
+              <AnalyticsHeaderButton onClick={() => setAnalyticsOpen(true)} />
             )}
           </div>
         )}
@@ -297,6 +326,17 @@ export function CampaignHeaderV2({
         legacyTotals={legacyTotals}
         reportData={reportData}
       />
+      {isAdmin && (
+        <ReportAnalyticsModal
+          open={analyticsOpen}
+          onOpenChange={setAnalyticsOpen}
+          campaign={{
+            short_token: shortToken,
+            client_name: clientName,
+            campaign_name: campaignName,
+          }}
+        />
+      )}
     </section>
   );
 }
@@ -321,6 +361,53 @@ function NegotiationButton({ onClick }) {
       <DocChipIcon className="size-3" />
       Negociado
     </button>
+  );
+}
+
+/**
+ * Atalho admin-only — abre o ReportAnalyticsModal direto do report.
+ * Padrão visual de chip soft (mesma família do NegotiationButton mas
+ * neutro/fg-muted em vez de signature) pra não competir com o "Negociado"
+ * que vive na meta line acima e é mais funcional pro cliente do report.
+ *
+ * Posicionado abaixo do logo, alinhado à direita — usa o slot vazio do
+ * canto superior direito do card sem inflar a row de meta.
+ */
+function AnalyticsHeaderButton({ onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md cursor-pointer",
+        "bg-surface border border-border text-fg-muted",
+        "text-[10.5px] font-bold uppercase tracking-wider",
+        "hover:bg-signature/8 hover:border-signature/40 hover:text-signature transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-surface-2",
+      ].join(" ")}
+      aria-label="Ver analytics de acessos"
+    >
+      <AnalyticsChipIcon className="size-3" />
+      Analytics
+    </button>
+  );
+}
+
+function AnalyticsChipIcon({ className }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 3v18h18" />
+      <path d="M7 14l4-4 3 3 5-6" />
+    </svg>
   );
 }
 

@@ -898,3 +898,69 @@ export async function updateMergeSettings({ merge_id, rmnd_mode, pdooh_mode }) {
   const data = await jsonOrError(r, "update_merge_settings");
   return data.group;
 }
+
+// ── Analytics + Audit Log (admin) ───────────────────────────────────────────
+
+/**
+ * Payload completo pro ReportAnalyticsModal — KPIs, timeline, abas, devices,
+ * heatmap, sessões recentes e a data inicial do tracking.
+ */
+export async function getReportAnalytics({ short_token, range_days = 30, include_internal = false }) {
+  const jwt = await getOrIssueAdminJwt();
+  const params = new URLSearchParams({
+    action: "report_analytics",
+    token: short_token,
+    range: String(range_days),
+  });
+  if (include_internal) params.set("include_internal", "true");
+  const r = await fetch(`${API_URL}?${params}`, { headers: adminAuthHeaders(jwt) });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/**
+ * Summary leve usado pelo badge de acessos no CampaignCardV2. Versão
+ * compacta da getReportAnalytics — só os totais agregados.
+ */
+export async function getAccessSummary({ short_token }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=access_summary&token=${encodeURIComponent(short_token)}`,
+    { headers: adminAuthHeaders(jwt) },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/**
+ * Batch — usado pelo CampaignMenu pra pré-carregar summaries de todos os
+ * cards de uma vez. Sem isso, 270 cards = 270 requests simultâneos.
+ * Limita a 500 tokens por request (backend impõe o cap).
+ */
+export async function getAccessSummariesBatch(tokens) {
+  if (!Array.isArray(tokens) || tokens.length === 0) return {};
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=access_summary_batch`,
+    { tokens },
+    adminAuthHeaders(jwt),
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const data = await r.json();
+  return data?.summaries || {};
+}
+
+/**
+ * Changelog de ações admin sobre um report — Loom adicionado, owner trocado,
+ * etc. Ordenado por created_at DESC.
+ */
+export async function getReportAuditLog({ short_token, limit = 50 }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=report_audit_log&token=${encodeURIComponent(short_token)}&limit=${limit}`,
+    { headers: adminAuthHeaders(jwt) },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const data = await r.json();
+  return data?.events || [];
+}
