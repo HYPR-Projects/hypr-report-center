@@ -49,6 +49,8 @@ import clients
 import merges
 import sheets_integration
 import sheets_alerts
+import audit_log
+import access_tracking
 
 logger = logging.getLogger(__name__)
 
@@ -824,7 +826,8 @@ def report_data(request):
 
     # ── Endpoint: salvar logo ─────────────────────────────────────────────────
     if request.method == "POST" and request.args.get("action") == "save_logo":
-        if not authenticate_admin(request):
+        admin = authenticate_admin(request)
+        if not admin:
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
             body = request.get_json(silent=True) or {}
@@ -834,6 +837,12 @@ def report_data(request):
                 return (jsonify({"error": "short_token e logo_base64 são obrigatórios"}), 400, headers)
             save_logo(short_token, logo_base64)
             _cache_invalidate_token(short_token)
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="logo_changed",
+                actor_email=admin.get("email"),
+                message="trocou o logo do cliente",
+            )
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR save_logo] {e}")
@@ -924,6 +933,13 @@ def report_data(request):
             # próxima request da lista admin re-lê do BQ com o override aplicado
             # na CTE abs_signals e o badge ABS / score atualiza.
             _cache_invalidate_token(short_token)
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="abs_toggled",
+                actor_email=admin.get("email"),
+                message=f"marcou Pre-bid ABS como {'ativo' if has_abs else 'inativo'}",
+                payload={"has_abs": has_abs},
+            )
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR save_abs_override] {e}")
@@ -945,6 +961,12 @@ def report_data(request):
                 return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
             save_campaign_closure(short_token, closed, closed_by=admin.get("email"))
             _cache_invalidate_token(short_token)
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="campaign_closed" if closed else "campaign_reopened",
+                actor_email=admin.get("email"),
+                message="marcou a campanha como encerrada" if closed else "reabriu a campanha",
+            )
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR save_campaign_closure] {e}")
@@ -967,6 +989,13 @@ def report_data(request):
                 return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
             save_campaign_pause(short_token, paused, paused_by=admin.get("email"), reason=reason)
             _cache_invalidate_token(short_token)
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="campaign_paused" if paused else "campaign_resumed",
+                actor_email=admin.get("email"),
+                message=("pausou a campanha" + (f" — {reason}" if reason else "")) if paused else "retomou a campanha",
+                payload={"reason": reason} if reason else None,
+            )
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR save_campaign_pause] {e}")
@@ -1006,6 +1035,13 @@ def report_data(request):
                     return (jsonify({"error": "early_end_date não pode ser posterior ao fim original da campanha"}), 400, headers)
             save_campaign_early_end(short_token, early_end_date, reason, ended_by=admin.get("email"))
             _cache_invalidate_token(short_token)
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="campaign_early_ended",
+                actor_email=admin.get("email"),
+                message=f"encerrou antecipadamente em {early_end_date}" + (f" — {reason}" if reason else ""),
+                payload={"early_end_date": early_end_date, "reason": reason},
+            )
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR save_campaign_early_end] {e}")
@@ -1025,6 +1061,12 @@ def report_data(request):
                 return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
             delete_campaign_early_end(short_token)
             _cache_invalidate_token(short_token)
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="campaign_early_end_reverted",
+                actor_email=admin.get("email"),
+                message="reverteu o encerramento antecipado",
+            )
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR delete_campaign_early_end] {e}")
@@ -1068,7 +1110,8 @@ def report_data(request):
 
     # ── Endpoint: salvar link Loom ───────────────────────────────────────────
     if request.method == "POST" and request.args.get("action") == "save_loom":
-        if not authenticate_admin(request):
+        admin = authenticate_admin(request)
+        if not admin:
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
             body = request.get_json(silent=True) or {}
@@ -1076,8 +1119,20 @@ def report_data(request):
             loom_url    = body.get("loom_url", "").strip()
             if not short_token or not loom_url:
                 return (jsonify({"error": "short_token e loom_url são obrigatórios"}), 400, headers)
+            # Detecta se já tinha Loom (replaced) ou se é primeiro upload (added).
+            # Falha do query NÃO bloqueia a mutation — só afeta a label do log.
+            try:
+                previous = query_loom(short_token)
+            except Exception:
+                previous = None
             save_loom(short_token, loom_url)
             _cache_invalidate_token(short_token)
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="loom_replaced" if previous else "loom_added",
+                actor_email=admin.get("email"),
+                message="trocou o vídeo Loom" if previous else "adicionou um vídeo Loom",
+            )
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR save_loom] {e}")
@@ -1191,7 +1246,8 @@ def report_data(request):
 
     # ── Endpoint: salvar survey ──────────────────────────────────────────────
     if request.method == "POST" and request.args.get("action") == "save_survey":
-        if not authenticate_admin(request):
+        admin = authenticate_admin(request)
+        if not admin:
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
             body = request.get_json(silent=True) or {}
@@ -1199,8 +1255,18 @@ def report_data(request):
             survey_data = body.get("survey_data", "").strip()
             if not short_token or not survey_data:
                 return (jsonify({"error": "short_token e survey_data são obrigatórios"}), 400, headers)
+            try:
+                previous_survey = query_survey(short_token)
+            except Exception:
+                previous_survey = None
             save_survey(short_token, survey_data)
             _cache_invalidate_token(short_token)
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="survey_updated" if previous_survey else "survey_created",
+                actor_email=admin.get("email"),
+                message="ajustou perguntas da Survey" if previous_survey else "criou uma Survey",
+            )
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR save_survey] {e}")
@@ -1398,7 +1464,8 @@ def report_data(request):
 
     # ── Endpoint: salvar upload RMND/PDOOH ───────────────────────────────────
     if request.method == "POST" and request.args.get("action") == "save_upload":
-        if not authenticate_admin(request):
+        admin = authenticate_admin(request)
+        if not admin:
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
             body = request.get_json(silent=True) or {}
@@ -1411,6 +1478,12 @@ def report_data(request):
                 return (jsonify({"error": "type deve ser RMND ou PDOOH"}), 400, headers)
             save_upload(short_token, upload_type, data_json)
             _cache_invalidate_token(short_token)
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="rmnd_uploaded" if upload_type == "RMND" else "pdooh_uploaded",
+                actor_email=admin.get("email"),
+                message="subiu CSV do Amazon Ads" if upload_type == "RMND" else "subiu relatório PDOOH",
+            )
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR save_upload] {e}")
@@ -1470,6 +1543,19 @@ def report_data(request):
                 updated_by=admin.get("email", "unknown"),
             )
             _cache_invalidate_token(short_token)
+            # Mensagem denormalizada — frontend prefere ler `message` direto
+            # em vez de cruzar `payload` com team_members pra cada row.
+            owner_parts = []
+            if cp_email: owner_parts.append(f"CP={cp_email}")
+            if cs_email: owner_parts.append(f"CS={cs_email}")
+            owner_summary = ", ".join(owner_parts) if owner_parts else "removeu owners"
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="owner_changed",
+                actor_email=admin.get("email"),
+                message=f"alterou owner ({owner_summary})",
+                payload={"cp_email": cp_email or None, "cs_email": cs_email or None},
+            )
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR save_report_owner] {e}")
@@ -1606,9 +1692,22 @@ def report_data(request):
                 rmnd_mode=rmnd_mode,
                 pdooh_mode=pdooh_mode,
             )
-            # Invalida cache de cada membro + caches da lista
-            for m in (group.get("members") or []):
-                _cache_invalidate_token(m["short_token"])
+            # Invalida cache de cada membro + caches da lista. Audit log
+            # vai uma row POR membro do grupo — assim cada report mostra a
+            # ação no próprio changelog.
+            member_tokens = [m["short_token"] for m in (group.get("members") or [])]
+            for tok in member_tokens:
+                _cache_invalidate_token(tok)
+            other_tokens = [t for t in member_tokens]
+            for tok in member_tokens:
+                peers = [t for t in other_tokens if t != tok]
+                audit_log.safe_write_event(
+                    short_token=tok,
+                    event_type="merge_linked",
+                    actor_email=admin.get("email"),
+                    message=f"agrupou com {', '.join(peers)}" if peers else "criou grupo",
+                    payload={"merge_id": group.get("merge_id"), "peers": peers},
+                )
             return (jsonify({"group": group}), 200, headers)
         except merges.MergeError as e:
             return (jsonify({"error": str(e)}), e.code, headers)
@@ -1632,6 +1731,12 @@ def report_data(request):
                 _cache_invalidate_token(t)
             # Sempre invalida o token base mesmo se já estava em "removed"
             _cache_invalidate_token(short_token)
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="merge_unlinked",
+                actor_email=admin.get("email"),
+                message="removeu este token do agrupamento",
+            )
             return (jsonify({"ok": True, **result}), 200, headers)
         except merges.MergeError as e:
             return (jsonify({"error": str(e)}), e.code, headers)
@@ -1658,12 +1763,200 @@ def report_data(request):
             )
             for m in (group.get("members") or []):
                 _cache_invalidate_token(m["short_token"])
+            # Cada membro do grupo recebe uma entry — o setting muda como
+            # cada report calcula RMND/PDOOH, então é relevante per-token.
+            settings_parts = []
+            if rmnd_mode  is not None: settings_parts.append(f"RMND={rmnd_mode}")
+            if pdooh_mode is not None: settings_parts.append(f"PDOOH={pdooh_mode}")
+            settings_summary = ", ".join(settings_parts) if settings_parts else "settings"
+            for m in (group.get("members") or []):
+                audit_log.safe_write_event(
+                    short_token=m["short_token"],
+                    event_type="merge_linked",  # reusa o type — é mudança de config do mesmo grupo
+                    actor_email=admin.get("email"),
+                    message=f"atualizou settings do agrupamento ({settings_summary})",
+                    payload={"merge_id": merge_id, "rmnd_mode": rmnd_mode, "pdooh_mode": pdooh_mode},
+                )
             return (jsonify({"group": group}), 200, headers)
         except merges.MergeError as e:
             return (jsonify({"error": str(e)}), e.code, headers)
         except Exception as e:
             logger.error(f"[ERROR update_merge_settings] {e}")
             return (jsonify({"error": "Erro ao atualizar settings"}), 500, headers)
+
+    # ── Endpoints: Access Tracking + Audit Log (Analytics do report) ──────
+    #
+    # Stack:
+    #   POST ?action=track_access    → público, ingere events do client (rate-limited)
+    #   GET  ?action=report_analytics → admin, lê rollup + agregações
+    #   GET  ?action=report_audit_log → admin, lê changelog de mudanças
+    #   GET  ?action=access_summary  → admin, summary leve pra o badge do card
+    #
+    # Implementação em backend/access_tracking.py + backend/audit_log.py.
+
+    # POST ?action=track_access — PÚBLICO (sem auth). Recebe pageview/heartbeat/
+    # tab_change/session_end do client. Validamos token + bot UA + rate limit
+    # antes de inserir. Falhas silenciosas (return 200) pra não vazar info.
+    if request.method == "POST" and request.args.get("action") == "track_access":
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            share_id    = (body.get("share_id") or "").strip() or None
+            session_id  = (body.get("session_id") or "").strip()
+            event_type  = (body.get("event_type") or "").strip()
+            # event_id do client habilita idempotência de retry — backend
+            # reusa quando vier; senão gera novo. Necessário pra rollup
+            # deduplicar via ROW_NUMBER OVER (PARTITION BY event_id).
+            event_id    = (body.get("event_id") or "").strip() or None
+            tab_id      = (body.get("tab_id") or "").strip() or None
+            prev_tab_id = (body.get("prev_tab_id") or "").strip() or None
+            duration_ms = body.get("duration_ms")
+            viewport_w  = body.get("viewport_w")
+            viewport_h  = body.get("viewport_h")
+            referrer    = (body.get("referrer") or "").strip()
+            client_ts   = (body.get("client_ts") or "").strip()
+
+            # Validação 1: token existe (filtra lixo / scans)
+            if not access_tracking.validate_short_token(short_token):
+                return (jsonify({"ok": True}), 200, headers)
+
+            # Validação 2: bot UA conhecido (Slackbot etc.)
+            ua = request.headers.get("User-Agent", "")
+            if access_tracking.is_blocked_bot(ua):
+                return (jsonify({"ok": True}), 200, headers)
+
+            # IP do client — pega do X-Forwarded-For (Cloud Functions atrás
+            # do GFE). Se ausente, cai pro remote_addr.
+            raw_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            if not raw_ip:
+                raw_ip = request.remote_addr or ""
+            ip_hash = access_tracking.hash_ip(raw_ip) if raw_ip else None
+
+            # Validação 3: rate limit por IP-hash
+            if ip_hash and not access_tracking.rate_limit_check(ip_hash):
+                return (jsonify({"ok": True}), 200, headers)
+
+            # Timestamp do server vence drift do client
+            when = access_tracking.validate_timestamp(client_ts)
+
+            # is_internal: pode vir do client (hook frontend marca quando
+            # detecta sessão admin no localStorage) — admin não deveria
+            # disparar eventos, mas se escapar, marcamos pra filtragem.
+            is_internal = bool(body.get("is_internal"))
+
+            access_tracking.safe_write_event(
+                short_token=short_token,
+                share_id=share_id,
+                session_id=session_id,
+                event_type=event_type,
+                event_id=event_id,
+                tab_id=tab_id,
+                prev_tab_id=prev_tab_id,
+                device_family=access_tracking.device_family_from_ua(ua),
+                ip_hash=ip_hash,
+                is_internal=is_internal,
+                duration_ms=duration_ms,
+                viewport_w=viewport_w,
+                viewport_h=viewport_h,
+                referrer_host=access_tracking.extract_referrer_host(referrer),
+                when=when,
+            )
+            return (jsonify({"ok": True}), 200, headers)
+        except Exception as e:
+            # Endpoint público — NUNCA propaga exceção pro caller.
+            logger.error(f"[ERROR track_access] {e}")
+            return (jsonify({"ok": True}), 200, headers)
+
+    # GET ?action=report_analytics — admin-only. Devolve TUDO que o modal
+    # precisa em 1 round-trip (kpis + series + tabs + devices + heatmap +
+    # sessions + tracking_start_date). Range em dias (default 30).
+    if request.method == "GET" and request.args.get("action") == "report_analytics":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            short_token = (request.args.get("token") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "token é obrigatório"}), 400, headers)
+            try:
+                range_days = int(request.args.get("range", "30"))
+            except ValueError:
+                range_days = 30
+            range_days = max(1, min(range_days, 365))
+            include_internal = request.args.get("include_internal", "").lower() == "true"
+
+            payload = {
+                "summary":              access_tracking.query_summary(short_token, range_days, include_internal),
+                "timeline":             access_tracking.query_timeline(short_token, range_days, include_internal),
+                "tabs":                 access_tracking.query_tabs_breakdown(short_token, range_days, include_internal),
+                "devices":              access_tracking.query_devices_breakdown(short_token, range_days, include_internal),
+                "heatmap":              access_tracking.query_heatmap(short_token, range_days, include_internal),
+                "recent_sessions":      access_tracking.query_recent_sessions(short_token, 8, include_internal),
+                "tracking_start_date":  access_tracking.query_tracking_start_date(),
+            }
+            return (jsonify(payload), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR report_analytics] {e}")
+            return (jsonify({"error": "Erro ao buscar analytics"}), 500, headers)
+
+    # GET ?action=access_summary — admin-only. Versão leve da agregação
+    # pro badge do card no menu admin. Retorna {total_pageviews,
+    # unique_sessions, last_access_at, range_days}. Range é fixo em 30d.
+    if request.method == "GET" and request.args.get("action") == "access_summary":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            short_token = (request.args.get("token") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "token é obrigatório"}), 400, headers)
+            summary = access_tracking.query_summary(short_token, 30, include_internal=False)
+            return (jsonify(summary), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR access_summary] {e}")
+            return (jsonify({"error": "Erro ao buscar summary"}), 500, headers)
+
+    # POST ?action=access_summary_batch — admin-only. Batched version pro
+    # menu admin (270+ cards). Body: { tokens: [...] }. Resposta:
+    # { summaries: { token: {total_pageviews, unique_sessions, last_at} } }.
+    # POST porque a lista de tokens pode passar do limite de query string.
+    if request.method == "POST" and request.args.get("action") == "access_summary_batch":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            tokens = body.get("tokens") or []
+            if not isinstance(tokens, list):
+                return (jsonify({"error": "tokens deve ser array"}), 400, headers)
+            # Sanitiza: só strings, dedup, máximo 500 tokens por request
+            tokens = list({t.strip() for t in tokens if isinstance(t, str) and t.strip()})
+            tokens = tokens[:500]
+            summaries = access_tracking.query_summary_batch(tokens, range_days=30)
+            return (jsonify({"summaries": summaries}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR access_summary_batch] {e}")
+            return (jsonify({"error": "Erro ao buscar batch"}), 500, headers)
+
+    # GET ?action=report_audit_log — admin-only. Devolve o changelog de
+    # mudanças (Loom adicionado, owner trocado, etc.) ordenado por
+    # created_at DESC. Resolve actor_email → actor_name via teamMap quando
+    # disponível (mantemos a denormalização na resposta pra o frontend
+    # exibir direto sem JOIN).
+    if request.method == "GET" and request.args.get("action") == "report_audit_log":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            short_token = (request.args.get("token") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "token é obrigatório"}), 400, headers)
+            try:
+                limit = int(request.args.get("limit", "50"))
+            except ValueError:
+                limit = 50
+            limit = max(1, min(limit, 200))
+            events = audit_log.query_recent_events(short_token, limit)
+            return (jsonify({"events": events}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR report_audit_log] {e}")
+            return (jsonify({"error": "Erro ao buscar audit log"}), 500, headers)
 
     # ── Endpoint: lista de clientes agregada (admin) ─────────────────────────
     # View "Por cliente" do menu admin V2. Agrega campanhas em memória pelo
