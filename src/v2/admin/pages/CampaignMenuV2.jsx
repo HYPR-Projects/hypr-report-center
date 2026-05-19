@@ -99,11 +99,42 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   // derivados client-side a partir de `campaigns` no init —
   // funcionalmente equivalente ao backend (paridade testada em
   // aggregation.js).
-  const [bootstrap] = useState(() => ({
-    campaigns: readCache("menu.campaigns"),
-    clients:   readCache("menu.clients"),
-    team:      readCache("menu.team"),
-  }));
+  const [bootstrap] = useState(() => {
+    const cachedCampaigns = readCache("menu.campaigns");
+    const cachedClients   = readCache("menu.clients");
+    const cachedTeam      = readCache("menu.team");
+    // Kicka o prefetch de access summaries DENTRO do init de bootstrap.
+    //
+    // Por quê: quando vínhamos com cache de campanhas em localStorage,
+    // o primeiro render acontecia com 273 cards montados ANTES do
+    // useEffect inferior disparar prefetchAccessSummaries. No primeiro
+    // render, cada AccessBadge consultava o módulo accessSummaryCache:
+    //   - cache.has(token) = false     (Map zerado no reload)
+    //   - inflight = null              (prefetch ainda não chamado)
+    //   - requestedTokens.has = false  (idem)
+    //   → isLoadingSummary() = false → badge renderizava `0` real.
+    // Depois quando o prefetch resolvia, emit() rerenderizava com o
+    // número certo. O user via o flash de zeros e atribuía a "às vezes
+    // só hard refresh mostra o número".
+    //
+    // Disparando SÍNCRONO aqui, `inflight` está setado antes do React
+    // pintar a primeira frame → badge renderiza skeleton → vai pro
+    // valor real sem passar por 0. Cache do módulo deduplica com o
+    // prefetch que o useEffect dispara depois (vê inflight, espera).
+    if (cachedCampaigns?.data) {
+      const tokens = cachedCampaigns.data
+        .map((c) => c.short_token)
+        .filter(Boolean);
+      if (tokens.length > 0) {
+        prefetchAccessSummaries(tokens).catch(() => { /* silencioso */ });
+      }
+    }
+    return {
+      campaigns: cachedCampaigns,
+      clients:   cachedClients,
+      team:      cachedTeam,
+    };
+  });
   const [campaigns, setCampaigns]     = useState(bootstrap.campaigns?.data ?? []);
   const [clients, setClients]         = useState(bootstrap.clients?.data?.clients ?? []);
   // Worklist: prioriza cache do backend (mais recente em conteúdo);
