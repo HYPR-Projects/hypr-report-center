@@ -35,7 +35,7 @@ import urllib.request
 import urllib.parse
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from auth import (
     JWT_TTL_SECONDS,
@@ -113,6 +113,13 @@ _typeform_forms_cache = {} # "all" -> (timestamp, list[{id,title,last_updated_at
 # de ingestão diária só atualiza poucas vezes ao dia.
 _PERFORMERS_PERIOD_CACHE_TTL = 600
 _performers_period_cache = {} # "from|to" -> (timestamp, list[campaign])
+# Freshness do rollup diário das bases (DV360/Xandr/StackAdapt). Lê uma
+# query agregada barata (group by source) — TTL curto pra que se o admin
+# olhar o indicador depois das 06h e o pipeline ainda não tiver rodado,
+# o refresh natural (5min) já pega quando rodar. Não tem invalidação
+# manual: dado é cosmético, não bloqueante.
+_DATA_FRESHNESS_CACHE_TTL = 300
+_data_freshness_cache = {}  # "all" -> (timestamp, list[{source, max_date, ...}])
 _cache_lock      = threading.Lock()
 
 
@@ -1989,6 +1996,24 @@ def report_data(request):
             logger.error(f"[ERROR report_audit_log] {e}")
             return (jsonify({"error": "Erro ao buscar audit log"}), 500, headers)
 
+    # GET ?action=data_freshness — admin-only. Frescor da base de dados
+    # por DSP (MAX(date) por source). Devolve `server_now` (UTC ISO) pra
+    # o frontend decidir o cutoff de "ainda não rodou às 7h" usando o
+    # relógio do servidor — evita falso positivo se o client estiver em
+    # outro fuso ou com clock skew.
+    if request.method == "GET" and request.args.get("action") == "data_freshness":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            sources = query_data_freshness()
+            return (jsonify({
+                "sources":    sources,
+                "server_now": datetime.now(timezone.utc).isoformat(),
+            }), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR data_freshness] {e}")
+            return (jsonify({"error": "Erro ao buscar freshness"}), 500, headers)
+
     # ── Endpoint: lista de clientes agregada (admin) ─────────────────────────
     # View "Por cliente" do menu admin V2. Agrega campanhas em memória pelo
     # client_name normalizado (LOWER + TRIM + slug-safe) e enriquece cada
@@ -3103,6 +3128,47 @@ def save_loom(short_token: str, loom_url: str):
         ]
     )
     bq.query(sql, job_config=job_config).result()
+
+
+def query_data_freshness():
+    """Devolve o MAX(date) por `source` na unified_daily_performance_metrics.
+
+    Usado pelo indicador de frescor de dados no header admin. Cada fonte
+    (DV360/Xandr/StackAdapt) é ingerida diariamente no rollup das 06h —
+    se MAX(date) < ontem após 7h, o pipeline daquela fonte falhou.
+
+    Query dinâmica (GROUP BY source sem hardcode de label) pra ser
+    resiliente a novas fontes ou renames sem mexer no backend. Janela
+    de 7 dias é só pra reduzir partition scan — não afeta o resultado
+    porque a tabela tem rows novas todo dia.
+
+    Tabela está na região US (mesma constraint das outras queries desta
+    base) — passar location explícito.
+    """
+    cached = _cache_get(_data_freshness_cache, "all", _DATA_FRESHNESS_CACHE_TTL)
+    if cached is not None:
+        return cached
+    sql = f"""
+        SELECT
+            source,
+            MAX(date) AS max_date,
+            COUNT(DISTINCT date) AS days_in_window
+        FROM `{PROJECT_ID}.{DATASET_ASSETS}.unified_daily_performance_metrics`
+        WHERE date >= DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 7 DAY)
+        GROUP BY source
+        ORDER BY source
+    """
+    job_config = bigquery.QueryJobConfig()
+    rows = bq.query(sql, job_config=job_config, location="US").result()
+    out = []
+    for r in rows:
+        out.append({
+            "source": r["source"],
+            "max_date": r["max_date"].isoformat() if r["max_date"] else None,
+            "days_in_window": int(r["days_in_window"] or 0),
+        })
+    _cache_set(_data_freshness_cache, "all", out)
+    return out
 
 
 def query_loom(short_token: str):

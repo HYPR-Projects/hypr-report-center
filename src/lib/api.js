@@ -998,3 +998,24 @@ export async function getReportAuditLog({ short_token, limit = 50 }) {
   const data = await r.json();
   return data?.events || [];
 }
+
+/**
+ * Frescor da base de dados unified_daily_performance_metrics, por DSP.
+ * Cada item tem { source, max_date, days_in_window }. O backend também
+ * devolve `server_now` (ISO UTC) — usado pelo indicador de freshness
+ * pra decidir o cutoff "já passou das 7h?" com base no relógio do
+ * servidor, evitando falso positivo por clock skew do client.
+ */
+export async function getDataFreshness() {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=data_freshness`,
+    { headers: adminAuthHeaders(jwt) },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const data = await r.json();
+  return {
+    sources:    Array.isArray(data?.sources) ? data.sources : [],
+    serverNow:  data?.server_now || null,
+  };
+}

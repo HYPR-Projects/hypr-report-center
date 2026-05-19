@@ -57,6 +57,7 @@ import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
 import { cn } from "../../../ui/cn";
 import { ThemeToggleV2 } from "../../components/ThemeToggleV2";
+import { DataFreshnessIndicator } from "../components/DataFreshnessIndicator";
 
 import { LayoutToggle } from "../components/LayoutToggle";
 import { ToolbarV2 } from "../components/ToolbarV2";
@@ -664,6 +665,10 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
             <HyprReportCenterLogo height={32} />
           </button>
           <div className="flex items-center gap-2 md:gap-3">
+            {/* Status do rollup diário das bases. Admin-only — o
+                CampaignMenuV2 inteiro já é renderizado dentro do
+                isAdminMode em App.jsx, então o gate é implícito. */}
+            <DataFreshnessIndicator />
             <ThemeToggleV2 />
             {user?.picture && (
               <img
