@@ -633,13 +633,16 @@ function TimelineCard({ series, annotations, range, loading }) {
 
   // Gera os índices dos dias que ganham label no eixo X (evenly spaced).
   // Inclui sempre primeiro e último ponto pras pontas baterem com "há Xd"
-  // e "hoje" — leitura mantém a referência temporal.
+  // e "hoje" — leitura mantém a referência temporal. Round pode colidir
+  // dois ticks no mesmo idx quando tickCount > series.length, então dedup
+  // antes de renderizar pra não sobrepor labels.
   const tickCount = X_TICKS_BY_RANGE[range] || 6;
-  const xTicks = [];
+  const rawTicks = [];
   for (let i = 0; i < tickCount; i++) {
     const idx = Math.round((i / (tickCount - 1)) * (series.length - 1));
-    xTicks.push(idx);
+    rawTicks.push(idx);
   }
+  const uniqueXTicks = Array.from(new Set(rawTicks)).sort((a, b) => a - b);
 
   // Pluralização do tooltip. 1 acesso vs N acessos.
   const fmtAccesses = (n) => `${n} ${n === 1 ? "acesso" : "acessos"}`;
@@ -655,10 +658,12 @@ function TimelineCard({ series, annotations, range, loading }) {
           Pageviews
         </div>
       </div>
-      {/* Layout em duas bands verticais: faixa de anotações ACIMA do gráfico
-          (espaço dedicado, não sobrepõe a linha) + área do chart. As linhas
-          tracejadas verticais correm pela área do chart, ancoradas no mesmo
-          X de cada label, mantendo a leitura "evento → spike".
+      {/* Posicionamento: TODOS os elementos visuais (anotação, dot do hover,
+          guia, tooltip, ticks do eixo X) usam `left: (i / (N-1)) * 100%`,
+          mesma fórmula que a SparklineV2 usa pra distribuir pontos.
+          Layout flex-1 só nas hit zones (captação de hover) — visual fica
+          em absolute pra ficar exatamente em cima da linha.
+
           Padding-left abre o gutter pro eixo Y; chart e ticks do eixo X
           herdam o mesmo offset, mantendo alinhamento vertical. */}
       <div className="relative mt-3" style={{ paddingLeft: Y_AXIS_GUTTER_PX }}>
@@ -675,25 +680,28 @@ function TimelineCard({ series, annotations, range, loading }) {
           <span className="text-right leading-none">0</span>
         </div>
 
+        {/* Band das anotações ACIMA do chart — labels não sobrepõem a linha.
+            Cada label posicionada em `left: x%` correspondente ao dia da
+            anotação, com -translate-x-1/2 pra centralizar no eixo. */}
         <div className="relative h-[24px] mb-1">
-          <div className="absolute inset-0 flex">
-            {series.map((d, i) => {
-              const anno = annotations.find((a) => a.day === i);
-              if (!anno) return <div key={i} className="flex-1" />;
-              return (
-                <div key={i} className="flex-1 relative">
-                  <span className={cn(
-                    "absolute bottom-0 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md px-1.5 py-0.5",
-                    "text-[9.5px] font-semibold uppercase tracking-wider shadow-sm",
-                    anno.tone === "signature" ? "bg-signature/15 text-signature" : "bg-success/15 text-success",
-                  )}>
-                    {anno.label}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
+          {annotations.map((anno) => {
+            const xPct = pctForIndex(anno.day, series.length);
+            return (
+              <span
+                key={`anno-label-${anno.day}`}
+                className={cn(
+                  "absolute bottom-0 -translate-x-1/2 whitespace-nowrap rounded-md px-1.5 py-0.5",
+                  "text-[9.5px] font-semibold uppercase tracking-wider shadow-sm",
+                  anno.tone === "signature" ? "bg-signature/15 text-signature" : "bg-success/15 text-success",
+                )}
+                style={{ left: `${xPct}%` }}
+              >
+                {anno.label}
+              </span>
+            );
+          })}
         </div>
+
         <div
           className="relative h-[120px]"
           onMouseLeave={() => setHoverIdx(null)}
@@ -711,117 +719,130 @@ function TimelineCard({ series, annotations, range, loading }) {
             className="w-full h-full"
             ariaLabel="Timeline de acessos"
           />
-          {/* Linhas tracejadas das anotações (não-interativas, por isso
-              pointer-events-none — não roubam hover das hit zones abaixo). */}
-          <div className="pointer-events-none absolute inset-0 flex">
-            {series.map((d, i) => {
-              const anno = annotations.find((a) => a.day === i);
-              if (!anno) return <div key={i} className="flex-1" />;
-              return (
-                <div key={i} className="flex-1 relative">
-                  <div className={cn(
-                    "absolute top-0 bottom-0 left-1/2 w-px border-l border-dashed",
-                    anno.tone === "signature" ? "border-signature/60" : "border-success/60",
-                  )} />
-                </div>
-              );
-            })}
-          </div>
-          {/* Hit zones: 1 cell por dia, captura hover. Renderiza guia
-              vertical, dot na posição do valor e tooltip flutuante.
-              Mesma estrutura flex das anotações pra alinhar com pontos
-              do sparkline (que também distribui i/(N-1) ao longo do width).
-              `bottom: (v/max)*100%` casa com a fórmula da SparklineV2
-              quando minValue=0 — ambos usam mesma escala 0→max. */}
-          <div className="absolute inset-0 flex">
-            {series.map((d, i) => {
-              const isHover = hoverIdx === i;
-              // Posição vertical do dot em px, replicando o cálculo interno
-              // do SparklineV2 (usableH centrado entre padY top/bottom).
-              // bottom-px do CENTRO da linha = padY + (v/max) * usableH;
-              // do BOTTOM-edge do dot = centro - raio.
-              const linePxFromBottom = max > 0
-                ? SPARKLINE_PAD_Y_PX + (d.accesses / max) * SPARKLINE_USABLE_H_PX
-                : SPARKLINE_PAD_Y_PX;
-              const dotBottomPx = linePxFromBottom - TOOLTIP_DOT_RADIUS_PX;
-              const isLastDay = i === series.length - 1;
-              const isFirstDay = i === 0;
-              return (
+          {/* Linhas tracejadas das anotações em `left: x%` (mesmo cálculo
+              das labels acima, ficam alinhadas verticalmente). */}
+          {annotations.map((anno) => {
+            const xPct = pctForIndex(anno.day, series.length);
+            return (
+              <div
+                key={`anno-line-${anno.day}`}
+                aria-hidden
+                className={cn(
+                  "pointer-events-none absolute top-0 bottom-0 w-px -translate-x-1/2 border-l border-dashed",
+                  anno.tone === "signature" ? "border-signature/60" : "border-success/60",
+                )}
+                style={{ left: `${xPct}%` }}
+              />
+            );
+          })}
+          {/* Hit zones — divs absolutos cobrindo a faixa em torno de cada
+              ponto. Cada faixa vai de meio-caminho do ponto anterior até
+              meio-caminho do próximo, clipada às bordas [0%, 100%]. Sem
+              flex aqui: visual ficou desalinhado quando hit zones em flex-1
+              centravam no centro da CELL e a linha estava em i/(N-1). */}
+          {series.map((_, i) => {
+            const N = series.length;
+            if (N < 2) return null;
+            const leftPct  = Math.max(0, (i - 0.5) / (N - 1)) * 100;
+            const rightPct = Math.min(1, (i + 0.5) / (N - 1)) * 100;
+            return (
+              <div
+                key={`hit-${i}`}
+                className="absolute top-0 bottom-0 cursor-default"
+                style={{ left: `${leftPct}%`, width: `${rightPct - leftPct}%` }}
+                onMouseEnter={() => setHoverIdx(i)}
+              />
+            );
+          })}
+          {/* Visuals do hover — guia vertical, dot, tooltip, todos em
+              `left: x%` exato. Renderizam só quando hoverIdx setado.
+              IIFE deriva valores específicos do dia hovered de uma vez. */}
+          {hoverIdx != null && series[hoverIdx] && (() => {
+            const d = series[hoverIdx];
+            const xPct = pctForIndex(hoverIdx, series.length);
+            // Posição vertical do dot em px, replicando o cálculo interno
+            // do SparklineV2 (usableH centrado entre padY top/bottom).
+            // bottom-px do CENTRO da linha = padY + (v/max) * usableH;
+            // bottom do dot = centro - raio.
+            const linePxFromBottom = max > 0
+              ? SPARKLINE_PAD_Y_PX + (d.accesses / max) * SPARKLINE_USABLE_H_PX
+              : SPARKLINE_PAD_Y_PX;
+            const dotBottomPx = linePxFromBottom - TOOLTIP_DOT_RADIUS_PX;
+            const isLastDay  = hoverIdx === series.length - 1;
+            const isFirstDay = hoverIdx === 0;
+            // Tooltip translateX: centro no meio, mas nos extremos ancora
+            // pela borda pra não overflow do card. Combina com `left: x%`
+            // do ponto de dado (0% no primeiro, 100% no último).
+            const tooltipTransform = isFirstDay ? "translateX(0)"
+              : isLastDay ? "translateX(-100%)"
+              : "translateX(-50%)";
+            return (
+              <>
                 <div
-                  key={i}
-                  className="flex-1 relative cursor-default"
-                  onMouseEnter={() => setHoverIdx(i)}
-                >
-                  {isHover && (
-                    <>
-                      <div className="pointer-events-none absolute top-0 bottom-0 left-1/2 w-px bg-fg-subtle/35" />
-                      <div
-                        className="pointer-events-none absolute left-1/2 w-2 h-2 rounded-full bg-signature ring-2 ring-canvas-elevated"
-                        style={{
-                          bottom: `${dotBottomPx}px`,
-                          transform: "translateX(-50%)",
-                        }}
-                      />
-                      <div
-                        className={cn(
-                          "pointer-events-none absolute -top-7 whitespace-nowrap rounded-md bg-fg text-canvas-elevated",
-                          "px-2 py-1 text-[10.5px] font-medium tabular-nums shadow-md",
-                          // Próximo das bordas, ancora pela borda pra não cortar.
-                          isFirstDay ? "left-0"
-                          : isLastDay ? "right-0"
-                          : "left-1/2 -translate-x-1/2",
-                        )}
-                      >
-                        <span className="font-mono">{isLastDay ? "hoje" : fmtDayMonth(series.length - 1 - i)}</span>
-                        <span className="opacity-50 mx-1">·</span>
-                        <span>{fmtAccesses(d.accesses)}</span>
-                      </div>
-                    </>
+                  aria-hidden
+                  className="pointer-events-none absolute top-0 bottom-0 w-px -translate-x-1/2 bg-fg-subtle/35"
+                  style={{ left: `${xPct}%` }}
+                />
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute w-2 h-2 -translate-x-1/2 rounded-full bg-signature ring-2 ring-canvas-elevated"
+                  style={{ left: `${xPct}%`, bottom: `${dotBottomPx}px` }}
+                />
+                <div
+                  className={cn(
+                    "pointer-events-none absolute -top-7 whitespace-nowrap rounded-md bg-fg text-canvas-elevated",
+                    "px-2 py-1 text-[10.5px] font-medium tabular-nums shadow-md",
                   )}
+                  style={{ left: `${xPct}%`, transform: tooltipTransform }}
+                >
+                  <span className="font-mono">{isLastDay ? "hoje" : fmtDayMonth(series.length - 1 - hoverIdx)}</span>
+                  <span className="opacity-50 mx-1">·</span>
+                  <span>{fmtAccesses(d.accesses)}</span>
                 </div>
-              );
-            })}
-          </div>
+              </>
+            );
+          })()}
         </div>
       </div>
-      {/* Eixo X — ticks de data evenly spaced. Cada cell usa flex-1 igual
-          às cells do chart, então labels alinham exatamente com os pontos
-          do gráfico acima. Primeiro/último label encostam nas bordas
-          (text-left / text-right) pra não cortar. Herda o mesmo
-          padding-left do wrapper pra alinhar com o chart. */}
+      {/* Eixo X — ticks de data evenly spaced. Cada tick posicionado em
+          `left: x%` exato do dia, batendo com os pontos do gráfico acima.
+          Primeiro/último ancorados pela borda pra não cortar.
+          Herda o mesmo padding-left do wrapper pra alinhar com o chart. */}
       <div
-        className="mt-2 flex text-[10px] text-fg-subtle font-mono tabular-nums"
+        className="mt-2 relative h-[14px] text-[10px] text-fg-subtle font-mono tabular-nums"
         style={{ paddingLeft: Y_AXIS_GUTTER_PX }}
       >
-        {series.map((_, i) => {
-          const isTick = xTicks.includes(i);
-          if (!isTick) return <div key={i} className="flex-1" />;
-          const isFirst = i === xTicks[0];
-          const isLast  = i === xTicks[xTicks.length - 1];
-          return (
-            <div
-              key={i}
-              className={cn(
-                "flex-1 relative",
-                isFirst ? "text-left" : isLast ? "text-right" : "text-center",
-              )}
-            >
+        <div className="relative h-full">
+          {uniqueXTicks.map((idx, tickI) => {
+            const isFirst = tickI === 0;
+            const isLast  = tickI === uniqueXTicks.length - 1;
+            const xPct = pctForIndex(idx, series.length);
+            const transform = isFirst ? "translateX(0)"
+              : isLast ? "translateX(-100%)"
+              : "translateX(-50%)";
+            return (
               <span
-                className={cn(
-                  "whitespace-nowrap",
-                  // Pontas: ancora direto na cell; centro: absolute centralizado
-                  // pra não duplicar largura quando a label é mais larga que a cell.
-                  !isFirst && !isLast && "absolute left-1/2 -translate-x-1/2",
-                )}
+                key={idx}
+                className="absolute top-0 whitespace-nowrap"
+                style={{ left: `${xPct}%`, transform }}
               >
-                {isLast ? "hoje" : fmtDayMonth(series.length - 1 - i)}
+                {idx === series.length - 1 ? "hoje" : fmtDayMonth(series.length - 1 - idx)}
               </span>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
     </div>
   );
+}
+
+// Posição X em % matching o mesmo cálculo da SparklineV2:
+// ponto i de N pontos fica em (i / (N-1)) * 100% do width.
+// N=1 retorna 0 pra evitar division-by-zero — SparklineV2 já bail-out
+// antes nesse caso, mas mantém defensivo aqui.
+function pctForIndex(i, n) {
+  if (n < 2) return 0;
+  return (i / (n - 1)) * 100;
 }
 
 // ─── Abas mais vistas ──────────────────────────────────────────────────
