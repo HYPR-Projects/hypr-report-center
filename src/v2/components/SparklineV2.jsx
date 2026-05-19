@@ -22,6 +22,12 @@ export function SparklineV2({
   // Opacidade no TOPO da área. Bottom sempre 0 (gradiente vertical).
   // 0 = só linha (sem área).
   fillOpacity = 0,
+  // Força um piso fixo no eixo Y. Default null = usa min(values) (escala
+  // dinâmica, bom pra sparklines de tendência onde só importa a forma).
+  // Passar 0 alinha o "fundo" do gráfico com a baseline zero — necessário
+  // quando o gráfico tem eixo Y rotulado com 0 (senão a linha fica solta
+  // do label "0"). Sem efeito quando todos os valores são iguais.
+  minValue = null,
   width = 200,
   height = 28,
   className,
@@ -47,7 +53,8 @@ export function SparklineV2({
     );
   }
 
-  const min = Math.min(...values);
+  const computedMin = Math.min(...values);
+  const min = minValue != null ? Math.min(minValue, computedMin) : computedMin;
   const max = Math.max(...values);
   const range = max - min || 1; // evita divisão por zero quando série é flat
 
