@@ -55,7 +55,15 @@ export function MonthGroupedSections({
       for (const g of groups) {
         if (g.key === "no-date") continue;
         if (!(g.key in next)) {
-          next[g.key] = g.key < currentYM && g.key !== mostRecentKey;
+          // Default colapsado: passado E não é o mais recente E o caller
+          // não pediu expansão explícita. `expandedByDefault` cobre o caso
+          // "mês passado com campanhas ainda ativas (ex: stretched April
+          // pra Maio)" — sem isso o user precisava abrir manualmente todo
+          // mês passado pra achar as in_flight.
+          next[g.key] =
+            g.key < currentYM &&
+            g.key !== mostRecentKey &&
+            !g.expandedByDefault;
           changed = true;
         }
       }

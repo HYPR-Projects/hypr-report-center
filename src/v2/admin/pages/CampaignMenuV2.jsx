@@ -71,7 +71,7 @@ import { CampaignDrawer } from "../components/CampaignDrawer";
 import { ReportAnalyticsModal } from "../components/ReportAnalyticsModal";
 import { prefetchAccessSummaries } from "../lib/accessSummaryCache";
 import { MonthGroupedSections } from "../components/MonthGroupedSections";
-import { formatMonthLabel } from "../lib/format";
+import { formatMonthLabel, getCampaignStatus } from "../lib/format";
 import { TooltipProvider } from "../../../ui/Tooltip";
 
 // localStorage key pra persistir o layout escolhido entre sessões.
@@ -142,6 +142,11 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   const [search, setSearch]               = useState("");
   const [ownerFilter, setOwnerFilter]     = useState(() => getOwnerFilter());
   const [activeMonth, setActiveMonth]     = useState(null);
+  // Toggle "apenas ativas" — filtra campanhas com status in_flight (não
+  // pausadas, não encerradas). Composável com mês e owner: clicar "Mai 26"
+  // + "Apenas ativas" mostra só ativas de maio. Default off pra preservar
+  // a UX de "vejo tudo por padrão".
+  const [onlyActive, setOnlyActive]       = useState(false);
   // Sort por escopo — campanhas e clientes têm conjuntos diferentes de
   // opções, e cada um persiste campo + direção separados.
   //
@@ -362,13 +367,30 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
       // Multi-owner: AND entre papéis (CP + CS), OR dentro do mesmo papel.
       // Ver `createOwnerMatcher` em ../lib/ownerFilter.js pra detalhes.
       const matchOwner = ownerMatcher(c);
-      return matchSearch && matchMonth && matchOwner;
+      // "Apenas ativas" — usa getCampaignStatus pra cobrir os 4 estados
+      // (in_flight / paused / awaiting_closure / ended). Aqui só in_flight
+      // passa: paused conta como "ativa em pausa" e foi decisão explícita
+      // do user pausar — manter junto teria sentido, mas "apenas ativas"
+      // soa estrito; se virar útil incluir pausadas, abre uma 2ª opção.
+      const matchActive = !onlyActive ||
+        getCampaignStatus(c.end_date, c.closed_at, c.paused_at, c.early_end_date) === "in_flight";
+      return matchSearch && matchMonth && matchOwner && matchActive;
     });
-  }, [campaigns, search, activeMonth, ownerMatcher, activeWorklist, worklist]);
+  }, [campaigns, search, activeMonth, ownerMatcher, activeWorklist, worklist, onlyActive]);
 
   const sortedCampaigns = useMemo(() => {
     return [...filteredCampaigns].sort(compareCampaigns(campaignsSortBy, campaignsSortDir));
   }, [filteredCampaigns, campaignsSortBy, campaignsSortDir]);
+
+  // Contagem global de campanhas ativas (in_flight) — independente dos
+  // outros filtros. Mostrada no chip "Apenas ativas". Recomputa quando
+  // a lista de campanhas muda; não depende de search/owner/mês.
+  const activeCampaignsCount = useMemo(
+    () => campaigns.filter((c) =>
+      getCampaignStatus(c.end_date, c.closed_at, c.paused_at, c.early_end_date) === "in_flight"
+    ).length,
+    [campaigns]
+  );
 
   // Agrupamento por mês (apenas layout=month).
   //
@@ -391,11 +413,22 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
       return b.localeCompare(a);
     });
     const cmp = compareCampaigns(campaignsSortBy, campaignsSortDir);
-    return monthsSorted.map((m) => ({
-      key: m,
-      label: m === "no-date" ? "Sem data" : formatMonthLabel(m),
-      items: [...acc.get(m)].sort(cmp),
-    }));
+    return monthsSorted.map((m) => {
+      const items = [...acc.get(m)].sort(cmp);
+      // Sinaliza pro MonthGroupedSections que um mês passado com pelo
+      // menos uma campanha in_flight deve abrir por default — caso típico:
+      // campanha de Abril que esticou pra Maio. Sem isso, o user precisava
+      // expandir manualmente todo mês passado pra achar as que ainda rodam.
+      const hasActive = items.some((c) =>
+        getCampaignStatus(c.end_date, c.closed_at, c.paused_at, c.early_end_date) === "in_flight"
+      );
+      return {
+        key: m,
+        label: m === "no-date" ? "Sem data" : formatMonthLabel(m),
+        items,
+        expandedByDefault: hasActive,
+      };
+    });
   }, [filteredCampaigns, layout, campaignsSortBy, campaignsSortDir]);
 
   // Filtragem de clientes (search + ownerFilter + worklist).
@@ -774,9 +807,18 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           )}
         </div>
 
-        {/* Quick month pills — só no layout 'month' */}
+        {/* Quick month pills — só no layout 'month'. Inclui o toggle
+            "Apenas ativas" na mesma row pra ficar no agrupamento mental
+            "filtros rápidos". Visualmente igual aos meses (PillButton)
+            mas conceitualmente é toggle binário (on/off), não exclusivo.
+            Composável com mês — clicar ambos restringe a interseção. */}
         {layout === "month" && (
-          <div className="mb-6">
+          <div className="mb-6 flex flex-wrap items-center gap-2">
+            <ActiveFilterPill
+              active={onlyActive}
+              count={activeCampaignsCount}
+              onToggle={() => setOnlyActive((v) => !v)}
+            />
             <MonthFilterPills
               campaigns={campaigns}
               activeMonth={activeMonth}
@@ -800,7 +842,12 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
                 onOpen={handleOpenDrawer}
                 onOpenReport={onOpenReport}
                 teamMap={teamMap}
-                filterSignature={[search.trim(), ownerFilter.join(","), activeWorklist || ""]
+                filterSignature={[
+                  search.trim(),
+                  ownerFilter.join(","),
+                  activeWorklist || "",
+                  onlyActive ? "only-active" : "",
+                ]
                   .filter(Boolean)
                   .join("|")}
               />
@@ -963,6 +1010,52 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
 // ─────────────────────────────────────────────────────────────────────────────
 // Sub-componentes
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ── Chip "Apenas ativas" ────────────────────────────────────────────────
+// Toggle visualmente alinhado às MonthFilterPills (mesma altura, mesmo
+// shape de pill). Diferenças propositais pra comunicar "isto é um toggle,
+// não um seletor de mês":
+//   - Dot verde com pulse quando inativo, sólido quando ativo
+//   - Label fixo "Apenas ativas" (não muda com o estado)
+// Quando ativo, herda a aparência signature-soft das pills selecionadas.
+function ActiveFilterPill({ active, count, onToggle }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={active}
+      title={active ? "Mostrando só campanhas ativas — clique pra limpar" : "Filtrar só campanhas ativas"}
+      className={cn(
+        "inline-flex items-center gap-2 h-8 px-3.5 rounded-full cursor-pointer",
+        "text-xs font-medium transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
+        active
+          ? "bg-signature-soft text-fg border border-signature/40"
+          : "bg-surface text-fg-muted border border-border hover:bg-surface-strong hover:text-fg"
+      )}
+    >
+      <span className="relative inline-flex shrink-0">
+        <span className={cn(
+          "size-1.5 rounded-full bg-success",
+          // Pulse só quando inativo, pra "chamar pra clicar" sem ficar
+          // ruidoso quando já está ligado.
+          !active && "animate-pulse"
+        )} />
+      </span>
+      Apenas ativas
+      <span
+        className={cn(
+          "inline-flex items-center justify-center min-w-[22px] h-4 px-1.5 rounded-full text-[10px] font-bold tabular-nums",
+          active
+            ? "bg-signature/25 text-fg"
+            : "bg-surface-strong text-fg-muted"
+        )}
+      >
+        {count}
+      </span>
+    </button>
+  );
+}
 
 function MonthLayout({ groups, onOpen, onOpenReport, teamMap, filterSignature = "" }) {
   // Toda a lógica de colapso/expansão/auto-expand foi movida pro
