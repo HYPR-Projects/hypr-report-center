@@ -27,7 +27,7 @@
 // Permite item poder ser `Campaign`, `{ kind: 'single'|'group', ... }`,
 // etc. sem o componente saber a estrutura.
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { cn } from "../../../ui/cn";
 
 export function MonthGroupedSections({
@@ -38,44 +38,67 @@ export function MonthGroupedSections({
 }) {
   const currentYM = new Date().toISOString().slice(0, 7);
 
-  // Estado de colapso por chave de mês. Default: meses passados começam
-  // colapsados, mês atual expandido, último mês da lista sempre aberto.
-  // Toggles do user persistem entre filtros — só inicializa keys NOVAS.
+  // Estado de colapso por chave de mês.
+  //
+  // Default por mês: passado E não é o mais recente E não tem campanha
+  // in_flight (expandedByDefault). `expandedByDefault` vem do caller pra
+  // cobrir "mês passado que ainda tem campanha rodando" — sem isso o user
+  // precisava abrir manualmente todo mês passado pra achar as ativas.
+  //
+  // Toggles do user persistem enquanto o filtro não muda — só RESETA
+  // pros defaults quando o `filterSignature` troca, porque o contexto
+  // mudou e o "estado preservado" perdeu sentido. Antes resetava pra
+  // "tudo aberto" indiscriminadamente; agora respeita o default, então
+  // mês passado sem ativas continua colapsado mesmo com filtro de owner
+  // ligado.
   const [collapsed, setCollapsed] = useState({});
 
+  // Computa o estado default por grupo. Encapsulado num useCallback pra
+  // os dois useEffect usarem a mesma fórmula sem duplicar.
+  const computeDefaults = useCallback((gs) => {
+    const mostRecentKey = gs
+      .map((g) => g.key)
+      .filter((k) => k !== "no-date")
+      .sort()
+      .at(-1);
+    const next = {};
+    for (const g of gs) {
+      if (g.key === "no-date") continue;
+      next[g.key] =
+        g.key < currentYM &&
+        g.key !== mostRecentKey &&
+        !g.expandedByDefault;
+    }
+    return next;
+  }, [currentYM]);
+
+  // Init/extensão: garante que keys NOVAS (mês aparece pela 1ª vez)
+  // ganhem default. Não mexe nas existentes — preserva toggles do user
+  // e o reset-on-filter abaixo cuida da troca de contexto.
   useEffect(() => {
     setCollapsed((prev) => {
-      const next = { ...prev };
+      const defaults = computeDefaults(groups);
       let changed = false;
-      const mostRecentKey = groups
-        .map((g) => g.key)
-        .filter((k) => k !== "no-date")
-        .sort()
-        .at(-1);
-      for (const g of groups) {
-        if (g.key === "no-date") continue;
-        if (!(g.key in next)) {
-          // Default colapsado: passado E não é o mais recente E o caller
-          // não pediu expansão explícita. `expandedByDefault` cobre o caso
-          // "mês passado com campanhas ainda ativas (ex: stretched April
-          // pra Maio)" — sem isso o user precisava abrir manualmente todo
-          // mês passado pra achar as in_flight.
-          next[g.key] =
-            g.key < currentYM &&
-            g.key !== mostRecentKey &&
-            !g.expandedByDefault;
+      const next = { ...prev };
+      for (const [k, v] of Object.entries(defaults)) {
+        if (!(k in next)) {
+          next[k] = v;
           changed = true;
         }
       }
       return changed ? next : prev;
     });
-  }, [groups, currentYM]);
+  }, [groups, computeDefaults]);
 
-  // Auto-expand quando filtro ativo. Sinature vazia preserva toggles do user.
-  const isFiltering = !!filterSignature;
+  // Reset on filter change: usa ref pra detectar mudança REAL no
+  // filterSignature (não dispara só pq `groups` recomputou — ex: refresh
+  // periódico de dados não pode wipe-out toggles do user).
+  const prevSigRef = useRef(filterSignature);
   useEffect(() => {
-    if (isFiltering) setCollapsed({});
-  }, [filterSignature, isFiltering]);
+    if (prevSigRef.current === filterSignature) return;
+    prevSigRef.current = filterSignature;
+    setCollapsed(computeDefaults(groups));
+  }, [filterSignature, groups, computeDefaults]);
 
   const toggle = useCallback(
     (key) => setCollapsed((s) => ({ ...s, [key]: !s[key] })),
