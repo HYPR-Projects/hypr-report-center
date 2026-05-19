@@ -807,23 +807,29 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           )}
         </div>
 
-        {/* Quick month pills — só no layout 'month'. Inclui o toggle
-            "Apenas ativas" na mesma row pra ficar no agrupamento mental
-            "filtros rápidos". Visualmente igual aos meses (PillButton)
-            mas conceitualmente é toggle binário (on/off), não exclusivo.
-            Composável com mês — clicar ambos restringe a interseção. */}
-        {layout === "month" && (
+        {/* Filtros rápidos: chip "Apenas ativas" + (em 'month') pills de
+            mês. Apenas-ativas faz sentido tanto em 'month' quanto em 'list'
+            — em 'client' e 'top' a semântica é diferente (cliente filtrado
+            por TER ativas, top performers já filtra por performance), então
+            fica de fora desses pra não confundir.
+
+            Visualmente igual à PillButton mas conceitualmente é toggle
+            binário (on/off), não exclusivo. Composável com mês quando
+            ambos aparecem — clicar ambos restringe a interseção. */}
+        {(layout === "month" || layout === "list") && (
           <div className="mb-6 flex flex-wrap items-center gap-2">
             <ActiveFilterPill
               active={onlyActive}
               count={activeCampaignsCount}
               onToggle={() => setOnlyActive((v) => !v)}
             />
-            <MonthFilterPills
-              campaigns={campaigns}
-              activeMonth={activeMonth}
-              onChange={setActiveMonth}
-            />
+            {layout === "month" && (
+              <MonthFilterPills
+                campaigns={campaigns}
+                activeMonth={activeMonth}
+                onChange={setActiveMonth}
+              />
+            )}
           </div>
         )}
 
