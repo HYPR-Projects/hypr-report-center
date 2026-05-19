@@ -276,11 +276,19 @@ function computeMinutesAgo(isoString) {
   return Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
 }
 
+// Diff de calendário (meia-noite local → meia-noite local), não janelas
+// de 24h corridas. Sem isso, um evento de ontem 22h visto hoje 08h dá
+// floor(10h / 24h) = 0 e o changelog mostra "hoje" pra algo que claramente
+// foi ontem. Round em cima do diff em ms cobre fronteiras de horário de
+// verão (dias com 23h ou 25h) sem ficar 1 dia errado.
 function computeDaysAgo(isoString) {
   if (!isoString) return 0;
   const d = new Date(isoString);
   if (isNaN(d.getTime())) return 0;
-  return Math.max(0, Math.floor((Date.now() - d.getTime()) / 86_400_000));
+  const then  = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const now   = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.max(0, Math.round((today.getTime() - then.getTime()) / 86_400_000));
 }
 
 
