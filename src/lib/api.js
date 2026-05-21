@@ -999,6 +999,264 @@ export async function getReportAuditLog({ short_token, limit = 50 }) {
   return data?.events || [];
 }
 
+// ── PMP Lines v2 (admin) ─────────────────────────────────────────────────────
+// API redesenhada em volta de Line Items (a unidade real do negócio).
+// Substitui o `pmp_deals*` da v1 progressivamente.
+
+/** Lista de lines enriquecidas (line + IO + Command + delivery + health). */
+export async function listPmpLines({ includeArchived = false, onlyActive = true } = {}) {
+  const jwt = await getOrIssueAdminJwt();
+  const qs = new URLSearchParams({ action: "pmp_lines_list" });
+  if (includeArchived) qs.set("include_archived", "1");
+  qs.set("only_active", onlyActive ? "1" : "0");
+  const r = await fetch(`${API_URL}?${qs}`, { headers: { ...adminAuthHeaders(jwt) } });
+  if (r.status === 401 || r.status === 403) {
+    try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
+    window.location.reload();
+    throw new Error("admin session expired");
+  }
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  if (!Array.isArray(d?.lines)) throw new Error("malformed response: lines missing");
+  return d.lines;
+}
+
+/** Detalhe + timeseries diária de uma line. */
+export async function getPmpLine(lineId) {
+  if (!lineId) return null;
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(`${API_URL}?action=pmp_line_get&line_id=${encodeURIComponent(lineId)}`,
+    { headers: { ...adminAuthHeaders(jwt) } });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/** Salva campos manuais (status, notes, overrides). */
+export async function savePmpLineOverrides({ line_id, ...fields }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(`${API_URL}?action=pmp_save_line_overrides`,
+    { line_id, ...fields }, adminAuthHeaders(jwt));
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+/** Sugestões de checklists do Command pra vincular à line. */
+export async function suggestPmpLinks(lineId) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(`${API_URL}?action=pmp_suggest_links&line_id=${encodeURIComponent(lineId)}`,
+    { headers: { ...adminAuthHeaders(jwt) } });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  return d.suggestions || [];
+}
+
+/** Vincula line ↔ short_token: PUT no Xandr + update local + refresh enriched. */
+export async function linkPmpCommand({ line_id, short_token, force = false }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(`${API_URL}?action=pmp_link_command`,
+    { line_id, short_token, force }, adminAuthHeaders(jwt));
+  if (r.status === 409) {
+    const d = await r.json();
+    const err = new Error(d.error || "Conflito");
+    err.conflict_line_id = d.conflict_line_id;
+    err.is_conflict = true;
+    throw err;
+  }
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+/** Lista lines do mesmo cliente que podem ser agrupadas com `lineId`. */
+export async function listPmpGroupableLines(lineId) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(`${API_URL}?action=pmp_groupable_lines&line_id=${encodeURIComponent(lineId)}`,
+    { headers: { ...adminAuthHeaders(jwt) } });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  return d.lines || [];
+}
+
+/** Cria grupo OU anexa lines a grupo existente. Pelo menos 2 line_ids. */
+export async function groupPmpLines({ line_ids, short_token, group_name }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(`${API_URL}?action=pmp_group_lines`,
+    { line_ids, short_token, group_name }, adminAuthHeaders(jwt));
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+/** Remove line do grupo (dissolve grupo se sobrar 1 line). */
+export async function ungroupPmpLine(line_id) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(`${API_URL}?action=pmp_ungroup_line`,
+    { line_id }, adminAuthHeaders(jwt));
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/** Atualiza metadados (nome, short_token, notas) — não mexe em membros. */
+export async function updatePmpGroup({ group_id, group_name, short_token, notes }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(`${API_URL}?action=pmp_group_update`,
+    { group_id, group_name, short_token, notes }, adminAuthHeaders(jwt));
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/** Detalhe do grupo. */
+export async function getPmpGroup(group_id) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(`${API_URL}?action=pmp_group_get&group_id=${encodeURIComponent(group_id)}`,
+    { headers: { ...adminAuthHeaders(jwt) } });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/** Trigger manual do sync v2 (IOs + Lines + delivery + refresh view). */
+export async function syncPmpV2({ interval = "last_7_days" } = {}) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(`${API_URL}?action=pmp_sync_v2`,
+    { report_interval: interval }, adminAuthHeaders(jwt));
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+// ── PMP Deals (admin) ────────────────────────────────────────────────────────
+// Substitui o fluxo manual de baixar reports do Xandr Curate e alimentar a
+// planilha "HYPR Product Performance". Backend em `backend/pmp_deals.py`.
+
+/**
+ * Lista deals PMP com delivery agregada (revenue, imps, margin, ecpm).
+ *
+ * Retorna `{ deals: [...] }` (array vazio se ainda não migrou).
+ * Lança em status != 2xx ou ausência de array.
+ */
+export async function listPmpDeals({ includeArchived = false } = {}) {
+  const jwt = await getOrIssueAdminJwt();
+  if (!jwt) throw new Error("no admin jwt");
+  const qs = new URLSearchParams({ action: "pmp_list" });
+  if (includeArchived) qs.set("include_archived", "1");
+  const r = await fetch(`${API_URL}?${qs}`, {
+    headers: { ...adminAuthHeaders(jwt) },
+  });
+  if (r.status === 401 || r.status === 403) {
+    try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
+    window.location.reload();
+    throw new Error("admin session expired");
+  }
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  if (!Array.isArray(d?.deals)) throw new Error("malformed response: deals missing");
+  return d.deals;
+}
+
+/**
+ * Busca um deal específico com timeseries diária de delivery. Retorna
+ * o objeto cru do backend ou null se 404.
+ */
+export async function getPmpDeal(deal_id) {
+  if (!deal_id) return null;
+  const jwt = await getOrIssueAdminJwt();
+  if (!jwt) return null;
+  const r = await fetch(
+    `${API_URL}?action=pmp_get&deal_id=${encodeURIComponent(deal_id)}`,
+    { headers: { ...adminAuthHeaders(jwt) } },
+  );
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/**
+ * Upsert dos campos manuais de um deal. `fields` aceita subset de:
+ *   customer, campaign_name, agency, flight_quarter, flight_month,
+ *   client_pi_amount, margin_pct, dv_tech_fee_pct, status, owner_email,
+ *   notes, is_archived
+ *
+ * Strings vazias são tratadas como NULL pelo backend (limpa campo).
+ * Retorna o deal atualizado (com delivery agregada).
+ */
+export async function savePmpDeal({ deal_id, ...fields }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=pmp_save_deal`,
+    { deal_id, ...fields },
+    adminAuthHeaders(jwt),
+  );
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+/**
+ * Soft-delete (archive=true) ou restaura (archive=false). Mantém o
+ * histórico de delivery — só esconde da listagem default.
+ */
+export async function archivePmpDeal({ deal_id, archive = true }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=pmp_archive_deal`,
+    { deal_id, archive },
+    adminAuthHeaders(jwt),
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/**
+ * Dispara o sync com a Xandr Curate API: autentica, pede o report,
+ * espera ficar pronto, baixa CSV, faz upsert no BigQuery. Síncrono
+ * pro caller — pode levar 10-60s dependendo da janela.
+ *
+ * `interval` aceita: yesterday / last_7_days / last_month / month_to_date.
+ * Pra janela custom passe `start_date` e `end_date` (YYYY-MM-DD).
+ *
+ * Retorna o summary: { report_id, rows_processed, deals_touched,
+ * deals_created, duration_sec, window, synced_at }.
+ */
+export async function syncPmpXandr({ interval = "last_7_days", start_date, end_date } = {}) {
+  const jwt = await getOrIssueAdminJwt();
+  const body = {};
+  if (start_date && end_date) {
+    body.start_date = start_date;
+    body.end_date   = end_date;
+  } else {
+    body.report_interval = interval;
+  }
+  const r = await postJson(
+    `${API_URL}?action=pmp_sync_xandr`,
+    body,
+    adminAuthHeaders(jwt),
+  );
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
 /**
  * Frescor da base de dados unified_daily_performance_metrics, por DSP.
  * Cada item tem { source, max_date, days_in_window }. O backend também

@@ -39,6 +39,7 @@ const LoginScreen          = lazy(() => import("./pages/LoginScreen"));
 const CampaignMenu         = lazy(() => import("./v2/admin/pages/CampaignMenuV2"));
 const ClientDetailPage     = lazy(() => import("./v2/admin/pages/ClientDetailPage"));
 const ClientDashboard      = lazy(() => import("./v2/dashboards/ClientDashboardV2"));
+const PmpDealsPage         = lazy(() => import("./v2/admin/pages/PmpDealsPage"));
 
 /**
  * Heurística pra distinguir share_id (formato novo, opaco) de
@@ -158,6 +159,10 @@ function AppRoutes() {
   // não vale o ganho.
   const adminClientMatch = path.match(/^\/admin\/client\/([a-z0-9-]+)\/?$/i);
   const adminClientSlug  = adminClientMatch ? adminClientMatch[1].toLowerCase() : null;
+  // Rota /admin/pmp — análise de deals de pagamento (PMP). Substitui a
+  // planilha "HYPR Product Performance" no Google Sheets. Mesmo gate
+  // do CampaignMenu (sessão admin @hypr.mobi).
+  const isAdminPmp = path === "/admin/pmp" || path === "/admin/pmp/";
   // Quando o cliente desbloqueia, guardamos o short_token resolvido pelo
   // backend (que pode diferir do `clientToken` da URL no formato novo
   // /report/{share_id}). O state inicial é populado do localStorage para
@@ -394,6 +399,16 @@ function AppRoutes() {
     window.history.pushState({}, "", "/");
     window.dispatchEvent(new PopStateEvent("popstate"));
   };
+
+  // Rota /admin/pmp — análise de deals PMP. Mesma topbar do menu,
+  // botão "Voltar" leva pro CampaignMenu (goHome).
+  if (isAdminPmp) {
+    return (
+      <Suspense fallback={<RouteSuspense />}>
+        <PmpDealsPage user={user} onLogout={onLogout} onBackToMenu={goHome} />
+      </Suspense>
+    );
+  }
 
   // Drilldown do cliente. `key={slug}` força remount quando o slug muda
   // (ex: navegação via back+forward entre dois clientes), zerando state

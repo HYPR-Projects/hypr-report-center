@@ -79,7 +79,7 @@ export const DrawerContent = forwardRef(function DrawerContent(
  * Header com título grande + subtítulo opcional + botão fechar (X).
  * O botão é Dialog.Close pra fechar via Radix sem precisar de prop.
  */
-export function DrawerHeader({ title, subtitle, className }) {
+export function DrawerHeader({ title, subtitle, className, titleClassName }) {
   return (
     <div
       className={cn(
@@ -88,7 +88,7 @@ export function DrawerHeader({ title, subtitle, className }) {
       )}
     >
       <div className="min-w-0 flex-1">
-        <Dialog.Title className="text-lg font-bold tracking-tight text-fg leading-tight truncate">
+        <Dialog.Title className={cn("font-bold tracking-tight text-fg leading-tight", titleClassName || "text-lg truncate")}>
           {title}
         </Dialog.Title>
         {subtitle && (

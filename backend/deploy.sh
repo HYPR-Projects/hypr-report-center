@@ -77,6 +77,43 @@ SENDGRID_API_KEY=$(extract_env "SENDGRID_API_KEY")
 SHEETS_ALERT_FROM=$(extract_env "SHEETS_ALERT_FROM")
 ACCESS_TRACKING_IP_SALT=$(extract_env "ACCESS_TRACKING_IP_SALT")
 
+# Xandr Curate API — capturamos da revisão ativa OU lemos do Secret Manager.
+# Existem nesse jeito (não como --set-secrets) por consistência com o resto:
+# o deploy do report_data usa --env-vars-file pra tudo, e --env-vars-file
+# limpa secrets mountados via --set-secrets se misturarmos.
+read_secret_if_missing() {
+  local var_name="$1"
+  local current_value="$2"
+  if [ -n "$current_value" ]; then
+    echo "$current_value"
+    return
+  fi
+  gcloud secrets versions access latest --secret="$var_name" --project=site-hypr 2>/dev/null || echo ""
+}
+XANDR_CURATE_USER=$(extract_env "XANDR_CURATE_USER")
+XANDR_CURATE_USER=$(read_secret_if_missing "XANDR_CURATE_USER" "$XANDR_CURATE_USER")
+XANDR_CURATE_PASS=$(extract_env "XANDR_CURATE_PASS")
+XANDR_CURATE_PASS=$(read_secret_if_missing "XANDR_CURATE_PASS" "$XANDR_CURATE_PASS")
+XANDR_CURATE_MEMBER_ID=$(extract_env "XANDR_CURATE_MEMBER_ID")
+XANDR_CURATE_MEMBER_ID=$(read_secret_if_missing "XANDR_CURATE_MEMBER_ID" "$XANDR_CURATE_MEMBER_ID")
+
+# PMP_SCHEDULER_SECRET — segredo compartilhado entre Cloud Scheduler e a
+# Cloud Function pra autenticar o cron job sem JWT admin. Gerado uma vez,
+# armazenado no Secret Manager pra deploys futuros, e configurado no
+# Scheduler como header X-Scheduler-Secret.
+PMP_SCHEDULER_SECRET=$(extract_env "PMP_SCHEDULER_SECRET")
+if [ -z "$PMP_SCHEDULER_SECRET" ]; then
+  PMP_SCHEDULER_SECRET=$(gcloud secrets versions access latest --secret=PMP_SCHEDULER_SECRET --project=site-hypr 2>/dev/null || echo "")
+fi
+if [ -z "$PMP_SCHEDULER_SECRET" ]; then
+  PMP_SCHEDULER_SECRET=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+  gcloud secrets describe PMP_SCHEDULER_SECRET --project=site-hypr >/dev/null 2>&1 || \
+    gcloud secrets create PMP_SCHEDULER_SECRET --replication-policy=automatic --project=site-hypr >/dev/null
+  printf '%s' "$PMP_SCHEDULER_SECRET" | gcloud secrets versions add PMP_SCHEDULER_SECRET --data-file=- --project=site-hypr >/dev/null
+  echo "  ✨ PMP_SCHEDULER_SECRET gerado e armazenado no Secret Manager."
+  echo "     Configure o Cloud Scheduler job com este valor no header X-Scheduler-Secret."
+fi
+
 if [ -z "$JWT_SECRET" ]; then
   echo "✗ JWT_SECRET não encontrado na revisão $ACTIVE_REV. Abortando."
   echo "  (sem ele o login admin quebra em loop)"
@@ -114,6 +151,14 @@ else
   echo "    Configure: gcloud functions deploy report_data --gen2 --region=southamerica-east1 \\"
   echo "                 --update-env-vars ACCESS_TRACKING_IP_SALT=\$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 fi
+if [ -n "$XANDR_CURATE_USER" ] && [ -n "$XANDR_CURATE_PASS" ] && [ -n "$XANDR_CURATE_MEMBER_ID" ]; then
+  echo "  ✓ XANDR_CURATE_{USER,PASS,MEMBER_ID} capturados (PMP sync habilitado)"
+else
+  echo "  ⚠ XANDR_CURATE_* ausentes — sync de PMP deals desabilitado"
+fi
+if [ -n "$PMP_SCHEDULER_SECRET" ]; then
+  echo "  ✓ PMP_SCHEDULER_SECRET capturado"
+fi
 
 # ── 2. Montar arquivo YAML com todas as envvars ──────────────────────────────
 ENV_FILE=$(mktemp -t envs.XXXXXX.yaml)
@@ -149,6 +194,18 @@ fi
 if [ -n "$ACCESS_TRACKING_IP_SALT" ]; then
   echo "ACCESS_TRACKING_IP_SALT: '${ACCESS_TRACKING_IP_SALT}'" >> "$ENV_FILE"
 fi
+if [ -n "$XANDR_CURATE_USER" ]; then
+  echo "XANDR_CURATE_USER: '${XANDR_CURATE_USER}'" >> "$ENV_FILE"
+fi
+if [ -n "$XANDR_CURATE_PASS" ]; then
+  echo "XANDR_CURATE_PASS: '${XANDR_CURATE_PASS}'" >> "$ENV_FILE"
+fi
+if [ -n "$XANDR_CURATE_MEMBER_ID" ]; then
+  echo "XANDR_CURATE_MEMBER_ID: '${XANDR_CURATE_MEMBER_ID}'" >> "$ENV_FILE"
+fi
+if [ -n "$PMP_SCHEDULER_SECRET" ]; then
+  echo "PMP_SCHEDULER_SECRET: '${PMP_SCHEDULER_SECRET}'" >> "$ENV_FILE"
+fi
 
 # ── 3. Deploy ────────────────────────────────────────────────────────────────
 echo ""
@@ -162,7 +219,7 @@ gcloud functions deploy "$FUNCTION_NAME" \
   --entry-point=report_data \
   --trigger-http \
   --allow-unauthenticated \
-  --memory=1Gi \
+  --memory=2Gi \
   --cpu=1 \
   --timeout=540s \
   --min-instances=1 \

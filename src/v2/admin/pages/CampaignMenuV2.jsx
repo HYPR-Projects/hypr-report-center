@@ -776,6 +776,17 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
             <Button
               variant="ghost"
               size="md"
+              onClick={() => {
+                window.history.pushState({}, "", "/admin/pmp");
+                window.dispatchEvent(new PopStateEvent("popstate"));
+              }}
+              title="Análise dos deals de pagamento HYPR (Xandr Curate)"
+            >
+              PMP Deals
+            </Button>
+            <Button
+              variant="ghost"
+              size="md"
               onClick={() => window.open("/report/DEMO", "_blank")}
               title="Abre o report de demonstração em nova aba"
             >

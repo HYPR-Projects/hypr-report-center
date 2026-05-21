@@ -51,6 +51,10 @@ import sheets_integration
 import sheets_alerts
 import audit_log
 import access_tracking
+import pmp_deals
+import pmp_lines
+import pmp_groups
+import xandr_curate
 
 logger = logging.getLogger(__name__)
 
@@ -1111,10 +1115,22 @@ def report_data(request):
             save_alcance_frequencia(target_type, target_id, alcance, frequencia)
             # Invalida cache: pra escopo token, derruba só esse token (o
             # _cache_invalidate_token já limpa o cache merged também). Pra
-            # escopo merge, derruba o cache merged do grupo.
+            # escopo merge, derruba o cache merged do grupo + os caches
+            # per-token de cada membro — fetch_campaign_data faz fallback
+            # de (token, X) vazio pra (merge, merge_id), então os payloads
+            # cacheados dos membros precisam ser refeitos pra refletir o
+            # novo valor merge-scoped.
             if target_type == "token":
                 _cache_invalidate_token(target_id)
             else:
+                try:
+                    group = merges.get_merge_group(target_id)
+                    if group:
+                        for m in (group.get("members") or []):
+                            if m.get("short_token"):
+                                _cache_invalidate_token(m["short_token"])
+                except Exception as e:
+                    logger.warning(f"[WARN save_af invalidate members merge={target_id}] {e}")
                 with _cache_lock:
                     _merged_report_cache.pop(target_id, None)
             return (jsonify({"ok": True}), 200, headers)
@@ -2014,6 +2030,393 @@ def report_data(request):
             logger.error(f"[ERROR data_freshness] {e}")
             return (jsonify({"error": "Erro ao buscar freshness"}), 500, headers)
 
+    # ── Endpoints: PMP Deals (admin) ──────────────────────────────────────────
+    # Análise das entregas dos deals de pagamento HYPR — substitui o fluxo
+    # manual de baixar o report do Xandr Curate e alimentar a planilha
+    # "HYPR Product Performance" no Google Sheets.
+    #
+    #   POST ?action=pmp_setup_schema           → cria tabelas idempotente
+    #   GET  ?action=pmp_list                   → lista de deals + delivery agregada
+    #   GET  ?action=pmp_get&deal_id=...        → detalhes + daily timeseries
+    #   POST ?action=pmp_save_deal              → upsert master (campos manuais)
+    #   POST ?action=pmp_archive_deal           → soft delete (is_archived=TRUE)
+    #
+    # As Fases 3/4 vão adicionar:
+    #   POST ?action=pmp_sync_xandr             → trigger manual de sync
+    #   GET  ?action=pmp_sync_status            → última execução do job diário
+    if request.method == "POST" and request.args.get("action") == "pmp_setup_schema":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            res = pmp_deals.setup_schema()
+            return (jsonify({"ok": True, "tables": res}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR pmp_setup_schema] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    if request.method == "GET" and request.args.get("action") == "pmp_list":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            include_archived = (request.args.get("include_archived") or "").lower() in ("1", "true", "yes")
+            deals = pmp_deals.list_deals(include_archived=include_archived)
+            return (jsonify({"deals": deals}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR pmp_list] {e}")
+            return (jsonify({"error": "Erro ao listar deals"}), 500, headers)
+
+    if request.method == "GET" and request.args.get("action") == "pmp_get":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            deal_id = (request.args.get("deal_id") or "").strip()
+            if not deal_id:
+                return (jsonify({"error": "deal_id obrigatório"}), 400, headers)
+            deal = pmp_deals.get_deal(deal_id)
+            if not deal:
+                return (jsonify({"error": "Deal não encontrado"}), 404, headers)
+            return (jsonify(deal), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR pmp_get] {e}")
+            return (jsonify({"error": "Erro ao buscar deal"}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "pmp_save_deal":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            deal_id = (body.get("deal_id") or "").strip()
+            if not deal_id:
+                return (jsonify({"error": "deal_id obrigatório"}), 400, headers)
+            # Remove deal_id e metadados read-only do payload de fields.
+            fields = {k: v for k, v in body.items()
+                       if k not in ("deal_id", "created_by", "created_at",
+                                     "updated_by", "updated_at")}
+            # Strings vazias viram NULL (permite limpar campo no front).
+            for k, v in list(fields.items()):
+                if isinstance(v, str) and v.strip() == "":
+                    fields[k] = None
+            deal = pmp_deals.save_deal(
+                deal_id=deal_id,
+                fields=fields,
+                updated_by=admin.get("email", "unknown"),
+            )
+            return (jsonify(deal), 200, headers)
+        except ValueError as ve:
+            return (jsonify({"error": str(ve)}), 400, headers)
+        except Exception as e:
+            logger.error(f"[ERROR pmp_save_deal] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "pmp_archive_deal":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            deal_id = (body.get("deal_id") or "").strip()
+            archive = bool(body.get("archive", True))
+            if not deal_id:
+                return (jsonify({"error": "deal_id obrigatório"}), 400, headers)
+            if archive:
+                pmp_deals.archive_deal(deal_id, admin.get("email", "unknown"))
+            else:
+                pmp_deals.unarchive_deal(deal_id, admin.get("email", "unknown"))
+            return (jsonify({"ok": True}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR pmp_archive_deal] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    # ── Endpoint: sync Xandr Curate → pmp_deals_delivery ─────────────────────
+    # Roda 3 passos: auth → POST /report → poll → download → upsert no BQ.
+    # Chamado de duas formas:
+    #   • Manual: admin clica "Sync agora" na UI /admin/pmp
+    #     (auth via JWT, body opcional com janela customizada).
+    #   • Scheduled: Cloud Scheduler chama 1x/dia 04:00 BRT com OIDC token
+    #     (verificamos via cabeçalho X-Scheduler-Secret pra evitar abuso).
+    #
+    # Body opcional:
+    #   {report_interval: "yesterday"|"last_7_days"|"last_month"|"month_to_date"}
+    # ou
+    #   {start_date: "YYYY-MM-DD", end_date: "YYYY-MM-DD"}
+    #
+    # Default = last_7_days (cobre eventual atraso de pipeline do Xandr).
+    if request.method == "POST" and request.args.get("action") == "pmp_sync_xandr":
+        # Auth: admin OU scheduler. Scheduler usa segredo compartilhado
+        # via header X-Scheduler-Secret (configurado no Cloud Scheduler job).
+        actor = "unknown"
+        scheduler_secret_env = os.environ.get("PMP_SCHEDULER_SECRET", "")
+        provided_secret = request.headers.get("X-Scheduler-Secret", "")
+        is_scheduler = bool(scheduler_secret_env) and provided_secret == scheduler_secret_env
+
+        if is_scheduler:
+            actor = "scheduler"
+        else:
+            admin = authenticate_admin(request)
+            if not admin:
+                return (jsonify({"error": "Não autorizado"}), 401, headers)
+            actor = admin.get("email", "unknown")
+
+        try:
+            body = request.get_json(silent=True) or {}
+            start_raw = (body.get("start_date") or "").strip()
+            end_raw   = (body.get("end_date") or "").strip()
+            interval  = (body.get("report_interval") or "last_7_days").strip()
+
+            start_date = None
+            end_date   = None
+            if start_raw and end_raw:
+                try:
+                    start_date = datetime.strptime(start_raw, "%Y-%m-%d").date()
+                    end_date   = datetime.strptime(end_raw,   "%Y-%m-%d").date()
+                except ValueError:
+                    return (jsonify({"error": "Formato de data inválido — use YYYY-MM-DD"}), 400, headers)
+                if start_date > end_date:
+                    return (jsonify({"error": "start_date precisa ser ≤ end_date"}), 400, headers)
+
+            summary = xandr_curate.sync(
+                start_date=start_date,
+                end_date=end_date,
+                report_interval=interval,
+                created_by=actor,
+            )
+            return (jsonify(summary), 200, headers)
+        except xandr_curate.XandrError as xe:
+            logger.error(f"[ERROR pmp_sync_xandr] {xe}")
+            return (jsonify({"error": str(xe)}), 502, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_sync_xandr] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    # ── Endpoints: PMP Lines v2 (admin) ──────────────────────────────────────
+    # API redesenhada em volta de LINE ITEM (a unidade real do negócio),
+    # enriquecida com Hypr Command via line.code = checklists.short_token.
+    #
+    #   GET  ?action=pmp_lines_list                    → lista enriquecida
+    #   GET  ?action=pmp_line_get&line_id=...          → drill-down + daily
+    #   POST ?action=pmp_save_line_overrides           → campos manuais
+    #   GET  ?action=pmp_suggest_links&line_id=...     → fuzzy match Command
+    #   POST ?action=pmp_link_command                  → PUT code no Xandr + local
+    #   POST ?action=pmp_sync_v2                       → orquestra full sync
+    if request.method == "GET" and request.args.get("action") == "pmp_lines_list":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            include_archived = (request.args.get("include_archived") or "").lower() in ("1","true","yes")
+            only_active      = (request.args.get("only_active") or "1").lower() in ("1","true","yes")
+            lines = pmp_lines.list_lines(include_archived=include_archived, only_active=only_active)
+            return (jsonify({"lines": lines}), 200, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_lines_list] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    if request.method == "GET" and request.args.get("action") == "pmp_line_get":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            line_id_raw = (request.args.get("line_id") or "").strip()
+            if not line_id_raw.isdigit():
+                return (jsonify({"error": "line_id obrigatório (int)"}), 400, headers)
+            line = pmp_lines.get_line(int(line_id_raw))
+            if not line:
+                return (jsonify({"error": "Line não encontrada"}), 404, headers)
+            return (jsonify(line), 200, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_line_get] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "pmp_save_line_overrides":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            line_id = body.get("line_id")
+            if not isinstance(line_id, int) and not (isinstance(line_id, str) and line_id.isdigit()):
+                return (jsonify({"error": "line_id obrigatório (int)"}), 400, headers)
+            line_id = int(line_id)
+            fields = {k: v for k, v in body.items() if k != "line_id"}
+            for k, v in list(fields.items()):
+                if isinstance(v, str) and v.strip() == "":
+                    fields[k] = None
+            line = pmp_lines.save_line_overrides(line_id, fields, admin.get("email","unknown"))
+            return (jsonify(line), 200, headers)
+        except ValueError as ve:
+            return (jsonify({"error": str(ve)}), 400, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_save_line_overrides] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    if request.method == "GET" and request.args.get("action") == "pmp_suggest_links":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            line_id_raw = (request.args.get("line_id") or "").strip()
+            if not line_id_raw.isdigit():
+                return (jsonify({"error": "line_id obrigatório"}), 400, headers)
+            suggestions = pmp_lines.suggest_command_links(int(line_id_raw))
+            return (jsonify({"suggestions": suggestions}), 200, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_suggest_links] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "pmp_link_command":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            line_id = int(body.get("line_id") or 0)
+            short_token = (body.get("short_token") or "").strip().upper()
+            if not line_id or not short_token:
+                return (jsonify({"error": "line_id e short_token obrigatórios"}), 400, headers)
+            existing = pmp_lines.is_token_in_use(short_token, exclude_line_id=line_id)
+            if existing and not body.get("force"):
+                return (jsonify({
+                    "error": f"short_token {short_token} já está vinculado à line {existing}",
+                    "conflict_line_id": existing,
+                }), 409, headers)
+            # 1) PUT no Xandr (com retry pra token expirado)
+            xandr_curate.set_line_code(line_id, short_token)
+            # 2) Atualiza local + refresca tabela enriched
+            pmp_lines.set_line_code_local(line_id, short_token, admin.get("email","unknown"))
+            line = pmp_lines.get_line(line_id)
+            return (jsonify(line), 200, headers)
+        except xandr_curate.XandrError as xe:
+            logger.warning(f"[pmp_link_command] xandr err: {xe}")
+            return (jsonify({"error": str(xe)}), 502, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_link_command] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    # ── Endpoints: PMP Line Groups (admin) ────────────────────────────────────
+    # Agrupa N lines do Xandr sob o MESMO PI compartilhado (A/B test, Fixed
+    # vs Flex, etc.). Espelha a UX do Merge Reports mas opera em line_id
+    # em vez de short_token.
+    if request.method == "GET" and request.args.get("action") == "pmp_groupable_lines":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            line_id_raw = (request.args.get("line_id") or "").strip()
+            if not line_id_raw.isdigit():
+                return (jsonify({"error": "line_id obrigatório"}), 400, headers)
+            lines = pmp_groups.list_groupable_lines(int(line_id_raw))
+            return (jsonify({"lines": lines}), 200, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_groupable_lines] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "pmp_group_lines":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            line_ids = body.get("line_ids") or []
+            if not isinstance(line_ids, list) or len(line_ids) < 2:
+                return (jsonify({"error": "line_ids precisa ser lista com ≥ 2 IDs"}), 400, headers)
+            try:
+                line_ids = [int(x) for x in line_ids]
+            except (TypeError, ValueError):
+                return (jsonify({"error": "line_ids devem ser inteiros"}), 400, headers)
+            group = pmp_groups.group_lines(
+                line_ids=line_ids,
+                short_token=(body.get("short_token") or "").strip() or None,
+                group_name=(body.get("group_name") or "").strip() or None,
+                created_by=admin.get("email", "unknown"),
+            )
+            return (jsonify(group), 200, headers)
+        except pmp_groups.GroupError as ge:
+            return (jsonify({"error": str(ge)}), ge.code, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_group_lines] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "pmp_ungroup_line":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            line_id = body.get("line_id")
+            if line_id is None or (isinstance(line_id, str) and not line_id.isdigit()):
+                return (jsonify({"error": "line_id obrigatório"}), 400, headers)
+            res = pmp_groups.ungroup_line(int(line_id), admin.get("email", "unknown"))
+            return (jsonify(res), 200, headers)
+        except pmp_groups.GroupError as ge:
+            return (jsonify({"error": str(ge)}), ge.code, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_ungroup_line] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    if request.method == "GET" and request.args.get("action") == "pmp_group_get":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            group_id = (request.args.get("group_id") or "").strip()
+            if not group_id:
+                return (jsonify({"error": "group_id obrigatório"}), 400, headers)
+            group = pmp_groups.get_group(group_id)
+            if not group:
+                return (jsonify({"error": "Grupo não encontrado"}), 404, headers)
+            return (jsonify(group), 200, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_group_get] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "pmp_group_update":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            group_id = (body.get("group_id") or "").strip()
+            if not group_id:
+                return (jsonify({"error": "group_id obrigatório"}), 400, headers)
+            group = pmp_groups.update_group_meta(
+                group_id=group_id,
+                group_name=body.get("group_name"),
+                short_token=body.get("short_token"),
+                notes=body.get("notes"),
+                updated_by=admin.get("email", "unknown"),
+            )
+            return (jsonify(group), 200, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_group_update] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "pmp_sync_v2":
+        scheduler_secret_env = os.environ.get("PMP_SCHEDULER_SECRET", "")
+        provided_secret = request.headers.get("X-Scheduler-Secret", "")
+        is_scheduler = bool(scheduler_secret_env) and provided_secret == scheduler_secret_env
+        actor = "scheduler" if is_scheduler else None
+        if not is_scheduler:
+            admin = authenticate_admin(request)
+            if not admin:
+                return (jsonify({"error": "Não autorizado"}), 401, headers)
+            actor = admin.get("email","unknown")
+        try:
+            body = request.get_json(silent=True) or {}
+            interval = (body.get("report_interval") or "last_7_days").strip()
+            advertiser_id = 5472841  # HYPR — único advertiser do member 13053
+            io_res     = xandr_curate.sync_insertion_orders(advertiser_id=advertiser_id)
+            line_res   = xandr_curate.sync_line_items(advertiser_id=advertiser_id)
+            deliv_res  = xandr_curate.sync_delivery_by_line(report_interval=interval)
+            pmp_lines.refresh_enriched_table()
+            return (jsonify({
+                "actor": actor,
+                "insertion_orders": io_res,
+                "line_items":       line_res,
+                "delivery":         deliv_res,
+                "view_refreshed":   True,
+            }), 200, headers)
+        except xandr_curate.XandrError as xe:
+            return (jsonify({"error": str(xe)}), 502, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_sync_v2] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
     # ── Endpoint: lista de clientes agregada (admin) ─────────────────────────
     # View "Por cliente" do menu admin V2. Agrega campanhas em memória pelo
     # client_name normalizado (LOWER + TRIM + slug-safe) e enriquece cada
@@ -2369,6 +2772,26 @@ def fetch_campaign_data(short_token):
     # Achatamos alcance_frequencia em chaves de topo (`alcance`, `frequencia`,
     # `alcance_updated_at`) — frontend lê direto, sem aninhamento.
     af = result.pop("alcance_frequencia", None) or {}
+    # Fallback merge-scoped: se o token pertence a um grupo merge e o par
+    # (token, short_token) está vazio, lê de (merge, merge_id). Cobre o caso
+    # em que o admin salvou na "Visão agregada" (escopo merge) e o cliente
+    # abre a URL default — que cai em fetch_campaign_data(active_token) e
+    # antes via vazio mesmo com valor salvo no banco. Per-month edits
+    # (admin salva num pill de mês específico) seguem prevalecendo porque
+    # o par (token, X) tem prioridade.
+    if not (af.get("alcance") or af.get("frequencia")):
+        try:
+            merges_lookup = _safe_get_merges()
+            merge_info = (
+                merges_lookup.get(short_token)
+                or merges_lookup.get(short_token.upper())
+            )
+            if merge_info and merge_info.get("merge_id"):
+                af_merge = query_alcance_frequencia("merge", merge_info["merge_id"])
+                if af_merge.get("alcance") or af_merge.get("frequencia"):
+                    af = af_merge
+        except Exception as e:
+            logger.warning(f"[WARN fetch_campaign_data af_merge_fallback {short_token}] {e}")
     result["alcance"]            = af.get("alcance", "")    or ""
     result["frequencia"]         = af.get("frequencia", "") or ""
     result["alcance_updated_at"] = af.get("updated_at", "") or ""
