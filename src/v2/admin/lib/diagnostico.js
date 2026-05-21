@@ -191,10 +191,33 @@ export function deriveMediaMetrics({
     ? pacing * elapsedRatio
     : null;
 
-  // Ritmo diário necessário pra bater 100% (= negotiated / totalDays).
-  const minDiariaContratada = negotiated != null && negotiated > 0
-    ? negotiated / totalDays
-    : null;
+  // ── Mínima diária RESTANTE ──────────────────────────────────────────────
+  // "Quanto ainda preciso entregar por dia daqui pra frente pra fechar 100%."
+  //
+  // Lógica:
+  //   • Já bateu 100% (delivered >= negotiated)        → null → renderiza "—"
+  //     (não precisa de mínima, já entregou tudo que precisava)
+  //   • Sem dias restantes (campanha já acabou hoje)   → null → renderiza "—"
+  //     (não dá pra entregar mais, end_date é hoje ou já passou)
+  //   • Caso normal: (negotiated - delivered) / dias_restantes
+  //     onde dias_restantes inclui hoje (campanha ainda pode entregar hoje)
+  //
+  // Por que NÃO usar `negotiated / totalDays` (lógica antiga):
+  //   Aquilo era a "mínima estática" do plano original — útil só no dia 1.
+  //   Conforme a campanha evolui (over, under), o ritmo necessário pra fechar
+  //   muda. Mostrar a mínima ESTÁTICA pra campanha 170% entregue confunde
+  //   ("preciso entregar 12.801/dia?" — não, você já tem 70% de gordura).
+  const daysRemaining = Math.max(0, totalDays - elapsedDays + 1);
+  let minDiariaContratada = null;
+  if (negotiated != null && negotiated > 0 && delivered != null) {
+    const remaining = negotiated - delivered;
+    if (remaining > 0 && daysRemaining > 0) {
+      minDiariaContratada = remaining / daysRemaining;
+    }
+    // Quando remaining <= 0 (já bateu 100%) ou daysRemaining = 0 (acabou),
+    // deixa null pra UI mostrar "—". Operacionalmente: "não precisa mais
+    // se preocupar com mínima diária".
+  }
 
   // Ritmo médio realizado (delivered / dias decorridos).
   const mediaDiariaAtual = delivered && delivered > 0 && elapsedDays > 0

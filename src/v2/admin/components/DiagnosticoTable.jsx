@@ -289,7 +289,7 @@ export function DiagnosticoTable({
                     <Td
                       align="right"
                       tabular
-                      title="Ritmo diário necessário pra entregar 100% até o fim"
+                      title="Ritmo diário necessário pra entregar 100% nos dias restantes (— se já bateu 100% ou campanha acabou)"
                     >
                       {formatIntRow(r.minDiariaContratada)}
                     </Td>
