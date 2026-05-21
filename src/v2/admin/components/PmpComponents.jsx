@@ -18,6 +18,7 @@ import {
   formatRatioPct, formatLastDelivery, emailInitial,
   pctEntrega, groupPctEntrega,
   effectiveStatus, formatLineStartPeriod,
+  isNewLine,
 } from "../lib/pmpFormat";
 
 
@@ -808,6 +809,13 @@ export function PmpLineRow({
                 ? "text-fg-subtle bg-surface border border-border"
                 : "text-signature bg-signature/10")}>
               {line.short_token}
+            </span>
+          )}
+          {!isCancelado && isNewLine(line) && (
+            <span
+              className="badge-new font-semibold text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full shrink-0 bg-signature/15 text-signature border border-signature/40"
+              title="Line criada há menos de 72h">
+              new
             </span>
           )}
         </div>

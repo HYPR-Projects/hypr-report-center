@@ -72,6 +72,25 @@
 }
 
 /* ───────────────────────────────────────────────────────────
+ * Badge "NEW" — pulse sutil no glow, sem mexer em opacity
+ * ───────────────────────────────────────────────────────────
+ * Aparece em lines criadas há menos de 72h. Usa box-shadow expandindo
+ * pra dar a sensação de "respirar" sem competir com texto. Cor signature
+ * (verde-azulado HYPR) sinaliza novidade sem virar alerta. */
+@keyframes badge-new-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(51, 151, 185, 0.55); }
+  60%      { box-shadow: 0 0 0 5px rgba(51, 151, 185, 0);   }
+}
+.badge-new {
+  animation: badge-new-pulse 2.2s ease-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .badge-new {
+    animation: none;
+  }
+}
+
+/* ───────────────────────────────────────────────────────────
  * Closure success animation — check desenhado + halo verde
  * ───────────────────────────────────────────────────────────
  * Disparada ao marcar campanha como encerrada no CampaignDrawer.

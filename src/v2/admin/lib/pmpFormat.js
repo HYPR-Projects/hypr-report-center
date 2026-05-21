@@ -256,6 +256,16 @@ export function formatLastDelivery(hours) {
   return `há ${Math.floor(d / 365)}a`;
 }
 
+/** True se a line foi criada há menos de `windowHours` (default 72h).
+ *  Usado pra renderizar o badge "NEW" — janela curta pra ser informação útil
+ *  (line acabou de chegar no sync) sem virar permanente. */
+export function isNewLine(line, windowHours = 72) {
+  if (!line?.created_at) return false;
+  const created = new Date(line.created_at).getTime();
+  if (isNaN(created)) return false;
+  return (Date.now() - created) < windowHours * 3600 * 1000;
+}
+
 /** Compara duas lines pelo campo escolhido. Nulls sempre no fim. */
 export function comparePmpLines(a, b, field, dir = "desc") {
   const va = a?.[field], vb = b?.[field];
