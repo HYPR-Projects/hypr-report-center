@@ -126,6 +126,19 @@ export function ecpmBgClass(ecpm, kind = "display") {
 }
 
 /**
+ * Variante de `ecpmBgClass` que retorna text-color em vez de background.
+ * Usada na tabela Diagnóstico (cells densas, bg sujaria a leitura) —
+ * mesma régua de tiers, mesmo `kind` (display / displayAbs / video).
+ */
+export function ecpmToneClass(ecpm, kind = "display") {
+  if (ecpm == null || isNaN(ecpm)) return "";
+  const tiers = ECPM_TIERS[kind] || ECPM_TIERS.display;
+  if (ecpm < tiers.healthy) return "text-success";
+  if (ecpm < tiers.warning) return "text-warning";
+  return "text-danger";
+}
+
+/**
  * Campanha recém-iniciada — true quando today − start_date ∈ [0, 2] dias.
  *
  * Usado pelo NewBadge no card admin. Some sozinho 48h depois do start_date,

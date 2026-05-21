@@ -79,16 +79,18 @@ function EmptyStateGlobal() {
 // ────────────────────────────────────────────────────────────────────────
 /**
  * Props:
- *   campaigns    — array cru de listCampaigns
- *   teamMap      — { email → nome de exibição }
- *   onOpenReport — (short_token) => void
- *   search       — string de busca (cliente/campanha/token), vinda do ToolbarV2
- *   ownerMatcher — fn(row) → boolean, criada via createOwnerMatcher no parent
+ *   campaigns      — array cru de listCampaigns
+ *   teamMap        — { email → nome de exibição }
+ *   onOpenReport   — (short_token) => void  (kept pra fallback / botões dedicados)
+ *   onOpenCampaign — (short_token) => void  (clicar row abre o sheet de análise)
+ *   search         — string de busca (cliente/campanha/token), vinda do ToolbarV2
+ *   ownerMatcher   — fn(row) → boolean, criada via createOwnerMatcher no parent
  */
 export function DiagnosticoLayout({
   campaigns,
   teamMap,
   onOpenReport,
+  onOpenCampaign,
   search = "",
   ownerMatcher,
 }) {
@@ -130,10 +132,12 @@ export function DiagnosticoLayout({
     const d = countByStatus(displayRows);
     const v = countByStatus(videoRows);
     return {
-      [STATUS.SUPER_OVER]: d[STATUS.SUPER_OVER] + v[STATUS.SUPER_OVER],
-      [STATUS.OVER]:       d[STATUS.OVER]       + v[STATUS.OVER],
-      [STATUS.UNDER]:      d[STATUS.UNDER]      + v[STATUS.UNDER],
-      [STATUS.OK]:         d[STATUS.OK]         + v[STATUS.OK],
+      [STATUS.SUPER_OVER]:   d[STATUS.SUPER_OVER]   + v[STATUS.SUPER_OVER],
+      [STATUS.OVER]:         d[STATUS.OVER]         + v[STATUS.OVER],
+      [STATUS.UNDER]:        d[STATUS.UNDER]        + v[STATUS.UNDER],
+      [STATUS.OK]:           d[STATUS.OK]           + v[STATUS.OK],
+      [STATUS.TECH_HIGH]:    d[STATUS.TECH_HIGH]    + v[STATUS.TECH_HIGH],
+      [STATUS.TECH_AT_RISK]: d[STATUS.TECH_AT_RISK] + v[STATUS.TECH_AT_RISK],
     };
   }, [displayRows, videoRows]);
 
@@ -188,6 +192,7 @@ export function DiagnosticoLayout({
         mediaLabel="Viewable Imps."
         teamMap={teamMap}
         onOpenReport={onOpenReport}
+        onOpenCampaign={onOpenCampaign}
         activeStatuses={activeStatuses}
       />
 
@@ -197,6 +202,7 @@ export function DiagnosticoLayout({
         mediaLabel="Views 100%"
         teamMap={teamMap}
         onOpenReport={onOpenReport}
+        onOpenCampaign={onOpenCampaign}
         activeStatuses={activeStatuses}
       />
     </div>

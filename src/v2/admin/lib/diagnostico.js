@@ -32,14 +32,23 @@ export const STATUS = {
   OK:         "ok",
   OVER:       "over",
   SUPER_OVER: "super_over",
+  // Status de Tech Cost — ORTOGONAIS aos status de pacing. Uma campanha
+  // pode ser Super Over (pacing) E Tech High (financeiro) ao mesmo tempo.
+  // O filtro pill faz OR: selecionar "Super Over" + "Tech Alto" mostra
+  // a união dos dois sets.
+  TECH_HIGH:    "tech_high",     // atual > tier.warning (10% sem ABS / 12% com)
+  TECH_AT_RISK: "tech_at_risk",  // atual em zona amarela OU projetando estourar
 };
 
-// Ordem canônica pra exibição/tabs. Coloca o que exige ação primeiro.
+// Ordem canônica pra exibição/tabs. Pacing primeiro (operacional), depois
+// tech cost (financeiro).
 export const STATUS_ORDER = [
   STATUS.SUPER_OVER,
   STATUS.OVER,
   STATUS.UNDER,
   STATUS.OK,
+  STATUS.TECH_HIGH,
+  STATUS.TECH_AT_RISK,
 ];
 
 export const STATUS_META = {
@@ -84,7 +93,54 @@ export const STATUS_META = {
     borderClass: "border-success/40",
     dotClass:  "bg-success",
   },
+  [STATUS.TECH_HIGH]: {
+    label:     "Tech Cost Alto",
+    shortLabel: "Tech Alto",
+    description: "Custo real DSP acima do tier vs PI cliente — margem em risco direto",
+    tone:      "danger",
+    textClass: "text-danger",
+    bgClass:   "bg-danger/8",
+    borderClass: "border-danger/40",
+    dotClass:  "bg-danger",
+  },
+  [STATUS.TECH_AT_RISK]: {
+    label:     "Possível Tech Alto",
+    shortLabel: "Pos. Tech",
+    description: "Tech cost em zona amarela ou projetando estourar o tier no fim",
+    tone:      "warning",
+    textClass: "text-warning",
+    bgClass:   "bg-warning/12",
+    borderClass: "border-warning/40",
+    dotClass:  "bg-warning",
+  },
 };
+
+// ────────────────────────────────────────────────────────────────────────
+// Classificação Tech Cost (ortogonal ao pacing — pode coexistir)
+// ────────────────────────────────────────────────────────────────────────
+/**
+ * Classifica o tech cost de uma mídia em:
+ *   • TECH_HIGH:    atual já passou o tier warning (vermelho)
+ *   • TECH_AT_RISK: atual em zona amarela OU projetado passa o warning
+ *   • null:         dentro do tier saudável
+ *
+ * `projectedPct` opcional — se fornecido, o "AT_RISK" cobre também
+ * campanhas saudáveis hoje mas projetando estourar. Critério mesma régua
+ * do techCostToneClass.
+ */
+const TECH_COST_TIERS_CLASSIFY = {
+  noAbs: { healthy: 8,  warning: 10 },
+  abs:   { healthy: 10, warning: 12 },
+};
+
+export function classifyTechCostStatus(pct, hasAbs, projectedPct = null) {
+  if (pct == null || !Number.isFinite(pct)) return null;
+  const tiers = hasAbs ? TECH_COST_TIERS_CLASSIFY.abs : TECH_COST_TIERS_CLASSIFY.noAbs;
+  if (pct > tiers.warning) return STATUS.TECH_HIGH;
+  if (pct > tiers.healthy) return STATUS.TECH_AT_RISK;
+  if (projectedPct != null && projectedPct > tiers.warning) return STATUS.TECH_AT_RISK;
+  return null;
+}
 
 // ────────────────────────────────────────────────────────────────────────
 // Classificação a partir do pacing (= projeção %)
@@ -124,6 +180,20 @@ function todayUTC() {
 
 function daysBetween(fromUTC, toUTC) {
   return Math.floor((toUTC.getTime() - fromUTC.getTime()) / 86400000);
+}
+
+// Multiplier calendar-constante pra projeção: total_days / elapsed_days.
+// Aplica ao tech_cost_pct atual pra estimar o tech cost ao final mantendo
+// ritmo atual. Null se datas inválidas ou campanha acabando hoje.
+function dayProjMultiplier(startISO, endISO) {
+  const s = parseDateUTC(startISO);
+  const e = parseDateUTC(endISO);
+  if (!s || !e) return null;
+  const t = todayUTC();
+  const totalDays = daysBetween(s, e) + 1;
+  const elapsedDays = Math.max(1, Math.min(totalDays, daysBetween(s, t) + 1));
+  if (totalDays <= 0) return null;
+  return totalDays / elapsedDays;
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -340,11 +410,18 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
       lastDayDelivered: c.display_yesterday_viewable,
     });
     if (displayMetrics && displayMetrics.status) {
+      const displayFin = computeFinancials(c, "display");
+      const multiplier = dayProjMultiplier(c.start_date, c.end_date);
+      const displayProjTech = displayFin.techCostPct != null && multiplier
+        ? displayFin.techCostPct * multiplier
+        : null;
       displayRows.push({
         ...identity,
         ...displayMetrics,
-        ...computeFinancials(c, "display"),
+        ...displayFin,
+        has_abs: !!c.display_has_abs,
         media: "display",
+        tech_status: classifyTechCostStatus(displayFin.techCostPct, !!c.display_has_abs, displayProjTech),
       });
     }
 
@@ -361,11 +438,18 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
       lastDayDelivered: c.video_yesterday_completions,
     });
     if (videoMetrics && videoMetrics.status) {
+      const videoFin = computeFinancials(c, "video");
+      const multiplier = dayProjMultiplier(c.start_date, c.end_date);
+      const videoProjTech = videoFin.techCostPct != null && multiplier
+        ? videoFin.techCostPct * multiplier
+        : null;
       videoRows.push({
         ...identity,
         ...videoMetrics,
-        ...computeFinancials(c, "video"),
+        ...videoFin,
+        has_abs: !!c.video_has_abs,
         media: "video",
+        tech_status: classifyTechCostStatus(videoFin.techCostPct, !!c.video_has_abs, videoProjTech),
       });
     }
   }
@@ -389,16 +473,15 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
 function computeFinancials(campaign, media) {
   const isDisplay = media === "display";
 
-  const realEcpm        = isDisplay ? (campaign.display_ecpm        ?? null) : (campaign.video_ecpm         ?? null);
-  const totalImpressions = isDisplay ? (campaign.d_admin_impressions ?? null) : (campaign.v_admin_impressions ?? null);
-  const realTotalCost   = isDisplay ? (campaign.d_admin_total_cost  ?? null) : (campaign.v_admin_total_cost  ?? null);
-  const clientBudget    = isDisplay ? (campaign.d_client_budget     ?? null) : (campaign.v_client_budget     ?? null);
+  const realEcpm      = isDisplay ? (campaign.display_ecpm       ?? null) : (campaign.video_ecpm        ?? null);
+  const realTotalCost = isDisplay ? (campaign.d_admin_total_cost ?? null) : (campaign.v_admin_total_cost ?? null);
+  const clientBudget  = isDisplay ? (campaign.d_client_budget    ?? null) : (campaign.v_client_budget    ?? null);
 
   const techCostPct = (realTotalCost != null && clientBudget != null && clientBudget > 0)
     ? (realTotalCost / clientBudget) * 100
     : null;
 
-  return { realEcpm, totalImpressions, realTotalCost, techCostPct };
+  return { realEcpm, realTotalCost, techCostPct };
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -406,13 +489,18 @@ function computeFinancials(campaign, media) {
 // ────────────────────────────────────────────────────────────────────────
 export function countByStatus(rows) {
   const counts = {
-    [STATUS.SUPER_OVER]: 0,
-    [STATUS.OVER]:       0,
-    [STATUS.UNDER]:      0,
-    [STATUS.OK]:         0,
+    [STATUS.SUPER_OVER]:   0,
+    [STATUS.OVER]:         0,
+    [STATUS.UNDER]:        0,
+    [STATUS.OK]:           0,
+    [STATUS.TECH_HIGH]:    0,
+    [STATUS.TECH_AT_RISK]: 0,
   };
   for (const r of rows || []) {
     if (counts[r.status] != null) counts[r.status]++;
+    // Tech status é ortogonal — uma row pode contribuir pra status pacing
+    // E status tech ao mesmo tempo (campanha super_over + tech alto).
+    if (r.tech_status && counts[r.tech_status] != null) counts[r.tech_status]++;
   }
   return counts;
 }
@@ -443,6 +531,29 @@ export function formatBrlRow(value, decimals = 2) {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   });
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Tech Cost — formatação condicional
+// ────────────────────────────────────────────────────────────────────────
+//
+// Sem ABS: ≤ 8% verde · 8–10% amarelo · > 10% vermelho
+// Com ABS: ≤ 10% verde · 10–12% amarelo · > 12% vermelho
+//
+// Inventário com ABS (pre-bid DV/IAS) é estruturalmente mais caro, então
+// o "saudável" tolera ~2 pp a mais antes de virar alerta. Mesma lógica que
+// já se aplica no eCPM (displayAbs tem tier mais permissivo que display).
+const TECH_COST_TIERS = {
+  noAbs: { healthy: 8,  warning: 10 },
+  abs:   { healthy: 10, warning: 12 },
+};
+
+export function techCostToneClass(pct, hasAbs) {
+  if (pct == null || !Number.isFinite(pct)) return "";
+  const tiers = hasAbs ? TECH_COST_TIERS.abs : TECH_COST_TIERS.noAbs;
+  if (pct <= tiers.healthy) return "text-success";
+  if (pct <= tiers.warning) return "text-warning";
+  return "text-danger";
 }
 
 /**

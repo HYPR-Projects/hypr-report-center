@@ -73,6 +73,9 @@ import { prefetchAccessSummaries } from "../lib/accessSummaryCache";
 import { MonthGroupedSections } from "../components/MonthGroupedSections";
 import { formatMonthLabel, getCampaignStatus } from "../lib/format";
 import { DiagnosticoLayout } from "../components/DiagnosticoLayout";
+import { AlertsBell } from "../components/AlertsBell";
+import { AlertCampaignSheet } from "../components/AlertCampaignSheet";
+import { generateAlerts } from "../lib/alerts/engine";
 import { TooltipProvider } from "../../../ui/Tooltip";
 
 // localStorage key pra persistir o layout escolhido entre sessões.
@@ -709,6 +712,37 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   // KPIs agregados das campanhas ativas — alimenta a MetricStrip do topo.
   const metricsSummary = useMemo(() => computeMetricsSummary(campaigns), [campaigns]);
 
+  // Engine de alertas — gera lista priorizada de riscos (A + C + E + H).
+  // Memoiza em `campaigns + teamMap` pra não recomputar a cada keystroke
+  // de filtro. Saída alimenta o sino no header.
+  const alerts = useMemo(
+    () => generateAlerts(campaigns, getCampaignStatus, teamMap),
+    [campaigns, teamMap]
+  );
+
+  // Atalho do rodapé do popover de alertas — leva pra aba Diagnóstico já
+  // selecionada. Não filtra nada além disso (a aba tem seus próprios filtros).
+  const handleOpenDiagnosticoFromAlert = useCallback(() => {
+    setLayout("diagnostico");
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
+
+  // ── Sheet de deep-dive da campanha (vive no nível do menu pra ser
+  //    invocado tanto pelo AlertsBell quanto pelas rows do Diagnóstico).
+  //    Manter UM estado evita dois sheets concorrendo + permite expandir
+  //    pra outros callers (Por mês, Lista) no futuro sem refactor.
+  const [drillToken, setDrillToken] = useState(null);
+  const drillCampaign = useMemo(
+    () => drillToken ? campaigns.find((c) => c.short_token === drillToken) : null,
+    [drillToken, campaigns]
+  );
+  const drillAlerts = useMemo(
+    () => drillToken ? alerts.filter((a) => a.campaign?.short_token === drillToken) : [],
+    [drillToken, alerts]
+  );
+  const handleDrillCampaign = useCallback((token) => setDrillToken(token), []);
+  const handleCloseDrill = useCallback(() => setDrillToken(null), []);
+
   // ── Render ───────────────────────────────────────────────────────────────
   return (
     <TooltipProvider delayDuration={200}>
@@ -734,6 +768,14 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
                 CampaignMenuV2 inteiro já é renderizado dentro do
                 isAdminMode em App.jsx, então o gate é implícito. */}
             <DataFreshnessIndicator />
+            {/* Sino de alertas — engine prioriza riscos por severidade ×
+                impacto BRL, mostra críticos primeiro. Admin-only por estar
+                aqui dentro (mesmo gate do DataFreshnessIndicator). */}
+            <AlertsBell
+              alerts={alerts}
+              onDrillCampaign={handleDrillCampaign}
+              onOpenDiagnostico={handleOpenDiagnosticoFromAlert}
+            />
             <ThemeToggleV2 />
             {user?.picture && (
               <img
@@ -917,6 +959,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
                 campaigns={campaigns}
                 teamMap={teamMap}
                 onOpenReport={onOpenReport}
+                onOpenCampaign={handleDrillCampaign}
                 search={search}
                 ownerMatcher={ownerMatcher}
               />
@@ -931,6 +974,19 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
           </div>
         )}
       </main>
+
+      {/* Sheet de deep-dive de campanha — análise focada em alertas + métricas.
+          Aberto pelo AlertsBell (clique em item) ou DiagnosticoLayout (clique
+          em row). Distinto do CampaignDrawer (ações admin tipo Loom, Survey). */}
+      <AlertCampaignSheet
+        open={!!drillToken}
+        onOpenChange={(o) => { if (!o) handleCloseDrill(); }}
+        campaign={drillCampaign}
+        alerts={drillAlerts}
+        teamMap={teamMap}
+        onOpenReport={onOpenReport}
+        onOpenAdminDrawer={handleOpenDrawer}
+      />
 
       {/* ── Drawer + Modais ─────────────────────────────────────────────── */}
       <CampaignDrawer

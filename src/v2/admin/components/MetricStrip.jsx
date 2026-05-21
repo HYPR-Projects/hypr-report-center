@@ -92,6 +92,16 @@ function toneVtr(value) {
   return value >= 80 ? "success" : "danger";
 }
 
+// Tech Cost agregado: usa a régua sem-ABS como referência geral (campanhas
+// HYPR são majoritariamente sem ABS). Quando o mix de ABS aumentar, os
+// thresholds individuais por campanha continuam mais permissivos.
+function toneTechCost(value) {
+  if (value == null) return "muted";
+  if (value <= 8)  return "success";
+  if (value <= 10) return "warning";
+  return "danger";
+}
+
 const TONE_CLASS = {
   muted:     "text-fg-subtle",
   danger:    "text-danger",
@@ -101,30 +111,58 @@ const TONE_CLASS = {
   fg:        "text-fg",
 };
 
-function MetricCard({ label, value, tone = "fg", footer }) {
+function MetricCard({ label, value, tone = "fg", aside, footer }) {
   // Padding e tipografia mobile-first: cards em 2 colunas a 375px ficam
-  // ~165px de largura — `text-2xl` (24px) ainda cabe pra valores curtos
-  // ("165,1k", "R$ 14,40"), mas `whitespace-nowrap` no footer estoura
-  // quando MetricDelta carrega "▼ 12.4% vs últimas 30d" (~150px).
-  // Solução: footer permite quebrar linha em mobile (default), nowrap
-  // só em md+ onde temos largura sobrando.
+  // ~165px de largura — `text-2xl` (24px) ainda cabe pra valores curtos.
+  //
+  // `aside` é um slot INLINE à direita do value (mesmo baseline), usado
+  // hoje só pelo Tech Cost pra mostrar projeção de forma minimalista. Não
+  // aumenta a altura do card.
   return (
     <div className="rounded-xl border border-border bg-surface px-3.5 py-4 sm:px-4 sm:py-5 flex flex-col gap-2 min-w-0">
       <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle whitespace-nowrap">
         {label}
       </span>
-      <span className={cn(
-        "text-xl sm:text-2xl font-bold tracking-tight tabular-nums leading-none whitespace-nowrap",
-        TONE_CLASS[tone] || TONE_CLASS.fg
-      )}>
-        {value}
-      </span>
+      <div className="flex items-baseline gap-2 min-w-0">
+        <span className={cn(
+          "text-xl sm:text-2xl font-bold tracking-tight tabular-nums leading-none whitespace-nowrap",
+          TONE_CLASS[tone] || TONE_CLASS.fg
+        )}>
+          {value}
+        </span>
+        {aside && (
+          <span className="text-[11px] leading-none whitespace-nowrap">
+            {aside}
+          </span>
+        )}
+      </div>
       {footer && (
         <div className="text-[11px] text-fg-subtle leading-snug md:leading-none md:whitespace-nowrap">
           {footer}
         </div>
       )}
     </div>
+  );
+}
+
+// Projeção inline minimalista — apenas seta + valor, sem labels. Tooltip
+// no hover explica o que é. Tom: down=good pro Tech Cost (alta = piora).
+function ProjectionInline({ current, projected, format, goodDirection = "down" }) {
+  if (current == null || projected == null) return null;
+  const delta = projected - current;
+  const isFlat = Math.abs(delta) < 0.05;
+  const isUp = delta > 0;
+  const isGood = isFlat ? false : (goodDirection === "down" ? !isUp : isUp);
+  const tone = isFlat ? "text-fg-subtle" : isGood ? "text-success" : "text-danger";
+  const arrow = isFlat ? "→" : isUp ? "↗" : "↘";
+  return (
+    <span
+      className={cn("inline-flex items-baseline gap-0.5 font-semibold", tone)}
+      title={`Projeção ao fim mantendo o ritmo atual: ${format(projected)}`}
+    >
+      <span className="text-[9px] leading-none">{arrow}</span>
+      <span className="tabular-nums">{format(projected)}</span>
+    </span>
   );
 }
 
@@ -178,18 +216,27 @@ export function MetricStrip({ summary, className }) {
     ecpm_display_prev,
     ecpm_video,
     ecpm_video_prev,
+    tech_cost,
+    tech_cost_prev,
+    tech_cost_projected,
   } = summary;
 
   // Fallback pra eCPM combinado quando o backend ainda não envia os splits
   // por mídia (d_admin_total_cost / v_admin_total_cost). Mantém o card único
   // de eCPM até o redeploy.
   const hasSplit = ecpm_display != null || ecpm_video != null;
+  // Tech cost só aparece se backend tiver enviado d_client_budget/v_client_budget.
+  const hasTechCost = tech_cost != null;
+  // Grid: 5 (sem split) + eCPM card(s) + opcionalmente Tech Cost.
+  const totalCols = 5 + (hasSplit ? 2 : 1) + (hasTechCost ? 1 : 0);
 
   return (
     <div
       className={cn(
         "grid grid-cols-2 sm:grid-cols-3 gap-3",
-        hasSplit ? "lg:grid-cols-7" : "lg:grid-cols-6",
+        totalCols === 8 && "lg:grid-cols-8",
+        totalCols === 7 && "lg:grid-cols-7",
+        totalCols === 6 && "lg:grid-cols-6",
         className
       )}
       role="region"
@@ -239,6 +286,22 @@ export function MetricStrip({ summary, className }) {
           label="eCPM"
           value={<AnimatedValue value={ecpm} format={formatBRL} />}
           footer={<MetricDelta current={ecpm} previous={ecpm_prev} goodDirection="down" />}
+        />
+      )}
+      {hasTechCost && (
+        <MetricCard
+          label="Tech Cost"
+          value={<AnimatedValue value={tech_cost} format={formatPctTwo} />}
+          tone={toneTechCost(tech_cost)}
+          aside={
+            <ProjectionInline
+              current={tech_cost}
+              projected={tech_cost_projected}
+              format={formatPctTwo}
+              goodDirection="down"
+            />
+          }
+          footer={<MetricDelta current={tech_cost} previous={tech_cost_prev} goodDirection="down" />}
         />
       )}
     </div>

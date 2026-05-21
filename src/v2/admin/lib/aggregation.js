@@ -255,6 +255,14 @@ function aggregateMetrics(set) {
   const dCostImpr  = sumField(set, "d_admin_impressions");
   const vCost      = sumField(set, "v_admin_total_cost");
   const vCostImpr  = sumField(set, "v_admin_impressions");
+  // Tech Cost agregado = Σ custo cru DSP / Σ valor PI cliente × 100.
+  // Backend emite d_client_budget/v_client_budget só pra campanhas com
+  // CPM/CPCV e contratado > 0 — então campanhas 100% bonificadas ou sem
+  // checklist somam 0 no denominador e ficam fora do agregado naturalmente.
+  // Mesma lógica que o tier do diagnostico — mas global em vez de por
+  // campanha. Delta vs cohort de 30d mostra se a operação como um todo
+  // tá comendo mais ou menos margem ao longo do tempo.
+  const clientBudget = sumField(set, "d_client_budget") + sumField(set, "v_client_budget");
 
   return {
     ctr:        dImpr     > 0 ? (dClicks   / dImpr)     * 100  : meanOfField(set, "display_ctr"),
@@ -264,7 +272,52 @@ function aggregateMetrics(set) {
     ecpm:         impr      > 0 ? (cost  / impr)     * 1000 : null,
     ecpm_display: dCostImpr > 0 ? (dCost / dCostImpr) * 1000 : null,
     ecpm_video:   vCostImpr > 0 ? (vCost / vCostImpr) * 1000 : null,
+    tech_cost:    clientBudget > 0 ? (cost / clientBudget) * 100 : null,
   };
+}
+
+// Projeção forward-looking de Tech Cost no fim da campanha, agregada
+// pelas ativas. Método: pra cada campanha multiplica o real_cost atual
+// por (total_days / elapsed_days) — extrapolação calendar-constante, a
+// mesma matemática que usamos por campanha individual em derive.js.
+// Soma os projected_real_cost e divide pela soma de client_budget — sem
+// média de razões (que distorceria com campanha pequena).
+//
+// Campanhas sem dado suficiente (sem datas, sem cost, sem budget) saem
+// do agregado naturalmente. Sem cap nem gating exotic — projeção honesta
+// que reflete onde a operação tá indo se mantiver o ritmo atual.
+function aggregateProjectedTechCost(set) {
+  // Today às 12:00 UTC pra evitar oscilação na borda do dia em comparações
+  // com start_date/end_date que vêm como YYYY-MM-DD (00:00 UTC).
+  const todayIso = TODAY();
+  const todayMs = Date.parse(todayIso + "T12:00:00Z");
+  let sumProjectedRealCost = 0;
+  let sumClientBudget = 0;
+
+  for (const c of set) {
+    const dBudget = Number(c.d_client_budget) || 0;
+    const vBudget = Number(c.v_client_budget) || 0;
+    const budget  = dBudget + vBudget;
+    const realCost = Number(c.admin_total_cost) || 0;
+    if (budget <= 0 || realCost <= 0) continue;
+    if (!c.start_date || !c.end_date) continue;
+
+    const startMs = Date.parse(c.start_date);
+    const endMs   = Date.parse(c.end_date);
+    if (isNaN(startMs) || isNaN(endMs)) continue;
+
+    const totalDays = Math.max(1, Math.floor((endMs - startMs) / 86400000) + 1);
+    let elapsedDays = Math.floor((todayMs - startMs) / 86400000) + 1;
+    elapsedDays = Math.min(totalDays, Math.max(1, elapsedDays));
+
+    const multiplier = totalDays / elapsedDays;
+    sumProjectedRealCost += realCost * multiplier;
+    sumClientBudget      += budget;
+  }
+
+  return sumClientBudget > 0
+    ? (sumProjectedRealCost / sumClientBudget) * 100
+    : null;
 }
 
 export function computeMetricsSummary(campaigns) {
@@ -281,6 +334,8 @@ export function computeMetricsSummary(campaigns) {
 
   const cur  = aggregateMetrics(active);
   const prev = aggregateMetrics(recentlyEnded);
+  // Projeção só faz sentido pras campanhas ativas (que têm futuro).
+  const techCostProjected = aggregateProjectedTechCost(active);
 
   return {
     active_count: active.length,
@@ -296,6 +351,9 @@ export function computeMetricsSummary(campaigns) {
     ecpm_display_prev: prev.ecpm_display,
     ecpm_video:        cur.ecpm_video,
     ecpm_video_prev:   prev.ecpm_video,
+    tech_cost:           cur.tech_cost,
+    tech_cost_prev:      prev.tech_cost,
+    tech_cost_projected: techCostProjected,
   };
 }
 

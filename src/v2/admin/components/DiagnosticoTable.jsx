@@ -10,12 +10,13 @@
 
 import { useState, useMemo } from "react";
 import { cn } from "../../../ui/cn";
-import { localPartFromEmail } from "../lib/format";
+import { localPartFromEmail, ecpmToneClass } from "../lib/format";
 import {
   STATUS_META,
   formatPctRow,
   formatIntRow,
   formatBrlRow,
+  techCostToneClass,
   compareNullableNumbers,
 } from "../lib/diagnostico";
 
@@ -117,11 +118,12 @@ function EmptyState({ message }) {
 // ────────────────────────────────────────────────────────────────────────
 /**
  * Props:
- *   title       — "Display" | "Video"
- *   rows        — array vindo de buildDiagnosticoRows
- *   mediaLabel  — "Viewable Impressions" | "Views 100%"
- *   teamMap     — { email → nome de exibição }
- *   onOpenReport — (short_token) => void  (abre o report em nova aba)
+ *   title          — "Display" | "Video"
+ *   rows           — array vindo de buildDiagnosticoRows
+ *   mediaLabel     — "Viewable Impressions" | "Views 100%"
+ *   teamMap        — { email → nome de exibição }
+ *   onOpenReport   — (short_token) => void  (fallback se onOpenCampaign ausente)
+ *   onOpenCampaign — (short_token) => void  (clicar row abre sheet de análise)
  *   activeStatuses — Set<status> de filtros ativos (vindo do parent)
  */
 export function DiagnosticoTable({
@@ -130,6 +132,7 @@ export function DiagnosticoTable({
   mediaLabel,
   teamMap = {},
   onOpenReport,
+  onOpenCampaign,
   activeStatuses,
 }) {
   // Sort state local (cada tabela tem o seu).
@@ -139,7 +142,13 @@ export function DiagnosticoTable({
 
   const filteredRows = useMemo(() => {
     if (!activeStatuses || activeStatuses.size === 0) return rows;
-    return rows.filter((r) => activeStatuses.has(r.status));
+    // Row passa se o pacing status OU o tech_status casa com algum filtro
+    // ativo. Filtros pacing e tech cost são ortogonais — usar OR aqui faz
+    // o multi-select agir como "mostre rows que tenham qualquer um desses
+    // problemas".
+    return rows.filter(
+      (r) => activeStatuses.has(r.status) || (r.tech_status && activeStatuses.has(r.tech_status))
+    );
   }, [rows, activeStatuses]);
 
   const sortedRows = useMemo(() => {
@@ -230,7 +239,6 @@ export function DiagnosticoTable({
                 <Th align="right" {...headerProps("deliveredD1")}>{mediaLabel} D-1</Th>
                 <Th align="right" {...headerProps("minDiariaContratada")}>Mín. Diária</Th>
                 <Th align="center" {...headerProps("status")}>Status Pacing</Th>
-                <Th align="right" {...headerProps("totalImpressions")}>Impressões</Th>
                 <Th align="right" {...headerProps("realEcpm")}>CPM Real</Th>
                 <Th align="right" {...headerProps("realTotalCost")}>Custo Real</Th>
                 <Th align="right" {...headerProps("techCostPct")}>Tech Cost</Th>
@@ -243,16 +251,24 @@ export function DiagnosticoTable({
                   ? (teamMap[r.cs_email] || localPartFromEmail(r.cs_email))
                   : null;
                 const projTone = STATUS_META[r.status]?.textClass || "";
+                // Régua de CPM segue exatamente os mesmos tiers do card "Por mês"
+                // (ecpmBgClass/ecpmToneClass em format.js). Video não tem
+                // displayAbs próprio — ABS só muda a régua de Display.
+                const ecpmKind = r.media === "video"
+                  ? "video"
+                  : (r.has_abs ? "displayAbs" : "display");
+                const cpmTone     = ecpmToneClass(r.realEcpm, ecpmKind);
+                const techCostTone = techCostToneClass(r.techCostPct, r.has_abs);
                 return (
                   <tr
                     key={`${r.short_token}-${r.media}`}
                     role="button"
                     tabIndex={0}
-                    onClick={() => onOpenReport?.(r.short_token)}
+                    onClick={() => (onOpenCampaign || onOpenReport)?.(r.short_token)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        onOpenReport?.(r.short_token);
+                        (onOpenCampaign || onOpenReport)?.(r.short_token);
                       }
                     }}
                     className={cn(
@@ -304,14 +320,14 @@ export function DiagnosticoTable({
                     <Td
                       align="right"
                       tabular
-                      title="Total de impressões gross do DSP (denom. da viewability)"
-                    >
-                      {formatIntRow(r.totalImpressions)}
-                    </Td>
-                    <Td
-                      align="right"
-                      tabular
-                      title="eCPM real HYPR — custo cru do DSP por mil impressões (sem margem cliente)"
+                      className={cn("font-semibold", cpmTone)}
+                      title={
+                        r.media === "video"
+                          ? "eCPM real HYPR (custo cru DSP / 1k imps). Régua: <R$3 verde · <R$3,50 amarelo · ≥R$3,50 vermelho"
+                          : r.has_abs
+                            ? "eCPM real HYPR com ABS (pre-bid). Régua: <R$1,50 verde · <R$1,80 amarelo · ≥R$1,80 vermelho"
+                            : "eCPM real HYPR (custo cru DSP / 1k imps). Régua: <R$0,70 verde · <R$0,80 amarelo · ≥R$0,80 vermelho"
+                      }
                     >
                       {formatBrlRow(r.realEcpm, 2)}
                     </Td>
@@ -325,7 +341,12 @@ export function DiagnosticoTable({
                     <Td
                       align="right"
                       tabular
-                      title="Custo real HYPR ÷ valor PI do cliente (contracted × CPM/CPCV, sem bônus). — quando PI = 0 ou campanha 100% bonificada."
+                      className={cn("font-semibold", techCostTone)}
+                      title={
+                        r.has_abs
+                          ? "Custo real HYPR ÷ PI cliente (sem bônus). Com ABS — Régua: ≤10% verde · 10–12% amarelo · >12% vermelho"
+                          : "Custo real HYPR ÷ PI cliente (sem bônus). Sem ABS — Régua: ≤8% verde · 8–10% amarelo · >10% vermelho"
+                      }
                     >
                       {formatPctRow(r.techCostPct, 1)}
                     </Td>
