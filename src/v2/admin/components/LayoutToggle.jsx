@@ -1,12 +1,14 @@
 // src/v2/admin/components/LayoutToggle.jsx
 //
-// Segmented control de 3 botões pra alternar entre layouts:
-//   - month:  agrupado por mês (legacy refatorado)
-//   - client: agrupado por cliente (view nova)
-//   - list:   lista densa estilo Linear
+// Segmented control de 5 botões pra alternar entre layouts:
+//   - month:        agrupado por mês (legacy refatorado)
+//   - client:       agrupado por cliente (view nova)
+//   - list:         lista densa estilo Linear
+//   - performers:   leaderboard de CS/CP
+//   - diagnostico:  diagnóstico de pacing (status Ok/Over/Super Over/Under)
 //
 // Adota o mesmo padrão visual do SegmentedControlV2 já em uso no
-// dashboard cliente, mas com 3 opções em vez de 2 e ícones inline.
+// dashboard cliente, mas com 5 opções e ícones inline.
 
 import { cn } from "../../../ui/cn";
 import { useSlidingThumb } from "../../../ui/useSlidingThumb";
@@ -49,6 +51,16 @@ const OPTIONS = [
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M8 21h8M12 17v4M6 4h12v3a6 6 0 0 1-12 0V4z" />
         <path d="M6 6H4a2 2 0 0 0 0 4h2M18 6h2a2 2 0 0 1 0 4h-2" />
+      </svg>
+    ),
+  },
+  {
+    value: "diagnostico",
+    label: "Diagnóstico",
+    // Ícone de pulse/heart-rate — comunica "monitoramento da saúde da campanha".
+    icon: (
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 12h4l2-6 4 12 2-6h6" />
       </svg>
     ),
   },

@@ -72,6 +72,7 @@ import { ReportAnalyticsModal } from "../components/ReportAnalyticsModal";
 import { prefetchAccessSummaries } from "../lib/accessSummaryCache";
 import { MonthGroupedSections } from "../components/MonthGroupedSections";
 import { formatMonthLabel, getCampaignStatus } from "../lib/format";
+import { DiagnosticoLayout } from "../components/DiagnosticoLayout";
 import { TooltipProvider } from "../../../ui/Tooltip";
 
 // localStorage key pra persistir o layout escolhido entre sessões.
@@ -80,7 +81,7 @@ const LAYOUT_STORAGE_KEY = "hypr.admin.layout";
 function getInitialLayout() {
   try {
     const v = localStorage.getItem(LAYOUT_STORAGE_KEY);
-    if (v === "month" || v === "client" || v === "list" || v === "performers") return v;
+    if (v === "month" || v === "client" || v === "list" || v === "performers" || v === "diagnostico") return v;
   } catch { /* ignore */ }
   return "month";
 }
@@ -830,7 +831,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
             <LayoutToggle value={layout} onChange={setLayout} />
             <div className="flex-1" />
           </div>
-          {layout !== "performers" && (
+          {layout !== "performers" && layout !== "diagnostico" && (
             <ToolbarV2
               search={search}
               onSearchChange={setSearch}
@@ -908,6 +909,12 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
                 : <ClientLayout clients={enrichedClients} onOpen={handleOpenClient} />
             ) : layout === "performers" ? (
               <PerformersLayout campaigns={campaigns} teamMap={teamMap} onOpenReport={onOpenReport} />
+            ) : layout === "diagnostico" ? (
+              <DiagnosticoLayout
+                campaigns={campaigns}
+                teamMap={teamMap}
+                onOpenReport={onOpenReport}
+              />
             ) : (
               <CampaignListV2
                 campaigns={sortedCampaigns}
