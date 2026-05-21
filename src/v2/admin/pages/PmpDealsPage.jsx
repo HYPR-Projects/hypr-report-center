@@ -2,15 +2,13 @@
 //
 // Refatoração completa baseada no padrão visual do CampaignMenuV2.
 // Resolve: hierarquia visual (spacing, tipografia), separação clara entre
-// estados (live vs ended vs archived), múltiplas views específicas, e
-// foco em ação imediata via Worklist.
+// estados (live vs ended vs archived) e múltiplas views específicas.
 //
-// 5 views (LayoutToggle):
-//   🟢 Ao vivo     — cards ricos pra lines com delivery <7d (default)
+// 4 views (LayoutToggle):
+//   📋 Lista       — densidade alta estilo Linear (default)
+//   🟢 Ao vivo     — cards ricos pra lines com delivery <7d
 //   👥 Por cliente — accordion: card cliente → lines dentro
-//   📋 Lista       — densidade alta estilo Linear
-//   🎯 Worklist    — 4 buckets de ação imediata (pararam, sem PI, over-PI, encerrando)
-//   📂 Histórico   — lines encerradas/arquivadas (cinza, sob demanda)
+//   📂 Histórico   — lifetime: tudo (encerradas, ativas, arquivadas)
 //
 // Mutations preservadas: drawer de edição, popup de auto-vinculação.
 
@@ -46,10 +44,9 @@ import {
   effectiveStatus, isPmpEditor,
 } from "../lib/pmpFormat";
 import {
-  PmpLayoutToggle, PmpKpiStrip, PmpAlertsBar,
+  PmpLayoutToggle, PmpKpiStrip,
   PmpLiveCard, PmpLiveGroupCard, PmpCustomerAccordion,
   PmpLineRow, PmpLineRowHeader, PmpLineGroupCard,
-  PmpWorklistView,
 } from "../components/PmpComponents";
 import { GroupLinesModal } from "../components/GroupLinesModal";
 import { PmpFreshnessIndicator } from "../components/PmpFreshnessIndicator";
@@ -72,7 +69,12 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
 
   // Layout
   const [layout, setLayout] = useState(() => {
-    try { return localStorage.getItem("hypr.pmp.layout") || "client"; } catch { return "client"; }
+    try {
+      const saved = localStorage.getItem("hypr.pmp.layout");
+      // "worklist" foi removida; migra storage antigo pra default.
+      if (saved && saved !== "worklist") return saved;
+      return "client";
+    } catch { return "client"; }
   });
   useEffect(() => {
     try { localStorage.setItem("hypr.pmp.layout", layout); } catch { /* ignore */ }
@@ -106,16 +108,19 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
       localStorage.setItem("hypr.pmp.filters", JSON.stringify({ customer, bidType, status }));
     } catch { /* ignore */ }
   }, [customer, bidType, status]);
-  const [focusBucket, setFocusBucket] = useState(null);
 
   // Filtros temporais — só aplicam na aba Histórico.
   //   histPeriod    = { from: "YYYY-MM-DD"|null, to: "YYYY-MM-DD"|null, presetId }
   //   histQuarters  = [{ year: 2026, q: 2 }, ...] (multi). [] = sem filtro.
-  // Período × trimestres: AND (line precisa estar no Período E em pelo menos
-  // 1 dos trimestres). Multi-trimestre é UNION dos ranges, permite faixas
-  // não-contíguas (ex: Q1 + Q3 sem incluir Q2).
+  //   histMonths    = [{ year: 2026, month: 5 }, ...] (multi, 1-12). [] = sem filtro.
+  // Composição:
+  //   • Período AND (trimestres ∪ meses)
+  //   • Trimestres e meses são UNION entre si — line passa se cai em qualquer
+  //     range. Permite "Q1 + Mai/26" ou múltiplos meses sem precisar selecionar
+  //     o trimestre inteiro.
   const [histPeriod, setHistPeriod] = useState({ presetId: "all", from: null, to: null });
   const [histQuarters, setHistQuarters] = useState([]);
+  const [histMonths, setHistMonths]     = useState([]);
 
   // Sort — duas instâncias separadas porque os defaults fazem sentido
   // diferentes em cada view (Lista: mais stale primeiro; Histórico:
@@ -257,45 +262,50 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     });
   }, [histQuarters]);
 
+  const monthRanges = useMemo(() => {
+    return histMonths.map(({ year, month }) => {
+      const lastDay = new Date(year, month, 0).getDate();
+      const mm = String(month).padStart(2,"0");
+      return {
+        from: `${year}-${mm}-01`,
+        to:   `${year}-${mm}-${String(lastDay).padStart(2,"0")}`,
+      };
+    });
+  }, [histMonths]);
+
   const allLinesFiltered = useMemo(() => {
     const base = applyFilters(lines);
     const { from, to } = histPeriod;
-    if (!from && !to && quarterRanges.length === 0) return base;
+    const bucketRanges = [...quarterRanges, ...monthRanges];
+    if (!from && !to && bucketRanges.length === 0) return base;
     // Filtra pelo start_date (ativação) com fallback pra last_delivery_day.
     return base.filter(l => {
       const ref = l.start_date || l.last_delivery_day;
       if (!ref) return false;
-      // Período (AND com trimestres).
+      // Período (AND com buckets de trim/mês).
       if (from && ref < from) return false;
       if (to   && ref > to)   return false;
-      // Trimestres: line precisa estar em PELO MENOS 1 range (union).
-      if (quarterRanges.length > 0) {
-        const inAny = quarterRanges.some(r => ref >= r.from && ref <= r.to);
+      // Trimestres ∪ meses: line precisa estar em PELO MENOS 1 range.
+      if (bucketRanges.length > 0) {
+        const inAny = bucketRanges.some(r => ref >= r.from && ref <= r.to);
         if (!inAny) return false;
       }
       return true;
     });
-  }, [lines, search, customer, bidType, status, histPeriod, quarterRanges]);
+  }, [lines, search, customer, bidType, status, histPeriod, quarterRanges, monthRanges]);
 
   const allFiltered = useMemo(() => applyFilters([...partitions.live, ...partitions.other]), [partitions, search, customer, bidType, status]);
-  // Worklist olha a BASE INTEIRA (não só partitions.live) — pega line com
-  // state=active no Xandr mesmo que já tenha sido classificada como "ended".
-  // Critérios: pararam de entregar (stopped) ou no ar sem PI vinculado.
-  const worklistFiltered = useMemo(() => {
-    const base = applyFilters(lines);
-    return base.filter(l =>
-      l.delivery_status === "stopped" ||
-      (LIVE_STATUSES.has(l.delivery_status) && l.pi_brl == null)
-    );
-  }, [lines, search, customer, bidType, status]);
 
   // Conjunto exibido na aba atual — KPIs e contagens refletem isso.
+  // Por cliente é uma view LIFETIME (mostra todas as lines do cliente,
+  // incluindo encerradas) — usa o mesmo dataset do Histórico pra que os
+  // big numbers no topo somem tudo que está exposto abaixo, não só ativas.
   const visibleLines = useMemo(() => {
     if (layout === "live")     return liveFiltered;
     if (layout === "history")  return allLinesFiltered;
-    if (layout === "worklist") return worklistFiltered;
+    if (layout === "client")   return allLinesFiltered;
     return allFiltered;
-  }, [layout, liveFiltered, allLinesFiltered, allFiltered, worklistFiltered]);
+  }, [layout, liveFiltered, allLinesFiltered, allFiltered]);
 
   // ── KPIs ──────────────────────────────────────────────────────────────────
   // Big numbers refletem o dataset visível na aba ativa (com filtros).
@@ -367,20 +377,6 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     };
   }, [visibleLines]);
 
-  // ── Alertas ───────────────────────────────────────────────────────────────
-  const alerts = useMemo(() => {
-    const out = [];
-    const stopped = partitions.live.filter(l => l.delivery_status === "stopped");
-    if (stopped.length)
-      out.push({ kind: "danger", bucket: "stopped",
-        text: `${stopped.length} line${stopped.length === 1 ? "" : "s"} parou de entregar` });
-    const noPi = partitions.live.filter(l => l.pi_brl == null);
-    if (noPi.length)
-      out.push({ kind: "warn", bucket: "no_pi",
-        text: `${noPi.length} line${noPi.length === 1 ? "" : "s"} ativa${noPi.length === 1 ? "" : "s"} sem PI vinculado` });
-    return out;
-  }, [partitions.live]);
-
   // ── Contagens por layout (mostradas no toggle) ────────────────────────────
   // Refletem os filtros aplicados — cada badge mostra quantas lines apareceriam
   // se você clicasse na aba agora. Histórico vira "lifetime" (tudo).
@@ -388,9 +384,8 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     live:     liveFiltered.length,
     client:   new Set(allFiltered.map(l => l.customer || "(sem)")).size,
     list:     allFiltered.length,
-    worklist: worklistFiltered.length,
     history:  allLinesFiltered.length,
-  }), [liveFiltered, allFiltered, allLinesFiltered, worklistFiltered]);
+  }), [liveFiltered, allFiltered, allLinesFiltered]);
 
   const customersAll = useMemo(() => {
     const s = new Set();
@@ -490,11 +485,6 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     setLines(prev => prev.map(l => l.line_id === updated.line_id ? { ...l, ...updated } : l));
     setLinking(null);
     setLinkToast({ token: short_token, lineLabel });
-  };
-
-  const onAlertClick = (bucket) => {
-    setLayout("worklist");
-    setFocusBucket(bucket);
   };
 
   const onExport = async () => {
@@ -643,35 +633,31 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
         {/* KPIs */}
         {lines.length > 0 && (
           <div className="mb-6">
-            <PmpKpiStrip kpis={kpis} livesCount={partitions.live.length} totalCount={lines.length} />
+            <PmpKpiStrip kpis={kpis} livesCount={partitions.live.length} totalCount={lines.length}
+                         showExtra={layout === "history" || layout === "client"} />
           </div>
         )}
 
-        {/* Alertas (chips clicáveis → worklist) */}
-        {lines.length > 0 && alerts.length > 0 && (
-          <div className="mb-8">
-            <PmpAlertsBar alerts={alerts} onClickAlert={onAlertClick} />
-          </div>
-        )}
 
         {/* Sync toast */}
         {syncResult && <SyncToast result={syncResult} onDismiss={() => setSyncResult(null)} />}
 
         {/* Layout toggle + filtros de período (Histórico) na mesma linha */}
         <div className="flex items-center justify-between gap-3 flex-wrap mb-5">
-          <PmpLayoutToggle value={layout} onChange={(v) => { setLayout(v); setFocusBucket(null); }} counts={counts} />
+          <PmpLayoutToggle value={layout} onChange={setLayout} counts={counts} />
           {layout === "history" && (
             <div className="flex flex-wrap items-center gap-2">
               <PeriodFilterPill value={histPeriod} onChange={setHistPeriod} />
               <QuarterFilterPill values={histQuarters} onChange={setHistQuarters} availableYears={historyYears} />
+              <MonthFilterPill values={histMonths} onChange={setHistMonths} availableYears={historyYears} />
               <SortChip
                 visible={histSortBy !== HIST_DEFAULT_SORT.by || histSortDir !== HIST_DEFAULT_SORT.dir}
                 field={histSortBy}
                 dir={histSortDir}
                 onClear={() => { setHistSortBy(HIST_DEFAULT_SORT.by); setHistSortDir(HIST_DEFAULT_SORT.dir); }}
               />
-              {(histPeriod.from || histPeriod.to || histQuarters.length > 0) && (
-                <button onClick={() => { setHistPeriod({ presetId: "all", from: null, to: null }); setHistQuarters([]); }}
+              {(histPeriod.from || histPeriod.to || histQuarters.length > 0 || histMonths.length > 0) && (
+                <button onClick={() => { setHistPeriod({ presetId: "all", from: null, to: null }); setHistQuarters([]); setHistMonths([]); }}
                         className="text-xs text-fg-muted hover:text-fg underline-offset-2 hover:underline">
                   Limpar
                 </button>
@@ -719,8 +705,6 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
                                                          else { setSortBy(LIST_DEFAULT_SORT.by); setSortDir(LIST_DEFAULT_SORT.dir); }
                                                        }}
                                                        onLineClick={setEditing} onLinkClick={canEdit ? setLinking : undefined} />}
-              {layout === "worklist" && <PmpWorklistView lines={worklistFiltered} focusBucket={focusBucket}
-                                                          onLineClick={setEditing} onLinkClick={canEdit ? setLinking : undefined} />}
               {layout === "history"  && <HistoryView  lines={allLinesFiltered}
                                                        sortBy={histSortBy} sortDir={histSortDir}
                                                        onColumnClick={(f) => {
@@ -1539,6 +1523,107 @@ function QuarterFilterPill({ values, onChange, availableYears }) {
             <button onClick={() => { onChange([]); setOpen(false); }}
                     className="w-full h-8 rounded-md text-xs text-fg-muted hover:bg-surface-strong">
               Limpar trimestres
+            </button>
+          )}
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+const MONTH_ABBR = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
+
+function MonthFilterPill({ values, onChange, availableYears }) {
+  const [open, setOpen] = useState(false);
+  const [year, setYear] = useState(() => values[0]?.year || availableYears[0] || new Date().getFullYear());
+  const isActive = values.length > 0;
+  const sameYear = isActive && values.every(v => v.year === values[0].year);
+  const fmtMonth = ({ year, month }) => `${MONTH_ABBR[month-1]}/${String(year).slice(-2)}`;
+  const label =
+    !isActive             ? "Mês"
+    : values.length === 1 ? fmtMonth(values[0])
+    : sameYear            ? `${values.length} meses ${String(values[0].year).slice(-2)}`
+                          : `${values.length} meses`;
+
+  const isSelected = (year, month) => values.some(v => v.year === year && v.month === month);
+  const toggle = (year, month) => {
+    if (isSelected(year, month)) {
+      onChange(values.filter(v => !(v.year === year && v.month === month)));
+    } else {
+      onChange([...values, { year, month }]);
+    }
+  };
+
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        <button className={cn(
+          "inline-flex items-center gap-2 h-9 px-3 rounded-lg border text-sm transition-colors",
+          isActive
+            ? "border-signature/50 bg-signature/10 text-signature"
+            : "border-border bg-surface text-fg hover:bg-surface-strong",
+        )}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="4" width="18" height="18" rx="2"/>
+            <path d="M16 2v4M8 2v4M3 10h18"/>
+          </svg>
+          <span>{label}</span>
+          {isActive && values.length > 1 && (
+            <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-signature/20 text-signature text-[10px] font-bold tabular-nums">
+              {values.length}
+            </span>
+          )}
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={cn("transition-transform", open && "rotate-180")}>
+            <path d="m6 9 6 6 6-6"/>
+          </svg>
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content align="start" sideOffset={8}
+          className="z-50 rounded-xl border border-border bg-surface-2 shadow-2xl p-4 w-[300px] data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">Ano</div>
+            <div className="inline-flex items-center gap-1">
+              <button onClick={() => setYear(y => y - 1)} className="w-7 h-7 inline-flex items-center justify-center rounded-md text-fg-muted hover:bg-surface-strong">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m15 18-6-6 6-6"/></svg>
+              </button>
+              <select value={year} onChange={e => setYear(Number(e.target.value))}
+                      className="h-7 px-2 rounded-md bg-surface border border-border text-sm text-fg cursor-pointer">
+                {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+              <button onClick={() => setYear(y => y + 1)} className="w-7 h-7 inline-flex items-center justify-center rounded-md text-fg-muted hover:bg-surface-strong">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m9 18 6-6-6-6"/></svg>
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-4 gap-1.5 mb-3">
+            {MONTH_ABBR.map((label, idx) => {
+              const month = idx + 1;
+              const active = isSelected(year, month);
+              return (
+                <button key={month} onClick={() => toggle(year, month)}
+                        className={cn(
+                          "py-2 rounded-md border text-[12px] font-medium transition-colors",
+                          active
+                            ? "border-signature bg-signature/15 text-signature"
+                            : "border-border bg-surface hover:bg-surface-strong text-fg",
+                        )}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          {isActive && values.some(v => v.year !== year) && (
+            <div className="mb-3 px-2.5 py-1.5 rounded-md bg-surface text-[11px] text-fg-muted">
+              <span className="truncate">
+                Outros anos: {values.filter(v => v.year !== year).map(fmtMonth).join(", ")}
+              </span>
+            </div>
+          )}
+          {isActive && (
+            <button onClick={() => { onChange([]); setOpen(false); }}
+                    className="w-full h-8 rounded-md text-xs text-fg-muted hover:bg-surface-strong">
+              Limpar meses
             </button>
           )}
         </Popover.Content>

@@ -127,13 +127,12 @@ function MergeIcon() {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-// LayoutToggle PMP — 5 views (Ao Vivo / Por Cliente / Lista / Worklist / Histórico)
+// LayoutToggle PMP — 4 views (Lista / Ao Vivo / Por Cliente / Histórico)
 // ═══════════════════════════════════════════════════════════════════════════
 const LAYOUT_OPTIONS = [
   { value: "list",      label: "Lista",       icon: <ListIcon /> },
   { value: "live",      label: "No ar",       icon: <DotIcon /> },
   { value: "client",    label: "Por cliente", icon: <UsersIcon /> },
-  { value: "worklist",  label: "Worklist",    icon: <TargetIcon /> },
   { value: "history",   label: "Histórico",   icon: <ArchiveIcon /> },
 ];
 
@@ -175,7 +174,7 @@ export function PmpLayoutToggle({ value, onChange, counts = {} }) {
 // Valores SEMPRE em formato completo (R$ 11.339.437,28) — nunca abreviados.
 // Operação contábil precisa do número exato. Tipografia menor (text-xl)
 // compensa o tamanho dos valores grandes.
-export function PmpKpiStrip({ kpis, livesCount, totalCount }) {
+export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false }) {
   const items = [
     { label: "Lines no ar",   value: livesCount,
       sub: totalCount ? `${livesCount} de ${totalCount} ativas` : null,
@@ -194,7 +193,10 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount }) {
       hint: kpis.pctReceber != null
         ? { text: "ideal ≥ 85%", ok: kpis.pctReceber >= 0.85 }
         : null },
-    { label: "Receita Extra",
+    // Receita Extra só faz sentido como leitura lifetime (Histórico) — fora
+    // disso muitas lines mid-flight aparecem muito negativas e poluem.
+    ...(showExtra ? [{
+      label: "Receita Extra",
       value: kpis.extraLinesCount > 0
         ? `${kpis.extraRevenue >= 0 ? "+ " : "− "}${formatBRL(Math.abs(kpis.extraRevenue))}`
         : "—",
@@ -203,10 +205,12 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount }) {
         : "sem dado de margem configurada",
       valueClass: kpis.extraLinesCount === 0 ? "text-fg"
         : kpis.extraRevenue >= 0 ? "text-emerald-400" : "text-amber-400",
-      title: "Margem realizada − (receita bruta entregue × margem configurada). Positivo = HYPR capturou mais que o contratado." },
+      title: "Margem realizada − (receita bruta entregue × margem configurada). Positivo = HYPR capturou mais que o contratado.",
+    }] : []),
   ];
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+    <div className={cn("grid grid-cols-2 gap-4",
+      showExtra ? "md:grid-cols-3 lg:grid-cols-6" : "md:grid-cols-5")}>
       {items.map((it, i) => (
         <div key={i} className="rounded-xl border border-border bg-canvas-elevated p-5" title={it.title}>
           <div className="text-[10px] uppercase tracking-widest text-fg-subtle font-semibold">{it.label}</div>
