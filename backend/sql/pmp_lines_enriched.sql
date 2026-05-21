@@ -106,6 +106,7 @@ joined AS (
     li.line_item_subtype,
     li.bid_type,
     li.bid_type_source,
+    li.pricing_strategy,
     li.revenue_type,
     li.revenue_value,
     li.curator_margin_type,

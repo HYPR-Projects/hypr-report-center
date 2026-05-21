@@ -506,22 +506,58 @@ def _customer_from_io_name(io_name: str) -> Optional[str]:
 
 
 # ─── Bid type inference ──────────────────────────────────────────────────────
+def _normalize_pricing_strategy(raw) -> Optional[str]:
+    """Normaliza o valor de `pricing_strategy` do Xandr Curate para o nosso
+    domínio (fixed | flex). Aceita variações de case/separador.
+
+    Mapping:
+      • "fixed_price" / "FixedPrice"   → fixed
+      • "floor_price" / "FloorPrice"   → flex (preço base, lance variável)
+      • "market_price" / "MarketPrice" → flex (preço de mercado, variável)
+
+    Retorna None pra valores não reconhecidos (admin pode classificar manual).
+    """
+    if not raw:
+        return None
+    s = str(raw).lower().replace("_", " ").replace("-", " ").strip()
+    if "fixed" in s:
+        return "fixed"
+    if "floor" in s or "market" in s:
+        return "flex"
+    return None
+
+
 def infer_bid_type(line: dict) -> tuple[Optional[str], str]:
     """Retorna (bid_type, source) onde bid_type ∈ {"fixed", "flex", None}.
 
-    Regras (ordem de confiança):
-      1. Nome da line: FLEX-BID / FIXED-BID explícito.
-      2. valuation:
-         - min_margin_pct > 0  → flex (curator margin percentual)
-         - min_revenue_value definido + max_revenue_value null → flex (floor)
-         - min_revenue_value == max_revenue_value (definidos) → fixed
-      3. None: fallback — admin define manualmente via UI.
+    Regras (ordem de confiança, do mais autoritativo pro mais frágil):
+      1. Nome da line: FLEX-BID / FIXED-BID explícito (override manual).
+      2. `pricing_strategy` da API Xandr Curate — fonte de verdade. Espelha
+         o campo "Pricing Strategy" da UI do Curate (Floor / Fixed / Market).
+      3. valuation (heurístico — só usado se pricing_strategy ausente):
+         • min_margin_pct > 0  → flex (curator margin percentual)
+         • min_revenue_value definido + max_revenue_value null → flex (floor)
+         • min_revenue_value == max_revenue_value (definidos) → fixed
+      4. None: fallback — admin define manualmente via UI.
+
+    HISTÓRICO: até 2026-05, só usávamos heurísticas de valuation. Lines
+    "fixed_price" no Xandr Curate vinham com min_rev setado e max_rev null
+    (a API expõe assim quando só há 1 valor), batendo na regra "min sem
+    max → flex" e ficando classificadas como flex erroneamente. Agora
+    pricing_strategy resolve isso direto.
     """
     name_upper = (line.get("name") or "").upper()
     if "FLEX-BID" in name_upper or "FLEX_BID" in name_upper or "FLEXBID" in name_upper:
         return ("flex", "name")
     if any(p in name_upper for p in ("FIXED-BID", "FIXED_BID", "FIXEDBID", "FIXED-PRICE", "FIXED_PRICE")):
         return ("fixed", "name")
+
+    # pricing_strategy pode vir top-level ou aninhado dentro de "pricing".
+    # Defensivo: tenta os dois caminhos pra não depender de a API mudar shape.
+    ps_raw = line.get("pricing_strategy") or (line.get("pricing") or {}).get("strategy")
+    ps_norm = _normalize_pricing_strategy(ps_raw)
+    if ps_norm:
+        return (ps_norm, "pricing_strategy")
 
     val = line.get("valuation") or {}
     min_margin_pct = val.get("min_margin_pct")
@@ -612,12 +648,26 @@ def sync_line_items(advertiser_id: int) -> dict:
       - Extrai io_id do primeiro insertion_orders[].id (lines têm 1:N IOs;
         usamos o primeiro pq na prática é sempre 1:1 na HYPR — admin
         ajusta no edge case M:N).
-      - Infere bid_type via name + valuation.
+      - Infere bid_type via name + pricing_strategy + valuation (em ordem
+        de confiança).
       - Extrai deal_ids[] do array deals.
       - Preserva campos manuais (status, notes, overrides) — só sobrescreve
         os campos do Xandr na MERGE.
     """
     t0 = time.time()
+    # Migração defensiva: garante que a coluna pricing_strategy existe na
+    # tabela antes de tentar fazer o MERGE. Idempotente (IF NOT EXISTS),
+    # roda apenas DDL light no BQ — sem custo significativo.
+    try:
+        _bq_client.query(
+            f"ALTER TABLE `{_PROJECT}.{_DATASET}.pmp_line_items` "
+            f"ADD COLUMN IF NOT EXISTS pricing_strategy STRING"
+        ).result()
+    except Exception as e:
+        # Se DDL falhar (permissão / tabela inexistente), seguimos sem
+        # bloquear o sync — o erro reaparece no MERGE com contexto melhor.
+        import logging
+        logging.warning(f"[xandr_curate] ALTER TABLE pricing_strategy falhou: {e}")
     rows = []
     for li in _paginated_get(
         f"/line-item?advertiser_id={advertiser_id}&include_insertion_order_id=true",
@@ -633,6 +683,10 @@ def sync_line_items(advertiser_id: int) -> dict:
         cur_margin_pct  = val.get("min_margin_pct") if cur_margin_type in (None, "Percent") else None
         cur_margin_cpm  = val.get("min_margin_cpm") if cur_margin_type == "CPM" else None
 
+        # Pricing strategy do Xandr Curate (Floor/Fixed/Market) — armazenado
+        # cru pra debug e usado por infer_bid_type como sinal autoritativo.
+        pricing_strategy_raw = li.get("pricing_strategy") or (li.get("pricing") or {}).get("strategy")
+
         rows.append({
             "line_id":             int(li["id"]),
             "line_name":           li.get("name"),
@@ -646,6 +700,7 @@ def sync_line_items(advertiser_id: int) -> dict:
             "currency":            li.get("currency"),
             "bid_type":            bid_type,
             "bid_type_source":     bid_source,
+            "pricing_strategy":    str(pricing_strategy_raw) if pricing_strategy_raw else None,
             "revenue_type":        li.get("revenue_type"),
             "revenue_value":       li.get("revenue_value"),
             "curator_margin_type": cur_margin_type,
@@ -680,6 +735,7 @@ def sync_line_items(advertiser_id: int) -> dict:
             _bq.SchemaField("currency", "STRING"),
             _bq.SchemaField("bid_type", "STRING"),
             _bq.SchemaField("bid_type_source", "STRING"),
+            _bq.SchemaField("pricing_strategy", "STRING"),
             _bq.SchemaField("revenue_type", "STRING"),
             _bq.SchemaField("revenue_value", "NUMERIC"),
             _bq.SchemaField("curator_margin_type", "STRING"),
@@ -698,7 +754,7 @@ def sync_line_items(advertiser_id: int) -> dict:
         update_cols=[
             "line_name","line_code","advertiser_id","io_id","state",
             "line_item_subtype","start_date","end_date","currency",
-            "bid_type","bid_type_source","revenue_type","revenue_value",
+            "bid_type","bid_type_source","pricing_strategy","revenue_type","revenue_value",
             "curator_margin_type","curator_margin_pct","curator_margin_cpm",
             "min_revenue_value","max_revenue_value",
             "deal_ids","deal_count","xandr_last_modified","short_token",
