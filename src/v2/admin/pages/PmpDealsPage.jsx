@@ -80,10 +80,32 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
 
   // Filtros transversais
   const [search, setSearch]   = useState("");
+  // Filtros de catálogo (cliente, bid, status) persistem entre sessões no
+  // mesmo browser/usuário — UX: usuário operacional volta pro mesmo recorte
+  // sem reaplicar. Search e período/trimestre NÃO persistem por serem
+  // contexto da sessão.
+  const persistedFilters = (() => {
+    try {
+      const raw = localStorage.getItem("hypr.pmp.filters");
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return {
+        customer: Array.isArray(parsed.customer) ? parsed.customer : [],
+        bidType:  typeof parsed.bidType === "string" ? parsed.bidType : ALL,
+        status:   Array.isArray(parsed.status) ? parsed.status : [],
+      };
+    } catch { return null; }
+  })();
   // Cliente é multi-select: array de nomes. Vazio = todos.
-  const [customer, setCustomer] = useState([]);
-  const [bidType, setBidType] = useState(ALL);
-  const [status, setStatus]   = useState(ALL);
+  const [customer, setCustomer] = useState(persistedFilters?.customer || []);
+  const [bidType, setBidType] = useState(persistedFilters?.bidType || ALL);
+  // Status é multi-select: array. Vazio = todos.
+  const [status, setStatus]   = useState(persistedFilters?.status || []);
+  useEffect(() => {
+    try {
+      localStorage.setItem("hypr.pmp.filters", JSON.stringify({ customer, bidType, status }));
+    } catch { /* ignore */ }
+  }, [customer, bidType, status]);
   const [focusBucket, setFocusBucket] = useState(null);
 
   // Filtros temporais — só aplicam na aba Histórico.
@@ -209,7 +231,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     return arr.filter(l => {
       if (customer.length > 0 && !customer.includes(l.customer)) return false;
       if (bidType  !== ALL && (l.bid_type || "—") !== bidType) return false;
-      if (status   !== ALL && effectiveStatus(l) !== status) return false;
+      if (status.length > 0 && !status.includes(effectiveStatus(l))) return false;
       if (term) {
         const hay = [l.line_id, l.line_name, l.customer, l.campaign_name, l.agency,
                       l.short_token, l.io_name, l.cp_email, l.cs_email].filter(Boolean).join(" ").toLowerCase();
@@ -529,7 +551,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     const map = new Map();
     for (const l of lines) {
       if (l.is_archived) continue;  // testes/seeds arquivadas: só no Histórico
-      if (search || customer.length > 0 || bidType !== ALL || status !== ALL) {
+      if (search || customer.length > 0 || bidType !== ALL || status.length > 0) {
         if (!applyFilters([l]).length) continue;
       }
       const key = l.customer || "(sem cliente)";
@@ -673,9 +695,9 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
           <SearchInput value={search} onChange={setSearch} />
           <FilterMultiSelect label="Cliente" values={customer} onChange={setCustomer} options={customersAll} />
           <FilterSelect label="Bid"     value={bidType}  onChange={setBidType}  options={["flex","fixed"]} />
-          <FilterSelect label="Status"  value={status}   onChange={setStatus}   options={PMP_STATUSES} />
-          {(search || customer.length > 0 || bidType !== ALL || status !== ALL) && (
-            <button onClick={() => { setSearch(""); setCustomer([]); setBidType(ALL); setStatus(ALL); }}
+          <FilterMultiSelect label="Status" values={status} onChange={setStatus} options={PMP_STATUSES} />
+          {(search || customer.length > 0 || bidType !== ALL || status.length > 0) && (
+            <button onClick={() => { setSearch(""); setCustomer([]); setBidType(ALL); setStatus([]); }}
                     className="text-xs text-fg-muted hover:text-fg underline-offset-2 hover:underline ml-1">
               Limpar
             </button>
@@ -1010,7 +1032,7 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
 // ─── Subtotal inline minimalista (mesmo grid do row, sem cores berrantes) ───
 function InlineGroupSubtotal({ members, groupPi, groupPctReceber }) {
   const first = members[0];
-  const grid = "grid grid-cols-[12px_minmax(0,1.6fr)_minmax(110px,0.4fr)_140px_140px_140px_150px_60px_72px_minmax(82px,0.5fr)] gap-x-4";
+  const grid = "grid grid-cols-[12px_minmax(0,1.45fr)_minmax(110px,0.4fr)_88px_140px_140px_140px_150px_60px_72px_minmax(82px,0.5fr)] gap-x-4";
   return (
     <div className={cn(grid, "px-5 py-2.5 items-center border-t border-border/40 bg-surface/40 text-[12px]")}>
       <div />
@@ -1018,6 +1040,7 @@ function InlineGroupSubtotal({ members, groupPi, groupPctReceber }) {
         Subtotal do grupo · {members.length} lines
       </div>
       <div /> {/* bid/status */}
+      <div /> {/* início */}
       <div className="text-right tabular-nums text-fg font-bold">
         {groupPi != null ? formatBRL(groupPi) : "—"}
       </div>
@@ -1288,7 +1311,7 @@ const SORT_FIELD_LABELS = {
   effective_margin_pct:      "Mgm %",
   pct_a_receber:             "% Entr",
   hours_since_last_delivery: "Delivery",
-  start_date:                "Ativação",
+  start_date:                "Início",
 };
 
 // Chip "Ordenado: Margem ↓ ×" — fica visível quando a sort diverge do default

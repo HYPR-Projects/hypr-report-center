@@ -689,11 +689,11 @@ function Chevron({ open }) {
 //
 // Larguras generosas (140-160px) pra acomodar valores completos sem
 // abreviar — operação contábil precisa do número exato.
-const ROW_GRID = "grid grid-cols-[12px_minmax(0,1.6fr)_minmax(110px,0.4fr)_140px_140px_140px_150px_60px_72px_minmax(82px,0.5fr)] gap-x-4";
+const ROW_GRID = "grid grid-cols-[12px_minmax(0,1.45fr)_minmax(110px,0.4fr)_88px_140px_140px_140px_150px_60px_72px_minmax(82px,0.5fr)] gap-x-4";
 
 export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "desc", onColumnClick = null }) {
   const grid = hidePi
-    ? "grid grid-cols-[12px_minmax(0,1.7fr)_minmax(110px,0.4fr)_140px_140px_150px_60px_minmax(82px,0.55fr)] gap-x-4"
+    ? "grid grid-cols-[12px_minmax(0,1.55fr)_minmax(110px,0.4fr)_88px_140px_140px_150px_60px_minmax(82px,0.55fr)] gap-x-4"
     : ROW_GRID;
   const interactive = !!onColumnClick;
 
@@ -746,6 +746,7 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
       <div />
       <Th field="customer" align="left">Cliente / Campanha</Th>
       <Th>Status</Th>
+      <Th field="start_date">Início</Th>
       {!hidePi && <Th field="pi_brl">PI</Th>}
       <Th field="curator_total_cost">Cost</Th>
       <Th field="curator_revenue">Revenue</Th>
@@ -784,7 +785,7 @@ export function PmpLineRow({
   // Grid: quando hidePi, esconde a coluna PI (PI está no header do grupo).
   // Também esconde % Entrega per-line (faz sentido só ao nível do grupo).
   const grid = hidePi
-    ? "grid grid-cols-[12px_minmax(0,1.7fr)_minmax(110px,0.4fr)_140px_140px_150px_60px_minmax(82px,0.55fr)] gap-x-4"
+    ? "grid grid-cols-[12px_minmax(0,1.55fr)_minmax(110px,0.4fr)_88px_140px_140px_150px_60px_minmax(82px,0.55fr)] gap-x-4"
     : ROW_GRID;
 
   return (
@@ -823,12 +824,6 @@ export function PmpLineRow({
           isCancelado ? "text-fg-subtle/60" : "text-fg-subtle")}>
           <span className="truncate">
             {line.agency || "—"} <span className="mx-1.5">·</span> Line {line.line_id}
-            {formatLineStartPeriod(line) && (
-              <>
-                <span className="mx-1.5">·</span>
-                <span className="tabular-nums">{formatLineStartPeriod(line)}</span>
-              </>
-            )}
           </span>
           {groupBadge && (
             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-signature/10 text-signature border border-signature/20 shrink-0"
@@ -850,6 +845,11 @@ export function PmpLineRow({
         <span className={cn("inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border", statusPillClass(effStatus))}>
           {effStatus}
         </span>
+      </div>
+
+      <div className={cn("text-right text-[12px] tabular-nums",
+        isCancelado ? "text-fg-subtle/70" : "text-fg-muted")}>
+        {formatLineStartPeriod(line) || "—"}
       </div>
 
       {!hidePi && (
