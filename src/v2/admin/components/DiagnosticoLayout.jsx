@@ -82,17 +82,46 @@ function EmptyStateGlobal() {
  *   campaigns    — array cru de listCampaigns
  *   teamMap      — { email → nome de exibição }
  *   onOpenReport — (short_token) => void
+ *   search       — string de busca (cliente/campanha/token), vinda do ToolbarV2
+ *   ownerMatcher — fn(row) → boolean, criada via createOwnerMatcher no parent
  */
-export function DiagnosticoLayout({ campaigns, teamMap, onOpenReport }) {
+export function DiagnosticoLayout({
+  campaigns,
+  teamMap,
+  onOpenReport,
+  search = "",
+  ownerMatcher,
+}) {
   // Filtros: Set de status ativos. Vazio = mostra tudo.
   const [activeStatuses, setActiveStatuses] = useState(() => new Set());
 
   // Calcula linhas Display + Video uma vez por mudança de payload.
   // getCampaignStatus passa as datas/flags pra decidir "in_flight".
-  const { displayRows, videoRows } = useMemo(
+  const { displayRows: allDisplayRows, videoRows: allVideoRows } = useMemo(
     () => buildDiagnosticoRows(campaigns, getCampaignStatus),
     [campaigns]
   );
+
+  // Aplica search + owner ANTES de contar pills e renderizar tabelas, pra que
+  // os números nos pills reflitam o escopo já filtrado. Rows do
+  // buildDiagnosticoRows preservam client_name/campaign_name/short_token +
+  // cp_email/cs_email, então o ownerMatcher funciona direto.
+  const { displayRows, videoRows } = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const isTokenQuery = /[-]/.test(search.trim()) || /^[A-Z0-9]{4,8}$/.test(search.trim());
+    const matchSearchAndOwner = (r) => {
+      const matchSearch = !q ||
+        r.client_name?.toLowerCase().includes(q) ||
+        r.campaign_name?.toLowerCase().includes(q) ||
+        (isTokenQuery && r.short_token?.toLowerCase().includes(q));
+      const matchOwner = !ownerMatcher || ownerMatcher(r);
+      return matchSearch && matchOwner;
+    };
+    return {
+      displayRows: allDisplayRows.filter(matchSearchAndOwner),
+      videoRows:   allVideoRows.filter(matchSearchAndOwner),
+    };
+  }, [allDisplayRows, allVideoRows, search, ownerMatcher]);
 
   // Contagens GLOBAIS (Display + Video) — o número no pill reflete o total
   // de linhas naquele status entre as duas tabelas, pra dar uma visão única

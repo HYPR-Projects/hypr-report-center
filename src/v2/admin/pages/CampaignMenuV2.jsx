@@ -831,18 +831,21 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
             <LayoutToggle value={layout} onChange={setLayout} />
             <div className="flex-1" />
           </div>
-          {layout !== "performers" && layout !== "diagnostico" && (
+          {layout !== "performers" && (
             <ToolbarV2
               search={search}
               onSearchChange={setSearch}
               ownerFilter={ownerFilter}
               onOwnerChange={setOwnerFilter}
               teamMembers={teamMembers}
-              sortBy={layout === "client" ? clientsSortBy : campaignsSortBy}
-              onSortByChange={layout === "client" ? handleClientsSortByChange : handleCampaignsSortByChange}
-              sortDir={layout === "client" ? clientsSortDir : campaignsSortDir}
-              onSortDirToggle={layout === "client" ? toggleClientsSortDir : toggleCampaignsSortDir}
-              sortOptions={layout === "client" ? CLIENT_SORT_OPTIONS : CAMPAIGN_SORT_OPTIONS}
+              // Diagnóstico tem sort por header de coluna nas próprias tabelas
+              // — omitir sortOptions esconde o dropdown e o toggle de direção
+              // do toolbar (ver ToolbarV2: `sortGroups` null → nada renderiza).
+              sortBy={layout === "diagnostico" ? undefined : (layout === "client" ? clientsSortBy : campaignsSortBy)}
+              onSortByChange={layout === "diagnostico" ? undefined : (layout === "client" ? handleClientsSortByChange : handleCampaignsSortByChange)}
+              sortDir={layout === "diagnostico" ? undefined : (layout === "client" ? clientsSortDir : campaignsSortDir)}
+              onSortDirToggle={layout === "diagnostico" ? undefined : (layout === "client" ? toggleClientsSortDir : toggleCampaignsSortDir)}
+              sortOptions={layout === "diagnostico" ? undefined : (layout === "client" ? CLIENT_SORT_OPTIONS : CAMPAIGN_SORT_OPTIONS)}
               searchPlaceholder={
                 layout === "client" ? "Buscar cliente..." : "Buscar cliente, campanha ou token..."
               }
@@ -914,6 +917,8 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
                 campaigns={campaigns}
                 teamMap={teamMap}
                 onOpenReport={onOpenReport}
+                search={search}
+                ownerMatcher={ownerMatcher}
               />
             ) : (
               <CampaignListV2
