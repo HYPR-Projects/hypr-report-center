@@ -294,8 +294,10 @@ export function AlcanceFrequenciaV2({
           // derivado no formato read-only com badge "calculada" pra dar
           // contexto, igual frequência derivada.
           forceReadOnly={editing && autoAlcance}
+          // Badge "calculada" é admin-only — cliente vê só o número final,
+          // sem distinção entre manual e derivado.
           hint={
-            alcanceIsAuto && (!editing || autoAlcance) ? "calculada" : null
+            isAdmin && alcanceIsAuto && (!editing || autoAlcance) ? "calculada" : null
           }
         />
         <Stat
@@ -310,7 +312,7 @@ export function AlcanceFrequenciaV2({
               : (derivedFreq ? `Auto: ${derivedFreq}` : "Ex: 3,2")
           }
           editing={isAdmin && editing}
-          hint={!editing && freqIsAuto ? "calculada" : null}
+          hint={isAdmin && !editing && freqIsAuto ? "calculada" : null}
         />
       </div>
 
