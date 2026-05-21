@@ -14,7 +14,7 @@ import {
   effectiveDeliveryMeta, LIVE_STATUSES,
   statusPillClass, healthPillClass, healthLabel,
   pctDeliveryClass, pctBarColor,
-  formatBRL, formatInt, formatIntCompact,
+  formatBRL, formatBRLCompact, formatInt, formatIntCompact,
   formatRatioPct, formatLastDelivery, emailInitial,
   pctEntrega, groupPctEntrega,
   effectiveStatus, formatLineStartPeriod,
@@ -181,24 +181,50 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount }) {
       valueClass: livesCount > 0 ? "text-emerald-400" : "text-fg" },
     { label: "Total PI",      value: formatBRL(kpis.pi),
       sub: kpis.countWithPi != null ? `${kpis.countWithPi} c/ PI vinculado` : null },
-    { label: "Revenue",       value: formatBRL(kpis.revenue),
+    { label: "Receita Bruta", value: formatBRL(kpis.revenue),
       sub: kpis.revenue7d ? `${formatBRL(kpis.revenue7d)} últ. 7d` : null },
-    { label: "Margem HYPR",   value: formatBRL(kpis.margin),
+    { label: "Receita Líquida", value: formatBRL(kpis.margin),
       sub: kpis.margin7d ? `${formatBRL(kpis.margin7d)} últ. 7d` : null,
       valueClass: "text-emerald-400" },
-    { label: "% Entrega",     value: kpis.pctReceber != null ? formatRatioPct(kpis.pctReceber) : "—",
-      sub: kpis.countWithPi ? `Margem ÷ PI · ${kpis.countWithPi} lines` : "sem PI cadastrado" },
+    { label: "% Margem PMP", value: kpis.pctReceber != null ? formatRatioPct(kpis.pctReceber) : "—",
+      sub: kpis.countWithPi ? `Receita Líquida ÷ Total PI · ${kpis.countWithPi} lines` : "sem PI cadastrado",
+      valueClass: kpis.pctReceber == null ? "text-fg"
+        : kpis.pctReceber >= 0.85 ? "text-emerald-400" : "text-amber-400",
+      hint: kpis.pctReceber != null
+        ? { text: "ideal ≥ 85%", ok: kpis.pctReceber >= 0.85 }
+        : null },
+    { label: "Receita Extra",
+      value: kpis.extraLinesCount > 0
+        ? `${kpis.extraRevenue >= 0 ? "+ " : "− "}${formatBRL(Math.abs(kpis.extraRevenue))}`
+        : "—",
+      sub: kpis.extraLinesCount > 0
+        ? `acima do esperado · ${kpis.extraLinesCount} lines`
+        : "sem dado de margem configurada",
+      valueClass: kpis.extraLinesCount === 0 ? "text-fg"
+        : kpis.extraRevenue >= 0 ? "text-emerald-400" : "text-amber-400",
+      title: "Margem realizada − (receita bruta entregue × margem configurada). Positivo = HYPR capturou mais que o contratado." },
   ];
   return (
-    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
       {items.map((it, i) => (
-        <div key={i} className="rounded-xl border border-border bg-canvas-elevated p-5">
+        <div key={i} className="rounded-xl border border-border bg-canvas-elevated p-5" title={it.title}>
           <div className="text-[10px] uppercase tracking-widest text-fg-subtle font-semibold">{it.label}</div>
           <div className={cn("text-xl font-bold tabular-nums mt-2 whitespace-nowrap overflow-hidden text-ellipsis", it.valueClass || "text-fg")}
                title={typeof it.value === "string" ? it.value : ""}>
             {it.value}
           </div>
           {it.sub && <div className="text-[11px] text-fg-muted mt-1.5">{it.sub}</div>}
+          {it.hint && (
+            <div className={cn(
+              "text-[10px] mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded",
+              it.hint.ok
+                ? "bg-emerald-500/15 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
+                : "bg-amber-500/15 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300",
+            )}>
+              <span className="text-[8px] leading-none">●</span>
+              <span>{it.hint.text}</span>
+            </div>
+          )}
         </div>
       ))}
     </div>
@@ -722,7 +748,7 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
       {!hidePi && <Th field="pi_brl">PI</Th>}
       <Th field="curator_total_cost">Cost</Th>
       <Th field="curator_revenue">Revenue</Th>
-      <Th field="curator_margin" emerald>Margem HYPR</Th>
+      <Th field="curator_margin">Margem HYPR</Th>
       <Th field="effective_margin_pct">Mgm %</Th>
       {!hidePi && <Th field="pct_a_receber">% Entr</Th>}
       <Th field="hours_since_last_delivery">Delivery</Th>
@@ -737,6 +763,10 @@ export function PmpLineRow({
   // Quando a line está num grupo, o pai injeta o PI unificado e o %
   // entrega calculado contra esse PI compartilhado (em vez do per-line).
   groupPi = null, groupPctReceber = null,
+  // True só no 1º membro do grupo — usado pra renderizar o badge de
+  // Receita Extra uma única vez por grupo (no 1º membro), usando a
+  // margem agregada do grupo (não per-line).
+  isFirstGroupMember = false,
 }) {
   const dm = effectiveDeliveryMeta(line);
   const piToShow = groupPi != null ? groupPi : line.pi_brl;
@@ -759,7 +789,7 @@ export function PmpLineRow({
   return (
     <div onClick={() => onClick?.(line)}
          className={cn(grid, "px-5 cursor-pointer transition-colors hover:bg-surface/40 group items-center",
-           compact ? "py-3" : "py-4",
+           compact ? "py-4" : "py-5",
            line.is_archived && "opacity-50")}>
       <div className="flex justify-center" title={dm.label}>
         <span className={cn("w-2 h-2 rounded-full", dm.dot)} />
@@ -847,9 +877,38 @@ export function PmpLineRow({
         isCancelado ? "text-fg-subtle/70" : "text-fg-muted")}>
         {formatBRL(line.curator_revenue)}
       </div>
-      <div className={cn("text-right text-[13px] tabular-nums font-semibold",
-        isCancelado ? "text-fg-subtle" : "text-emerald-400")}>
-        {formatBRL(line.curator_margin)}
+      <div className={cn("text-right tabular-nums",
+        isCancelado ? "text-fg-subtle" : "text-fg")}>
+        <div className="text-[13px] font-semibold">{formatBRL(line.curator_margin)}</div>
+        {(() => {
+          if (isCancelado) return null;
+          const pct = line.curator_margin_pct;
+          const isGroupMember = line.group_id != null;
+          // Em grupo, badge só no 1º membro pra não duplicar o "ganho extra"
+          // (membros seguintes representam a mesma agregação grupo×PI).
+          if (isGroupMember && !isFirstGroupMember) return null;
+          const piBase = isGroupMember ? (groupPi != null ? groupPi : line.pi_brl) : line.pi_brl;
+          const realized = isGroupMember
+            ? Number(line.group_curator_margin || 0)
+            : Number(line.curator_margin || 0);
+          if (piBase == null || pct == null) return null;
+          const expected = Number(piBase) * (Number(pct) / 100);
+          const extra = realized - expected;
+          if (Math.abs(extra) < 1) return null;
+          const positive = extra >= 0;
+          return (
+            <div className={cn(
+              "inline-block mt-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded",
+              positive
+                ? "bg-emerald-500/15 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
+                : "bg-amber-500/15 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300",
+            )} title={isGroupMember
+              ? "Margem agregada do grupo − PI × margem configurada"
+              : "Margem realizada − PI × margem configurada"}>
+              {positive ? "+ " : "− "}{formatBRLCompact(Math.abs(extra))}
+            </div>
+          );
+        })()}
       </div>
       <div className={cn("text-right text-[12px] tabular-nums",
         isCancelado ? "text-fg-subtle/70" : "text-fg-muted")}>

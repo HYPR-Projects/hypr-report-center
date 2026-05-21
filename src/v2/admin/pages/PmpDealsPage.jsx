@@ -281,6 +281,17 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   const kpis = useMemo(() => {
     let pi = 0, revenue = 0, margin = 0, imps = 0, revenue7d = 0, margin7d = 0;
     let withPi = 0;
+    // extraRevenue = Σ (margem_realizada − PI × margem_configurada)
+    //   • Base 0 = PI × margem_configurada (ex: 350k × 85% = 297,5k esperado).
+    //   • Positivo = ganhamos acima do esperado pro investimento total.
+    //   • Negativo = abaixo do esperado (pode ser line ainda mid-flight).
+    //   • Em GRUPO: PI é compartilhado, então usa group_curator_margin
+    //     (Σ margens das lines do grupo) contra o PI único do grupo —
+    //     evita comparar margem somada contra PI multiplicado.
+    //   • Só conta unidades-de-conta (grupo ou line standalone) com PI
+    //     e margem configurada definidos.
+    let extraRevenue = 0;
+    let extraLinesCount = 0;
     // Regras de agregação:
     //   • Canceladas saem do total (não somam PI, revenue, margem).
     //   • PI é COMPARTILHADO no grupo — dedup por group_id pra contar 1×.
@@ -303,16 +314,34 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
         if (seenGroups.has(l.group_id)) continue;
         if (l.pi_brl == null) continue;     // espera um membro do grupo com PI
         seenGroups.add(l.group_id);
-      } else if (l.pi_brl == null) {
-        continue;
+        pi += Number(l.pi_brl);
+        withPi++;
+        // Extra do grupo: margem agregada do grupo vs PI × pct configurada.
+        // Usa group_curator_margin (já agregado pelo backend) pra evitar
+        // somar margem das lines em outros passos.
+        if (l.curator_margin_pct != null) {
+          const expected = Number(l.pi_brl) * (Number(l.curator_margin_pct) / 100);
+          const realized = Number(l.group_curator_margin || 0);
+          extraRevenue += (realized - expected);
+          extraLinesCount++;
+        }
+      } else if (l.pi_brl != null) {
+        pi += Number(l.pi_brl);
+        withPi++;
+        if (l.curator_margin_pct != null) {
+          const expected = Number(l.pi_brl) * (Number(l.curator_margin_pct) / 100);
+          const realized = Number(l.curator_margin || 0);
+          extraRevenue += (realized - expected);
+          extraLinesCount++;
+        }
       }
-      pi += Number(l.pi_brl);
-      withPi++;
     }
     return {
       pi, revenue, margin, imps, revenue7d, margin7d,
       countWithPi: withPi,
       pctReceber: pi > 0 ? margin / pi : null,
+      extraRevenue,
+      extraLinesCount,
     };
   }, [visibleLines]);
 
@@ -817,6 +846,7 @@ function ListView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLinkCl
                               onClick={onLineClick} onLinkClick={onLinkClick}
                               compact
                               groupBadge={i === 0 ? (m.group_name || "Grupo") : null}
+                              isFirstGroupMember={i === 0}
                               groupPi={groupPi}
                               groupPctReceber={groupPctReceber} />
                 ))}
@@ -963,6 +993,7 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
                   <PmpLineRow key={m.line_id} line={m} onClick={onLineClick} onLinkClick={onLinkClick}
                               compact
                               groupBadge={i === 0 ? (m.group_name || "Grupo · 1 PI") : null}
+                              isFirstGroupMember={i === 0}
                               groupPi={groupPi}
                               groupPctReceber={groupPctReceber} />
                 ))}
@@ -996,7 +1027,7 @@ function InlineGroupSubtotal({ members, groupPi, groupPctReceber }) {
       <div className="text-right tabular-nums text-fg font-bold">
         {formatBRL(first.group_curator_revenue)}
       </div>
-      <div className="text-right tabular-nums text-emerald-400 font-bold">
+      <div className="text-right tabular-nums text-fg font-bold">
         {formatBRL(first.group_curator_margin)}
       </div>
       <div className="text-right tabular-nums text-fg font-semibold">
