@@ -1,0 +1,311 @@
+// src/v2/admin/components/DiagnosticoTable.jsx
+//
+// Tabela densa pra aba "Diagnóstico" — uma instância pra Display, outra
+// pra Video. Recebe linhas já calculadas (de buildDiagnosticoRows) e a
+// configuração das colunas. Ordenação client-side por header click.
+//
+// Visual: header sticky dentro do container, hover por row, dot colorido
+// na coluna de status. Linhas clicáveis abrem o report da campanha em
+// nova aba (mesmo handler `onOpenReport` usado nos cards).
+
+import { useState, useMemo } from "react";
+import { cn } from "../../../ui/cn";
+import { localPartFromEmail } from "../lib/format";
+import {
+  STATUS_META,
+  formatPctRow,
+  formatIntRow,
+  compareNullableNumbers,
+} from "../lib/diagnostico";
+
+// ────────────────────────────────────────────────────────────────────────
+// Pílula de status — dot + label
+// ────────────────────────────────────────────────────────────────────────
+function StatusPill({ status }) {
+  const meta = STATUS_META[status];
+  if (!meta) return <span className="text-fg-subtle">—</span>;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full",
+        "text-[11px] font-semibold whitespace-nowrap",
+        "border",
+        meta.bgClass,
+        meta.borderClass,
+        meta.textClass
+      )}
+      title={meta.description}
+    >
+      <span className={cn("size-1.5 rounded-full", meta.dotClass)} />
+      {meta.shortLabel}
+    </span>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Header com sort indicator
+// ────────────────────────────────────────────────────────────────────────
+function Th({ children, align = "left", sortable = false, active = false, dir, onClick, className }) {
+  return (
+    <th
+      scope="col"
+      className={cn(
+        "sticky top-0 z-10 bg-canvas-deeper",
+        "px-3 py-2.5",
+        "text-[10px] font-bold uppercase tracking-wider text-fg-subtle",
+        "border-b border-border",
+        "whitespace-nowrap",
+        sortable && "cursor-pointer select-none hover:text-fg",
+        align === "right"  && "text-right",
+        align === "center" && "text-center",
+        align === "left"   && "text-left",
+        className
+      )}
+      onClick={sortable ? onClick : undefined}
+      aria-sort={active ? (dir === "asc" ? "ascending" : "descending") : undefined}
+    >
+      <span className="inline-flex items-center gap-1">
+        {children}
+        {sortable && active && (
+          <span className="text-fg" aria-hidden="true">
+            {dir === "asc" ? "▲" : "▼"}
+          </span>
+        )}
+      </span>
+    </th>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Cell helpers
+// ────────────────────────────────────────────────────────────────────────
+function Td({ children, align = "left", className, tabular = false, title }) {
+  return (
+    <td
+      className={cn(
+        "px-3 py-2.5",
+        "text-xs text-fg",
+        "border-b border-border/40",
+        "whitespace-nowrap",
+        tabular && "tabular-nums",
+        align === "right"  && "text-right",
+        align === "center" && "text-center",
+        align === "left"   && "text-left",
+        className
+      )}
+      title={title}
+    >
+      {children}
+    </td>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Empty state
+// ────────────────────────────────────────────────────────────────────────
+function EmptyState({ message }) {
+  return (
+    <div className="rounded-xl border border-border bg-surface p-8 text-center">
+      <p className="text-sm text-fg-muted">{message}</p>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Componente principal
+// ────────────────────────────────────────────────────────────────────────
+/**
+ * Props:
+ *   title       — "Display" | "Video"
+ *   rows        — array vindo de buildDiagnosticoRows
+ *   mediaLabel  — "Viewable Impressions" | "Views 100%"
+ *   teamMap     — { email → nome de exibição }
+ *   onOpenReport — (short_token) => void  (abre o report em nova aba)
+ *   activeStatuses — Set<status> de filtros ativos (vindo do parent)
+ */
+export function DiagnosticoTable({
+  title,
+  rows,
+  mediaLabel,
+  teamMap = {},
+  onOpenReport,
+  activeStatuses,
+}) {
+  // Sort state local (cada tabela tem o seu).
+  // Default: por projetada desc (problema mais visível primeiro).
+  const [sortKey, setSortKey] = useState("projetadaPct");
+  const [sortDir, setSortDir] = useState("desc");
+
+  const filteredRows = useMemo(() => {
+    if (!activeStatuses || activeStatuses.size === 0) return rows;
+    return rows.filter((r) => activeStatuses.has(r.status));
+  }, [rows, activeStatuses]);
+
+  const sortedRows = useMemo(() => {
+    const arr = [...filteredRows];
+    arr.sort((a, b) => {
+      // Strings (client_name, campaign_name, cs_name) ordenam alfabeticamente.
+      if (sortKey === "client_name" || sortKey === "campaign_name" || sortKey === "cs_name") {
+        const av = String(a[sortKey] || "").toLowerCase();
+        const bv = String(b[sortKey] || "").toLowerCase();
+        return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+      }
+      // Status: ordena pelo rank dele (super_over no topo quando desc).
+      if (sortKey === "status") {
+        const RANK = { super_over: 3, over: 2, under: 1, ok: 0 };
+        const av = RANK[a.status] ?? -1;
+        const bv = RANK[b.status] ?? -1;
+        return sortDir === "asc" ? av - bv : bv - av;
+      }
+      // Default: número.
+      return compareNullableNumbers(a[sortKey], b[sortKey], sortDir);
+    });
+    return arr;
+  }, [filteredRows, sortKey, sortDir]);
+
+  const handleSort = (key) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      // Default direction: desc pra números (pior em cima), asc pra texto.
+      setSortDir(key === "client_name" || key === "campaign_name" || key === "cs_name" ? "asc" : "desc");
+    }
+  };
+
+  if (rows.length === 0) {
+    return (
+      <section className="space-y-3">
+        <header className="flex items-baseline justify-between gap-3">
+          <h3 className="text-base font-bold text-fg">{title}</h3>
+          <span className="text-xs text-fg-muted">0 campanhas</span>
+        </header>
+        <EmptyState message={`Nenhuma campanha ativa de ${title.toLowerCase()} no momento.`} />
+      </section>
+    );
+  }
+
+  if (filteredRows.length === 0) {
+    return (
+      <section className="space-y-3">
+        <header className="flex items-baseline justify-between gap-3">
+          <h3 className="text-base font-bold text-fg">{title}</h3>
+          <span className="text-xs text-fg-muted">
+            {rows.length} {rows.length === 1 ? "campanha" : "campanhas"} · 0 no filtro
+          </span>
+        </header>
+        <EmptyState message="Nenhuma campanha bate com os filtros selecionados." />
+      </section>
+    );
+  }
+
+  // Coluna helper: gera props do header pra sort
+  const headerProps = (key) => ({
+    sortable: true,
+    active:   sortKey === key,
+    dir:      sortDir,
+    onClick:  () => handleSort(key),
+  });
+
+  return (
+    <section className="space-y-3">
+      <header className="flex items-baseline justify-between gap-3">
+        <h3 className="text-base font-bold text-fg">{title}</h3>
+        <span className="text-xs text-fg-muted">
+          {filteredRows.length} de {rows.length} {rows.length === 1 ? "campanha" : "campanhas"}
+        </span>
+      </header>
+
+      <div className="rounded-xl border border-border bg-surface overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left">
+            <thead>
+              <tr>
+                <Th align="left"  {...headerProps("client_name")}>Cliente</Th>
+                <Th align="left"  {...headerProps("campaign_name")}>Campanha</Th>
+                <Th align="left"  {...headerProps("cs_name")}>CS Responsável</Th>
+                <Th align="right" {...headerProps("totalEntreguePct")}>Entregue</Th>
+                <Th align="right" {...headerProps("projetadaPct")}>Projetada</Th>
+                <Th align="right" {...headerProps("deliveredD1")}>{mediaLabel} D-1</Th>
+                <Th align="right" {...headerProps("minDiariaContratada")}>Mín. Diária</Th>
+                <Th align="center" {...headerProps("status")}>Status Pacing</Th>
+                <Th align="right" {...headerProps("viewability")}>Viewability</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedRows.map((r) => {
+                const csName = r.cs_email
+                  ? (teamMap[r.cs_email] || localPartFromEmail(r.cs_email))
+                  : null;
+                const projTone = STATUS_META[r.status]?.textClass || "";
+                return (
+                  <tr
+                    key={`${r.short_token}-${r.media}`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onOpenReport?.(r.short_token)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onOpenReport?.(r.short_token);
+                      }
+                    }}
+                    className={cn(
+                      "cursor-pointer transition-colors",
+                      "hover:bg-canvas-deeper",
+                      "focus-visible:outline-none focus-visible:bg-canvas-deeper",
+                      "focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-signature"
+                    )}
+                  >
+                    <Td align="left">
+                      <span className="font-medium text-fg">{r.client_name || "—"}</span>
+                    </Td>
+                    <Td align="left" className="max-w-[280px]">
+                      <span className="truncate block" title={r.campaign_name}>
+                        {r.campaign_name || "—"}
+                      </span>
+                    </Td>
+                    <Td align="left">
+                      {csName ? (
+                        <span className="capitalize">{csName}</span>
+                      ) : (
+                        <span className="text-fg-subtle italic">Sem CS</span>
+                      )}
+                    </Td>
+                    <Td align="right" tabular>
+                      {formatPctRow(r.totalEntreguePct, 1)}
+                    </Td>
+                    <Td
+                      align="right"
+                      tabular
+                      className={cn("font-semibold", projTone)}
+                      title="% que vai bater no final mantendo o ritmo atual"
+                    >
+                      {formatPctRow(r.projetadaPct, 1)}
+                    </Td>
+                    <Td align="right" tabular title="Entrega do último dia disponível (D-1)">
+                      {formatIntRow(r.deliveredD1)}
+                    </Td>
+                    <Td
+                      align="right"
+                      tabular
+                      title="Ritmo diário necessário pra entregar 100% nos dias restantes (— se já bateu 100% ou campanha acabou)"
+                    >
+                      {formatIntRow(r.minDiariaContratada)}
+                    </Td>
+                    <Td align="center">
+                      <StatusPill status={r.status} />
+                    </Td>
+                    <Td align="right" tabular>
+                      {formatPctRow(r.viewability, 1)}
+                    </Td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  );
+}
