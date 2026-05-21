@@ -30,7 +30,7 @@ export const DELIVERY_STATUS_ORDER = [
 ];
 
 export const DELIVERY_STATUS_META = {
-  live:      { label: "Ao vivo",        dot: "bg-emerald-400 shadow-[0_0_8px_rgb(52,211,153)]", border: "border-emerald-500/30", text: "text-emerald-400", bg: "bg-emerald-500/10" },
+  live:      { label: "No ar",          dot: "bg-emerald-400 shadow-[0_0_8px_rgb(52,211,153)]", border: "border-emerald-500/30", text: "text-emerald-400", bg: "bg-emerald-500/10" },
   running:   { label: "Rodando",        dot: "bg-emerald-400",       border: "border-emerald-500/20", text: "text-emerald-400", bg: "bg-emerald-500/10" },
   slowing:   { label: "Desacelerando",  dot: "bg-amber-400",         border: "border-amber-500/30",   text: "text-amber-400",   bg: "bg-amber-500/10" },
   stopped:   { label: "Parou",          dot: "bg-rose-400",          border: "border-rose-500/30",    text: "text-rose-400",    bg: "bg-rose-500/10" },

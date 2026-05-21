@@ -131,7 +131,7 @@ function MergeIcon() {
 // ═══════════════════════════════════════════════════════════════════════════
 const LAYOUT_OPTIONS = [
   { value: "list",      label: "Lista",       icon: <ListIcon /> },
-  { value: "live",      label: "Ao vivo",     icon: <DotIcon /> },
+  { value: "live",      label: "No ar",       icon: <DotIcon /> },
   { value: "client",    label: "Por cliente", icon: <UsersIcon /> },
   { value: "worklist",  label: "Worklist",    icon: <TargetIcon /> },
   { value: "history",   label: "Histórico",   icon: <ArchiveIcon /> },
@@ -187,8 +187,8 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount }) {
     { label: "Margem HYPR",   value: formatBRL(kpis.margin),
       sub: kpis.revenue > 0 ? `${formatRatioPct(kpis.margin / kpis.revenue, 1)} efetiva` : null,
       valueClass: "text-emerald-400" },
-    { label: "% Entrega",     value: kpis.avgPctReceber != null ? formatRatioPct(kpis.avgPctReceber) : "—",
-      sub: kpis.countWithPi ? `média ${kpis.countWithPi} lines c/ PI` : "sem PI cadastrado" },
+    { label: "% Entrega",     value: kpis.pctReceber != null ? formatRatioPct(kpis.pctReceber) : "—",
+      sub: kpis.countWithPi ? `Margem ÷ PI · ${kpis.countWithPi} lines` : "sem PI cadastrado" },
   ];
   return (
     <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -314,6 +314,11 @@ export function PmpLiveCard({ line, onClick, onLinkClick }) {
             <div className={cn("h-full transition-all", pctBarColor(pct))}
                  style={{ width: `${Math.min(100, (pct || 0) * 100)}%` }} />
           </div>
+        </div>
+      ) : effectiveStatus(line) === "Cancelado" ? (
+        // Cancelada sem PI: não polui a UI com CTA de vincular.
+        <div className="mb-4 px-3 py-2 rounded-md border border-border bg-surface/30 text-[11px] text-fg-subtle">
+          Cancelada — sem PI vinculado
         </div>
       ) : (
         <div className="mb-4 flex items-center justify-between gap-3 px-3 py-2 rounded-md border border-dashed border-amber-500/30 bg-amber-500/5">
@@ -590,7 +595,7 @@ export function PmpCustomerAccordion({ customer, lines, onLineClick, onLinkClick
               {customer || <span className="italic text-fg-muted">(sem cliente)</span>}
             </h3>
             <div className="flex items-center gap-3 text-[11px] text-fg-subtle tabular-nums">
-              {agg.live > 0    && <span className="text-emerald-400">● {agg.live} ao vivo</span>}
+              {agg.live > 0    && <span className="text-emerald-400">● {agg.live} no ar</span>}
               {agg.stopped > 0 && <span className="text-rose-400">● {agg.stopped} parou</span>}
               <span>{agg.count} {agg.count === 1 ? "line" : "lines"}</span>
             </div>
@@ -666,25 +671,70 @@ function Chevron({ open }) {
 //
 // Larguras generosas (140-160px) pra acomodar valores completos sem
 // abreviar — operação contábil precisa do número exato.
-const ROW_GRID = "grid grid-cols-[12px_minmax(0,1.7fr)_minmax(110px,0.8fr)_60px_140px_140px_140px_160px_64px_64px_minmax(72px,0.8fr)] gap-x-4";
+const ROW_GRID = "grid grid-cols-[12px_minmax(0,1.5fr)_minmax(150px,0.55fr)_140px_140px_140px_150px_60px_72px_minmax(82px,0.5fr)] gap-x-4";
 
-export function PmpLineRowHeader({ hidePi = false }) {
+export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "desc", onColumnClick = null }) {
   const grid = hidePi
-    ? "grid grid-cols-[12px_minmax(0,1.7fr)_minmax(110px,0.8fr)_60px_140px_140px_160px_64px_minmax(72px,0.8fr)] gap-x-4"
+    ? "grid grid-cols-[12px_minmax(0,1.6fr)_minmax(150px,0.55fr)_140px_140px_150px_60px_minmax(82px,0.55fr)] gap-x-4"
     : ROW_GRID;
+  const interactive = !!onColumnClick;
+
+  // Wrapper que vira <button> quando onColumnClick é fornecido. Mantém o
+  // mesmo alinhamento (text-right pra colunas numéricas) e injeta seta na
+  // coluna ativa.
+  //
+  // CUIDADO: <button> não herda font-size/font-weight/text-transform do pai
+  // (user-agent stylesheet sobrescreve), então `text-[10px] uppercase
+  // tracking-widest font-semibold` do container some quando o filho é
+  // <button>. Por isso aplico essas classes EXPLICITAMENTE no botão também.
+  const Th = ({ field, align = "right", emerald = false, children }) => {
+    const active = field && sortBy === field;
+    const arrow = active ? (sortDir === "asc" ? "↑" : "↓") : null;
+    const cls = cn(
+      "select-none",
+      align === "right" ? "text-right" : "text-left",
+      emerald && "text-emerald-400/80",
+    );
+    if (!field || !interactive) {
+      return <div className={cls}>{children}</div>;
+    }
+    const tip = active
+      ? (sortDir === "desc"
+          ? "Clique pra inverter (asc); 3º clique limpa"
+          : "Clique pra limpar a ordenação")
+      : "Clique pra ordenar do maior pro menor";
+    return (
+      <button
+        type="button"
+        onClick={() => onColumnClick(field)}
+        title={tip}
+        className={cn(
+          cls,
+          // Tipografia replicada pra não cair no default do <button>.
+          "text-[10px] uppercase tracking-widest font-semibold",
+          "inline-flex items-center gap-1 w-full cursor-pointer hover:text-fg transition-colors",
+          align === "right" && "justify-end",
+          active && "text-fg",
+        )}
+      >
+        <span>{children}</span>
+        {arrow && <span className="text-fg-muted text-[9px]">{arrow}</span>}
+      </button>
+    );
+  };
+
   return (
     <div className={cn(grid, "px-5 py-3 bg-surface/60 border-b border-border/60 text-[10px] uppercase tracking-widest font-semibold text-fg-subtle")}>
       <div />
-      <div>Cliente / Campanha</div>
-      <div className="text-right">Bid / Status</div>
-      <div className="text-right">Dias</div>
-      {!hidePi && <div className="text-right">PI</div>}
-      <div className="text-right">Cost</div>
-      <div className="text-right">Revenue</div>
-      <div className="text-right text-emerald-400/80">Margem HYPR</div>
-      <div className="text-right">Mgm %</div>
-      {!hidePi && <div className="text-right">% Entr</div>}
-      <div className="text-right">Delivery</div>
+      <Th field="customer" align="left">Cliente / Campanha</Th>
+      <Th>Bid / Status</Th>
+      {!hidePi && <Th field="pi_brl">PI</Th>}
+      <Th field="curator_total_cost">Cost</Th>
+      <Th field="curator_revenue">Revenue</Th>
+      <Th field="curator_margin" emerald>Margem HYPR</Th>
+      <Th field="effective_margin_pct">Mgm %</Th>
+      {!hidePi && <Th field="pct_a_receber">% Entr</Th>}
+      <Th field="hours_since_last_delivery">Delivery</Th>
     </div>
   );
 }
@@ -712,7 +762,7 @@ export function PmpLineRow({
   // Grid: quando hidePi, esconde a coluna PI (PI está no header do grupo).
   // Também esconde % Entrega per-line (faz sentido só ao nível do grupo).
   const grid = hidePi
-    ? "grid grid-cols-[12px_minmax(0,1.7fr)_minmax(110px,0.8fr)_60px_140px_140px_160px_64px_minmax(72px,0.8fr)] gap-x-4"
+    ? "grid grid-cols-[12px_minmax(0,1.6fr)_minmax(150px,0.55fr)_140px_140px_150px_60px_minmax(82px,0.55fr)] gap-x-4"
     : ROW_GRID;
 
   return (
@@ -777,13 +827,6 @@ export function PmpLineRow({
         </span>
       </div>
 
-      <div className={cn("text-right text-[12px] tabular-nums",
-        isCancelado ? "text-fg-subtle"
-        : line.days_remaining != null && line.days_remaining < 3 ? "text-rose-400"
-        : line.days_remaining != null && line.days_remaining < 7 ? "text-amber-400" : "text-fg-muted")}>
-        {line.days_remaining != null ? line.days_remaining : "—"}
-      </div>
-
       {!hidePi && (
         <div className="text-right text-[13px] tabular-nums">
           {hasPi ? (
@@ -794,6 +837,10 @@ export function PmpLineRow({
                   title={groupPi != null ? "PI compartilhado do grupo" : undefined}>
               {formatBRL(piToShow)}
             </span>
+          ) : isCancelado ? (
+            // Line cancelada não mostra CTA "vincular" — apenas placeholder.
+            // O drawer ainda permite vincular via edição (não polui a UI de lista).
+            <span className="text-fg-subtle/60">—</span>
           ) : (
             <button onClick={(e) => { e.stopPropagation(); onLinkClick?.(line); }}
                     className="text-[11px] text-amber-300 hover:text-amber-200 underline-offset-2 hover:underline">
@@ -921,10 +968,14 @@ function WorklistBucket({ bucket, onLineClick, onLinkClick, focused }) {
                   <div className="text-xs text-rose-400">{formatLastDelivery(l.hours_since_last_delivery) || "sem delivery"}</div>
                 )}
                 {bucket.key === "no_pi" && (
-                  <button onClick={(e) => { e.stopPropagation(); onLinkClick?.(l); }}
-                          className="text-xs text-amber-300 hover:text-amber-200 underline-offset-2 hover:underline">
-                    🔗 vincular
-                  </button>
+                  effectiveStatus(l) === "Cancelado" ? (
+                    <span className="text-xs text-fg-subtle/60">—</span>
+                  ) : (
+                    <button onClick={(e) => { e.stopPropagation(); onLinkClick?.(l); }}
+                            className="text-xs text-amber-300 hover:text-amber-200 underline-offset-2 hover:underline">
+                      🔗 vincular
+                    </button>
+                  )
                 )}
               </div>
             </button>

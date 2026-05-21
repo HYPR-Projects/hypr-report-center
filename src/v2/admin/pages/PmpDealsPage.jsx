@@ -24,7 +24,7 @@ import "../../v2.css";
 
 import {
   listPmpLines, savePmpLineOverrides, syncPmpV2,
-  suggestPmpLinks, linkPmpCommand,
+  suggestPmpLinks, linkPmpCommand, getPmpLine,
 } from "../../../lib/api";
 import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
@@ -36,12 +36,11 @@ import { ymd, parseYmd } from "../../../shared/dateFilter";
 import HyprReportCenterLogo from "../../../components/HyprReportCenterLogo";
 import { ThemeToggleV2 } from "../../components/ThemeToggleV2";
 import { TooltipProvider } from "../../../ui/Tooltip";
-import { formatTimeAgo } from "../lib/format";
 import {
   PMP_STATUSES, statusPillClass,
   LIVE_STATUSES, HISTORY_STATUSES, effectiveDeliveryMeta,
   bidTypeLabel,
-  formatBRL, formatInt, formatRatioPct,
+  formatBRL, formatBRLCompact, formatInt, formatIntCompact, formatRatioPct,
   comparePmpLines, formatLastDelivery,
   pctEntrega, groupPctEntrega,
   effectiveStatus,
@@ -53,6 +52,7 @@ import {
   PmpWorklistView,
 } from "../components/PmpComponents";
 import { GroupLinesModal } from "../components/GroupLinesModal";
+import { PmpFreshnessIndicator } from "../components/PmpFreshnessIndicator";
 
 const ALL = "__ALL__";
 
@@ -60,6 +60,10 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   const [lines, setLines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // Saves em voo (multi-save paralelo). Set de line_ids com save pendente.
+  const [savingLineIds, setSavingLineIds] = useState(() => new Set());
+  const startSaving = (id) => setSavingLineIds(prev => { const n = new Set(prev); n.add(id); return n; });
+  const finishSaving = (id) => setSavingLineIds(prev => { const n = new Set(prev); n.delete(id); return n; });
 
   // Layout
   const [layout, setLayout] = useState(() => {
@@ -71,21 +75,32 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
 
   // Filtros transversais
   const [search, setSearch]   = useState("");
-  const [customer, setCustomer] = useState(ALL);
+  // Cliente é multi-select: array de nomes. Vazio = todos.
+  const [customer, setCustomer] = useState([]);
   const [bidType, setBidType] = useState(ALL);
   const [status, setStatus]   = useState(ALL);
   const [focusBucket, setFocusBucket] = useState(null);
 
   // Filtros temporais — só aplicam na aba Histórico.
-  //   histPeriod = { from: "YYYY-MM-DD"|null, to: "YYYY-MM-DD"|null, presetId }
-  //   histQuarter = { year: 2026, q: 2 } ou null
-  // Quando ambos setados: intersecção (AND).
+  //   histPeriod    = { from: "YYYY-MM-DD"|null, to: "YYYY-MM-DD"|null, presetId }
+  //   histQuarters  = [{ year: 2026, q: 2 }, ...] (multi). [] = sem filtro.
+  // Período × trimestres: AND (line precisa estar no Período E em pelo menos
+  // 1 dos trimestres). Multi-trimestre é UNION dos ranges, permite faixas
+  // não-contíguas (ex: Q1 + Q3 sem incluir Q2).
   const [histPeriod, setHistPeriod] = useState({ presetId: "all", from: null, to: null });
-  const [histQuarter, setHistQuarter] = useState(null);
+  const [histQuarters, setHistQuarters] = useState([]);
 
-  // Sort (só pra layout lista)
+  // Sort — duas instâncias separadas porque os defaults fazem sentido
+  // diferentes em cada view (Lista: mais stale primeiro; Histórico:
+  // ativação mais recente primeiro).
   const [sortBy, setSortBy]   = useState("hours_since_last_delivery");
   const [sortDir, setSortDir] = useState("asc");
+  const [histSortBy, setHistSortBy]   = useState("start_date");
+  const [histSortDir, setHistSortDir] = useState("desc");
+  // Defaults pra checar quando voltar pro estado "sem sort manual" (chip
+  // "Ordenado:" só aparece quando há divergência do default).
+  const LIST_DEFAULT_SORT = { by: "hours_since_last_delivery", dir: "asc" };
+  const HIST_DEFAULT_SORT = { by: "start_date", dir: "desc" };
 
   // Modals
   const [editing, setEditing] = useState(null);
@@ -118,6 +133,13 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   // completo aparece em Lista E Histórico. Isso preserva o contexto de A/B
   // test (você nunca olha pra metade do grupo).
   const partitions = useMemo(() => {
+    // Status workflow terminal: line "Finalizado"/"Cancelado" sai de Lista/Ao vivo
+    // mesmo que o Xandr ainda mostre delivery — o admin marcou como fora de
+    // operação, então só deve aparecer em Histórico.
+    const isWorkflowTerminal = (l) => {
+      const eff = effectiveStatus(l);
+      return eff === "Finalizado" || eff === "Cancelado";
+    };
     // 1. Mapa group_id → todos os membros
     const groupLines = new Map();
     for (const l of lines) {
@@ -132,6 +154,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
       const views = new Set();
       for (const m of members) {
         if (m.is_archived) views.add("history");
+        else if (isWorkflowTerminal(m)) views.add("history");
         else if (LIVE_STATUSES.has(m.delivery_status)) views.add("live");
         else if (HISTORY_STATUSES.has(m.delivery_status)) views.add("history");
         else views.add("other");
@@ -157,6 +180,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
           pushOnce(other, "other", l);
       } else {
         if (l.is_archived) pushOnce(history, "history", l);
+        else if (isWorkflowTerminal(l)) pushOnce(history, "history", l);
         else if (LIVE_STATUSES.has(l.delivery_status))    pushOnce(live, "live", l);
         else if (HISTORY_STATUSES.has(l.delivery_status)) pushOnce(history, "history", l);
         else                                              pushOnce(other, "other", l);
@@ -169,7 +193,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   const applyFilters = (arr) => {
     const term = search.trim().toLowerCase();
     return arr.filter(l => {
-      if (customer !== ALL && l.customer !== customer) return false;
+      if (customer.length > 0 && !customer.includes(l.customer)) return false;
       if (bidType  !== ALL && (l.bid_type || "—") !== bidType) return false;
       if (status   !== ALL && effectiveStatus(l) !== status) return false;
       if (term) {
@@ -184,33 +208,38 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   // Histórico passa a ser LIFETIME: mostra TODOS os deals (ativos + encerrados
   // + arquivados), com filtros aplicados. Vira a aba "tudo".
   // Filtros de período/trimestre só aplicam na aba Histórico, e fazem intersecção.
-  const dateRangeFromHistFilters = useMemo(() => {
-    let from = histPeriod.from, to = histPeriod.to;
-    if (histQuarter) {
-      const { year, q } = histQuarter;
+  // Trimestres selecionados viram lista de ranges [{from, to}]. Multi-Q é
+  // UNION (line passa se cair em qualquer range) — permite seleção não
+  // contígua como Q1 + Q3.
+  const quarterRanges = useMemo(() => {
+    return histQuarters.map(({ year, q }) => {
       const qFrom = `${year}-${String((q-1)*3 + 1).padStart(2,"0")}-01`;
       const qToMonth = q*3;
       const qToLastDay = new Date(year, qToMonth, 0).getDate();
       const qTo = `${year}-${String(qToMonth).padStart(2,"0")}-${String(qToLastDay).padStart(2,"0")}`;
-      from = from && from > qFrom ? from : qFrom;
-      to   = to   && to   < qTo   ? to   : qTo;
-    }
-    return { from, to };
-  }, [histPeriod, histQuarter]);
+      return { from: qFrom, to: qTo };
+    });
+  }, [histQuarters]);
 
   const allLinesFiltered = useMemo(() => {
     const base = applyFilters(lines);
-    const { from, to } = dateRangeFromHistFilters;
-    if (!from && !to) return base;
+    const { from, to } = histPeriod;
+    if (!from && !to && quarterRanges.length === 0) return base;
     // Filtra pelo start_date (ativação) com fallback pra last_delivery_day.
     return base.filter(l => {
       const ref = l.start_date || l.last_delivery_day;
       if (!ref) return false;
+      // Período (AND com trimestres).
       if (from && ref < from) return false;
       if (to   && ref > to)   return false;
+      // Trimestres: line precisa estar em PELO MENOS 1 range (union).
+      if (quarterRanges.length > 0) {
+        const inAny = quarterRanges.some(r => ref >= r.from && ref <= r.to);
+        if (!inAny) return false;
+      }
       return true;
     });
-  }, [lines, search, customer, bidType, status, dateRangeFromHistFilters]);
+  }, [lines, search, customer, bidType, status, histPeriod, quarterRanges]);
 
   const allFiltered = useMemo(() => applyFilters([...partitions.live, ...partitions.other]), [partitions, search, customer, bidType, status]);
   // Worklist olha a BASE INTEIRA (não só partitions.live) — pega line com
@@ -237,23 +266,38 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   // % entrega = margem ÷ PI.
   const kpis = useMemo(() => {
     let pi = 0, revenue = 0, margin = 0, imps = 0, revenue7d = 0;
-    let withPi = 0, pctSum = 0, pctCount = 0;
+    let withPi = 0;
+    // Regras de agregação:
+    //   • Canceladas saem do total (não somam PI, revenue, margem).
+    //   • PI é COMPARTILHADO no grupo — dedup por group_id pra contar 1×.
+    //   • Revenue/margem/imps por-line (cada line entrega o seu).
+    //   • % entrega = Σ Margem HYPR ÷ Σ Total PI (global, não média de ratios).
+    //
+    // CUIDADO: nem todo membro do grupo tem `pi_brl` setado (só os com Command
+    // vinculado). Marcar o grupo como "visto" no primeiro membro pode esconder
+    // o PI se ele estiver num membro seguinte. Solução: só consumir o grupo
+    // quando encontrar um membro com PI não-nulo.
+    const seenGroups = new Set();
     for (const l of visibleLines) {
-      pi      += Number(l.pi_brl          || 0);
+      if (effectiveStatus(l) === "Cancelado") continue;
       revenue += Number(l.curator_revenue || 0);
       margin  += Number(l.curator_margin  || 0);
       imps    += Number(l.imps            || 0);
       revenue7d += Number(l.revenue_last_7d || 0);
-      if (l.pi_brl != null) {
-        withPi++;
-        const p = pctEntrega(l);
-        if (p != null) { pctSum += p; pctCount++; }
+      if (l.group_id) {
+        if (seenGroups.has(l.group_id)) continue;
+        if (l.pi_brl == null) continue;     // espera um membro do grupo com PI
+        seenGroups.add(l.group_id);
+      } else if (l.pi_brl == null) {
+        continue;
       }
+      pi += Number(l.pi_brl);
+      withPi++;
     }
     return {
       pi, revenue, margin, imps, revenue7d,
       countWithPi: withPi,
-      avgPctReceber: pctCount > 0 ? pctSum / pctCount : null,
+      pctReceber: pi > 0 ? margin / pi : null,
     };
   }, [visibleLines]);
 
@@ -305,6 +349,14 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     return max;
   }, [lines]);
 
+  // Última data de entrega coberta pelo sync — usado no popover do
+  // indicador de frescor pra dar contexto do que tá na base.
+  const latestDeliveryDay = useMemo(() => {
+    let max = null;
+    for (const l of lines) if (l.last_delivery_day && (!max || l.last_delivery_day > max)) max = l.last_delivery_day;
+    return max;
+  }, [lines]);
+
   // ── Actions ───────────────────────────────────────────────────────────────
   const onSync = async () => {
     setSyncing(true); setSyncResult(null);
@@ -336,7 +388,8 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
 
     // Optimistic UI: fecha drawer já e atualiza localmente antes do server
     // responder. Save roda em background — bloquear o user nos ~3-5s do BQ
-    // é o que parecia "trava".
+    // é o que parecia "trava". Múltiplos saves rodam em paralelo (Set de
+    // savingLineIds dá feedback global no header).
     setEditing(null);
     setLines(prev => prev.map(l => {
       if (l.line_id === targetLine.line_id) return { ...l, ...fields };
@@ -346,17 +399,21 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
       return l;
     }));
 
+    startSaving(targetLine.line_id);
     try {
       const updated = await savePmpLineOverrides({ line_id: targetLine.line_id, ...fields });
       // Sincroniza com o server (sobrescreve valores derivados / timestamps).
       setLines(prev => prev.map(l => l.line_id === updated.line_id ? { ...l, ...updated } : l));
-      // Se propagou no grupo, recarrega tudo pra refletir o resto (server
-      // já fez o UPDATE em massa).
+      // Se propagou no grupo, recarrega em background pra refletir o resto
+      // (server já fez o UPDATE em massa). Reload NÃO mostra skeleton —
+      // grid fica visível, indicador sutil no header.
       if (targetLine.group_id && Object.keys(groupPropagate).length > 0) {
         reload();
       }
     } catch (e) {
       alert("Erro ao salvar: " + e.message);
+    } finally {
+      finishSaving(targetLine.line_id);
     }
   };
 
@@ -425,7 +482,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     const map = new Map();
     for (const l of lines) {
       if (l.is_archived) continue;  // testes/seeds arquivadas: só no Histórico
-      if (search || customer !== ALL || bidType !== ALL || status !== ALL) {
+      if (search || customer.length > 0 || bidType !== ALL || status !== ALL) {
         if (!applyFilters([l]).length) continue;
       }
       const key = l.customer || "(sem cliente)";
@@ -456,6 +513,16 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
             <HyprReportCenterLogo height={32} />
           </button>
           <div className="flex items-center gap-2 md:gap-3">
+            {/* Status do sync Xandr Curate · ação "Sincronizar agora" mora
+                dentro do popover. Slot espelha o DataFreshnessIndicator do
+                menu admin pra manter consistência entre as duas headers. */}
+            <PmpFreshnessIndicator
+              lastSyncedAt={lastSyncedAt}
+              latestDeliveryDay={latestDeliveryDay}
+              linesCount={lines.length || null}
+              onSync={onSync}
+              syncing={syncing}
+            />
             <ThemeToggleV2 />
             {user?.picture && (
               <img src={user.picture} alt="" referrerPolicy="no-referrer"
@@ -478,7 +545,6 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
               <button onClick={onBackToMenu} className="hover:text-fg transition-colors">Admin</button>
               <span>/</span>
               <span className="text-fg-muted">PMP Lines</span>
-              <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wider bg-signature/15 text-signature">v3</span>
             </div>
             <h1 className="text-3xl font-bold tracking-tight text-fg leading-tight">
               Deals de Pagamento
@@ -492,18 +558,13 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {lastSyncedAt && (
-              <span className="text-[11px] text-fg-subtle hidden md:inline tabular-nums"
-                    title={`Última sync: ${new Date(lastSyncedAt).toLocaleString("pt-BR")}`}>
-                Xandr {formatTimeAgo(lastSyncedAt)}
+            {savingLineIds.size > 0 && (
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-signature tabular-nums"
+                    title="Saves em andamento — você pode continuar editando outras lines">
+                <span className="w-1.5 h-1.5 rounded-full bg-signature animate-pulse" />
+                Salvando {savingLineIds.size > 1 ? `${savingLineIds.size} alterações` : "alteração"}…
               </span>
             )}
-            <Button variant="ghost" size="md" onClick={onSync} disabled={syncing || loading}>
-              {syncing ? "Sincronizando..." : "Sync Xandr"}
-            </Button>
-            <Button variant="ghost" size="md" onClick={reload} disabled={loading}>
-              Recarregar
-            </Button>
             <Button variant="primary" size="md" onClick={onExport} disabled={!allFiltered.length}>
               Exportar
             </Button>
@@ -511,14 +572,14 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
         </div>
 
         {/* KPIs */}
-        {!loading && lines.length > 0 && (
+        {lines.length > 0 && (
           <div className="mb-6">
             <PmpKpiStrip kpis={kpis} livesCount={partitions.live.length} totalCount={lines.length} />
           </div>
         )}
 
         {/* Alertas (chips clicáveis → worklist) */}
-        {!loading && alerts.length > 0 && (
+        {lines.length > 0 && alerts.length > 0 && (
           <div className="mb-8">
             <PmpAlertsBar alerts={alerts} onClickAlert={onAlertClick} />
           </div>
@@ -533,13 +594,29 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
           {layout === "history" && (
             <div className="flex flex-wrap items-center gap-2">
               <PeriodFilterPill value={histPeriod} onChange={setHistPeriod} />
-              <QuarterFilterPill value={histQuarter} onChange={setHistQuarter} availableYears={historyYears} />
-              {(histPeriod.from || histPeriod.to || histQuarter) && (
-                <button onClick={() => { setHistPeriod({ presetId: "all", from: null, to: null }); setHistQuarter(null); }}
+              <QuarterFilterPill values={histQuarters} onChange={setHistQuarters} availableYears={historyYears} />
+              <SortChip
+                visible={histSortBy !== HIST_DEFAULT_SORT.by || histSortDir !== HIST_DEFAULT_SORT.dir}
+                field={histSortBy}
+                dir={histSortDir}
+                onClear={() => { setHistSortBy(HIST_DEFAULT_SORT.by); setHistSortDir(HIST_DEFAULT_SORT.dir); }}
+              />
+              {(histPeriod.from || histPeriod.to || histQuarters.length > 0) && (
+                <button onClick={() => { setHistPeriod({ presetId: "all", from: null, to: null }); setHistQuarters([]); }}
                         className="text-xs text-fg-muted hover:text-fg underline-offset-2 hover:underline">
                   Limpar
                 </button>
               )}
+            </div>
+          )}
+          {layout === "list" && (sortBy !== LIST_DEFAULT_SORT.by || sortDir !== LIST_DEFAULT_SORT.dir) && (
+            <div className="flex flex-wrap items-center gap-2">
+              <SortChip
+                visible
+                field={sortBy}
+                dir={sortDir}
+                onClear={() => { setSortBy(LIST_DEFAULT_SORT.by); setSortDir(LIST_DEFAULT_SORT.dir); }}
+              />
             </div>
           )}
         </div>
@@ -547,19 +624,19 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
         {/* Filtros sticky */}
         <div className="mb-6 flex flex-wrap items-center gap-2">
           <SearchInput value={search} onChange={setSearch} />
-          <FilterSelect label="Cliente" value={customer} onChange={setCustomer} options={customersAll} />
+          <FilterMultiSelect label="Cliente" values={customer} onChange={setCustomer} options={customersAll} />
           <FilterSelect label="Bid"     value={bidType}  onChange={setBidType}  options={["flex","fixed"]} />
           <FilterSelect label="Status"  value={status}   onChange={setStatus}   options={PMP_STATUSES} />
-          {(search || customer !== ALL || bidType !== ALL || status !== ALL) && (
-            <button onClick={() => { setSearch(""); setCustomer(ALL); setBidType(ALL); setStatus(ALL); }}
+          {(search || customer.length > 0 || bidType !== ALL || status !== ALL) && (
+            <button onClick={() => { setSearch(""); setCustomer([]); setBidType(ALL); setStatus(ALL); }}
                     className="text-xs text-fg-muted hover:text-fg underline-offset-2 hover:underline ml-1">
               Limpar
             </button>
           )}
         </div>
 
-        {/* Views */}
-        {loading ? <LinesSkeleton />
+        {/* Views — skeleton só no load inicial; reload em background mantém a grid visível */}
+        {(loading && lines.length === 0) ? <LinesSkeleton />
           : error  ? <ErrorState message={error} onRetry={reload} />
           : (
             <>
@@ -567,13 +644,23 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
               {layout === "client"   && <ClientView   groups={byCustomer}     onLineClick={setEditing} onLinkClick={setLinking} />}
               {layout === "list"     && <ListView     lines={allSorted}       sortBy={sortBy} sortDir={sortDir}
                                                        onColumnClick={(f) => {
-                                                         if (f === sortBy) setSortDir(sortDir === "asc" ? "desc" : "asc");
-                                                         else { setSortBy(f); setSortDir("desc"); }
+                                                         // Ciclo 3-estado: desc → asc → default
+                                                         if (f !== sortBy) { setSortBy(f); setSortDir("desc"); }
+                                                         else if (sortDir === "desc") setSortDir("asc");
+                                                         else { setSortBy(LIST_DEFAULT_SORT.by); setSortDir(LIST_DEFAULT_SORT.dir); }
                                                        }}
                                                        onLineClick={setEditing} onLinkClick={setLinking} />}
               {layout === "worklist" && <PmpWorklistView lines={worklistFiltered} focusBucket={focusBucket}
                                                           onLineClick={setEditing} onLinkClick={setLinking} />}
-              {layout === "history"  && <HistoryView  lines={allLinesFiltered} onLineClick={setEditing} onLinkClick={setLinking} />}
+              {layout === "history"  && <HistoryView  lines={allLinesFiltered}
+                                                       sortBy={histSortBy} sortDir={histSortDir}
+                                                       onColumnClick={(f) => {
+                                                         // Ciclo 3-estado: desc → asc → default
+                                                         if (f !== histSortBy) { setHistSortBy(f); setHistSortDir("desc"); }
+                                                         else if (histSortDir === "desc") setHistSortDir("asc");
+                                                         else { setHistSortBy(HIST_DEFAULT_SORT.by); setHistSortDir(HIST_DEFAULT_SORT.dir); }
+                                                       }}
+                                                       onLineClick={setEditing} onLinkClick={setLinking} />}
             </>
           )
         }
@@ -599,8 +686,8 @@ function LiveView({ lines, onLineClick, onLinkClick }) {
   if (lines.length === 0) {
     return (
       <div className="rounded-xl border border-dashed border-border bg-canvas-elevated px-6 py-16 text-center">
-        <div className="text-fg-muted text-sm">Nenhuma line ao vivo no momento.</div>
-        <div className="text-fg-subtle text-xs mt-2">Lines "ao vivo" são as que tiveram delivery nos últimos 7 dias.</div>
+        <div className="text-fg-muted text-sm">Nenhuma line no ar no momento.</div>
+        <div className="text-fg-subtle text-xs mt-2">Lines "no ar" são as que tiveram delivery nos últimos 7 dias.</div>
       </div>
     );
   }
@@ -691,7 +778,7 @@ function ListView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLinkCl
 
   return (
     <div className="rounded-xl border border-border bg-canvas-elevated overflow-hidden">
-      <PmpLineRowHeader />
+      <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
       <div className="divide-y divide-border/60">
         {items.map((it) => {
           if (it.kind === "single") {
@@ -733,7 +820,68 @@ function resolveGroupPi(members) {
   return null;
 }
 
-function HistoryView({ lines, onLineClick, onLinkClick }) {
+// Mapa de campo per-line → campo agregado do grupo. Pro sort de grupos
+// pegar o valor "real" do grupo (PI compartilhado, revenue/margin/cost
+// somados) em vez do membro arbitrário no índice 0.
+const GROUP_FIELD_MAP = {
+  curator_total_cost:   "group_curator_total_cost",
+  curator_revenue:      "group_curator_revenue",
+  curator_margin:       "group_curator_margin",
+  effective_margin_pct: "group_effective_margin_pct",
+  pct_a_receber:        "group_pct_a_receber",
+};
+
+function itemSortValue(item, field) {
+  if (item.kind === "single") return item.line[field];
+  const members = item.members;
+  if (field === "pi_brl") return resolveGroupPi(members);
+  if (field === "hours_since_last_delivery") {
+    // Grupo herda o MAIS RECENTE (menor hours) entre os membros.
+    let min = Infinity;
+    for (const m of members) {
+      const v = m.hours_since_last_delivery;
+      if (v != null && v < min) min = v;
+    }
+    return min === Infinity ? null : min;
+  }
+  if (field === "start_date" || field === "last_delivery_day" || field === "end_date") {
+    // Datas no grupo: pega a MAIS RECENTE entre membros (a ativação/entrega
+    // mais nova representa o grupo no histórico).
+    let max = "";
+    for (const m of members) {
+      const v = m[field] || "";
+      if (v > max) max = v;
+    }
+    return max || null;
+  }
+  const aggField = GROUP_FIELD_MAP[field];
+  if (aggField && members[0][aggField] != null) return members[0][aggField];
+  return members[0][field];
+}
+
+function sortItems(items, field, dir) {
+  if (!field) return items;
+  const out = [...items];
+  out.sort((a, b) => {
+    const va = itemSortValue(a, field);
+    const vb = itemSortValue(b, field);
+    const aN = va == null || va === "";
+    const bN = vb == null || vb === "";
+    if (aN && bN) return 0;
+    if (aN) return 1;
+    if (bN) return -1;
+    if (typeof va === "number" && typeof vb === "number") {
+      return dir === "asc" ? va - vb : vb - va;
+    }
+    const sa = String(va).toLowerCase(), sb = String(vb).toLowerCase();
+    if (sa < sb) return dir === "asc" ? -1 : 1;
+    if (sa > sb) return dir === "asc" ? 1 : -1;
+    return 0;
+  });
+  return out;
+}
+
+function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLinkClick }) {
   if (lines.length === 0) {
     return (
       <div className="rounded-xl border border-dashed border-border bg-canvas-elevated px-6 py-16 text-center">
@@ -762,30 +910,22 @@ function HistoryView({ lines, onLineClick, onLinkClick }) {
     }
   }
 
-  // 2. Cria "items" pra render — cada item é {kind:"group"|"single", ...sort_key}
-  //    Sort key = start_date (data de ativação). Grupo usa o MAIS RECENTE
-  //    entre seus membros (= a ativação mais nova representa o grupo).
-  //    Fallback pra last_delivery_day / end_date se start_date ausente.
+  // 2. Cria items pra render. Sort dinâmico pelo header clicado;
+  //    default = start_date desc (ativação mais nova no topo).
   const items = [];
-  const sortKeyOf = (l) => l.start_date || l.last_delivery_day || l.end_date || "";
   for (const [gid, members] of byGroup) {
-    const sortKey = members.reduce((max, m) => {
-      const k = sortKeyOf(m);
-      return k > max ? k : max;
-    }, "");
-    items.push({ kind: "group", group_id: gid, members, sortKey });
+    items.push({ kind: "group", group_id: gid, members });
   }
   for (const l of singles) {
-    items.push({ kind: "single", line: l, sortKey: sortKeyOf(l) });
+    items.push({ kind: "single", line: l });
   }
-  // 3. Sort items por sortKey DESC (ativação mais recente no topo)
-  items.sort((a, b) => b.sortKey.localeCompare(a.sortKey));
+  const sorted = sortItems(items, sortBy || "start_date", sortDir || "desc");
 
   return (
     <div className="rounded-xl border border-border bg-canvas-elevated overflow-hidden">
-      <PmpLineRowHeader />
+      <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
       <div className="divide-y divide-border/60 max-h-[calc(100vh-380px)] overflow-y-auto">
-        {items.map((it) => {
+        {sorted.map((it) => {
           if (it.kind === "single") {
             return <PmpLineRow key={it.line.line_id} line={it.line} onClick={onLineClick} onLinkClick={onLinkClick} />;
           }
@@ -819,7 +959,7 @@ function HistoryView({ lines, onLineClick, onLinkClick }) {
 // ─── Subtotal inline minimalista (mesmo grid do row, sem cores berrantes) ───
 function InlineGroupSubtotal({ members, groupPi, groupPctReceber }) {
   const first = members[0];
-  const grid = "grid grid-cols-[12px_minmax(0,1.7fr)_minmax(110px,0.8fr)_60px_140px_140px_140px_160px_64px_64px_minmax(72px,0.8fr)] gap-x-4";
+  const grid = "grid grid-cols-[12px_minmax(0,1.5fr)_minmax(150px,0.55fr)_140px_140px_140px_150px_60px_72px_minmax(82px,0.5fr)] gap-x-4";
   return (
     <div className={cn(grid, "px-5 py-2.5 items-center border-t border-border/40 bg-surface/40 text-[12px]")}>
       <div />
@@ -827,7 +967,6 @@ function InlineGroupSubtotal({ members, groupPi, groupPctReceber }) {
         Subtotal do grupo · {members.length} lines
       </div>
       <div /> {/* bid/status */}
-      <div /> {/* dias */}
       <div className="text-right tabular-nums text-fg font-bold">
         {groupPi != null ? formatBRL(groupPi) : "—"}
       </div>
@@ -890,6 +1029,166 @@ function FilterSelect({ label, value, onChange, options }) {
   );
 }
 
+// Multi-select com popover: trigger igual ao FilterSelect (mesma altura/borda)
+// + dropdown com search, checkbox por item, ações Selecionar tudo / Limpar.
+// `values=[]` significa "Todos" — evita força bruta de marcar tudo no estado.
+function FilterMultiSelect({ label, values, onChange, options }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const opts = useMemo(
+    () => options.map(o => typeof o === "string" ? { value: o, label: o } : o),
+    [options],
+  );
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return opts;
+    return opts.filter(o => o.label.toLowerCase().includes(q));
+  }, [opts, query]);
+
+  const isAll = values.length === 0;
+  const summary = isAll
+    ? "Todos"
+    : values.length === 1
+      ? (opts.find(o => o.value === values[0])?.label || values[0])
+      : `${values.length} selecionados`;
+
+  const toggle = (v) => {
+    if (values.includes(v)) onChange(values.filter(x => x !== v));
+    else onChange([...values, v]);
+  };
+
+  // Reset busca quando fecha — UX limpa na próxima abertura.
+  useEffect(() => { if (!open) setQuery(""); }, [open]);
+
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <label className="inline-flex items-center gap-2">
+        <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle hidden sm:inline">{label}</span>
+        <Popover.Trigger asChild>
+          <button
+            type="button"
+            className={cn(
+              "inline-flex items-center justify-between gap-2 h-9 pl-3 pr-2.5 min-w-[140px]",
+              "rounded-lg bg-surface border text-sm cursor-pointer",
+              "hover:bg-surface-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
+              isAll ? "border-border text-fg" : "border-signature/50 text-fg",
+            )}
+          >
+            <span className={cn("truncate", !isAll && "font-medium")}>{summary}</span>
+            {!isAll && (
+              <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-signature/20 text-signature text-[10px] font-bold tabular-nums shrink-0">
+                {values.length}
+              </span>
+            )}
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                 className="text-fg-subtle shrink-0">
+              <path d="m6 9 6 6 6-6"/>
+            </svg>
+          </button>
+        </Popover.Trigger>
+      </label>
+      <Popover.Portal>
+        <Popover.Content
+          sideOffset={6}
+          align="start"
+          collisionPadding={16}
+          className={cn(
+            "z-50 w-[280px] max-w-[calc(100vw-32px)]",
+            "rounded-lg border border-border bg-canvas-elevated shadow-lg overflow-hidden",
+            "data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out",
+            "focus-visible:outline-none",
+          )}
+        >
+          <div className="px-3 pt-3 pb-2 border-b border-border">
+            <div className="relative">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                   className="absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-subtle pointer-events-none">
+                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+              </svg>
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Buscar cliente…"
+                autoFocus
+                className="w-full h-8 pl-7 pr-2 rounded-md bg-surface border border-border text-xs text-fg placeholder:text-fg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between px-3 py-1.5 border-b border-border text-[11px]">
+            <button
+              type="button"
+              onClick={() => onChange(opts.map(o => o.value))}
+              disabled={values.length === opts.length}
+              className="text-fg-muted hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Selecionar tudo
+            </button>
+            <button
+              type="button"
+              onClick={() => onChange([])}
+              disabled={isAll}
+              className="text-fg-muted hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Limpar
+            </button>
+          </div>
+
+          <div className="max-h-[280px] overflow-y-auto py-1">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-4 text-xs text-fg-subtle italic text-center">
+                Nenhum cliente encontrado
+              </div>
+            ) : filtered.map(o => {
+              const checked = values.includes(o.value);
+              return (
+                <label
+                  key={o.value}
+                  className={cn(
+                    "flex items-center gap-2.5 px-3 py-2 cursor-pointer transition-colors",
+                    checked ? "bg-signature/10 hover:bg-signature/20" : "hover:bg-surface",
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggle(o.value)}
+                    className="sr-only peer"
+                  />
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "shrink-0 w-4 h-4 rounded-[4px] border-2 inline-flex items-center justify-center transition-colors",
+                      checked ? "bg-signature border-signature" : "border-fg-subtle",
+                      "peer-focus-visible:ring-2 peer-focus-visible:ring-signature peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-canvas-elevated",
+                    )}
+                  >
+                    {checked && (
+                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="white"
+                           strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M1.5 5.5L4 8L8.5 2"/>
+                      </svg>
+                    )}
+                  </span>
+                  <span className={cn(
+                    "text-sm flex-1 min-w-0 truncate",
+                    checked ? "text-fg font-medium" : "text-fg-muted",
+                  )}>
+                    {o.label}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
 // ───── Filtros de período do Histórico ──────────────────────────────────────
 const HIST_PERIOD_PRESETS = [
   { id: "all",        label: "Tudo" },
@@ -925,6 +1224,41 @@ function formatRangeCompact(from, to) {
   const [yt, mt, dt] = to.split("-");
   const sameYear = yf === yt;
   return sameYear ? `${df}/${mf} → ${dt}/${mt}` : `${df}/${mf}/${yf.slice(-2)} → ${dt}/${mt}/${yt.slice(-2)}`;
+}
+
+// Label humano por campo sortable — usado no chip "Ordenado: X" pra
+// indicar de forma clara qual coluna tá ativa.
+const SORT_FIELD_LABELS = {
+  customer:                  "Cliente",
+  pi_brl:                    "PI",
+  curator_total_cost:        "Cost",
+  curator_revenue:           "Revenue",
+  curator_margin:            "Margem",
+  effective_margin_pct:      "Mgm %",
+  pct_a_receber:             "% Entr",
+  hours_since_last_delivery: "Delivery",
+  start_date:                "Ativação",
+};
+
+// Chip "Ordenado: Margem ↓ ×" — fica visível quando a sort diverge do default
+// da view. Click no chip inteiro limpa (volta pro default). Atalho mais
+// óbvio que ficar lembrando do "clique 3× pra limpar" no header.
+function SortChip({ visible, field, dir, onClear }) {
+  if (!visible) return null;
+  const label = SORT_FIELD_LABELS[field] || field;
+  const arrow = dir === "asc" ? "↑" : "↓";
+  return (
+    <button
+      type="button"
+      onClick={onClear}
+      title="Voltar pra ordem padrão"
+      className="group inline-flex items-center gap-1.5 h-9 pl-2.5 pr-2 rounded-lg border border-signature/50 bg-signature/10 text-signature text-xs hover:bg-signature/15 transition-colors"
+    >
+      <span className="text-[10px] uppercase tracking-widest font-bold opacity-70">Ordenado</span>
+      <span className="font-medium">{label} {arrow}</span>
+      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-signature/20 group-hover:bg-signature/30 text-[12px] leading-none transition-colors">×</span>
+    </button>
+  );
 }
 
 function PeriodFilterPill({ value, onChange }) {
@@ -1028,11 +1362,28 @@ function PeriodFilterPill({ value, onChange }) {
   );
 }
 
-function QuarterFilterPill({ value, onChange, availableYears }) {
+// Multi-select de trimestres. `values` = array de { year, q }. Permite mix
+// não-contíguo (Q1 + Q3) e cross-ano (Q4 2025 + Q1 2026). Cada Q vira um
+// toggle no grid; popover não fecha ao selecionar (multi-pick fluido).
+function QuarterFilterPill({ values, onChange, availableYears }) {
   const [open, setOpen] = useState(false);
-  const [year, setYear] = useState(() => value?.year || availableYears[0] || new Date().getFullYear());
-  const isActive = !!value;
-  const label = isActive ? `Q${value.q} ${value.year}` : "Trimestre";
+  const [year, setYear] = useState(() => values[0]?.year || availableYears[0] || new Date().getFullYear());
+  const isActive = values.length > 0;
+  const sameYear = isActive && values.every(v => v.year === values[0].year);
+  const label =
+    !isActive               ? "Trimestre"
+    : values.length === 1   ? `Q${values[0].q} ${values[0].year}`
+    : sameYear              ? `${values.length} trim. ${values[0].year}`
+                            : `${values.length} trimestres`;
+
+  const isSelected = (year, q) => values.some(v => v.year === year && v.q === q);
+  const toggle = (year, q) => {
+    if (isSelected(year, q)) {
+      onChange(values.filter(v => !(v.year === year && v.q === q)));
+    } else {
+      onChange([...values, { year, q }]);
+    }
+  };
 
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
@@ -1040,7 +1391,7 @@ function QuarterFilterPill({ value, onChange, availableYears }) {
         <button className={cn(
           "inline-flex items-center gap-2 h-9 px-3 rounded-lg border text-sm transition-colors",
           isActive
-            ? "border-signature/40 bg-signature/10 text-signature"
+            ? "border-signature/50 bg-signature/10 text-signature"
             : "border-border bg-surface text-fg hover:bg-surface-strong",
         )}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1048,6 +1399,11 @@ function QuarterFilterPill({ value, onChange, availableYears }) {
             <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
           </svg>
           <span>{label}</span>
+          {isActive && values.length > 1 && (
+            <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-signature/20 text-signature text-[10px] font-bold tabular-nums">
+              {values.length}
+            </span>
+          )}
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={cn("transition-transform", open && "rotate-180")}>
             <path d="m6 9 6 6 6-6"/>
           </svg>
@@ -1073,26 +1429,42 @@ function QuarterFilterPill({ value, onChange, availableYears }) {
           </div>
           <div className="grid grid-cols-2 gap-2 mb-3">
             {[1,2,3,4].map(q => {
-              const active = value && value.year === year && value.q === q;
+              const active = isSelected(year, q);
               const months = ["Jan-Mar","Abr-Jun","Jul-Set","Out-Dez"][q-1];
               return (
-                <button key={q} onClick={() => { onChange({ year, q }); setOpen(false); }}
+                <button key={q} onClick={() => toggle(year, q)}
                         className={cn(
-                          "flex flex-col items-center gap-0.5 py-3 rounded-lg border transition-colors",
+                          "relative flex flex-col items-center gap-0.5 py-3 rounded-lg border transition-colors",
                           active
                             ? "border-signature bg-signature/15 text-signature"
                             : "border-border bg-surface hover:bg-surface-strong text-fg",
                         )}>
+                  {active && (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"
+                         className="absolute top-1.5 right-1.5 text-signature">
+                      <path d="M20 6 9 17l-5-5"/>
+                    </svg>
+                  )}
                   <span className="text-base font-bold">Q{q}</span>
                   <span className="text-[10px] text-fg-subtle">{months}</span>
                 </button>
               );
             })}
           </div>
+          {/* Resumo de seleção fora do ano corrente — ajuda o user a lembrar
+              que tem trimestres de outros anos selecionados (não vê no grid). */}
+          {isActive && values.some(v => v.year !== year) && (
+            <div className="mb-3 px-2.5 py-1.5 rounded-md bg-surface text-[11px] text-fg-muted flex items-center justify-between gap-2">
+              <span className="truncate">
+                Outros anos: {values.filter(v => v.year !== year).map(v => `Q${v.q} ${v.year}`).join(", ")}
+              </span>
+            </div>
+          )}
           {isActive && (
-            <button onClick={() => { onChange(null); setOpen(false); }}
+            <button onClick={() => { onChange([]); setOpen(false); }}
                     className="w-full h-8 rounded-md text-xs text-fg-muted hover:bg-surface-strong">
-              Remover filtro de trimestre
+              Limpar trimestres
             </button>
           )}
         </Popover.Content>
@@ -1116,8 +1488,11 @@ function formatDealIds(line) {
 
 function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupClick }) {
   const [form, setForm] = useState({});
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState(null);
+  // Timeseries diária da line (impressões + margem). null = ainda carregando,
+  // [] = sem dado. Refetch a cada line nova; cancelado se trocar antes da
+  // resposta. O endpoint `pmp_line_get` já agrupa por dia no backend.
+  const [daily, setDaily] = useState(null);
+
   useEffect(() => {
     if (line) {
       setForm({
@@ -1127,20 +1502,30 @@ function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupC
         campaign_name_override:    line.campaign_name_override || "",
         agency_override:           line.agency_override || "",
       });
-      setErr(null);
     }
   }, [line]);
+
+  useEffect(() => {
+    if (!line?.line_id) { setDaily(null); return; }
+    let cancelled = false;
+    setDaily(null);
+    getPmpLine(line.line_id)
+      .then(d => { if (!cancelled) setDaily(Array.isArray(d?.daily) ? d.daily : []); })
+      .catch(() => { if (!cancelled) setDaily([]); });
+    return () => { cancelled = true; };
+  }, [line?.line_id]);
+
   if (!line) return null;
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
-  const handleSave = async () => {
-    setSaving(true); setErr(null);
-    try {
-      const p = { ...form };
-      for (const k of Object.keys(p)) if (p[k] === "") p[k] = null;
-      if (p.client_pi_amount_override != null) p.client_pi_amount_override = Number(p.client_pi_amount_override);
-      await onSave(p);
-    } catch (e) { setErr(e.message || "Erro"); }
-    finally { setSaving(false); }
+  // Fire-and-forget: o pai (onSaveOverrides) fecha o drawer otimisticamente e
+  // toca o save em background. Sem `saving` local — evita vazamento entre
+  // lines (drawer não desmonta, só renderiza null) que travava o botão como
+  // "Salvando..." disabled na próxima edição.
+  const handleSave = () => {
+    const p = { ...form };
+    for (const k of Object.keys(p)) if (p[k] === "") p[k] = null;
+    if (p.client_pi_amount_override != null) p.client_pi_amount_override = Number(p.client_pi_amount_override);
+    onSave(p);
   };
   const dm = effectiveDeliveryMeta(line);
 
@@ -1152,71 +1537,11 @@ function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupC
                       subtitle={`${line.customer || "?"} · Line ${line.line_id} · ${dm.label}`} />
         <DrawerBody>
           <div className="space-y-5">
-            <div className="rounded-lg border border-border bg-surface/40 px-4 py-3 text-[11px] space-y-1.5">
-              {[
-                ["IO", line.io_name],
-                ["Deal ID(s)", formatDealIds(line)],
-                ["Bid type", bidTypeLabel(line.bid_type) || "—"],
-                ["Margem curator", line.curator_margin_pct != null ? `${line.curator_margin_pct}%` : "—"],
-                ["Revenue type", line.revenue_type || "—"],
-                ["Floor / Teto", `${line.min_revenue_value ?? "—"} / ${line.max_revenue_value ?? "—"}`],
-                ["Início → Fim", `${line.start_date || "—"} → ${line.end_date || "—"}`],
-                ["Última entrega", line.last_delivery_day || "—"],
-                ["Token Command", line.short_token || "—"],
-                ["CP / CS", line.cp_email && line.cs_email ? `${line.cp_email} / ${line.cs_email}` : "—"],
-              ].map(([k, v]) => (
-                <div key={k} className="flex items-start justify-between gap-3">
-                  <span className="text-fg-subtle uppercase tracking-wider shrink-0">{k}</span>
-                  <span className={cn(
-                          "text-fg text-right max-w-[300px]",
-                          k === "Deal ID(s)" ? "font-mono break-all" : "truncate",
-                        )}
-                        title={String(v ?? "")}>{v || "—"}</span>
-                </div>
-              ))}
-              {!line.short_token && (
-                <button onClick={onLinkClick}
-                        className="mt-2 w-full h-8 rounded-md border border-signature/40 bg-signature/10 text-signature text-xs hover:bg-signature/20 transition-colors">
-                  🔗 Vincular ao Hypr Command
-                </button>
-              )}
-            </div>
+            {/* Gráfico de entrega — destaque visual do drawer. Tem toggle
+                Imps/Margem e tooltip on-hover com os dois valores do dia. */}
+            <DeliveryChart daily={daily} />
 
-            {/* Seção Grupo */}
-            <div className="rounded-lg border border-signature/30 bg-signature/[0.04] px-4 py-3">
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-[10px] uppercase tracking-widest font-bold text-signature">
-                  Grupo (PI compartilhado)
-                </div>
-                {line.group_id && (
-                  <span className="font-mono text-[10px] text-signature">{line.group_id}</span>
-                )}
-              </div>
-              {line.group_id ? (
-                <>
-                  <div className="text-sm text-fg">{line.group_name || "—"}</div>
-                  <div className="text-[11px] text-fg-muted mt-1 tabular-nums">
-                    {line.group_member_count} lines · {formatRatioPct(line.group_pct_a_receber)} entrega ·
-                    Margem {formatBRL(line.group_curator_margin)}
-                  </div>
-                  <button onClick={onGroupClick}
-                          className="mt-3 w-full h-8 rounded-md border border-signature/40 bg-signature/10 text-signature text-xs hover:bg-signature/20 transition-colors">
-                    ⚙️ Editar grupo / desagrupar
-                  </button>
-                </>
-              ) : (
-                <>
-                  <div className="text-[11px] text-fg-muted leading-relaxed">
-                    Esta line não está agrupada. Agrupe com outras lines do mesmo cliente que compartilham o mesmo PI.
-                  </div>
-                  <button onClick={onGroupClick}
-                          className="mt-2 w-full h-8 rounded-md border border-signature/40 bg-signature/10 text-signature text-xs hover:bg-signature/20 transition-colors">
-                    🔗 Agrupar com outras lines
-                  </button>
-                </>
-              )}
-            </div>
-
+            {/* Status — sempre visível, é a edição mais frequente */}
             <FieldGroup label="Status workflow">
               <select value={form.status} onChange={e => set("status", e.target.value)}
                       className="w-full h-9 px-3 rounded-md bg-surface border border-border text-sm text-fg">
@@ -1230,39 +1555,437 @@ function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupC
               )}
             </FieldGroup>
 
-            <FieldGroup label={`PI Override (BRL)${line.pi_brl != null && !line.pi_overridden ? ` — Command tem ${formatBRL(line.pi_brl)}` : ""}`}>
-              <CurrencyInput value={form.client_pi_amount_override}
-                             onChange={v => set("client_pi_amount_override", v)}
-                             placeholder={line.pi_brl != null ? "deixe vazio pra usar o do Command" : "0,00"}
-                             className="w-full h-9 px-3 rounded-md bg-surface border border-border text-sm text-fg tabular-nums" />
-            </FieldGroup>
+            {/* Grupo (PI compartilhado) — sempre visível, ação contextual */}
+            <GroupBlock line={line} onGroupClick={onGroupClick} />
 
-            <FieldGroup label="Campaign override">
-              <input type="text" value={form.campaign_name_override}
-                     onChange={e => set("campaign_name_override", e.target.value)}
-                     placeholder={line.campaign_name || ""}
-                     className="w-full h-9 px-3 rounded-md bg-surface border border-border text-sm text-fg" />
-            </FieldGroup>
-            <FieldGroup label="Agência override">
-              <input type="text" value={form.agency_override}
-                     onChange={e => set("agency_override", e.target.value)}
-                     placeholder={line.agency || ""}
-                     className="w-full h-9 px-3 rounded-md bg-surface border border-border text-sm text-fg" />
-            </FieldGroup>
+            {/* Detalhes da line — colapsado por padrão. Informação de
+                referência (IO, deal IDs, bid type, datas) que o operador
+                consulta ocasionalmente mas não precisa ver toda vez. */}
+            <Accordion label="Detalhes da line"
+                       summary={detailsSummary(line)}>
+              <div className="space-y-3 pt-1">
+                <MetaRow k="IO" v={line.io_name} />
+                <MetaRow k="Deal IDs" v={formatDealIds(line)} mono />
+                <MetaRow k="Command" v={line.short_token || "—"} mono />
+                <MetaRow k="CP / CS" v={line.cp_email && line.cs_email
+                  ? `${line.cp_email} / ${line.cs_email}` : "—"} />
+                {!line.short_token && (
+                  <button onClick={onLinkClick}
+                          className="mt-1 w-full h-8 rounded-md border border-signature/40 bg-signature/10 text-signature text-xs hover:bg-signature/20 transition-colors">
+                    🔗 Vincular ao Hypr Command
+                  </button>
+                )}
+                <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 pt-2 border-t border-border">
+                  <MetaRow k="Bid type" v={bidTypeLabel(line.bid_type) || "—"} compact />
+                  <MetaRow k="Revenue type" v={line.revenue_type || "—"} compact />
+                  <MetaRow k="Margem curator"
+                           v={line.curator_margin_pct != null ? `${line.curator_margin_pct}%` : "—"}
+                           compact />
+                  <MetaRow k="Floor / Teto"
+                           v={`${line.min_revenue_value ?? "—"} / ${line.max_revenue_value ?? "—"}`}
+                           compact />
+                  <MetaRow k="Início" v={formatYmdShort(line.start_date) || "—"} compact />
+                  <MetaRow k="Fim" v={formatYmdShort(line.end_date) || "—"} compact />
+                  <MetaRow k="Última entrega" v={formatYmdShort(line.last_delivery_day) || "—"} compact />
+                </div>
+              </div>
+            </Accordion>
+
+            {/* Overrides avançados — colapsados. PI/Campaign/Agência são
+                exceções; default é deixar o Command mandar. */}
+            <Accordion label="Overrides avançados"
+                       summary={overrideSummary(line, form)}>
+              <div className="space-y-3 pt-1">
+                <FieldGroup label={`PI Override (BRL)${line.pi_brl != null && !line.pi_overridden ? ` — Command tem ${formatBRL(line.pi_brl)}` : ""}`}>
+                  <CurrencyInput value={form.client_pi_amount_override}
+                                 onChange={v => set("client_pi_amount_override", v)}
+                                 placeholder={line.pi_brl != null ? "deixe vazio pra usar o do Command" : "0,00"}
+                                 className="w-full h-9 px-3 rounded-md bg-surface border border-border text-sm text-fg tabular-nums" />
+                </FieldGroup>
+                <FieldGroup label="Campaign override">
+                  <input type="text" value={form.campaign_name_override}
+                         onChange={e => set("campaign_name_override", e.target.value)}
+                         placeholder={line.campaign_name || ""}
+                         className="w-full h-9 px-3 rounded-md bg-surface border border-border text-sm text-fg" />
+                </FieldGroup>
+                <FieldGroup label="Agência override">
+                  <input type="text" value={form.agency_override}
+                         onChange={e => set("agency_override", e.target.value)}
+                         placeholder={line.agency || ""}
+                         className="w-full h-9 px-3 rounded-md bg-surface border border-border text-sm text-fg" />
+                </FieldGroup>
+              </div>
+            </Accordion>
+
             <FieldGroup label="Notas">
               <textarea value={form.notes} onChange={e => set("notes", e.target.value)} rows={3}
+                        placeholder="Anote contexto, alinhamentos, próximos passos…"
                         className="w-full px-3 py-2 rounded-md bg-surface border border-border text-sm text-fg resize-none" />
             </FieldGroup>
-            {err && <div className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-400">{err}</div>}
           </div>
         </DrawerBody>
         <DrawerFooter>
           <Button variant="ghost" size="md" onClick={() => onOpenChange(false)}>Cancelar</Button>
-          <Button variant="primary" size="md" onClick={handleSave} disabled={saving}>{saving ? "Salvando..." : "Salvar"}</Button>
+          <Button variant="primary" size="md" onClick={handleSave}>Salvar</Button>
         </DrawerFooter>
       </DrawerContent>
     </Drawer>
   );
+}
+
+// ─── Componentes auxiliares do drawer ────────────────────────────────────────
+// Linha key/value padrão. `compact` reduz pra layout de 2 colunas (label em
+// cima, valor embaixo) — bom pra grids densos. `mono` aplica fonte mono pro
+// valor (IDs, tokens).
+function MetaRow({ k, v, mono, compact }) {
+  if (compact) {
+    return (
+      <div className="min-w-0">
+        <div className="text-[10px] uppercase tracking-wider text-fg-subtle">{k}</div>
+        <div className={cn("text-[12px] text-fg truncate tabular-nums", mono && "font-mono")}
+             title={String(v ?? "")}>{v || "—"}</div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-start justify-between gap-3 text-[11px]">
+      <span className="text-fg-subtle uppercase tracking-wider shrink-0">{k}</span>
+      <span className={cn("text-fg text-right max-w-[300px]",
+                          mono ? "font-mono break-all" : "truncate")}
+            title={String(v ?? "")}>{v || "—"}</span>
+    </div>
+  );
+}
+
+// Formata "2026-05-20" → "20/05" pra usar nos campos de data do drawer.
+// Retorna null se input não bate. Não inclui ano pra economizar espaço — em
+// PMP a referência temporal típica é o mês corrente.
+function formatYmdShort(ymdStr) {
+  if (!ymdStr || typeof ymdStr !== "string" || ymdStr.length < 10) return null;
+  const [, m, d] = ymdStr.split("-");
+  if (!m || !d) return null;
+  return `${d}/${m}`;
+}
+
+// ─── Gráfico de entrega (7 dias) ────────────────────────────────────────────
+// Chart grande, único, full-width do drawer. Toggle entre Impressões e
+// Margem; sempre mostra ambos no tooltip on-hover (a métrica selecionada
+// dita só a forma das barras + o KPI grande do topo). Bar chart porque
+// "entrega diária" é variável discreta (1 valor por dia) — linhas dariam
+// falsa impressão de continuidade.
+const METRICS = {
+  imps:   { key: "imps",           label: "Impressões",  color: "var(--color-signature)", fmt: formatIntCompact, fmtFull: formatInt },
+  margin: { key: "curator_margin", label: "Margem HYPR", color: "rgb(52, 211, 153)",      fmt: formatBRLCompact, fmtFull: formatBRL },
+};
+
+function DeliveryChart({ daily }) {
+  const [metric, setMetric] = useState("imps");
+  const [hoverIdx, setHoverIdx] = useState(null);
+  const loading = daily == null;
+  const series = daily || [];
+
+  // Últimos 7 dias com padding zero à esquerda quando a line é nova. Mantém
+  // 7 colunas sempre — assim o leitor compara o "shape" entre lines.
+  const last7raw = series.slice(-7);
+  const lastDayStr = last7raw[last7raw.length - 1]?.day;
+  const today = lastDayStr ? parseYmd(lastDayStr) : new Date();
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const t = new Date(today);
+    t.setDate(t.getDate() - i);
+    const d = ymd(t);
+    const found = last7raw.find(x => x.day === d);
+    days.push({
+      day: d,
+      imps:           found ? Number(found.imps) || 0           : 0,
+      curator_margin: found ? Number(found.curator_margin) || 0 : 0,
+      missing: !found,
+    });
+  }
+
+  // Delta vs 7 dias anteriores (só calculado se temos histórico ≥14 dias —
+  // senão mostraria "+∞%" pra qualquer line nova e seria ruído).
+  const prev7 = series.length >= 14 ? series.slice(-14, -7) : [];
+  const cur7Sum  = days.reduce((s, d) => s + d[METRICS[metric].key], 0);
+  const prev7Sum = prev7.reduce((s, d) => s + (Number(d[METRICS[metric].key]) || 0), 0);
+  const delta = prev7Sum > 0 ? ((cur7Sum - prev7Sum) / prev7Sum) * 100 : null;
+
+  const meta   = METRICS[metric];
+  const values = days.map(d => d[meta.key]);
+  const max    = Math.max(...values, 1);
+
+  return (
+    <section className="rounded-xl border border-border bg-surface/40">
+      {/* Header — KPI grande à esquerda, toggle à direita */}
+      <div className="flex items-start justify-between gap-3 px-4 pt-3.5 pb-2">
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+            {meta.label} · 7 dias
+          </div>
+          <div className="flex items-baseline gap-2 mt-1">
+            <div className="text-[22px] leading-none font-semibold text-fg tabular-nums">
+              {loading
+                ? <span className="inline-block h-[20px] w-20 rounded bg-surface-2 animate-pulse" />
+                : meta.fmt(cur7Sum)}
+            </div>
+            {!loading && delta != null && Number.isFinite(delta) && <DeltaPill pct={delta} />}
+          </div>
+        </div>
+        <MetricToggle value={metric} onChange={setMetric} />
+      </div>
+
+      {/* Chart area. SVG escala via viewBox; hover via overlay de hit-zones
+          que cobrem 1/7 da largura cada — assim mira não precisa ser exata
+          na barra. Tooltip flutua acima da barra com translateX pra ficar
+          ancorado nos extremos sem overflow. */}
+      <div className="relative h-[140px] mx-4 mb-2"
+           onMouseLeave={() => setHoverIdx(null)}>
+        {loading ? (
+          <div className="absolute inset-0 rounded-md bg-surface-2/40 animate-pulse" />
+        ) : (
+          <>
+            <svg viewBox="0 0 700 140" preserveAspectRatio="none"
+                 className="absolute inset-0 w-full h-full" aria-hidden>
+              {/* Gridlines horizontais sutis — 4 linhas (0, 33%, 66%, 100%) */}
+              {[0, 0.33, 0.66, 1].map((p, i) => (
+                <line key={i} x1="0" x2="700"
+                      y1={(140 - 14) - (140 - 14) * p + 7}
+                      y2={(140 - 14) - (140 - 14) * p + 7}
+                      stroke="currentColor" className="text-border" strokeWidth="1"
+                      strokeDasharray={p === 0 ? "0" : "2 3"} opacity={p === 0 ? 0.6 : 0.35} />
+              ))}
+              {/* Barras — uma por dia. Width = 1/7 da área menos gap.
+                  Cor sólida na barra hovered, transparente nas outras. */}
+              {days.map((d, i) => {
+                const slot = 700 / 7;
+                const bw   = slot * 0.62;
+                const bx   = i * slot + (slot - bw) / 2;
+                const v    = d[meta.key];
+                const usableH = 140 - 14; // gap top/bottom pra labels
+                const bh   = max > 0 ? (v / max) * usableH : 0;
+                const by   = 140 - 7 - bh;
+                const isHover = hoverIdx === i;
+                const isEmpty = v === 0;
+                return (
+                  <g key={i}>
+                    {/* Trilha cinza da altura total — ajuda a "ler" 0 mesmo
+                        quando a barra é minúscula. Sutil. */}
+                    <rect x={bx} y={7} width={bw} height={usableH} rx="2"
+                          fill="currentColor" className="text-border" opacity="0.18" />
+                    <rect x={bx} y={by} width={bw} height={Math.max(bh, isEmpty ? 0 : 2)} rx="2"
+                          fill={meta.color}
+                          opacity={isHover ? 1 : (hoverIdx == null ? 0.85 : 0.45)}
+                          style={{ transition: "opacity 120ms" }} />
+                  </g>
+                );
+              })}
+            </svg>
+            {/* Hit zones — 7 divs cobrindo a largura. Captura hover por
+                coluna. Mantém pointer-cursor pra sinalizar interatividade. */}
+            <div className="absolute inset-0 flex">
+              {days.map((_, i) => (
+                <div key={i} className="flex-1 cursor-default"
+                     onMouseEnter={() => setHoverIdx(i)} />
+              ))}
+            </div>
+            {/* Tooltip — mostra dia + AMBAS as métricas. Posicionamento:
+                topo da barra hovered, mas com piso de 8px do topo do chart
+                pra nunca sair (quando a barra é a mais alta, o tooltip
+                sobrepõe levemente o topo dela em vez de escapar do card).
+                translateX nas pontas pra não overflow lateral. */}
+            {hoverIdx != null && days[hoverIdx] && (() => {
+              const d = days[hoverIdx];
+              const xPct = ((hoverIdx + 0.5) / 7) * 100;
+              const anchor = hoverIdx <= 1 ? "translateX(0)"
+                          : hoverIdx >= 5  ? "translateX(-100%)"
+                          :                  "translateX(-50%)";
+              // bottom-pct: distância da base da barra ao topo da área do
+              // chart, em % da altura visível. Garante mínimo 60% pra que o
+              // tooltip nunca cole na barra ou desça muito.
+              const v = d[meta.key];
+              const usableH = 140 - 14;
+              const bh = max > 0 ? (v / max) * usableH : 0;
+              const barTopPx = 140 - 7 - bh; // y do topo da barra
+              // Tooltip ancora 4px ACIMA do topo da barra; mas se isso passar
+              // do topo do chart, usa 4px do topo. Sem translateY — fica
+              // dentro do container sempre.
+              const tooltipTop = Math.max(4, barTopPx - 56);
+              return (
+                <div className="pointer-events-none absolute z-10 whitespace-nowrap rounded-md bg-fg text-canvas-elevated px-2.5 py-1.5 text-[10.5px] shadow-lg ring-1 ring-black/10"
+                     style={{ left: `${xPct}%`, top: `${tooltipTop}px`, transform: anchor }}>
+                  <div className="font-mono text-[10px] opacity-60 mb-0.5">
+                    {formatYmdWeekday(d.day)}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="inline-block w-2 h-2 rounded-sm" style={{ background: METRICS.imps.color }} />
+                    <span>{formatInt(d.imps)} imp.</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="inline-block w-2 h-2 rounded-sm" style={{ background: METRICS.margin.color }} />
+                    <span>{formatBRL(d.curator_margin)}</span>
+                  </div>
+                </div>
+              );
+            })()}
+          </>
+        )}
+      </div>
+
+      {/* Eixo X — abreviação do dia (dom/seg/…) + dd/mm. "hoje" no último. */}
+      <div className="flex px-4 pb-3 text-[10px] text-fg-subtle font-mono tabular-nums">
+        {days.map((d, i) => (
+          <div key={i} className="flex-1 text-center">
+            <div className={cn("leading-none", hoverIdx === i && "text-fg")}>
+              {i === days.length - 1 ? "hoje" : formatYmdShort(d.day)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function MetricToggle({ value, onChange }) {
+  return (
+    <div className="inline-flex shrink-0 items-center rounded-md border border-border bg-surface p-0.5"
+         role="tablist">
+      {Object.entries(METRICS).map(([k, m]) => {
+        const active = value === k;
+        return (
+          <button key={k} role="tab" aria-selected={active}
+                  onClick={() => onChange(k)}
+                  className={cn(
+                    "px-2 h-6 rounded text-[10.5px] uppercase tracking-wider font-semibold transition-colors",
+                    active
+                      ? "bg-surface-2 text-fg shadow-sm"
+                      : "text-fg-subtle hover:text-fg",
+                  )}>
+            {k === "imps" ? "Imps" : "Margem"}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function DeltaPill({ pct }) {
+  // Pílula compacta de variação. <1% mostra "flat" pra evitar ruído de
+  // centésimos quando o número é praticamente igual ao anterior.
+  const rounded = Math.round(pct);
+  const isFlat  = Math.abs(pct) < 1;
+  const isUp    = !isFlat && rounded > 0;
+  const isDown  = !isFlat && rounded < 0;
+  const cls = isUp   ? "bg-emerald-500/10 text-emerald-400"
+            : isDown ? "bg-rose-500/10 text-rose-400"
+            :          "bg-surface-2 text-fg-subtle";
+  const arrow = isUp ? "↑" : isDown ? "↓" : "≈";
+  const text = isFlat ? "flat" : `${Math.abs(rounded)}%`;
+  return (
+    <span className={cn("inline-flex items-center gap-0.5 px-1.5 h-4 rounded text-[10px] font-semibold tabular-nums",
+                        cls)}
+          title={`Variação vs 7d anteriores: ${pct.toFixed(1)}%`}>
+      <span aria-hidden>{arrow}</span>{text}
+    </span>
+  );
+}
+
+// ─── Accordion (drawer) ──────────────────────────────────────────────────────
+// Seção colapsável usando <details>/<summary> nativos — dá animação,
+// keyboard support, aria-expanded grátis e zero JS de estado. Custo:
+// styling do summary precisa esconder o disclosure triangle padrão.
+function Accordion({ label, summary, defaultOpen = false, children }) {
+  return (
+    <details className="group rounded-lg border border-border bg-surface/40 [&[open]>summary>.chev]:rotate-180"
+             open={defaultOpen}>
+      <summary className="flex items-center justify-between gap-3 cursor-pointer select-none list-none px-4 py-2.5 hover:bg-surface/60 transition-colors [&::-webkit-details-marker]:hidden">
+        <div className="min-w-0 flex-1">
+          <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">{label}</div>
+          {summary && (
+            <div className="text-[11px] text-fg-muted mt-0.5 truncate" title={summary}>{summary}</div>
+          )}
+        </div>
+        <svg className="chev shrink-0 transition-transform text-fg-subtle"
+             width="14" height="14" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="m6 9 6 6 6-6"/>
+        </svg>
+      </summary>
+      <div className="px-4 pb-3">{children}</div>
+    </details>
+  );
+}
+
+// ─── Grupo block ─────────────────────────────────────────────────────────────
+// Card destacado em signature pra chamar atenção quando a line é parte de
+// grupo (PI compartilhado). Quando não é grupo, mostra CTA pra agrupar de
+// forma mais discreta — não polui o drawer das lines individuais.
+function GroupBlock({ line, onGroupClick }) {
+  if (line.group_id) {
+    return (
+      <div className="rounded-lg border border-signature/30 bg-signature/[0.05] px-4 py-3">
+        <div className="flex items-center justify-between mb-1.5">
+          <div className="text-[10px] uppercase tracking-widest font-bold text-signature">
+            Grupo · PI compartilhado
+          </div>
+          <span className="font-mono text-[10px] text-signature">{line.group_id}</span>
+        </div>
+        <div className="text-sm text-fg">{line.group_name || "—"}</div>
+        <div className="text-[11px] text-fg-muted mt-1 tabular-nums">
+          {line.group_member_count} lines · {formatRatioPct(line.group_pct_a_receber)} entrega ·
+          Margem {formatBRL(line.group_curator_margin)}
+        </div>
+        <button onClick={onGroupClick}
+                className="mt-2.5 inline-flex h-7 items-center gap-1.5 px-2.5 rounded-md border border-signature/40 bg-signature/10 text-signature text-[11px] hover:bg-signature/20 transition-colors">
+          ⚙️ Editar grupo
+        </button>
+      </div>
+    );
+  }
+  return (
+    <button onClick={onGroupClick}
+            className="w-full flex items-center justify-between gap-2 px-3.5 py-2 rounded-lg border border-dashed border-border text-[11px] text-fg-muted hover:bg-surface/60 hover:border-signature/40 hover:text-fg transition-colors">
+      <span className="flex items-center gap-2">
+        <span className="text-fg-subtle">🔗</span>
+        Agrupar com outras lines do mesmo PI
+      </span>
+      <span className="text-fg-subtle">›</span>
+    </button>
+  );
+}
+
+// "dom 14/05" — dia da semana + dd/mm. Pro tooltip do gráfico.
+const WEEKDAYS_PT = ["dom","seg","ter","qua","qui","sex","sáb"];
+function formatYmdWeekday(ymdStr) {
+  const d = parseYmd(ymdStr);
+  if (!d) return ymdStr;
+  return `${WEEKDAYS_PT[d.getDay()]} ${formatYmdShort(ymdStr)}`;
+}
+
+// Summary 1-linha pro accordion de detalhes. Mostra IO e tipo, suficiente
+// pra reconhecer a line sem expandir.
+function detailsSummary(line) {
+  const parts = [];
+  if (line.io_name) parts.push(line.io_name);
+  const bid = bidTypeLabel(line.bid_type);
+  if (bid) parts.push(bid);
+  if (line.curator_margin_pct != null) parts.push(`${line.curator_margin_pct}%`);
+  return parts.join(" · ") || "—";
+}
+
+// Summary 1-linha pro accordion de overrides. Lista quais campos estão
+// efetivamente overrided. Vazio = "nenhum override aplicado".
+function overrideSummary(line, form) {
+  const flags = [];
+  const piVal = form?.client_pi_amount_override;
+  if (piVal != null && piVal !== "") flags.push("PI");
+  if (form?.campaign_name_override) flags.push("Campaign");
+  if (form?.agency_override) flags.push("Agência");
+  if (flags.length === 0 && line) {
+    if (line.pi_overridden) flags.push("PI");
+    if (line.campaign_name_override) flags.push("Campaign");
+    if (line.agency_override) flags.push("Agência");
+  }
+  return flags.length === 0 ? "Nenhum override aplicado" : `Override: ${flags.join(", ")}`;
 }
 
 function FieldGroup({ label, children }) {
