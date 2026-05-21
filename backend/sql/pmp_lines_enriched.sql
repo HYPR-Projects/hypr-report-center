@@ -79,10 +79,12 @@ delivery_agg AS (
   GROUP BY line_id
 ),
 delivery_7d AS (
-  -- Revenue dos últimos 7 dias (BRL, já convertido na ingestão).
+  -- Revenue + margem + imps dos últimos 7 dias (BRL, já convertido na ingestão).
+  -- Margin é exposto no KPI "Margem HYPR" do PMP como crescimento últ. 7d.
   SELECT
     line_id,
     SUM(curator_revenue) AS revenue_last_7d,
+    SUM(curator_margin)  AS margin_last_7d,
     SUM(imps)            AS imps_last_7d
   FROM `site-hypr.prod_assets.pmp_line_delivery_daily`
   WHERE day >= DATE_SUB(CURRENT_DATE('America/Sao_Paulo'), INTERVAL 7 DAY)
@@ -174,6 +176,7 @@ joined AS (
     d.last_synced_at,
 
     COALESCE(d7.revenue_last_7d, 0) AS revenue_last_7d,
+    COALESCE(d7.margin_last_7d, 0)  AS margin_last_7d,
     COALESCE(d7.imps_last_7d, 0)    AS imps_last_7d,
 
     li.created_by, li.created_at, li.updated_by, li.updated_at

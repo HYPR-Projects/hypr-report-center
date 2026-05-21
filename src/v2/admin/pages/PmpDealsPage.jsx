@@ -279,7 +279,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   // Big numbers refletem o dataset visível na aba ativa (com filtros).
   // % entrega = margem ÷ PI.
   const kpis = useMemo(() => {
-    let pi = 0, revenue = 0, margin = 0, imps = 0, revenue7d = 0;
+    let pi = 0, revenue = 0, margin = 0, imps = 0, revenue7d = 0, margin7d = 0;
     let withPi = 0;
     // Regras de agregação:
     //   • Canceladas saem do total (não somam PI, revenue, margem).
@@ -298,6 +298,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
       margin  += Number(l.curator_margin  || 0);
       imps    += Number(l.imps            || 0);
       revenue7d += Number(l.revenue_last_7d || 0);
+      margin7d  += Number(l.margin_last_7d  || 0);
       if (l.group_id) {
         if (seenGroups.has(l.group_id)) continue;
         if (l.pi_brl == null) continue;     // espera um membro do grupo com PI
@@ -309,7 +310,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
       withPi++;
     }
     return {
-      pi, revenue, margin, imps, revenue7d,
+      pi, revenue, margin, imps, revenue7d, margin7d,
       countWithPi: withPi,
       pctReceber: pi > 0 ? margin / pi : null,
     };

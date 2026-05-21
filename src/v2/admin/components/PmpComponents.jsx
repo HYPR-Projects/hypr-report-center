@@ -184,7 +184,7 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount }) {
     { label: "Revenue",       value: formatBRL(kpis.revenue),
       sub: kpis.revenue7d ? `${formatBRL(kpis.revenue7d)} últ. 7d` : null },
     { label: "Margem HYPR",   value: formatBRL(kpis.margin),
-      sub: kpis.revenue > 0 ? `${formatRatioPct(kpis.margin / kpis.revenue, 1)} efetiva` : null,
+      sub: kpis.margin7d ? `${formatBRL(kpis.margin7d)} últ. 7d` : null,
       valueClass: "text-emerald-400" },
     { label: "% Entrega",     value: kpis.pctReceber != null ? formatRatioPct(kpis.pctReceber) : "—",
       sub: kpis.countWithPi ? `Margem ÷ PI · ${kpis.countWithPi} lines` : "sem PI cadastrado" },
