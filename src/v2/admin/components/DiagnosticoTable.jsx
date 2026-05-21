@@ -15,6 +15,7 @@ import {
   STATUS_META,
   formatPctRow,
   formatIntRow,
+  formatBrlRow,
   compareNullableNumbers,
 } from "../lib/diagnostico";
 
@@ -229,6 +230,10 @@ export function DiagnosticoTable({
                 <Th align="right" {...headerProps("deliveredD1")}>{mediaLabel} D-1</Th>
                 <Th align="right" {...headerProps("minDiariaContratada")}>Mín. Diária</Th>
                 <Th align="center" {...headerProps("status")}>Status Pacing</Th>
+                <Th align="right" {...headerProps("totalImpressions")}>Impressões</Th>
+                <Th align="right" {...headerProps("realEcpm")}>CPM Real</Th>
+                <Th align="right" {...headerProps("realTotalCost")}>Custo Real</Th>
+                <Th align="right" {...headerProps("techCostPct")}>Tech Cost</Th>
                 <Th align="right" {...headerProps("viewability")}>Viewability</Th>
               </tr>
             </thead>
@@ -295,6 +300,34 @@ export function DiagnosticoTable({
                     </Td>
                     <Td align="center">
                       <StatusPill status={r.status} />
+                    </Td>
+                    <Td
+                      align="right"
+                      tabular
+                      title="Total de impressões gross do DSP (denom. da viewability)"
+                    >
+                      {formatIntRow(r.totalImpressions)}
+                    </Td>
+                    <Td
+                      align="right"
+                      tabular
+                      title="eCPM real HYPR — custo cru do DSP por mil impressões (sem margem cliente)"
+                    >
+                      {formatBrlRow(r.realEcpm, 2)}
+                    </Td>
+                    <Td
+                      align="right"
+                      tabular
+                      title="Custo real total HYPR (DSP spend, sem margem cliente)"
+                    >
+                      {formatBrlRow(r.realTotalCost, 2)}
+                    </Td>
+                    <Td
+                      align="right"
+                      tabular
+                      title="Custo real HYPR ÷ valor PI do cliente (contracted × CPM/CPCV, sem bônus). — quando PI = 0 ou campanha 100% bonificada."
+                    >
+                      {formatPctRow(r.techCostPct, 1)}
                     </Td>
                     <Td align="right" tabular>
                       {formatPctRow(r.viewability, 1)}

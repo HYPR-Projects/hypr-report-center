@@ -5272,6 +5272,33 @@ def query_campaigns_list():
             if v_admin_cost > 0:
                 entry["video_ecpm"] = round(v_admin_cost / v_admin_impr * 1000, 2)
 
+        # Budget cliente por mídia (valor PI faturado) — alimenta o Tech Cost
+        # na aba Diagnóstico do menu admin. Calculado como
+        #   contracted_impressions × CPM/CPCV negociado
+        # SEM os volumes bônus (que são cortesia, fora do faturamento). O
+        # frontend faz a razão `d_admin_total_cost / d_client_budget × 100`
+        # pra obter o % de Tech Cost — quanto do PI virou custo cru de DSP.
+        # Só emite se > 0; campanhas single-media ou 100% bonificadas ficam
+        # sem o campo → UI mostra "—". Admin-only (mesma gate dos admin_*).
+        d_contracted = (
+            float(r["contracted_o2o_display"] or 0) +
+            float(r["contracted_ooh_display"] or 0)
+        )
+        cpm_amount = float(r["cpm_amount"] or 0)
+        d_client_budget = d_contracted * cpm_amount / 1000 if d_contracted > 0 and cpm_amount > 0 else 0
+        if d_client_budget > 0:
+            entry["d_client_budget"] = round(d_client_budget, 2)
+
+        v_contracted = (
+            float(r["contracted_o2o_video"] or 0) +
+            float(r["contracted_ooh_video"] or 0)
+        )
+        cpcv_amount = float(r["cpcv_amount"] or 0)
+        # Video: CPCV é preço por completion (sem /1000), diferente de CPM.
+        v_client_budget = v_contracted * cpcv_amount if v_contracted > 0 and cpcv_amount > 0 else 0
+        if v_client_budget > 0:
+            entry["v_client_budget"] = round(v_client_budget, 2)
+
         # Brand Safety pre-bid (ABS) por mídia, agregando DV360 + Xandr. Quando
         # a flag é TRUE, scoreCampaignDetailed no frontend usa thresholds mais
         # permissivos pra eCPM e CTR daquela mídia (inventário com pre-bid é

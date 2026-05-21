@@ -340,7 +340,12 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
       lastDayDelivered: c.display_yesterday_viewable,
     });
     if (displayMetrics && displayMetrics.status) {
-      displayRows.push({ ...identity, ...displayMetrics, media: "display" });
+      displayRows.push({
+        ...identity,
+        ...displayMetrics,
+        ...computeFinancials(c, "display"),
+        media: "display",
+      });
     }
 
     // ── Video ────────────────────────────────────────────────────────
@@ -356,11 +361,44 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
       lastDayDelivered: c.video_yesterday_completions,
     });
     if (videoMetrics && videoMetrics.status) {
-      videoRows.push({ ...identity, ...videoMetrics, media: "video" });
+      videoRows.push({
+        ...identity,
+        ...videoMetrics,
+        ...computeFinancials(c, "video"),
+        media: "video",
+      });
     }
   }
 
   return { displayRows, videoRows };
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Financials por mídia (admin-only) — eCPM real, impressões totais, custo
+// real e Tech Cost (% do PI cliente consumido em custo real HYPR).
+// ────────────────────────────────────────────────────────────────────────
+//
+// Tech Cost
+// ─────────
+//   numerador   = custo real DSP HYPR (d_admin_total_cost / v_admin_total_cost)
+//   denominador = valor PI cliente daquela mídia (d_client_budget / v_client_budget,
+//                 calculado server-side como `contracted × CPM/CPCV` SEM bônus)
+//
+// Campanhas 100% bonificadas, single-media, ou sem CPM/CPCV preenchido na
+// checklist saem do backend sem `*_client_budget` → Tech Cost = null → UI "—".
+function computeFinancials(campaign, media) {
+  const isDisplay = media === "display";
+
+  const realEcpm        = isDisplay ? (campaign.display_ecpm        ?? null) : (campaign.video_ecpm         ?? null);
+  const totalImpressions = isDisplay ? (campaign.d_admin_impressions ?? null) : (campaign.v_admin_impressions ?? null);
+  const realTotalCost   = isDisplay ? (campaign.d_admin_total_cost  ?? null) : (campaign.v_admin_total_cost  ?? null);
+  const clientBudget    = isDisplay ? (campaign.d_client_budget     ?? null) : (campaign.v_client_budget     ?? null);
+
+  const techCostPct = (realTotalCost != null && clientBudget != null && clientBudget > 0)
+    ? (realTotalCost / clientBudget) * 100
+    : null;
+
+  return { realEcpm, totalImpressions, realTotalCost, techCostPct };
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -391,6 +429,20 @@ export function formatIntRow(value) {
   if (value == null || !Number.isFinite(value)) return "—";
   // toLocaleString com pt-BR usa ponto como separador de milhar.
   return Math.round(value).toLocaleString("pt-BR");
+}
+
+/**
+ * Formata BRL. Default 2 casas (R$ 1.234,56); pra eCPM passa 2 e mantém
+ * "R$ 0,85" estilo do MetricStrip. Null/NaN → "—".
+ */
+export function formatBrlRow(value, decimals = 2) {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return value.toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
 }
 
 /**
