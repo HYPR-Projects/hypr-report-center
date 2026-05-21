@@ -14,7 +14,6 @@ import {
   effectiveDeliveryMeta, LIVE_STATUSES,
   statusPillClass, healthPillClass, healthLabel,
   pctDeliveryClass, pctBarColor,
-  bidTypeLabel, bidTypeBadgeClass,
   formatBRL, formatInt, formatIntCompact,
   formatRatioPct, formatLastDelivery, emailInitial,
   pctEntrega, groupPctEntrega,
@@ -254,11 +253,6 @@ export function PmpLiveCard({ line, onClick, onLinkClick }) {
               <span className={cn("w-1.5 h-1.5 rounded-full", dm.dot)} />
               {dm.label}
             </span>
-            {line.bid_type && (
-              <span className={cn("px-1.5 py-0.5 rounded text-[10px] font-medium border", bidTypeBadgeClass(line.bid_type))}>
-                {bidTypeLabel(line.bid_type)}
-              </span>
-            )}
             <span className={cn("inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium border", statusPillClass(effectiveStatus(line)))}>
               {effectiveStatus(line)}
             </span>
@@ -325,10 +319,12 @@ export function PmpLiveCard({ line, onClick, onLinkClick }) {
           <div className="text-[11px] text-amber-300">
             Sem PI vinculado ao Hypr Command
           </div>
-          <button onClick={(e) => { e.stopPropagation(); onLinkClick?.(line); }}
-                  className="text-[11px] font-medium text-amber-300 hover:text-amber-200 underline-offset-2 hover:underline">
-            🔗 vincular
-          </button>
+          {onLinkClick && (
+            <button onClick={(e) => { e.stopPropagation(); onLinkClick(line); }}
+                    className="text-[11px] font-medium text-amber-300 hover:text-amber-200 underline-offset-2 hover:underline">
+              🔗 vincular
+            </button>
+          )}
         </div>
       )}
 
@@ -468,11 +464,6 @@ export function PmpLiveGroupCard({ members, onLineClick }) {
                 <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", mDm.dot)} title={mDm.label} />
                 <div className="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
                   <span className="font-mono text-[10px] text-fg-muted shrink-0">{m.line_id}</span>
-                  {m.bid_type && (
-                    <span className={cn("px-1.5 py-0.5 rounded text-[9px] font-medium border", bidTypeBadgeClass(m.bid_type))}>
-                      {bidTypeLabel(m.bid_type)}
-                    </span>
-                  )}
                   <span className={cn("inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium border", mDm.border, mDm.text, mDm.bg)}>
                     {mDm.label}
                   </span>
@@ -671,11 +662,11 @@ function Chevron({ open }) {
 //
 // Larguras generosas (140-160px) pra acomodar valores completos sem
 // abreviar — operação contábil precisa do número exato.
-const ROW_GRID = "grid grid-cols-[12px_minmax(0,1.5fr)_minmax(150px,0.55fr)_140px_140px_140px_150px_60px_72px_minmax(82px,0.5fr)] gap-x-4";
+const ROW_GRID = "grid grid-cols-[12px_minmax(0,1.6fr)_minmax(110px,0.4fr)_140px_140px_140px_150px_60px_72px_minmax(82px,0.5fr)] gap-x-4";
 
 export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "desc", onColumnClick = null }) {
   const grid = hidePi
-    ? "grid grid-cols-[12px_minmax(0,1.6fr)_minmax(150px,0.55fr)_140px_140px_150px_60px_minmax(82px,0.55fr)] gap-x-4"
+    ? "grid grid-cols-[12px_minmax(0,1.7fr)_minmax(110px,0.4fr)_140px_140px_150px_60px_minmax(82px,0.55fr)] gap-x-4"
     : ROW_GRID;
   const interactive = !!onColumnClick;
 
@@ -727,7 +718,7 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
     <div className={cn(grid, "px-5 py-3 bg-surface/60 border-b border-border/60 text-[10px] uppercase tracking-widest font-semibold text-fg-subtle")}>
       <div />
       <Th field="customer" align="left">Cliente / Campanha</Th>
-      <Th>Bid / Status</Th>
+      <Th>Status</Th>
       {!hidePi && <Th field="pi_brl">PI</Th>}
       <Th field="curator_total_cost">Cost</Th>
       <Th field="curator_revenue">Revenue</Th>
@@ -762,7 +753,7 @@ export function PmpLineRow({
   // Grid: quando hidePi, esconde a coluna PI (PI está no header do grupo).
   // Também esconde % Entrega per-line (faz sentido só ao nível do grupo).
   const grid = hidePi
-    ? "grid grid-cols-[12px_minmax(0,1.6fr)_minmax(150px,0.55fr)_140px_140px_150px_60px_minmax(82px,0.55fr)] gap-x-4"
+    ? "grid grid-cols-[12px_minmax(0,1.7fr)_minmax(110px,0.4fr)_140px_140px_150px_60px_minmax(82px,0.55fr)] gap-x-4"
     : ROW_GRID;
 
   return (
@@ -815,13 +806,9 @@ export function PmpLineRow({
         </div>
       </div>
 
-      <div className="flex justify-end items-center gap-1.5 flex-wrap">
-        {line.bid_type && (
-          <span className={cn("px-2 py-0.5 rounded text-[10px] font-medium border",
-            isCancelado ? "bg-surface text-fg-subtle border-border" : bidTypeBadgeClass(line.bid_type))}>
-            {bidTypeLabel(line.bid_type)}
-          </span>
-        )}
+      <div className="flex justify-end items-center">
+        {/* Pill de Bid (flex/fixed) saiu da lista — fica só no drawer da line.
+            Status segue como sinal visual principal. */}
         <span className={cn("inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border", statusPillClass(effStatus))}>
           {effStatus}
         </span>
@@ -841,11 +828,13 @@ export function PmpLineRow({
             // Line cancelada não mostra CTA "vincular" — apenas placeholder.
             // O drawer ainda permite vincular via edição (não polui a UI de lista).
             <span className="text-fg-subtle/60">—</span>
-          ) : (
-            <button onClick={(e) => { e.stopPropagation(); onLinkClick?.(line); }}
+          ) : onLinkClick ? (
+            <button onClick={(e) => { e.stopPropagation(); onLinkClick(line); }}
                     className="text-[11px] text-amber-300 hover:text-amber-200 underline-offset-2 hover:underline">
               🔗 vincular
             </button>
+          ) : (
+            <span className="text-[11px] text-amber-300/60">sem PI</span>
           )}
         </div>
       )}
@@ -970,11 +959,13 @@ function WorklistBucket({ bucket, onLineClick, onLinkClick, focused }) {
                 {bucket.key === "no_pi" && (
                   effectiveStatus(l) === "Cancelado" ? (
                     <span className="text-xs text-fg-subtle/60">—</span>
-                  ) : (
-                    <button onClick={(e) => { e.stopPropagation(); onLinkClick?.(l); }}
+                  ) : onLinkClick ? (
+                    <button onClick={(e) => { e.stopPropagation(); onLinkClick(l); }}
                             className="text-xs text-amber-300 hover:text-amber-200 underline-offset-2 hover:underline">
                       🔗 vincular
                     </button>
+                  ) : (
+                    <span className="text-xs text-amber-300/60">sem PI</span>
                   )
                 )}
               </div>

@@ -43,7 +43,7 @@ import {
   formatBRL, formatBRLCompact, formatInt, formatIntCompact, formatRatioPct,
   comparePmpLines, formatLastDelivery,
   pctEntrega, groupPctEntrega,
-  effectiveStatus,
+  effectiveStatus, isPmpEditor,
 } from "../lib/pmpFormat";
 import {
   PmpLayoutToggle, PmpKpiStrip, PmpAlertsBar,
@@ -57,6 +57,11 @@ import { PmpFreshnessIndicator } from "../components/PmpFreshnessIndicator";
 const ALL = "__ALL__";
 
 export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
+  // Permissão de edição — só uma lista curada de operadores pode mutar
+  // status/PI/command/overrides/notas/grupo. Demais usuários veem tudo
+  // em modo somente-leitura. Gate é frontend-only (guard rail UX).
+  const canEdit = isPmpEditor(user);
+
   const [lines, setLines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -640,8 +645,8 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
           : error  ? <ErrorState message={error} onRetry={reload} />
           : (
             <>
-              {layout === "live"     && <LiveView     lines={liveOrdered}     onLineClick={setEditing} onLinkClick={setLinking} />}
-              {layout === "client"   && <ClientView   groups={byCustomer}     onLineClick={setEditing} onLinkClick={setLinking} />}
+              {layout === "live"     && <LiveView     lines={liveOrdered}     onLineClick={setEditing} onLinkClick={canEdit ? setLinking : undefined} />}
+              {layout === "client"   && <ClientView   groups={byCustomer}     onLineClick={setEditing} onLinkClick={canEdit ? setLinking : undefined} />}
               {layout === "list"     && <ListView     lines={allSorted}       sortBy={sortBy} sortDir={sortDir}
                                                        onColumnClick={(f) => {
                                                          // Ciclo 3-estado: desc → asc → default
@@ -649,9 +654,9 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
                                                          else if (sortDir === "desc") setSortDir("asc");
                                                          else { setSortBy(LIST_DEFAULT_SORT.by); setSortDir(LIST_DEFAULT_SORT.dir); }
                                                        }}
-                                                       onLineClick={setEditing} onLinkClick={setLinking} />}
+                                                       onLineClick={setEditing} onLinkClick={canEdit ? setLinking : undefined} />}
               {layout === "worklist" && <PmpWorklistView lines={worklistFiltered} focusBucket={focusBucket}
-                                                          onLineClick={setEditing} onLinkClick={setLinking} />}
+                                                          onLineClick={setEditing} onLinkClick={canEdit ? setLinking : undefined} />}
               {layout === "history"  && <HistoryView  lines={allLinesFiltered}
                                                        sortBy={histSortBy} sortDir={histSortDir}
                                                        onColumnClick={(f) => {
@@ -660,7 +665,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
                                                          else if (histSortDir === "desc") setHistSortDir("asc");
                                                          else { setHistSortBy(HIST_DEFAULT_SORT.by); setHistSortDir(HIST_DEFAULT_SORT.dir); }
                                                        }}
-                                                       onLineClick={setEditing} onLinkClick={setLinking} />}
+                                                       onLineClick={setEditing} onLinkClick={canEdit ? setLinking : undefined} />}
             </>
           )
         }
@@ -669,8 +674,9 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
       {/* Drawer + popups */}
       <PmpLineDrawer open={!!editing} onOpenChange={o => { if (!o) setEditing(null); }}
                      line={editing} onSave={onSaveOverrides}
-                     onLinkClick={() => { setLinking(editing); setEditing(null); }}
-                     onGroupClick={() => { setGrouping(editing); setEditing(null); }} />
+                     canEdit={canEdit}
+                     onLinkClick={() => { if (!canEdit) return; setLinking(editing); setEditing(null); }}
+                     onGroupClick={() => { if (!canEdit) return; setGrouping(editing); setEditing(null); }} />
       <LinkCommandPopup open={!!linking} onOpenChange={o => { if (!o) setLinking(null); }}
                         line={linking} onLink={onLinkCommand} />
       <GroupLinesModal open={!!grouping} onOpenChange={o => { if (!o) setGrouping(null); }}
@@ -959,7 +965,7 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
 // ─── Subtotal inline minimalista (mesmo grid do row, sem cores berrantes) ───
 function InlineGroupSubtotal({ members, groupPi, groupPctReceber }) {
   const first = members[0];
-  const grid = "grid grid-cols-[12px_minmax(0,1.5fr)_minmax(150px,0.55fr)_140px_140px_140px_150px_60px_72px_minmax(82px,0.5fr)] gap-x-4";
+  const grid = "grid grid-cols-[12px_minmax(0,1.6fr)_minmax(110px,0.4fr)_140px_140px_140px_150px_60px_72px_minmax(82px,0.5fr)] gap-x-4";
   return (
     <div className={cn(grid, "px-5 py-2.5 items-center border-t border-border/40 bg-surface/40 text-[12px]")}>
       <div />
@@ -1486,7 +1492,7 @@ function formatDealIds(line) {
   return ids.join(" · ");
 }
 
-function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupClick }) {
+function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupClick, canEdit = false }) {
   const [form, setForm] = useState({});
   // Timeseries diária da line (impressões + margem). null = ainda carregando,
   // [] = sem dado. Refetch a cada line nova; cancelado se trocar antes da
@@ -1529,6 +1535,15 @@ function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupC
   };
   const dm = effectiveDeliveryMeta(line);
 
+  // Classes de input em modo read-only: tira contraste (opacity 70) e
+  // remove hover/focus ring pra sinalizar visualmente que não dá pra editar.
+  // `disabled` no input já bloqueia interação; o styling só comunica isso.
+  const inputCls = (extra = "") => cn(
+    "w-full h-9 px-3 rounded-md bg-surface border border-border text-sm text-fg",
+    !canEdit && "opacity-70 cursor-not-allowed",
+    extra,
+  );
+
   return (
     <Drawer open={open} onOpenChange={onOpenChange}>
       <DrawerContent widthClass="sm:w-[520px]">
@@ -1537,6 +1552,19 @@ function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupC
                       subtitle={`${line.customer || "?"} · Line ${line.line_id} · ${dm.label}`} />
         <DrawerBody>
           <div className="space-y-5">
+            {/* Pill "Somente leitura" pra não-editores — explica por que os
+                campos abaixo estão disabled. Posicionada no topo do body
+                pra ser vista antes do operador tentar editar e frustrar. */}
+            {!canEdit && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-surface/40 text-[11px] text-fg-muted">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <rect width="18" height="11" x="3" y="11" rx="2"/>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                </svg>
+                <span>Modo somente leitura — apenas operadores PMP editam status, PI, command e overrides.</span>
+              </div>
+            )}
+
             {/* Gráfico de entrega — destaque visual do drawer. Tem toggle
                 Imps/Margem e tooltip on-hover com os dois valores do dia. */}
             <DeliveryChart daily={daily} />
@@ -1544,19 +1572,22 @@ function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupC
             {/* Status — sempre visível, é a edição mais frequente */}
             <FieldGroup label="Status workflow">
               <select value={form.status} onChange={e => set("status", e.target.value)}
-                      className="w-full h-9 px-3 rounded-md bg-surface border border-border text-sm text-fg">
+                      disabled={!canEdit}
+                      className={inputCls()}>
                 {PMP_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
               {form.status === "Pendente" && effectiveStatus(line) !== "Pendente" && (
                 <div className="mt-1.5 text-[11px] text-fg-subtle">
                   Automático: <span className="text-fg font-medium">{effectiveStatus(line)}</span>
-                  <span className="ml-1">(baseado na última entrega — selecione outro pra fixar manual)</span>
+                  {canEdit && (
+                    <span className="ml-1">(baseado na última entrega — selecione outro pra fixar manual)</span>
+                  )}
                 </div>
               )}
             </FieldGroup>
 
             {/* Grupo (PI compartilhado) — sempre visível, ação contextual */}
-            <GroupBlock line={line} onGroupClick={onGroupClick} />
+            <GroupBlock line={line} onGroupClick={onGroupClick} canEdit={canEdit} />
 
             {/* Detalhes da line — colapsado por padrão. Informação de
                 referência (IO, deal IDs, bid type, datas) que o operador
@@ -1569,7 +1600,7 @@ function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupC
                 <MetaRow k="Command" v={line.short_token || "—"} mono />
                 <MetaRow k="CP / CS" v={line.cp_email && line.cs_email
                   ? `${line.cp_email} / ${line.cs_email}` : "—"} />
-                {!line.short_token && (
+                {!line.short_token && canEdit && (
                   <button onClick={onLinkClick}
                           className="mt-1 w-full h-8 rounded-md border border-signature/40 bg-signature/10 text-signature text-xs hover:bg-signature/20 transition-colors">
                     🔗 Vincular ao Hypr Command
@@ -1599,34 +1630,45 @@ function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupC
                 <FieldGroup label={`PI Override (BRL)${line.pi_brl != null && !line.pi_overridden ? ` — Command tem ${formatBRL(line.pi_brl)}` : ""}`}>
                   <CurrencyInput value={form.client_pi_amount_override}
                                  onChange={v => set("client_pi_amount_override", v)}
+                                 disabled={!canEdit}
                                  placeholder={line.pi_brl != null ? "deixe vazio pra usar o do Command" : "0,00"}
-                                 className="w-full h-9 px-3 rounded-md bg-surface border border-border text-sm text-fg tabular-nums" />
+                                 className={inputCls("tabular-nums")} />
                 </FieldGroup>
                 <FieldGroup label="Campaign override">
                   <input type="text" value={form.campaign_name_override}
                          onChange={e => set("campaign_name_override", e.target.value)}
+                         disabled={!canEdit}
                          placeholder={line.campaign_name || ""}
-                         className="w-full h-9 px-3 rounded-md bg-surface border border-border text-sm text-fg" />
+                         className={inputCls()} />
                 </FieldGroup>
                 <FieldGroup label="Agência override">
                   <input type="text" value={form.agency_override}
                          onChange={e => set("agency_override", e.target.value)}
+                         disabled={!canEdit}
                          placeholder={line.agency || ""}
-                         className="w-full h-9 px-3 rounded-md bg-surface border border-border text-sm text-fg" />
+                         className={inputCls()} />
                 </FieldGroup>
               </div>
             </Accordion>
 
             <FieldGroup label="Notas">
               <textarea value={form.notes} onChange={e => set("notes", e.target.value)} rows={3}
-                        placeholder="Anote contexto, alinhamentos, próximos passos…"
-                        className="w-full px-3 py-2 rounded-md bg-surface border border-border text-sm text-fg resize-none" />
+                        disabled={!canEdit}
+                        placeholder={canEdit ? "Anote contexto, alinhamentos, próximos passos…" : ""}
+                        className={cn(
+                          "w-full px-3 py-2 rounded-md bg-surface border border-border text-sm text-fg resize-none",
+                          !canEdit && "opacity-70 cursor-not-allowed",
+                        )} />
             </FieldGroup>
           </div>
         </DrawerBody>
         <DrawerFooter>
-          <Button variant="ghost" size="md" onClick={() => onOpenChange(false)}>Cancelar</Button>
-          <Button variant="primary" size="md" onClick={handleSave}>Salvar</Button>
+          <Button variant="ghost" size="md" onClick={() => onOpenChange(false)}>
+            {canEdit ? "Cancelar" : "Fechar"}
+          </Button>
+          {canEdit && (
+            <Button variant="primary" size="md" onClick={handleSave}>Salvar</Button>
+          )}
         </DrawerFooter>
       </DrawerContent>
     </Drawer>
@@ -1919,7 +1961,7 @@ function Accordion({ label, summary, defaultOpen = false, children }) {
 // Card destacado em signature pra chamar atenção quando a line é parte de
 // grupo (PI compartilhado). Quando não é grupo, mostra CTA pra agrupar de
 // forma mais discreta — não polui o drawer das lines individuais.
-function GroupBlock({ line, onGroupClick }) {
+function GroupBlock({ line, onGroupClick, canEdit = true }) {
   if (line.group_id) {
     return (
       <div className="rounded-lg border border-signature/30 bg-signature/[0.05] px-4 py-3">
@@ -1934,13 +1976,17 @@ function GroupBlock({ line, onGroupClick }) {
           {line.group_member_count} lines · {formatRatioPct(line.group_pct_a_receber)} entrega ·
           Margem {formatBRL(line.group_curator_margin)}
         </div>
-        <button onClick={onGroupClick}
-                className="mt-2.5 inline-flex h-7 items-center gap-1.5 px-2.5 rounded-md border border-signature/40 bg-signature/10 text-signature text-[11px] hover:bg-signature/20 transition-colors">
-          ⚙️ Editar grupo
-        </button>
+        {canEdit && (
+          <button onClick={onGroupClick}
+                  className="mt-2.5 inline-flex h-7 items-center gap-1.5 px-2.5 rounded-md border border-signature/40 bg-signature/10 text-signature text-[11px] hover:bg-signature/20 transition-colors">
+            ⚙️ Editar grupo
+          </button>
+        )}
       </div>
     );
   }
+  // Sem grupo + sem permissão = nada a mostrar (esconde o CTA discreto).
+  if (!canEdit) return null;
   return (
     <button onClick={onGroupClick}
             className="w-full flex items-center justify-between gap-2 px-3.5 py-2 rounded-lg border border-dashed border-border text-[11px] text-fg-muted hover:bg-surface/60 hover:border-signature/40 hover:text-fg transition-colors">
@@ -2002,7 +2048,7 @@ function FieldGroup({ label, children }) {
 // "12.345,67". Aceita o valor inicial em string numérica ("1234.56") e devolve
 // no mesmo formato (string numérica). Cursor permanece no final naturalmente
 // porque o input é uma string controlada que cresce só pela direita.
-function CurrencyInput({ value, onChange, placeholder, className }) {
+function CurrencyInput({ value, onChange, placeholder, className, disabled = false }) {
   const [display, setDisplay] = useState("");
 
   // Sincroniza display quando o valor externo muda (ex: reset de formulário,
@@ -2033,6 +2079,7 @@ function CurrencyInput({ value, onChange, placeholder, className }) {
       value={display}
       onChange={handleChange}
       placeholder={placeholder}
+      disabled={disabled}
       className={className}
     />
   );
