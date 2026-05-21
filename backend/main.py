@@ -1108,11 +1108,17 @@ def report_data(request):
                 target_id   = (body.get("short_token") or "").strip()
             alcance    = (body.get("alcance")    or "").strip()
             frequencia = (body.get("frequencia") or "").strip()
+            auto_alcance = bool(body.get("auto_alcance"))
             if target_type not in ("token", "merge"):
                 return (jsonify({"error": "target_type inválido (use 'token' ou 'merge')"}), 400, headers)
             if not target_id:
                 return (jsonify({"error": "target_id é obrigatório"}), 400, headers)
-            save_alcance_frequencia(target_type, target_id, alcance, frequencia)
+            # Em modo auto_alcance, o alcance é derivado em runtime a partir
+            # de impressões/frequência — descarta qualquer valor manual que
+            # tenha vazado do front pra não confundir leitor da tabela.
+            if auto_alcance:
+                alcance = ""
+            save_alcance_frequencia(target_type, target_id, alcance, frequencia, auto_alcance)
             # Invalida cache: pra escopo token, derruba só esse token (o
             # _cache_invalidate_token já limpa o cache merged também). Pra
             # escopo merge, derruba o cache merged do grupo + os caches
@@ -2765,7 +2771,7 @@ def fetch_campaign_data(short_token):
         # "sem dados" em vez de erro 500.
         nullable = key in ("logo", "loom", "rmnd", "pdooh", "survey", "sheets_integration")
         if key == "alcance_frequencia":
-            default = {"alcance": "", "frequencia": "", "updated_at": ""}
+            default = {"alcance": "", "frequencia": "", "auto_alcance": False, "updated_at": ""}
         else:
             default = None if nullable else []
         result[key] = _safe_future_result(future, key, default=default)
@@ -2794,6 +2800,7 @@ def fetch_campaign_data(short_token):
             logger.warning(f"[WARN fetch_campaign_data af_merge_fallback {short_token}] {e}")
     result["alcance"]            = af.get("alcance", "")    or ""
     result["frequencia"]         = af.get("frequencia", "") or ""
+    result["auto_alcance"]       = bool(af.get("auto_alcance", False))
     result["alcance_updated_at"] = af.get("updated_at", "") or ""
     return result
 
@@ -3342,6 +3349,7 @@ def compose_merged_report(group, force_refresh=False):
         "merge_meta":         merge_meta,
         "alcance":            af_merge.get("alcance", "")    or "",
         "frequencia":         af_merge.get("frequencia", "") or "",
+        "auto_alcance":       bool(af_merge.get("auto_alcance", False)),
         "alcance_updated_at": af_merge.get("updated_at", "") or "",
     }
 
@@ -4032,7 +4040,12 @@ def _alc_freq_table_id() -> str:
 
 def _ensure_alc_freq_table() -> None:
     """Cria a tabela `campaign_alcance_frequencia` se não existir.
-    Idempotente, com flag de instância pra evitar query repetida em warm path."""
+    Idempotente, com flag de instância pra evitar query repetida em warm path.
+
+    A coluna `auto_alcance` foi adicionada depois da criação original — o
+    ADD COLUMN IF NOT EXISTS garante migração em tabelas pré-existentes sem
+    quebrar deploys novos.
+    """
     global _alc_freq_table_ensured
     if _alc_freq_table_ensured:
         return
@@ -4041,19 +4054,39 @@ def _ensure_alc_freq_table() -> None:
             return
         sql = f"""
             CREATE TABLE IF NOT EXISTS `{_alc_freq_table_id()}` (
-                scope_type STRING NOT NULL,
-                scope_id   STRING NOT NULL,
-                alcance    STRING,
-                frequencia STRING,
-                updated_at TIMESTAMP NOT NULL
+                scope_type   STRING NOT NULL,
+                scope_id     STRING NOT NULL,
+                alcance      STRING,
+                frequencia   STRING,
+                auto_alcance BOOL,
+                updated_at   TIMESTAMP NOT NULL
             )
         """
         bq.query(sql).result()
+        try:
+            bq.query(
+                f"ALTER TABLE `{_alc_freq_table_id()}` "
+                f"ADD COLUMN IF NOT EXISTS auto_alcance BOOL"
+            ).result()
+        except Exception as e:
+            logger.warning(f"[WARN ensure_alc_freq_table add_col] {e}")
         _alc_freq_table_ensured = True
 
 
-def save_alcance_frequencia(scope_type: str, scope_id: str, alcance: str, frequencia: str):
-    """UPSERT do par (alcance, frequencia) para um escopo (token ou merge)."""
+def save_alcance_frequencia(
+    scope_type: str,
+    scope_id: str,
+    alcance: str,
+    frequencia: str,
+    auto_alcance: bool = False,
+):
+    """UPSERT do par (alcance, frequencia) + flag auto_alcance para um escopo.
+
+    `auto_alcance=True` significa que o admin escolheu "calcular alcance
+    automaticamente a partir da frequência" — nesse modo o campo `alcance`
+    deve vir vazio do caller (frontend) e o valor é derivado em runtime
+    como `impressões / frequencia`.
+    """
     _ensure_alc_freq_table()
     sql = f"""
         MERGE `{_alc_freq_table_id()}` T
@@ -4061,28 +4094,31 @@ def save_alcance_frequencia(scope_type: str, scope_id: str, alcance: str, freque
         ON T.scope_type = S.scope_type AND T.scope_id = S.scope_id
         WHEN MATCHED THEN
             UPDATE SET alcance = @alcance, frequencia = @frequencia,
+                       auto_alcance = @auto_alcance,
                        updated_at = CURRENT_TIMESTAMP()
         WHEN NOT MATCHED THEN
-            INSERT (scope_type, scope_id, alcance, frequencia, updated_at)
-            VALUES (@scope_type, @scope_id, @alcance, @frequencia, CURRENT_TIMESTAMP())
+            INSERT (scope_type, scope_id, alcance, frequencia, auto_alcance, updated_at)
+            VALUES (@scope_type, @scope_id, @alcance, @frequencia, @auto_alcance, CURRENT_TIMESTAMP())
     """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
-            bigquery.ScalarQueryParameter("scope_type", "STRING", scope_type),
-            bigquery.ScalarQueryParameter("scope_id",   "STRING", scope_id),
-            bigquery.ScalarQueryParameter("alcance",    "STRING", alcance or ""),
-            bigquery.ScalarQueryParameter("frequencia", "STRING", frequencia or ""),
+            bigquery.ScalarQueryParameter("scope_type",   "STRING", scope_type),
+            bigquery.ScalarQueryParameter("scope_id",     "STRING", scope_id),
+            bigquery.ScalarQueryParameter("alcance",      "STRING", alcance or ""),
+            bigquery.ScalarQueryParameter("frequencia",   "STRING", frequencia or ""),
+            bigquery.ScalarQueryParameter("auto_alcance", "BOOL",   bool(auto_alcance)),
         ]
     )
     bq.query(sql, job_config=job_config).result()
 
 
 def query_alcance_frequencia(scope_type: str, scope_id: str):
-    """Retorna {"alcance": str, "frequencia": str, "updated_at": str ISO} do
-    escopo, ou strings vazias se nunca foi salvo. Tolera tabela inexistente
-    (deploy novo)."""
+    """Retorna {"alcance": str, "frequencia": str, "auto_alcance": bool,
+    "updated_at": str ISO} do escopo, ou strings/False vazios se nunca foi
+    salvo. Tolera tabela inexistente (deploy novo) e coluna `auto_alcance`
+    inexistente (deploy intermediário, antes do ALTER rodar)."""
     sql = f"""
-        SELECT alcance, frequencia, updated_at
+        SELECT alcance, frequencia, auto_alcance, updated_at
         FROM `{_alc_freq_table_id()}`
         WHERE scope_type = @scope_type AND scope_id = @scope_id
         LIMIT 1
@@ -4098,13 +4134,14 @@ def query_alcance_frequencia(scope_type: str, scope_id: str):
         if rows:
             ts = rows[0]["updated_at"]
             return {
-                "alcance":    rows[0]["alcance"]    or "",
-                "frequencia": rows[0]["frequencia"] or "",
-                "updated_at": ts.isoformat() if ts else "",
+                "alcance":      rows[0]["alcance"]    or "",
+                "frequencia":   rows[0]["frequencia"] or "",
+                "auto_alcance": bool(rows[0]["auto_alcance"]) if rows[0]["auto_alcance"] is not None else False,
+                "updated_at":   ts.isoformat() if ts else "",
             }
     except Exception as e:
         logger.warning(f"[WARN query_alcance_frequencia {scope_type}:{scope_id}] {e}")
-    return {"alcance": "", "frequencia": "", "updated_at": ""}
+    return {"alcance": "", "frequencia": "", "auto_alcance": False, "updated_at": ""}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

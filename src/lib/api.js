@@ -815,13 +815,17 @@ export async function saveComment({ short_token, metric_name, author, comment, a
  * `frequencia` é opcional. Quando vazia, o frontend calcula `impressões totais
  * / alcance` em runtime — o valor só vai pro banco se o admin sobrescrever.
  *
+ * `auto_alcance=true` inverte a relação: o admin preenche `frequencia` e o
+ * `alcance` é derivado em runtime (`impressões / frequência`). Nesse modo o
+ * backend ignora qualquer `alcance` enviado.
+ *
  * Lança em status != 2xx pra o caller propagar o erro pra UI (diferente da
  * versão antiga que ignorava response status).
  */
-export async function saveAlcanceFrequencia({ target_type, target_id, alcance, frequencia, adminJwt }) {
+export async function saveAlcanceFrequencia({ target_type, target_id, alcance, frequencia, auto_alcance, adminJwt }) {
   const r = await postJson(
     `${API_URL}?action=save_af`,
-    { target_type, target_id, alcance, frequencia },
+    { target_type, target_id, alcance, frequencia, auto_alcance: !!auto_alcance },
     adminAuthHeaders(adminJwt),
   );
   if (!r.ok) {

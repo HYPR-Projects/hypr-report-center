@@ -435,6 +435,7 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
             adminJwt={adminJwt}
             initialAlcance={data.alcance}
             initialFrequencia={data.frequencia}
+            initialAutoAlcance={data.auto_alcance}
             initialUpdatedAt={data.alcance_updated_at}
             totalImpressions={totalImpressions}
           />

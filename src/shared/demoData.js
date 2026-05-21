@@ -714,6 +714,7 @@ export function buildDemoPayload(today = new Date()) {
     // anchorado no `today` pra envelhecer junto com o demo.
     alcance:            "1.250.000",
     frequencia:         "",
+    auto_alcance:       false,
     alcance_updated_at: new Date(today.getTime() - 2 * 86400000).toISOString(),
   };
 }
