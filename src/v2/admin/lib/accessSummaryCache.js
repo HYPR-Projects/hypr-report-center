@@ -20,15 +20,21 @@
 //   - Cache em módulo sobrevive entre rotas (admin → client detail →
 //     volta) — sem rebuscar.
 //
-// TTL: 5 minutos. Refetch automático quando expira. Não invalida em
-// mutation (acessos só mudam por usuário externo, mutations admin não
-// afetam o número).
+// TTL: 5 minutos. Stale-while-revalidate: o badge segue exibindo o último
+// valor conhecido após o TTL e o hook dispara refetch em background. Sem
+// isso, badge caía em `0` quando o TTL expirava enquanto o user ficava
+// muito tempo na página (sintoma: "deixei a aba aberta e zerou").
+//
+// Em erro, aplica backoff de ERROR_BACKOFF_MS pra não martelar backend
+// (e flickar o skeleton) quando JWT expira ou rede está ruim.
 
 import { getAccessSummariesBatch } from "../../../lib/api";
 
 const TTL_MS = 5 * 60 * 1000;
+const ERROR_BACKOFF_MS = 30 * 1000;
 const cache = new Map(); // token → { summary, fetchedAt }
 let inflight = null;     // Promise da request em voo, pra dedup
+let lastErrorAt = 0;     // timestamp do último erro de batch, p/ backoff
 // Tokens que entraram em alguma prefetch — usado pelo badge pra
 // distinguir "estado de loading" (não rolou prefetch ainda) de
 // "0 acessos confirmado" (prefetch resolveu, valor é 0 real).
@@ -47,28 +53,65 @@ export function subscribe(cb) {
   return () => listeners.delete(cb);
 }
 
+// Micro-batch p/ refetches de entries stale. Quando 60+ badges remontam
+// stale ao mesmo tempo (ex: troca de filtro depois do TTL), agrupamos
+// os tokens em um único request via queueMicrotask em vez de N
+// chamadas sequenciais.
+const staleQueue = new Set();
+let staleScheduled = false;
+function flushStaleQueue() {
+  staleScheduled = false;
+  if (staleQueue.size === 0) return;
+  const tokens = [...staleQueue];
+  staleQueue.clear();
+  prefetchAccessSummaries(tokens).catch(() => { /* silencioso */ });
+}
+function requestRefreshIfStale(shortToken) {
+  if (!shortToken) return;
+  const entry = cache.get(shortToken);
+  if (entry && Date.now() - entry.fetchedAt <= TTL_MS) return; // ainda fresh
+  staleQueue.add(shortToken);
+  if (!staleScheduled) {
+    staleScheduled = true;
+    queueMicrotask(flushStaleQueue);
+  }
+}
+
+/**
+ * Retorna o ÚLTIMO valor conhecido — mesmo depois do TTL. Combinado com
+ * `requestRefreshIfStale` no hook, dá stale-while-revalidate: o número
+ * antigo continua visível enquanto o refetch corre em background.
+ *
+ * Antes desta mudança, expirar o TTL retornava null e o badge caía em
+ * `0` quando o card remontava (troca de filtro, busca, etc.) — sintoma
+ * de "deixei aberto e zerou".
+ */
 export function getCachedSummary(shortToken) {
   if (!shortToken) return null;
   const entry = cache.get(shortToken);
   if (!entry) return null;
-  if (Date.now() - entry.fetchedAt > TTL_MS) return null;
   return entry.summary;
 }
 
 /**
- * True quando temos um prefetch em voo OU o token nunca foi requested.
- * False quando já temos dado em cache (mesmo que valor zero, é dado
- * confirmado). Badge usa pra decidir entre skeleton e número real.
+ * True se há entry em cache mas passou do TTL. Caller (hook) usa pra
+ * disparar refetch em background sem trocar o número visível.
+ */
+export function isStaleSummary(shortToken) {
+  if (!shortToken) return false;
+  const entry = cache.get(shortToken);
+  if (!entry) return false;
+  return Date.now() - entry.fetchedAt > TTL_MS;
+}
+
+/**
+ * Loading = NÃO temos nenhum dado em cache + há request em voo. Se já
+ * temos dado (mesmo stale), retornamos false: o badge mostra o número,
+ * não o skeleton. Refetch em background atualiza quando chegar.
  */
 export function isLoadingSummary(shortToken) {
   if (!shortToken) return false;
-  if (cache.has(shortToken)) {
-    // Já tem dado — verifica se ainda é válido (TTL)
-    const entry = cache.get(shortToken);
-    if (Date.now() - entry.fetchedAt <= TTL_MS) return false;
-  }
-  // Não tem cache válido. Loading = se foi requested e tem inflight,
-  // OU se nunca foi requested mas tem inflight (provavelmente está nele).
+  if (cache.has(shortToken)) return false;
   return inflight != null;
 }
 
@@ -82,6 +125,11 @@ export async function prefetchAccessSummaries(tokens) {
   for (const t of tokens) {
     if (t) requestedTokens.add(t);
   }
+  // Backoff em erro recente: evita martelar backend quando JWT expirou
+  // ou rede está ruim. UI continua mostrando dado stale; nova tentativa
+  // só após o backoff (ou hard refresh, que reseta este módulo).
+  if (lastErrorAt && Date.now() - lastErrorAt < ERROR_BACKOFF_MS) return;
+
   const now = Date.now();
   const toFetch = tokens.filter((t) => {
     if (!t) return false;
@@ -123,20 +171,23 @@ export async function prefetchAccessSummaries(tokens) {
           });
         }
       }
-      emit();
+      lastErrorAt = 0;
     })
     .catch((err) => {
-      // Falha silenciosa — badge cai pra zeros. Próxima tentativa em 5min.
-      // Logamos pra Sentry/console pra detectar regressão silenciosa.
       // eslint-disable-next-line no-console
       console.warn("[accessSummaryCache] batch failed:", err?.message || err);
+      lastErrorAt = Date.now();
     })
     .finally(() => {
       inflight = null;
+      // Emit no finally garante 1 update ordenado APÓS inflight=null.
+      // Subscribers veem estado consistente: cache populado (sucesso) ou
+      // inflight=null (erro) → saem do skeleton sem ficar travados.
+      emit();
     });
 
   // Emit DEPOIS de inflight estar setado pros listeners vejam loading=true.
-  // Sem isso, badges não trocam pra skeleton.
+  // Sem isso, badges não trocam pra skeleton no 1º carregamento.
   emit();
   await inflight;
 }
@@ -157,6 +208,10 @@ export function useCachedAccessSummary(shortToken) {
       summary: getCachedSummary(shortToken),
       loading: isLoadingSummary(shortToken),
     });
+    // Stale-while-revalidate: se o cache expirou (TTL > 5min), dispara
+    // refetch em background. Micro-batched: 60+ badges remontando juntos
+    // viram 1 só request.
+    requestRefreshIfStale(shortToken);
     const unsub = subscribe(() => {
       setState({
         summary: getCachedSummary(shortToken),
