@@ -773,6 +773,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
                 aqui dentro (mesmo gate do DataFreshnessIndicator). */}
             <AlertsBell
               alerts={alerts}
+              teamMap={teamMap}
               onDrillCampaign={handleDrillCampaign}
               onOpenDiagnostico={handleOpenDiagnosticoFromAlert}
             />

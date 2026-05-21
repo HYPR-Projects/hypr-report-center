@@ -21,7 +21,8 @@ import {
 } from "../lib/alerts/constants";
 import { countBySeverity, groupByCategory } from "../lib/alerts/engine";
 
-const READ_STORAGE_KEY = "hypr.alerts.read.v1";
+const READ_STORAGE_KEY      = "hypr.alerts.read.v1";
+const CS_FILTER_STORAGE_KEY = "hypr.alerts.csFilter.v1";
 
 // ────────────────────────────────────────────────────────────────────────
 // Persistência de "lidos"
@@ -76,37 +77,90 @@ function BellIcon() {
 /**
  * Props:
  *   alerts            — Alert[] (de engine.generateAlerts)
+ *   teamMap           — { email → nome } pra exibir CS no filtro rápido
  *   onDrillCampaign   — (short_token) => void  (clicar item abre sheet no parent)
  *   onOpenDiagnostico — () => void  (rodapé "Ver no Diagnóstico")
  */
 export function AlertsBell({
   alerts = [],
+  teamMap = {},
   onDrillCampaign,
   onOpenDiagnostico,
 }) {
   const [readSet, setReadSet] = useState(loadReadSet);
   const [activeTab, setActiveTab] = useState("all");
   const [open, setOpen] = useState(false);
+  // Filtro rápido por CS — vazio = todos. Mostra só alertas onde
+  // `csEmail` casa com o selecionado. Alertas sem csEmail (ex: macro
+  // H2/H3 por cliente) ficam de fora quando filtro está ativo.
+  // Persiste em localStorage pra sobreviver reload/nova sessão — CS
+  // costuma filtrar por si mesmo e não vale forçar reselecionar todo dia.
+  const [csFilter, setCsFilter] = useState(() => {
+    try { return localStorage.getItem(CS_FILTER_STORAGE_KEY) || ""; }
+    catch { return ""; }
+  });
+  useEffect(() => {
+    try {
+      if (csFilter) localStorage.setItem(CS_FILTER_STORAGE_KEY, csFilter);
+      else          localStorage.removeItem(CS_FILTER_STORAGE_KEY);
+    } catch { /* ignore */ }
+  }, [csFilter]);
+  // Auto-clear: se o CS persistido não está nos alertas de hoje, reseta
+  // o filtro pra evitar popover vazio confuso. Roda quando alerts mudam.
+  useEffect(() => {
+    if (!csFilter || alerts.length === 0) return;
+    const hasCs = alerts.some((a) => (a.csEmail || a.owner?.email) === csFilter);
+    if (!hasCs) setCsFilter("");
+  }, [alerts, csFilter]);
 
   useEffect(() => { saveReadSet(readSet); }, [readSet]);
 
   // Conta apenas críticos NÃO lidos pro badge — mantém minimalista.
+  // Conta GLOBAL (sem aplicar csFilter), pra o sino refletir o estado
+  // total da operação independente do filtro local do popover.
   const unreadCriticalCount = useMemo(() => {
     return alerts.filter((a) => a.severity === SEVERITY.CRITICAL && !readSet.has(fingerprint(a))).length;
   }, [alerts, readSet]);
 
-  const totalCount = alerts.length;
-  const counts = useMemo(() => countBySeverity(alerts), [alerts]);
-  const grouped = useMemo(() => groupByCategory(alerts), [alerts]);
+  // Lista única de CSs presentes nos alertas — alimenta o dropdown do filtro
+  // rápido. Macros sem owner.email saem do listado naturalmente. Ordena por
+  // nome amigável (teamMap[email] || local-part) pra dropdown legível.
+  const csOptions = useMemo(() => {
+    const set = new Set();
+    for (const a of alerts) {
+      const email = a.csEmail || a.owner?.email;
+      if (email) set.add(email);
+    }
+    return [...set].sort((a, b) => {
+      const na = teamMap[a] || a.split("@")[0];
+      const nb = teamMap[b] || b.split("@")[0];
+      return na.localeCompare(nb);
+    });
+  }, [alerts, teamMap]);
+
+  // Aplica filtro de CS ANTES de contar/agrupar — assim contadores das
+  // tabs refletem o escopo filtrado, mas o badge do sino continua global.
+  const csFilteredAlerts = useMemo(() => {
+    if (!csFilter) return alerts;
+    return alerts.filter((a) => {
+      const email = a.csEmail || a.owner?.email;
+      return email === csFilter;
+    });
+  }, [alerts, csFilter]);
+
+  const totalCount = csFilteredAlerts.length;
+  const counts = useMemo(() => countBySeverity(csFilteredAlerts), [csFilteredAlerts]);
+  const grouped = useMemo(() => groupByCategory(csFilteredAlerts), [csFilteredAlerts]);
 
   const filtered = useMemo(() => {
-    if (activeTab === "all") return alerts;
+    if (activeTab === "all") return csFilteredAlerts;
     return grouped[activeTab] || [];
-  }, [alerts, activeTab, grouped]);
+  }, [csFilteredAlerts, activeTab, grouped]);
 
   const markAllRead = () => {
     const next = new Set(readSet);
-    for (const a of alerts) next.add(fingerprint(a));
+    // Marca só os alertas atualmente visíveis (respeita filtro de CS).
+    for (const a of csFilteredAlerts) next.add(fingerprint(a));
     setReadSet(next);
   };
 
@@ -203,16 +257,52 @@ export function AlertsBell({
                 </span>
               )}
             </div>
-            {totalCount > 0 && (
-              <button
-                type="button"
-                onClick={markAllRead}
-                className="text-[11px] text-fg-muted hover:text-fg font-medium cursor-pointer"
-                title="Marcar tudo como visto"
-              >
-                Marcar tudo
-              </button>
-            )}
+            <div className="flex items-center gap-3 shrink-0">
+              {/* Filtro rápido de CS — só aparece se houver ≥2 CSs distintos
+                  nos alertas. Native select com styling sutil pra integrar
+                  com o header sem competir com "Marcar tudo". */}
+              {csOptions.length > 1 && (
+                <div className="relative inline-flex">
+                  <select
+                    value={csFilter}
+                    onChange={(e) => setCsFilter(e.target.value)}
+                    aria-label="Filtrar alertas por CS"
+                    className={cn(
+                      "appearance-none cursor-pointer",
+                      "text-[11px] font-medium pl-2 pr-5 py-0.5 rounded-md",
+                      "bg-transparent text-fg-muted hover:text-fg border border-border/60 hover:border-border",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1 focus-visible:ring-offset-canvas-elevated",
+                      "transition-colors",
+                      csFilter && "text-fg border-signature/40 bg-signature-soft/50",
+                    )}
+                  >
+                    <option value="">Todos os CS</option>
+                    {csOptions.map((email) => (
+                      <option key={email} value={email}>
+                        {teamMap[email] || email.split("@")[0]}
+                      </option>
+                    ))}
+                  </select>
+                  <svg
+                    width="8" height="8" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" strokeWidth="2.5"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 text-fg-subtle pointer-events-none"
+                  >
+                    <path d="m6 9 6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </div>
+              )}
+              {totalCount > 0 && (
+                <button
+                  type="button"
+                  onClick={markAllRead}
+                  className="text-[11px] text-fg-muted hover:text-fg font-medium cursor-pointer"
+                  title="Marcar tudo como visto"
+                >
+                  Marcar tudo
+                </button>
+              )}
+            </div>
           </div>
 
           {/* ── Tabs ────────────────────────────────────────────────── */}

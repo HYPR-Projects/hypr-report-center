@@ -139,6 +139,11 @@ function buildAlert(rule, raw, media, result) {
     campaign:  { short_token: raw.short_token, client_name: raw.client_name, campaign_name: raw.campaign_name },
     owner:     null,
     media:     media || null,
+    // csEmail/cpEmail expostos pra alimentar o filtro rápido de owner no
+    // popover do sino. Null em campanhas sem owner — esses ficam visíveis
+    // quando o filtro está em "Todos CS".
+    csEmail:   raw.cs_email || null,
+    cpEmail:   raw.cp_email || null,
     message:   result.message,
     detail:    result.detail,
     impactBrl,
