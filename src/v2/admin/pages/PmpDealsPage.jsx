@@ -112,6 +112,15 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   const [linking, setLinking] = useState(null);
   const [grouping, setGrouping] = useState(null);  // line objeto, abre GroupLinesModal
 
+  // Toast pós-vinculação. Popup fecha imediatamente após sucesso, então sem
+  // toast o operador fica em dúvida se a operação completou. Auto-dismiss 4s.
+  const [linkToast, setLinkToast] = useState(null);  // { token, lineLabel } | null
+  useEffect(() => {
+    if (!linkToast) return;
+    const t = setTimeout(() => setLinkToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [linkToast]);
+
   // Sync
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
@@ -423,9 +432,12 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   };
 
   const onLinkCommand = async (short_token, opts = {}) => {
+    // Snapshot do nome ANTES de fechar o popup (setLinking(null) zera linking).
+    const lineLabel = linking?.line_name || linking?.campaign_name || `Line ${linking?.line_id}`;
     const updated = await linkPmpCommand({ line_id: linking.line_id, short_token, force: opts.force || false });
     setLines(prev => prev.map(l => l.line_id === updated.line_id ? { ...l, ...updated } : l));
     setLinking(null);
+    setLinkToast({ token: short_token, lineLabel });
   };
 
   const onAlertClick = (bucket) => {
@@ -681,6 +693,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
                         line={linking} onLink={onLinkCommand} />
       <GroupLinesModal open={!!grouping} onOpenChange={o => { if (!o) setGrouping(null); }}
                        line={grouping} onGroupCreated={() => reload()} />
+      <LinkSuccessToast toast={linkToast} onDismiss={() => setLinkToast(null)} />
     </div>
     </TooltipProvider>
   );
@@ -1609,11 +1622,23 @@ function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupC
                 <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 pt-2 border-t border-border">
                   <MetaRow k="Bid type" v={bidTypeLabel(line.bid_type) || "—"} compact />
                   <MetaRow k="Revenue type" v={line.revenue_type || "—"} compact />
+                  {/* Pricing strategy crua do Xandr Curate — visível quando o
+                      sync já tiver puxado (versão pós-deploy backend). */}
+                  {line.pricing_strategy && (
+                    <MetaRow k="Pricing strategy" v={line.pricing_strategy} compact />
+                  )}
+                  {/* Preço configurado no Xandr (campo "Price" da UI). Setado
+                      quando Pricing Strategy = Fixed Price / Market Price. */}
+                  {line.revenue_value != null && (
+                    <MetaRow k="Preço" v={formatBRL(line.revenue_value)} compact />
+                  )}
                   <MetaRow k="Margem curator"
                            v={line.curator_margin_pct != null ? `${line.curator_margin_pct}%` : "—"}
                            compact />
                   <MetaRow k="Floor / Teto"
-                           v={`${line.min_revenue_value ?? "—"} / ${line.max_revenue_value ?? "—"}`}
+                           v={(line.min_revenue_value != null || line.max_revenue_value != null)
+                                ? `${line.min_revenue_value != null ? formatBRL(line.min_revenue_value) : "—"} / ${line.max_revenue_value != null ? formatBRL(line.max_revenue_value) : "—"}`
+                                : "—"}
                            compact />
                   <MetaRow k="Início" v={formatYmdShort(line.start_date) || "—"} compact />
                   <MetaRow k="Fim" v={formatYmdShort(line.end_date) || "—"} compact />
@@ -2100,22 +2125,30 @@ function LinkCommandPopup({ open, onOpenChange, line, onLink }) {
   const [manual, setManual] = useState("");
   const [err, setErr] = useState(null);
   const [conflict, setConflict] = useState(null);
+  // Token sendo linkado AGORA (string ou null). Drives all UI feedback:
+  // spinner no card clicado, opacity-40 nos outros, disabled no input
+  // manual, label "Vinculando…" no botão. Limpa em catch (no success o
+  // popup desmonta antes via setLinking(null) no parent).
+  const [linkingToken, setLinkingToken] = useState(null);
   useEffect(() => {
     if (!line) return;
-    setLoading(true); setErr(null); setConflict(null); setManual("");
+    setLoading(true); setErr(null); setConflict(null); setManual(""); setLinkingToken(null);
     suggestPmpLinks(line.line_id).then(setSuggestions).catch(e => setErr(e.message)).finally(() => setLoading(false));
   }, [line]);
   if (!line) return null;
   const tryLink = async (token, force = false) => {
-    setErr(null); setConflict(null);
+    if (!token || linkingToken) return; // ignora cliques durante operação em voo
+    setErr(null); setConflict(null); setLinkingToken(token);
     try { await onLink(token, { force }); }
     catch (e) {
+      setLinkingToken(null);
       if (e.is_conflict) { setConflict(e.conflict_line_id); setErr(e.message); }
       else setErr(e.message);
     }
   };
+  const isLinking = linkingToken != null;
   return (
-    <Drawer open={open} onOpenChange={onOpenChange}>
+    <Drawer open={open} onOpenChange={isLinking ? () => {} : onOpenChange}>
       <DrawerContent widthClass="sm:w-[540px]">
         <DrawerHeader title="Vincular ao Hypr Command" subtitle={`Line ${line.line_id} · ${line.line_name || ""}`} />
         <DrawerBody>
@@ -2127,19 +2160,39 @@ function LinkCommandPopup({ open, onOpenChange, line, onLink }) {
           {!loading && suggestions.length > 0 && (
             <div className="space-y-2 mb-5">
               <div className="text-[10px] uppercase tracking-widest text-fg-subtle font-bold">Sugestões automáticas</div>
-              {suggestions.map(s => (
-                <button key={s.short_token} onClick={() => tryLink(s.short_token)}
-                        className="w-full text-left rounded-lg border border-border bg-surface/40 hover:bg-surface px-4 py-3 transition-colors">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="font-mono text-xs text-signature">{s.short_token}</div>
-                    <div className="text-[10px] text-fg-subtle">match {(s.score * 100).toFixed(0)}%</div>
-                  </div>
-                  <div className="text-sm text-fg mt-1">{s.client} <span className="text-fg-subtle mx-1">·</span> {s.campaign_name}</div>
-                  <div className="text-[11px] text-fg-muted mt-0.5">
-                    {s.agency || "—"} · PI {formatBRL(s.investment)} · {s.cp_name || "?"} / {s.cs_name || "?"}
-                  </div>
-                </button>
-              ))}
+              {suggestions.map(s => {
+                const linkingThis = linkingToken === s.short_token;
+                const dimmed = isLinking && !linkingThis;
+                return (
+                  <button key={s.short_token} onClick={() => tryLink(s.short_token)}
+                          disabled={isLinking}
+                          className={cn(
+                            "w-full text-left rounded-lg border px-4 py-3 transition-all",
+                            linkingThis ? "border-signature/60 bg-signature/[0.08]"
+                                        : "border-border bg-surface/40",
+                            !isLinking && "hover:bg-surface hover:border-border-strong cursor-pointer",
+                            dimmed && "opacity-40",
+                            isLinking && "cursor-default",
+                          )}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 font-mono text-xs text-signature">
+                        {linkingThis && <SpinnerIcon className="text-signature" />}
+                        {s.short_token}
+                      </div>
+                      <div className={cn(
+                            "text-[10px] tabular-nums",
+                            linkingThis ? "text-signature font-semibold" : "text-fg-subtle",
+                          )}>
+                        {linkingThis ? "vinculando…" : `match ${(s.score * 100).toFixed(0)}%`}
+                      </div>
+                    </div>
+                    <div className="text-sm text-fg mt-1">{s.client} <span className="text-fg-subtle mx-1">·</span> {s.campaign_name}</div>
+                    <div className="text-[11px] text-fg-muted mt-0.5">
+                      {s.agency || "—"} · PI {formatBRL(s.investment)} · {s.cp_name || "?"} / {s.cs_name || "?"}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           )}
           {!loading && suggestions.length === 0 && !err && (
@@ -2150,8 +2203,18 @@ function LinkCommandPopup({ open, onOpenChange, line, onLink }) {
             <div className="flex items-center gap-2">
               <input type="text" value={manual} onChange={e => setManual(e.target.value.toUpperCase())}
                      placeholder="ex: NO2015"
-                     className="flex-1 h-10 px-3 rounded-md bg-surface border border-border text-sm text-fg uppercase font-mono" />
-              <Button variant="primary" size="md" onClick={() => tryLink(manual)} disabled={!manual.trim()}>Vincular</Button>
+                     disabled={isLinking}
+                     className={cn(
+                       "flex-1 h-10 px-3 rounded-md bg-surface border border-border text-sm text-fg uppercase font-mono",
+                       isLinking && "opacity-60 cursor-not-allowed",
+                     )} />
+              <Button variant="primary" size="md"
+                      onClick={() => tryLink(manual)}
+                      disabled={!manual.trim() || isLinking}>
+                {linkingToken === manual ? (
+                  <span className="inline-flex items-center gap-1.5"><SpinnerIcon /> Vinculando…</span>
+                ) : "Vincular"}
+              </Button>
             </div>
           </div>
           {err && (
@@ -2159,8 +2222,9 @@ function LinkCommandPopup({ open, onOpenChange, line, onLink }) {
               {err}
               {conflict && (
                 <button onClick={() => tryLink(manual || suggestions[0]?.short_token, true)}
-                        className="block mt-2 text-amber-400 underline-offset-2 hover:underline text-xs">
-                  Sobrescrever — desvincular da line {conflict} e vincular aqui
+                        disabled={isLinking}
+                        className="block mt-2 text-amber-400 underline-offset-2 hover:underline text-xs disabled:opacity-40 disabled:no-underline">
+                  {isLinking ? "Sobrescrevendo…" : `Sobrescrever — desvincular da line ${conflict} e vincular aqui`}
                 </button>
               )}
             </div>
@@ -2168,6 +2232,52 @@ function LinkCommandPopup({ open, onOpenChange, line, onLink }) {
         </DrawerBody>
       </DrawerContent>
     </Drawer>
+  );
+}
+
+// Spinner SVG inline — 12px, usa currentColor pra herdar cor do contexto.
+// Tailwind animate-spin + path com strokeOpacity criando arco "girante".
+function SpinnerIcon({ className }) {
+  return (
+    <svg className={cn("animate-spin", className)} width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3.5" />
+      <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// Toast flutuante pós-vinculação. Fica no canto inferior direito, fora do
+// fluxo do drawer (que já fechou). Auto-dismiss vem do effect no parent.
+// Tem botão "fechar" pra dismiss manual antes do timeout.
+function LinkSuccessToast({ toast, onDismiss }) {
+  if (!toast) return null;
+  return (
+    <div role="status"
+         className="fixed bottom-6 right-6 z-[60] max-w-[360px] rounded-lg border border-emerald-500/30 bg-emerald-500/[0.08] backdrop-blur-md px-3.5 py-2.5 shadow-xl animate-in fade-in slide-in-from-bottom-2 duration-200">
+      <div className="flex items-start gap-2.5">
+        <div className="shrink-0 w-5 h-5 rounded-full bg-emerald-500/20 flex items-center justify-center mt-px">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-300">
+            <path d="M20 6 9 17l-5-5"/>
+          </svg>
+        </div>
+        <div className="min-w-0 flex-1 text-[12.5px] text-emerald-100">
+          <div>
+            <span className="font-mono font-semibold text-emerald-300">{toast.token}</span>
+            <span className="text-emerald-200/80"> vinculado</span>
+          </div>
+          <div className="text-[11px] text-emerald-200/60 truncate mt-0.5" title={toast.lineLabel}>
+            {toast.lineLabel}
+          </div>
+        </div>
+        <button onClick={onDismiss}
+                aria-label="Fechar"
+                className="shrink-0 -mt-0.5 -mr-1 w-6 h-6 rounded-md text-emerald-200/60 hover:text-emerald-200 hover:bg-emerald-500/10 inline-flex items-center justify-center">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+            <path d="M18 6 6 18M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+    </div>
   );
 }
 
