@@ -29,8 +29,26 @@ import tailwindcss from '@tailwindcss/vite'
 //   Vite já trata fonts como assets separados (cada .woff2 vira arquivo
 //   próprio com hash). O JS do @fontsource é minúsculo (CSS injection).
 
+// Build ID injetado em tempo de build pra invalidar o cache do navegador
+// (persistedCache.js) automaticamente em todo deploy. Sem isso, o cache
+// guardado em localStorage continua sendo lido após o deploy — e como a
+// lógica de scoring/alertas muda entre deploys, a tela pinta com dados
+// "antigos" e atualiza ~4s depois quando o fetch real volta. Atrelando
+// a chave do cache ao commit SHA, deploy novo = cache invalidado =
+// primeiro paint pós-deploy já é fresh.
+//
+// Em prod (Vercel): VERCEL_GIT_COMMIT_SHA é setado automaticamente.
+// Em dev (vite dev): usa timestamp do startup — cache local fica
+// estável durante a sessão e invalida no próximo `npm run dev`.
+const BUILD_ID =
+  process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 8) ||
+  `dev-${Date.now()}`;
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  define: {
+    __APP_BUILD_ID__: JSON.stringify(BUILD_ID),
+  },
   build: {
     rollupOptions: {
       output: {
