@@ -36,6 +36,7 @@
  */
 
 import { API_URL } from "../shared/config";
+import { isDemoToken, buildDemoPayload } from "../shared/demoData";
 
 const HOVER_DELAY_MS = 100;
 const PREFETCH_TTL_MS = 50_000;
@@ -43,14 +44,63 @@ const PREFETCH_TTL_MS = 50_000;
 const pendingHovers = new Map(); // token -> setTimeout id
 const prefetchedAt  = new Map(); // token -> ms timestamp
 
+// Cache em memória do detalhe parseado. Hoje o prefetch só esquenta o cache
+// HTTP do browser e descarta a Response; consumidores precisavam refetchar
+// e re-parsear. Guardar o JSON aqui deixa o card admin calcular pacing
+// per-frente (O2O/OOH) sync no render, sem ida ao backend nem flash de loading.
+const detailCache = new Map(); // token -> parsed payload (saída de getCampaign)
+const listeners   = new Set(); // fn() -> chamada quando detailCache muda
+
+function notifyListeners() {
+  for (const fn of listeners) {
+    try { fn(); } catch { /* listener isolado */ }
+  }
+}
+
 function fireFetch(token) {
   // Atualiza timestamp ANTES do fetch — se duas chamadas concorrentes
   // chegam aqui (improvável dado o debounce), só uma vai disparar.
   prefetchedAt.set(token, Date.now());
-  fetch(`${API_URL}?token=${encodeURIComponent(token)}`).catch(() => {
-    // Reseta pra próximo hover poder retentar.
-    prefetchedAt.delete(token);
-  });
+
+  // Demo token não passa pelo backend.
+  if (isDemoToken(token)) {
+    detailCache.set(token, buildDemoPayload());
+    notifyListeners();
+    return;
+  }
+
+  fetch(`${API_URL}?token=${encodeURIComponent(token)}`)
+    .then((r) => (r.ok ? r.json() : null))
+    .then((data) => {
+      if (data && data.campaign) {
+        detailCache.set(token, data);
+        notifyListeners();
+      }
+    })
+    .catch(() => {
+      // Reseta pra próximo hover poder retentar.
+      prefetchedAt.delete(token);
+    });
+}
+
+/**
+ * Retorna o detalhe prefetched de uma campanha, ou null se ainda não chegou.
+ * Consulta sync — não dispara request. Use junto com subscribe() pra
+ * re-renderizar quando o dado chegar.
+ */
+export function getPrefetchedDetail(token) {
+  if (!token) return null;
+  return detailCache.get(token) || null;
+}
+
+/**
+ * Assina mudanças no cache de detalhes. Retorna função pra cancelar.
+ * Usado por components que querem reagir ao detalhe chegar (ex: card
+ * recalcular cor do pacing per-frente).
+ */
+export function subscribeDetail(fn) {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
 }
 
 export function schedulePrefetch(token) {

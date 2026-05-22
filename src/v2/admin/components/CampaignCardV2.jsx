@@ -31,6 +31,7 @@
 // Click no card → drawer (`onOpen`). Click "Ver Report" → report
 // (`onOpenReport`). Stop propagation no botão pra não abrir o drawer.
 
+import { useEffect, useRef } from "react";
 import { cn } from "../../../ui/cn";
 import { Card } from "../../../ui/Card";
 import { Avatar } from "../../../ui/Avatar";
@@ -53,6 +54,7 @@ import {
 } from "../lib/format";
 import { schedulePrefetch, cancelPrefetch } from "../../../lib/prefetchReport";
 import { useCachedAccessSummary } from "../lib/accessSummaryCache";
+import { useFrenteBreakdown } from "../lib/useFrenteBreakdown";
 
 // Mapas health → classe de cor. Mesma régua de format.js (pacing tiers),
 // reaproveitada pra stripe lateral e fill da barra de pacing.
@@ -153,6 +155,31 @@ export function CampaignCardV2({
   } = campaign;
   const has_abs = display_has_abs || video_has_abs;
 
+  // Pacing por frente (O2O/OOH) — lido do detalhe prefetched (cache em
+  // memória populado pelo hover do card). Devolve null até o detalhe chegar;
+  // PacingRow cai no comportamento legado (cor pela média) nesse intervalo.
+  const { displaySubBars, videoSubBars } = useFrenteBreakdown(short_token);
+
+  // Dispara o prefetch assim que o card entra no viewport. Sem isso, a média
+  // saudável esconde uma frente under até o user passar o mouse — a janela
+  // visual deixa "tudo verde" mesmo numa campanha desbalanceada. Com IO, o
+  // prefetch acontece antes de qualquer interação e o card já pinta amarelo
+  // + ⚠️ no scroll. schedulePrefetch tem TTL de 50s e dedup por token, então
+  // re-entradas no viewport não amplificam tráfego.
+  const cardRef = useRef(null);
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el || !short_token || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) schedulePrefetch(short_token);
+      },
+      { rootMargin: "100px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [short_token]);
+
   // Data efetiva pra display: early_end_date quando setada, senão end_date.
   // Pacing math (PacingRow) continua usando end_date implícito do payload.
   const effectiveEndDate = early_end_date || end_date;
@@ -217,6 +244,7 @@ export function CampaignCardV2({
 
   return (
     <Card
+      ref={cardRef}
       className={cn(
         "relative overflow-hidden cursor-pointer group",
         "transition-all duration-150",
@@ -406,8 +434,8 @@ export function CampaignCardV2({
             vez de "—" placeholder. Largura da coluna fica fixa pra
             alinhamento entre cards continuar consistente. */}
         <div className="hidden md:flex flex-col justify-center gap-2 shrink-0 w-[160px]">
-          {hasDisplay && <PacingRow label="DSP" pacing={display_pacing} ended={ended} />}
-          {hasVideo   && <PacingRow label="VID" pacing={video_pacing}   ended={ended} />}
+          {hasDisplay && <PacingRow label="DSP" pacing={display_pacing} ended={ended} subBars={displaySubBars} />}
+          {hasVideo   && <PacingRow label="VID" pacing={video_pacing}   ended={ended} subBars={videoSubBars} />}
         </div>
 
         <Divider />
@@ -865,18 +893,34 @@ function FormatIcon({ label }) {
  *  Ícones (em vez de texto "DSP"/"VID"): operação reconhece formato por
  *  símbolo mais rápido do que ler 3 letras, e libera espaço visual. O
  *  label textual fica no `title` pra acessibilidade/hover. */
-function PacingRow({ label, pacing, ended }) {
+function PacingRow({ label, pacing, ended, subBars }) {
   const has = pacing != null && !isNaN(pacing);
-  const tier = ended ? "ended" : pacingTier(pacing);
+  // Quando há frentes O2O+OOH e alguma está under (<100%), força tier
+  // "attention" mesmo que a média esteja saudável. Caso operacional típico:
+  // O2O super-over compensa OOH under na média agregada, escondendo um
+  // pacing problemático de uma frente. A barra amarela sinaliza "tem frente
+  // que precisa de atenção, abre pra ver".
+  const hasFrenteUnder = !!subBars?.some((s) => s.pacing != null && s.pacing < 100);
+  const baseTier = pacingTier(pacing);
+  const effectiveTier = ended
+    ? "ended"
+    : (hasFrenteUnder && (baseTier === "healthy" || baseTier === "over")
+        ? "attention"
+        : baseTier);
   const colorClass = ended
     ? "text-fg-subtle"
-    : (has ? pacingColorClass(pacing) : "text-fg-subtle");
+    : (has
+        ? (hasFrenteUnder && (baseTier === "healthy" || baseTier === "over")
+            ? "text-warning"
+            : pacingColorClass(pacing))
+        : "text-fg-subtle");
   const tooltip = label === "DSP" ? "Display" : label === "VID" ? "Vídeo" : label;
-  return (
+
+  const rowContent = (
     <div className="flex items-center gap-2 leading-none">
       <span
         className="text-fg-subtle w-7 shrink-0 flex items-center"
-        title={tooltip}
+        title={subBars ? undefined : tooltip}
         aria-label={tooltip}
       >
         <FormatIcon label={label} />
@@ -884,7 +928,58 @@ function PacingRow({ label, pacing, ended }) {
       <span className={cn("text-[13px] font-bold tabular-nums w-12 shrink-0 text-right", colorClass)}>
         {has ? formatPacingValue(pacing) : "—"}
       </span>
-      {has && <PacingBar pacing={pacing} tier={tier} />}
+      {/* ⚠️ inline quando há frente under (sub-100%) escondida pela média.
+          Sinal pré-hover — sem ele, admin vê só barra amarela e pode interpretar
+          como "atenção genérica". Ícone deixa explícito "tem desequilíbrio". */}
+      {hasFrenteUnder && (
+        <span
+          className="text-warning shrink-0 -ml-0.5"
+          aria-label="Uma das frentes está abaixo de 100%"
+          title="Uma das frentes está abaixo de 100% — abra pra ver"
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 2 1 21h22L12 2zm0 6c.6 0 1 .4 1 1v5c0 .6-.4 1-1 1s-1-.4-1-1V9c0-.6.4-1 1-1zm0 9.5a1.2 1.2 0 1 1 0 2.5 1.2 1.2 0 0 1 0-2.5z" />
+          </svg>
+        </span>
+      )}
+      {has && <PacingBar pacing={pacing} tier={effectiveTier} />}
+    </div>
+  );
+
+  // Sem breakdown (frente única ou detalhe ainda não chegou): row simples.
+  if (!subBars || subBars.length < 2) return rowContent;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="cursor-default">{rowContent}</div>
+      </TooltipTrigger>
+      <TooltipContent side="top" align="start" className="px-3 py-2">
+        <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-fg-subtle mb-1.5">
+          {tooltip} · pacing por frente
+        </div>
+        <div className="flex flex-col gap-1">
+          {subBars.map((s) => (
+            <FrenteTooltipRow key={s.label} label={s.label} pacing={s.pacing} />
+          ))}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Linha compacta dentro do tooltip — label da frente + valor colorido. */
+function FrenteTooltipRow({ label, pacing }) {
+  const has = pacing != null && !isNaN(pacing);
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <span className="text-[11px] font-semibold text-fg-muted">{label}</span>
+      <span className={cn(
+        "text-[12px] font-bold tabular-nums",
+        has ? pacingColorClass(pacing) : "text-fg-subtle"
+      )}>
+        {has ? formatPacingValue(pacing) : "—"}
+      </span>
     </div>
   );
 }

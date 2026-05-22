@@ -41,6 +41,7 @@ import {
   isEarlyEnded,
   localPartFromEmail,
 } from "../lib/format";
+import { buildFrenteSubBars } from "../lib/useFrenteBreakdown";
 
 const ICON = {
   link: (
@@ -240,14 +241,16 @@ export function CampaignDrawer({
       if (cancelled) return;
       setNegotiation(n);
       setNegotiationLoading(false);
-      if (!n) return;
-      // pré-carrega reportData em background pra que o click em
-      // "Ver Negociado" abra o modal já com badges Ativado/Pendente
-      // corretas. Falha silenciosa cai em null e modal abre mesmo assim.
-      getCampaign(drawerToken)
-        .then((d) => { if (!cancelled) setReportData(d); })
-        .catch(() => { if (!cancelled) setReportData(null); });
     });
+    // Detail full sempre — alimenta o bloco "Pacing por frente" (O2O/OOH
+    // breakdown) e também o modal "Ver Negociado" (que precisa de
+    // features/táticas detectadas). Antes, só carregava se houvesse
+    // negotiation — drawer sem nego abria sem dados pra computar pacing
+    // por frente. Falha silenciosa: bloco de frente some, restante do
+    // drawer funciona normal.
+    getCampaign(drawerToken)
+      .then((d) => { if (!cancelled) setReportData(d); })
+      .catch(() => { if (!cancelled) setReportData(null); });
     return () => { cancelled = true; };
   }, [open, drawerToken]);
 
@@ -303,6 +306,18 @@ export function CampaignDrawer({
   const awaiting = status === "awaiting_closure";
   const paused   = status === "paused";
   const earlyEnded = isEarlyEnded(early_end_date);
+
+  // Pacing por frente (O2O/OOH) calculado a partir do detail full carregado
+  // em background. Cada subBars é null quando há frente única; nesse caso
+  // o bloco "Pacing por frente" some inteiro (não há o que comparar).
+  const detailCamp = reportData?.campaign || null;
+  const displaySubBars = detailCamp
+    ? buildFrenteSubBars(reportData.display, detailCamp, "DISPLAY")
+    : null;
+  const videoSubBars = detailCamp
+    ? buildFrenteSubBars(reportData.video, detailCamp, "VIDEO")
+    : null;
+  const hasFrenteBreakdown = !!(displaySubBars || videoSubBars);
   // Pausa só faz sentido em vôo. Após end_date, o ciclo natural toma conta.
   const canPause = status === "in_flight" || status === "paused";
   // Encerramento antecipado: faz sentido enquanto a campanha está em vôo
@@ -502,6 +517,29 @@ export function CampaignDrawer({
               )}
             </div>
           </div>
+
+          {/* Pacing por frente — quebra DSP/VID em O2O e OOH. Só aparece
+              quando a campanha tem ambas as frentes em pelo menos uma das
+              mídias (caso O2O-only ou OOH-only não tem o que comparar). O
+              detalhe é carregado em background pelo useEffect — bloco
+              aparece quando reportData chega; até lá não renderiza nada
+              (não há skeleton pra não ocupar espaço de algo que talvez nem
+              vá existir naquela campanha). */}
+          {hasFrenteBreakdown && (
+            <div className="drawer-section-rise drawer-stagger-1">
+              <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
+                Pacing por frente
+              </div>
+              <div className="rounded-lg bg-surface border border-border px-3 py-2.5 flex flex-col gap-2.5 mb-5">
+                {displaySubBars && (
+                  <FrenteGroup mediaLabel="DSP" subBars={displaySubBars} />
+                )}
+                {videoSubBars && (
+                  <FrenteGroup mediaLabel="VID" subBars={videoSubBars} />
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Brand Safety pre-bid (ABS) — toggle pra cobrir casos onde o sinal
               automático do BQ não detecta (Xandr Curate em open exchange, etc).
@@ -796,6 +834,64 @@ function DrawerInlineStat({ label, value, colorClass }) {
       </div>
     </div>
   );
+}
+
+/** Grupo de duas linhas (O2O + OOH) sob um label de mídia (DSP/VID).
+ *  Reusa a barra horizontal sutil + valor textual em estilo igual à do card,
+ *  pra manter consistência visual entre o card e o drawer. */
+function FrenteGroup({ mediaLabel, subBars }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="text-[9.5px] uppercase tracking-widest font-bold text-fg-subtle">
+        {mediaLabel === "DSP" ? "Display" : "Vídeo"}
+      </div>
+      {subBars.map((s) => (
+        <FrenteLine key={s.label} label={s.label} pacing={s.pacing} />
+      ))}
+    </div>
+  );
+}
+
+function FrenteLine({ label, pacing }) {
+  const has = pacing != null && !isNaN(pacing);
+  const tier = pacingTierLocal(pacing);
+  const fillPct = has ? Math.min(100, Math.max(0, Number(pacing))) : 0;
+  const fillBg = {
+    over:      "bg-signature",
+    healthy:   "bg-success",
+    attention: "bg-warning",
+    critical:  "bg-danger",
+  }[tier] || "bg-fg-subtle/40";
+  return (
+    <div className="flex items-center gap-2 leading-none">
+      <span className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle w-9 shrink-0">
+        {label}
+      </span>
+      <div className="relative h-[3px] flex-1 min-w-[40px] rounded-full bg-fg-subtle/15 overflow-visible">
+        {has && (
+          <span
+            className={cn("absolute inset-y-0 left-0 rounded-full transition-[width] duration-500 ease-out", fillBg)}
+            style={{ width: `${fillPct}%` }}
+          />
+        )}
+        <span aria-hidden className="absolute right-0 top-[-2px] bottom-[-2px] w-px bg-fg-subtle/45" />
+      </div>
+      <span className={cn(
+        "text-[12px] font-bold tabular-nums w-14 shrink-0 text-right",
+        has ? pacingColorClass(pacing) : "text-fg-subtle"
+      )}>
+        {has ? formatPacingValue(pacing) : "—"}
+      </span>
+    </div>
+  );
+}
+
+function pacingTierLocal(pacing) {
+  if (pacing == null || isNaN(pacing)) return null;
+  if (pacing < 90)  return "critical";
+  if (pacing < 100) return "attention";
+  if (pacing < 125) return "healthy";
+  return "over";
 }
 
 /**
