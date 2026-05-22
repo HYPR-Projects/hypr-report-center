@@ -2040,10 +2040,7 @@ def report_data(request):
     #   GET  ?action=pmp_get&deal_id=...        → detalhes + daily timeseries
     #   POST ?action=pmp_save_deal              → upsert master (campos manuais)
     #   POST ?action=pmp_archive_deal           → soft delete (is_archived=TRUE)
-    #
-    # As Fases 3/4 vão adicionar:
-    #   POST ?action=pmp_sync_xandr             → trigger manual de sync
-    #   GET  ?action=pmp_sync_status            → última execução do job diário
+    #   POST ?action=pmp_sync_xandr             → sync v1 manual (deals_delivery)
     if request.method == "POST" and request.args.get("action") == "pmp_setup_schema":
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
@@ -2128,13 +2125,11 @@ def report_data(request):
             logger.error(f"[ERROR pmp_archive_deal] {e}")
             return (jsonify({"error": str(e)}), 500, headers)
 
-    # ── Endpoint: sync Xandr Curate → pmp_deals_delivery ─────────────────────
+    # ── Endpoint: sync Xandr Curate → pmp_deals_delivery (v1) ────────────────
     # Roda 3 passos: auth → POST /report → poll → download → upsert no BQ.
-    # Chamado de duas formas:
-    #   • Manual: admin clica "Sync agora" na UI /admin/pmp
-    #     (auth via JWT, body opcional com janela customizada).
-    #   • Scheduled: Cloud Scheduler chama 1x/dia 04:00 BRT com OIDC token
-    #     (verificamos via cabeçalho X-Scheduler-Secret pra evitar abuso).
+    # Mantido como sync v1 standalone (deal-level, sem line items). O cron
+    # diário roda o `pmp_sync_v2` que cobre a granularidade que a UI usa.
+    # Aceita scheduler-auth via X-Scheduler-Secret pra uso futuro.
     #
     # Body opcional:
     #   {report_interval: "yesterday"|"last_7_days"|"last_month"|"month_to_date"}
@@ -2199,6 +2194,10 @@ def report_data(request):
     #   GET  ?action=pmp_suggest_links&line_id=...     → fuzzy match Command
     #   POST ?action=pmp_link_command                  → PUT code no Xandr + local
     #   POST ?action=pmp_sync_v2                       → orquestra full sync
+    #
+    # `pmp_sync_v2` é o endpoint que o Cloud Scheduler dispara 1x/dia às 04:00
+    # BRT (header X-Scheduler-Secret, body {"report_interval":"last_7_days"}).
+    # Setup do job é mantido idempotente em backend/deploy.sh.
     if request.method == "GET" and request.args.get("action") == "pmp_lines_list":
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)

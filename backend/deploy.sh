@@ -234,7 +234,47 @@ gcloud run services update-traffic "$SERVICE_NAME" \
   --region="$REGION" \
   --to-latest
 
-# ── 5. Output final ──────────────────────────────────────────────────────────
+# ── 5. Cloud Scheduler: pmp-xandr-daily-sync ─────────────────────────────────
+# Cron diário 04:00 BRT que dispara o sync v2 (master IOs + line items +
+# delivery + refresh da pmp_lines_enriched). Tornado idempotente aqui porque
+# já tivemos drift em produção: o job original ficou apontando pro endpoint
+# v1 (pmp_sync_xandr), que só alimenta pmp_deals_delivery — enquanto a UI
+# /admin/pmp lê do v2. Resultado: cron rodando "com sucesso" diariamente sem
+# atualizar a tela. Mantemos o setup no script pra qualquer redeploy
+# converger pro target correto.
+if [ -n "$PMP_SCHEDULER_SECRET" ] && [ -n "$XANDR_CURATE_USER" ]; then
+  echo ""
+  echo "▸ Garantindo Cloud Scheduler pmp-xandr-daily-sync..."
+
+  SCHEDULER_JOB="pmp-xandr-daily-sync"
+  SCHEDULER_URI="https://${REGION}-site-hypr.cloudfunctions.net/${FUNCTION_NAME}?action=pmp_sync_v2"
+  SCHEDULER_BODY='{"report_interval":"last_7_days"}'
+  SCHEDULER_SCHEDULE="0 4 * * *"
+  SCHEDULER_TZ="America/Sao_Paulo"
+
+  if gcloud scheduler jobs describe "$SCHEDULER_JOB" \
+        --location="$REGION" --project=site-hypr >/dev/null 2>&1; then
+    SCHEDULER_OP="update"
+  else
+    SCHEDULER_OP="create"
+  fi
+
+  gcloud scheduler jobs "$SCHEDULER_OP" http "$SCHEDULER_JOB" \
+    --location="$REGION" \
+    --project=site-hypr \
+    --schedule="$SCHEDULER_SCHEDULE" \
+    --time-zone="$SCHEDULER_TZ" \
+    --uri="$SCHEDULER_URI" \
+    --http-method=POST \
+    --headers="Content-Type=application/json,X-Scheduler-Secret=${PMP_SCHEDULER_SECRET}" \
+    --message-body="$SCHEDULER_BODY" \
+    --attempt-deadline=600s \
+    --description="Sync diario Xandr Curate -> pmp_lines_enriched (v2)" \
+    >/dev/null
+  echo "  ✓ Job ${SCHEDULER_OP}d ($SCHEDULER_SCHEDULE $SCHEDULER_TZ → $SCHEDULER_URI)"
+fi
+
+# ── 6. Output final ──────────────────────────────────────────────────────────
 echo ""
 echo "✓ Deploy concluído. URL pública:"
 gcloud functions describe "$FUNCTION_NAME" \
