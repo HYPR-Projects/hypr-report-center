@@ -27,6 +27,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { forwardRef } from "react";
 import { cn } from "./cn";
+import { useTheme } from "../v2/hooks/useTheme";
 
 export function Drawer({ open, onOpenChange, children }) {
   return (
@@ -42,28 +43,30 @@ export const DrawerContent = forwardRef(function DrawerContent(
   { className, widthClass = "sm:w-[420px]", children, ...rest },
   ref
 ) {
+  // Re-declara data-theme no portal pra garantir que as CSS vars do tema
+  // certo resolvem dentro do drawer. Radix Portal renderiza em document.body,
+  // e em algumas árvores (legacyThemeBridge etc.) o cascade do <html> não
+  // chega limpo até o portal — quando isso aconteceu o drawer pintava em
+  // light mode mesmo com a app em dark. Setar o atributo aqui é defensivo
+  // e a CSS var re-resolve no escopo do nó (precedence: ancestor mais
+  // próximo com data-theme ganha).
+  const [theme] = useTheme();
   return (
     <Dialog.Portal>
-      {/* Backdrop sutil — admin V2 já usa cor escura, então 40% basta.
-          Animation via classe `drawer-overlay` (v2.css) que pluga as
-          keyframes do theme.css com easing expo-out 280ms. */}
       <Dialog.Overlay
+        data-theme={theme}
         className={cn(
           "drawer-overlay fixed inset-0 z-40 bg-black/40 backdrop-blur-[2px]"
         )}
       />
       <Dialog.Content
         ref={ref}
+        data-theme={theme}
         className={cn(
-          // Posicionamento fixo, slide da direita
           "fixed top-0 right-0 z-50 h-full w-full",
           widthClass,
           "bg-canvas-elevated border-l border-border shadow-2xl",
-          "flex flex-col outline-none",
-          // Animation: classe `drawer-content` (v2.css) pluga slide-in
-          // expo-out 320ms quando data-state=open. Tailwind v4 sem
-          // `tailwindcss-animate` não registra `animate-in/slide-*` como
-          // utilities — então deixamos a animação no CSS dedicado.
+          "flex flex-col outline-none text-fg",
           "drawer-content",
           className
         )}

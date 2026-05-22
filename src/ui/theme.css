@@ -35,9 +35,15 @@
 @theme {
   /* ═══════════════ CORES OFICIAIS HYPR ═══════════════ */
 
-  /* Canvas (background principal) */
+  /* Canvas (background principal)
+   *
+   * canvas-deeper foi suavizado em PR-23: de #0F1419 → #17202A. A versão
+   * antiga era ~7% mais escura que canvas, criando blocos visivelmente
+   * pretos em tracks, sticky headers e hover rows. No light, canvas-deeper
+   * é só ~2% mais escuro que canvas — alinhamos a proporção no dark
+   * (~2% delta) pra eliminar o "peso" sem perder a hierarquia. */
   --color-canvas: #1C262F;
-  --color-canvas-deeper: #0F1419;        /* mais escuro, usado em borders e wells */
+  --color-canvas-deeper: #17202A;        /* well/track/sticky-header — delta sutil */
   --color-canvas-elevated: #232F39;      /* surface elevada — cards sobre canvas */
 
   /* Azul signature HYPR (CTA, links, foco, brand) */
@@ -231,7 +237,12 @@
  * é o caminho theme-aware pros consumidores de tokens.js (atualmente
  * só DualChartV2).
  */
-:root[data-theme="light"] {
+/* Seletor estendido pra cobrir descendentes com data-theme próprio
+ * (ex: Radix Portals que renderizam em document.body fora do scope
+ * normal do cascade). Sem `:root` no front, qualquer ancestor com
+ * data-theme="light" re-resolve as vars no escopo daquele nó. */
+:root[data-theme="light"],
+[data-theme="light"] {
   /* Canvas
    *
    * Ajustado em PR-20: canvas-deeper subiu de #ECEEF1 → #F1F3F6.

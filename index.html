@@ -42,17 +42,15 @@
          sync manual — set raríssimo, vale a duplicação pra evitar
          dependência de bundle JS no path crítico). -->
     <script>
+      // HYPR é dark-first — sem toggle explícito, sempre default dark.
+      // (Antes seguíamos prefers-color-scheme do OS, mas isso causava
+      // drawer/modais pintando light enquanto componentes legacy
+      // hardcoded permaneciam dark — inconsistência visual feia.)
       (function(){
         try {
           var stored = localStorage.getItem('hypr_theme');
           if (stored === 'dark' || stored === 'light') {
             document.documentElement.setAttribute('data-theme', stored);
-            return;
-          }
-        } catch(e) {}
-        try {
-          if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
-            document.documentElement.setAttribute('data-theme', 'light');
             return;
           }
         } catch(e) {}

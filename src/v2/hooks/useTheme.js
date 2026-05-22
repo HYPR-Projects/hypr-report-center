@@ -46,12 +46,10 @@ export function getInitialTheme() {
   } catch {
     /* localStorage indisponível (incognito + Safari, etc) — segue */
   }
-  if (
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-color-scheme: light)").matches
-  ) {
-    return "light";
-  }
+  // HYPR é dark-first. Sem toggle explícito, sempre dark — não seguimos
+  // prefers-color-scheme do OS porque vários componentes legacy ainda têm
+  // estilos hardcoded em dark, e respeitar o OS quebrava a consistência
+  // visual (drawer/modais pintavam light enquanto o resto seguia dark).
   return "dark";
 }
 
@@ -115,24 +113,9 @@ export function useTheme() {
     setTheme(currentTheme === "dark" ? "light" : "dark");
   }, [setTheme]);
 
-  // Listener prefers-color-scheme do OS — só atualiza se user NÃO tem
-  // preferência salva (toggle explícito sobrescreve OS). Mounted uma vez
-  // por instância, mas o efeito é idempotente: setCurrentTheme é early-return
-  // se o tema já é o atual.
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia("(prefers-color-scheme: light)");
-    const onChange = (e) => {
-      try {
-        if (window.localStorage.getItem(STORAGE_KEY)) return;
-      } catch {
-        /* sem localStorage — segue OS */
-      }
-      setCurrentTheme(e.matches ? "light" : "dark");
-    };
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
+  // Listener prefers-color-scheme do OS removido junto com o fallback em
+  // getInitialTheme — HYPR é dark-first, OS não interfere. User pode
+  // toggleTheme() explicitamente pra light.
 
   return [theme, toggleTheme, setTheme];
 }
