@@ -662,6 +662,24 @@ export function mediaDiariaToneClass(media, ideal) {
   return "text-danger";
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// Viewability — tom condicional
+// ────────────────────────────────────────────────────────────────────────
+//
+// Régua operacional definida pelo time:
+//   < 60% → vermelho (baixa, ação imediata — pode indicar problema de
+//            inventário ou placement abaixo do fold)
+//   60-70% → amarelo (atenção, dentro do aceitável mas merece monitoramento)
+//   > 70% → verde (saudável, padrão da indústria)
+const VIEWABILITY_TIERS = { healthy: 70, warning: 60 };
+
+export function viewabilityToneClass(pct) {
+  if (pct == null || !Number.isFinite(pct)) return "";
+  if (pct > VIEWABILITY_TIERS.healthy) return "text-success";
+  if (pct >= VIEWABILITY_TIERS.warning) return "text-warning";
+  return "text-danger";
+}
+
 /**
  * Compara dois valores pra ordenação. null/undefined sempre vão pro fim.
  */

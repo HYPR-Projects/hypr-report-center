@@ -18,6 +18,7 @@ import {
   formatBrlRow,
   techCostToneClass,
   mediaDiariaToneClass,
+  viewabilityToneClass,
   compareNullableNumbers,
 } from "../lib/diagnostico";
 
@@ -388,7 +389,12 @@ export function DiagnosticoTable({
                     >
                       {formatPctRow(r.techCostPct, 1)}
                     </Td>
-                    <Td align="right" tabular>
+                    <Td
+                      align="right"
+                      tabular
+                      className={cn("font-semibold", viewabilityToneClass(r.viewability))}
+                      title="Viewability: <60% vermelho · 60–70% amarelo · >70% verde"
+                    >
                       {formatPctRow(r.viewability, 1)}
                     </Td>
                   </tr>
