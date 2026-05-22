@@ -21,6 +21,7 @@ import {
   countByStatus,
 } from "../lib/diagnostico";
 import { DiagnosticoTable } from "./DiagnosticoTable";
+import { downloadDiagnosticoXlsx } from "../lib/diagnosticoExport";
 
 // ────────────────────────────────────────────────────────────────────────
 // Pill de filtro — visual alinhado com MonthFilterPills/ActiveFilterPill
@@ -158,9 +159,16 @@ export function DiagnosticoLayout({
     return <EmptyStateGlobal />;
   }
 
+  const handleDownloadXlsx = () => {
+    // Download exporta o que está visível APÓS search/owner mas ANTES dos
+    // filtros pill — pra que o arquivo seja o "diagnóstico do escopo" e
+    // não sofra com cliques exploratórios nos pills.
+    downloadDiagnosticoXlsx({ displayRows, videoRows, teamMap });
+  };
+
   return (
     <div className="space-y-6">
-      {/* Filtros pill + sumário ─────────────────────────────────────── */}
+      {/* Filtros pill + sumário + download ──────────────────────────── */}
       <div className="flex flex-wrap items-center gap-2">
         {STATUS_ORDER.map((status) => (
           <StatusFilterPill
@@ -183,13 +191,43 @@ export function DiagnosticoLayout({
             Limpar filtros
           </button>
         )}
+        <button
+          type="button"
+          onClick={handleDownloadXlsx}
+          disabled={displayRows.length === 0 && videoRows.length === 0}
+          title="Baixar diagnóstico em Excel (abas separadas para Display e Video)"
+          className={cn(
+            "ml-auto inline-flex items-center gap-1.5 h-8 px-3 rounded-full",
+            "text-xs font-medium border transition-colors cursor-pointer",
+            "bg-surface text-fg-muted border-border hover:bg-surface-strong hover:text-fg",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
+            "disabled:opacity-50 disabled:cursor-not-allowed"
+          )}
+        >
+          <svg
+            aria-hidden="true"
+            xmlns="http://www.w3.org/2000/svg"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          Baixar Excel
+        </button>
       </div>
 
       {/* Tabelas: Display em cima, Video embaixo ────────────────────── */}
       <DiagnosticoTable
         title="Display"
         rows={displayRows}
-        mediaLabel="Viewable Imps."
         teamMap={teamMap}
         onOpenReport={onOpenReport}
         onOpenCampaign={onOpenCampaign}
@@ -199,7 +237,6 @@ export function DiagnosticoLayout({
       <DiagnosticoTable
         title="Video"
         rows={videoRows}
-        mediaLabel="Views 100%"
         teamMap={teamMap}
         onOpenReport={onOpenReport}
         onOpenCampaign={onOpenCampaign}

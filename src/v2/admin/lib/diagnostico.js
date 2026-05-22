@@ -351,6 +351,14 @@ export function deriveMediaMetrics({
     ? delivered / elapsedDays
     : null;
 
+  // Ritmo médio IDEAL pra bater 100% — plano original "linear", do
+  // primeiro ao último dia. Diferente de minDiariaContratada que é o ritmo
+  // RESTANTE (ajustado pelo que já entregou); aqui é o baseline pra
+  // comparar com mediaDiariaAtual e ver "tô em cima ou abaixo do plano?".
+  const idealDiaria = negotiated != null && negotiated > 0 && totalDays > 0
+    ? negotiated / totalDays
+    : null;
+
   // Viewability = viewable / impressions × 100.
   // delivered já é viewable (campo `*_viewable_impressions` no payload),
   // então: viewability = delivered / impressions × 100.
@@ -376,9 +384,10 @@ export function deriveMediaMetrics({
     // colunas da tabela
     totalEntreguePct,
     projetadaPct,                             // projeção D-1 (com fallback) — exibida na UI
-    deliveredD1: lastDayDelivered ?? null,    // entrega de ontem (BRT)
-    minDiariaContratada,
-    mediaDiariaAtual,
+    deliveredD1: lastDayDelivered ?? null,    // entrega de ontem (BRT) — vai pro XLSX
+    minDiariaContratada,                      // mínima RESTANTE — vai pro XLSX
+    mediaDiariaAtual,                         // média real (entregue/elapsed) — coluna UI
+    idealDiaria,                              // ritmo ideal linear (negotiated/total) — coluna UI
     viewability,
     // brutos pra debugging/tooltip
     negotiated,
@@ -482,6 +491,10 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
         ...displayFin,
         has_abs: !!c.display_has_abs,
         media: "display",
+        // Brutos pro CSV — totais, não viewable. delivered (viewable) já vai
+        // separado via spread de displayMetrics.
+        totalImpressions: c.display_impressions ?? null,
+        clicks:           c.display_clicks      ?? null,
         tech_status: classifyTechCostStatus(displayFin.techCostPct, !!c.display_has_abs, displayProjTech),
       });
     }
@@ -510,6 +523,12 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
         ...videoFin,
         has_abs: !!c.video_has_abs,
         media: "video",
+        // Brutos pro CSV. Video não tem "starts" no payload da list (só
+        // aparece em report detail), então exporto impressões totais +
+        // viewable + completions 100% (delivered já é v_viewable_comp).
+        totalImpressions:    c.video_impressions            ?? null,
+        viewableImpressions: c.video_viewable_impressions   ?? null,
+        clicks:              c.video_clicks                 ?? null,
         tech_status: classifyTechCostStatus(videoFin.techCostPct, !!c.video_has_abs, videoProjTech),
       });
     }
@@ -614,6 +633,32 @@ export function techCostToneClass(pct, hasAbs) {
   const tiers = hasAbs ? TECH_COST_TIERS.abs : TECH_COST_TIERS.noAbs;
   if (pct <= tiers.healthy) return "text-success";
   if (pct <= tiers.warning) return "text-warning";
+  return "text-danger";
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Média Diária — tom baseado em proximidade ao Ideal
+// ────────────────────────────────────────────────────────────────────────
+//
+// Régua de proximidade SIMÉTRICA — pinta vermelho tanto pra over delivery
+// (média muito acima do ideal) quanto pra under delivery (muito abaixo).
+// Quanto mais perto do ideal, mais saudável.
+//
+//   |delta| ≤ 15%  → verde   (bem próximo, dentro da margem de operação)
+//   |delta| ≤ 30%  → amarelo (atenção — ritmo desviando do plano)
+//   |delta| >  30% → vermelho (descolado — super over OU under)
+//
+// Espelha em escala mais sensível a régua do Status Pacing (que usa 25%/50%
+// como thresholds de "ok/over/super over") — a coluna de ritmo é um sinal
+// mais rápido que a projeção acumulada e aceita menos margem.
+const MEDIA_DIARIA_TIERS = { healthy: 15, warning: 30 };
+
+export function mediaDiariaToneClass(media, ideal) {
+  if (media == null || ideal == null || !ideal) return "";
+  if (!Number.isFinite(media) || !Number.isFinite(ideal)) return "";
+  const deltaPct = Math.abs((media - ideal) / ideal) * 100;
+  if (deltaPct <= MEDIA_DIARIA_TIERS.healthy) return "text-success";
+  if (deltaPct <= MEDIA_DIARIA_TIERS.warning) return "text-warning";
   return "text-danger";
 }
 

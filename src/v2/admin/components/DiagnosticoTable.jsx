@@ -10,13 +10,14 @@
 
 import { useState, useMemo } from "react";
 import { cn } from "../../../ui/cn";
-import { localPartFromEmail, ecpmToneClass } from "../lib/format";
+import { localPartFromEmail, ecpmToneClass, formatDateRange } from "../lib/format";
 import {
   STATUS_META,
   formatPctRow,
   formatIntRow,
   formatBrlRow,
   techCostToneClass,
+  mediaDiariaToneClass,
   compareNullableNumbers,
 } from "../lib/diagnostico";
 
@@ -120,7 +121,6 @@ function EmptyState({ message }) {
  * Props:
  *   title          — "Display" | "Video"
  *   rows           — array vindo de buildDiagnosticoRows
- *   mediaLabel     — "Viewable Impressions" | "Views 100%"
  *   teamMap        — { email → nome de exibição }
  *   onOpenReport   — (short_token) => void  (fallback se onOpenCampaign ausente)
  *   onOpenCampaign — (short_token) => void  (clicar row abre sheet de análise)
@@ -129,7 +129,6 @@ function EmptyState({ message }) {
 export function DiagnosticoTable({
   title,
   rows,
-  mediaLabel,
   teamMap = {},
   onOpenReport,
   onOpenCampaign,
@@ -154,8 +153,10 @@ export function DiagnosticoTable({
   const sortedRows = useMemo(() => {
     const arr = [...filteredRows];
     arr.sort((a, b) => {
-      // Strings (client_name, campaign_name, cs_name) ordenam alfabeticamente.
-      if (sortKey === "client_name" || sortKey === "campaign_name" || sortKey === "cs_name") {
+      // Strings (client_name, campaign_name, cs_name, start_date ISO)
+      // ordenam alfabeticamente. start_date como "YYYY-MM-DD" já bate com
+      // ordem cronológica via localeCompare.
+      if (sortKey === "client_name" || sortKey === "campaign_name" || sortKey === "cs_name" || sortKey === "start_date") {
         const av = String(a[sortKey] || "").toLowerCase();
         const bv = String(b[sortKey] || "").toLowerCase();
         return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
@@ -178,8 +179,12 @@ export function DiagnosticoTable({
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
       setSortKey(key);
-      // Default direction: desc pra números (pior em cima), asc pra texto.
-      setSortDir(key === "client_name" || key === "campaign_name" || key === "cs_name" ? "asc" : "desc");
+      // Default direction: desc pra números (pior em cima), asc pra texto/data.
+      setSortDir(
+        key === "client_name" || key === "campaign_name" || key === "cs_name" || key === "start_date"
+          ? "asc"
+          : "desc"
+      );
     }
   };
 
@@ -234,10 +239,11 @@ export function DiagnosticoTable({
                 <Th align="left"  {...headerProps("client_name")}>Cliente</Th>
                 <Th align="left"  {...headerProps("campaign_name")}>Campanha</Th>
                 <Th align="left"  {...headerProps("cs_name")}>CS Responsável</Th>
+                <Th align="left"  {...headerProps("start_date")}>Período</Th>
                 <Th align="right" {...headerProps("totalEntreguePct")}>Entregue</Th>
                 <Th align="right" {...headerProps("projetadaPct")}>Projetada</Th>
-                <Th align="right" {...headerProps("deliveredD1")}>{mediaLabel} D-1</Th>
-                <Th align="right" {...headerProps("minDiariaContratada")}>Mín. Diária</Th>
+                <Th align="right" {...headerProps("idealDiaria")}>Ideal/Dia</Th>
+                <Th align="right" {...headerProps("mediaDiariaAtual")}>Média/Dia</Th>
                 <Th align="center" {...headerProps("status")}>Status Pacing</Th>
                 <Th align="right" {...headerProps("realEcpm")}>CPM Real</Th>
                 <Th align="right" {...headerProps("realTotalCost")}>Custo Real</Th>
@@ -282,9 +288,27 @@ export function DiagnosticoTable({
                       <span className="font-medium text-fg">{r.client_name || "—"}</span>
                     </Td>
                     <Td align="left" className="max-w-[280px]">
-                      <span className="truncate block" title={r.campaign_name}>
-                        {r.campaign_name || "—"}
-                      </span>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="truncate" title={r.campaign_name}>
+                          {r.campaign_name || "—"}
+                        </span>
+                        {r.has_abs && (
+                          <span
+                            className={cn(
+                              "shrink-0 inline-flex items-center px-1.5 py-0.5 rounded",
+                              "text-[9px] font-bold uppercase tracking-wide",
+                              "border border-signature/40 bg-signature-soft text-signature"
+                            )}
+                            title={
+                              r.media === "video"
+                                ? "Campanha com ABS (pre-bid)"
+                                : "Campanha com ABS (pre-bid) — tier de Tech Cost mais permissivo (≤10% saudável / >12% alto)"
+                            }
+                          >
+                            ABS
+                          </span>
+                        )}
+                      </div>
                     </Td>
                     <Td align="left">
                       {csName ? (
@@ -292,6 +316,14 @@ export function DiagnosticoTable({
                       ) : (
                         <span className="text-fg-subtle italic">Sem CS</span>
                       )}
+                    </Td>
+                    <Td
+                      align="left"
+                      tabular
+                      className="text-fg-muted"
+                      title={`Início: ${r.start_date || "—"} · Fim: ${r.end_date || "—"}`}
+                    >
+                      {formatDateRange(r.start_date, r.end_date) || "—"}
                     </Td>
                     <Td align="right" tabular>
                       {formatPctRow(r.totalEntreguePct, 1)}
@@ -304,15 +336,21 @@ export function DiagnosticoTable({
                     >
                       {formatPctRow(r.projetadaPct, 1)}
                     </Td>
-                    <Td align="right" tabular title="Entrega do último dia disponível (D-1)">
-                      {formatIntRow(r.deliveredD1)}
+                    <Td
+                      align="right"
+                      tabular
+                      className="text-fg-muted"
+                      title="Ritmo ideal por dia pra bater 100% (contrato total ÷ dias totais da campanha) — baseline linear do plano"
+                    >
+                      {formatIntRow(r.idealDiaria)}
                     </Td>
                     <Td
                       align="right"
                       tabular
-                      title="Ritmo diário necessário pra entregar 100% nos dias restantes (— se já bateu 100% ou campanha acabou)"
+                      className={cn("font-semibold", mediaDiariaToneClass(r.mediaDiariaAtual, r.idealDiaria))}
+                      title="Média real de entrega por dia (entregue até hoje ÷ dias decorridos). Régua de proximidade ao Ideal/Dia: |delta| ≤ 15% verde · ≤ 30% amarelo · > 30% vermelho. Acima OU abaixo do ideal são problema."
                     >
-                      {formatIntRow(r.minDiariaContratada)}
+                      {formatIntRow(r.mediaDiariaAtual)}
                     </Td>
                     <Td align="center">
                       <StatusPill status={r.status} />
