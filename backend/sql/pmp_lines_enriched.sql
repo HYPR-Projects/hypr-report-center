@@ -90,6 +90,29 @@ delivery_7d AS (
   WHERE day >= DATE_SUB(CURRENT_DATE('America/Sao_Paulo'), INTERVAL 7 DAY)
   GROUP BY line_id
 ),
+delivery_yesterday AS (
+  -- Margem entregue ontem (BRL). Exposta na coluna Delivery da lista pra
+  -- mostrar "quanto rendeu ontem" por line ativa.
+  SELECT
+    line_id,
+    SUM(curator_margin)  AS margin_yesterday,
+    SUM(curator_revenue) AS revenue_yesterday
+  FROM `site-hypr.prod_assets.pmp_line_delivery_daily`
+  WHERE day = DATE_SUB(CURRENT_DATE('America/Sao_Paulo'), INTERVAL 1 DAY)
+  GROUP BY line_id
+),
+delivery_prev_6d AS (
+  -- Média diária de margem nos 6 dias ANTES de ontem (D-7..D-2). Usada como
+  -- baseline pra setinha ↗/↘ ao lado da margem de ontem. Exclui ontem pra
+  -- evitar bias do próprio dia comparado.
+  SELECT
+    line_id,
+    SAFE_DIVIDE(SUM(curator_margin), 6) AS margin_prev_6d_avg
+  FROM `site-hypr.prod_assets.pmp_line_delivery_daily`
+  WHERE day BETWEEN DATE_SUB(CURRENT_DATE('America/Sao_Paulo'), INTERVAL 7 DAY)
+                AND DATE_SUB(CURRENT_DATE('America/Sao_Paulo'), INTERVAL 2 DAY)
+  GROUP BY line_id
+),
 joined AS (
   SELECT
     -- Identificadores
@@ -179,6 +202,10 @@ joined AS (
     COALESCE(d7.margin_last_7d, 0)  AS margin_last_7d,
     COALESCE(d7.imps_last_7d, 0)    AS imps_last_7d,
 
+    COALESCE(dy.margin_yesterday, 0)   AS margin_yesterday,
+    COALESCE(dy.revenue_yesterday, 0)  AS revenue_yesterday,
+    COALESCE(dp.margin_prev_6d_avg, 0) AS margin_prev_6d_avg,
+
     li.created_by, li.created_at, li.updated_by, li.updated_at
   FROM `site-hypr.prod_assets.pmp_line_items` li
   LEFT JOIN `site-hypr.prod_assets.pmp_insertion_orders` io
@@ -192,6 +219,8 @@ joined AS (
     ON UPPER(ck.short_token) = UPPER(li.short_token)
   LEFT JOIN delivery_agg d  ON d.line_id  = li.line_id
   LEFT JOIN delivery_7d  d7 ON d7.line_id = li.line_id
+  LEFT JOIN delivery_yesterday dy ON dy.line_id = li.line_id
+  LEFT JOIN delivery_prev_6d   dp ON dp.line_id = li.line_id
   LEFT JOIN line_groups  grp ON grp.line_id = li.line_id
   LEFT JOIN group_delivery_agg gd ON gd.group_id = grp.group_id
 )

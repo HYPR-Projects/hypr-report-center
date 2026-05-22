@@ -933,8 +933,41 @@ export function PmpLineRow({
           {formatRatioPct(pctToShow, 0)}
         </div>
       )}
-      <div className={cn("text-right text-[11px]", dm.text)}>
-        {lastDeliv || dm.label}
+      {/* Pra lines ativas que entregaram ontem, mostra a margem do dia + uma
+          seta direcional vs média/dia dos 6 dias anteriores. Dá ao admin uma
+          leitura rápida de "estamos avançando?" sem precisar abrir o drawer.
+          Outras lines mantêm o relativo ("há Xd", "Pausado", etc). */}
+      <div className="text-right">
+        {(() => {
+          const my = Number(line.margin_yesterday || 0);
+          if (effStatus === "Andamento" && my > 0) {
+            const avg = Number(line.margin_prev_6d_avg || 0);
+            // Tolerância de ±10% — abaixo disso é flutuação normal entre dias
+            // úteis/fim-de-semana e não vale piscar verde/amarelo.
+            const diff = avg > 0 ? (my - avg) / avg : null;
+            const arrow = diff == null ? "" : diff > 0.10 ? "↗" : diff < -0.10 ? "↘" : "→";
+            const tone = diff == null ? "text-fg-muted"
+                       : diff > 0.10  ? "text-emerald-600 dark:text-emerald-300"
+                       : diff < -0.10 ? "text-amber-600 dark:text-amber-300"
+                       :                "text-fg-muted";
+            const title = avg > 0
+              ? `Margem entregue ontem · média/dia dos 6d anteriores: ${formatBRL(avg)}`
+              : "Margem entregue ontem (sem histórico de 6d pra comparar)";
+            return (
+              <div title={title}>
+                <div className={cn("text-[12px] font-semibold tabular-nums", tone)}>
+                  {formatBRLCompact(my)}{arrow ? ` ${arrow}` : ""}
+                </div>
+                <div className="text-[10px] text-fg-subtle mt-0.5">ontem</div>
+              </div>
+            );
+          }
+          return (
+            <div className={cn("text-[11px]", dm.text)}>
+              {lastDeliv || dm.label}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
