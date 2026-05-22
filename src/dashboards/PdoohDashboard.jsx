@@ -47,7 +47,9 @@ const PdoohDashboard = ({ data, onClear, isDark = true }) => {
     });
   }, [allRows, range]);
 
-  const totalImpressions = rows.reduce((s,r)=>s+(Number(r["IMPRESSIONS"])||0),0);
+  // IMPRESSIONS é fracionário no PDOOH (audience-weighted), mas pra exibir
+  // sempre arredondamos pra inteiro — não faz sentido mostrar "2.133,495 imp".
+  const totalImpressions = Math.round(rows.reduce((s,r)=>s+(Number(r["IMPRESSIONS"])||0),0));
   const totalPlays       = rows.reduce((s,r)=>s+(Number(r["PLAYS"])||0),0);
   const uniqueCities     = new Set(rows.map(r=>r["CITY"]).filter(Boolean)).size;
   const uniqueOwners     = new Set(rows.map(r=>r["MEDIA_OWNER"]).filter(Boolean)).size;
@@ -60,29 +62,42 @@ const PdoohDashboard = ({ data, onClear, isDark = true }) => {
     byDate[d].impressions+=Number(r["IMPRESSIONS"])||0;
     byDate[d].plays+=Number(r["PLAYS"])||0;
   });
-  const chartData=Object.values(byDate).sort((a,b)=>a.date>b.date?1:-1);
-  const hasGeo = rows.some(r=>Number(r["LATITUDE"]||r["LAT"]||0)!==0);
+  // Arredonda impressões agregadas pra inteiro antes de mandar pro chart.
+  const chartData=Object.values(byDate).map(d=>({...d, impressions: Math.round(d.impressions)})).sort((a,b)=>a.date>b.date?1:-1);
+  // Aliases pra lat/lng — o HYPR_PDOOH_REPORT usa SCREEN_LATITUDE/SCREEN_LONGITUDE,
+  // bases legadas usavam LATITUDE/LONGITUDE ou LAT/LNG.
+  const getLat = (r) => {
+    const v = r["LATITUDE"] ?? r["SCREEN_LATITUDE"] ?? r["LAT"] ?? r["Lat"] ?? r["lat"];
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const getLng = (r) => {
+    const v = r["LONGITUDE"] ?? r["SCREEN_LONGITUDE"] ?? r["LNG"] ?? r["LON"] ?? r["LONG"] ?? r["Lng"] ?? r["lng"];
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const hasGeo = rows.some(r => getLat(r) !== 0);
   const byCity={};
   rows.forEach(r=>{
     const c=r["CITY"]||"Outras";
-    const lat=Number(r["LATITUDE"]||r["LAT"]||0);
-    const lng=Number(r["LONGITUDE"]||r["LNG"]||r["LON"]||r["LONG"]||0);
+    const lat=getLat(r);
+    const lng=getLng(r);
     if(!byCity[c])byCity[c]={city:c,impressions:0,plays:0,lat,lng};
     byCity[c].impressions+=Number(r["IMPRESSIONS"])||0;
     byCity[c].plays+=Number(r["PLAYS"])||0;
   });
-  const cityData=Object.values(byCity).sort((a,b)=>b.impressions-a.impressions).slice(0,10);
+  const cityData=Object.values(byCity).map(c=>({...c, impressions: Math.round(c.impressions)})).sort((a,b)=>b.impressions-a.impressions).slice(0,10);
 
-  // Pontos para heatmap — só cidades com lat/lng válidos
+  // Pontos para heatmap — só telas com lat/lng válidos
   const mapPoints = rows
   .filter(r=>{
-    const lat=Number(r["LATITUDE"]||r["LAT"]||0);
-    const lng=Number(r["LONGITUDE"]||r["LNG"]||r["LON"]||r["LONG"]||0);
+    const lat=getLat(r);
+    const lng=getLng(r);
     return lat!==0&&lng!==0;
   })
   .map(r=>[
-    Number(r["LATITUDE"]||r["LAT"]),
-    Number(r["LONGITUDE"]||r["LNG"]||r["LON"]||r["LONG"]),
+    getLat(r),
+    getLng(r),
     mapMetric==="impressions"?Number(r["IMPRESSIONS"]||0):Number(r["PLAYS"]||0)
   ]);
 
@@ -154,7 +169,7 @@ const PdoohDashboard = ({ data, onClear, isDark = true }) => {
           byOwner[o].impressions+=Number(r["IMPRESSIONS"])||0;
           byOwner[o].plays+=Number(r["PLAYS"])||0;
         });
-        const ownerData=Object.values(byOwner).sort((a,b)=>b.impressions-a.impressions);
+        const ownerData=Object.values(byOwner).map(o=>({...o, impressions: Math.round(o.impressions)})).sort((a,b)=>b.impressions-a.impressions);
         return (
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
             <div style={{background:bg2,border:`1px solid ${bdr}`,borderRadius:12,padding:20}}>
@@ -193,7 +208,7 @@ const PdoohDashboard = ({ data, onClear, isDark = true }) => {
           )}
         </div>
         {hasGeo
-          ? <PdoohMap points={mapPoints}/>
+          ? <PdoohMap points={mapPoints} isDark={isDark}/>
           : <div style={{height:200,display:"flex",alignItems:"center",justifyContent:"center",color:muted,fontSize:13,flexDirection:"column",gap:8}}>
               <span aria-hidden="true" style={{fontSize:32}}>🗺️</span>
               <span>O arquivo não possui colunas de geolocalização</span>
