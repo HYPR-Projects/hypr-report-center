@@ -2016,19 +2016,19 @@ function DeliveryChart({ daily }) {
               // Tooltip ancora 4px ACIMA do topo da barra; mas se isso passar
               // do topo do chart, usa 4px do topo. Sem translateY — fica
               // dentro do container sempre.
-              const tooltipTop = Math.max(4, barTopPx - 56);
+              const tooltipTop = Math.max(4, barTopPx - 68);
               return (
-                <div className="pointer-events-none absolute z-10 whitespace-nowrap rounded-md bg-fg text-canvas-elevated px-2.5 py-1.5 text-[10.5px] shadow-lg ring-1 ring-black/10"
+                <div className="pointer-events-none absolute z-10 whitespace-nowrap rounded-md bg-fg text-canvas-elevated px-3 py-2 text-[12px] shadow-lg ring-1 ring-black/10"
                      style={{ left: `${xPct}%`, top: `${tooltipTop}px`, transform: anchor }}>
-                  <div className="font-mono text-[10px] opacity-60 mb-0.5">
+                  <div className="font-mono text-[11px] opacity-60 mb-1">
                     {formatYmdWeekday(d.day)}
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="inline-block w-2 h-2 rounded-sm" style={{ background: METRICS.imps.color }} />
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: METRICS.imps.color }} />
                     <span>{formatInt(d.imps)} imp.</span>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="inline-block w-2 h-2 rounded-sm" style={{ background: METRICS.margin.color }} />
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: METRICS.margin.color }} />
                     <span>{formatBRL(d.curator_margin)}</span>
                   </div>
                 </div>
