@@ -22,7 +22,7 @@
 // O componente recebe `campaigns` e o `teamMap` e calcula internamente
 // os rankings de CS e CP — assim o caller só precisa passar dados crus.
 
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, useSyncExternalStore } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { DayPicker } from "react-day-picker";
 import { ptBR } from "date-fns/locale";
@@ -36,6 +36,7 @@ import { saveDailySnapshot, getPreviousScore, loadSnapshots } from "../lib/score
 import { PERIOD_PRESETS, resolvePeriod, formatPeriodLabel } from "../lib/period";
 import { ymd, parseYmd } from "../../../shared/dateFilter";
 import { listPerformersForPeriod } from "../../../lib/api";
+import { subscribeDetail, getAllPrefetchedDetails } from "../../../lib/prefetchReport";
 import { PerformerDrawer } from "./PerformerDrawer";
 
 function localPartFromEmail(email) {
@@ -333,14 +334,27 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
   // Fonte ativa: props.campaigns no modo Agora, periodCampaigns no histórico.
   const sourceCampaigns = isHistorical ? periodCampaigns : campaigns;
 
+  // detailMap reativo do cache de prefetch — populado pelo bulk prefetch que
+  // roda no CampaignMenuV2 quando a lista carrega. No modo "Agora", isso já
+  // está pronto em ~2s após o load. No modo histórico, o detail das campanhas
+  // do período não é prefetchado (são responses do listPerformersForPeriod,
+  // sem prefetch atrelado), então o score-por-frente só ativa pro modo Agora
+  // — graceful fallback pra média agregada no histórico.
+  const detailMap = useSyncExternalStore(
+    subscribeDetail,
+    getAllPrefetchedDetails,
+    () => ({}),
+  );
+
   const performers = useMemo(() => {
     if (!sourceCampaigns) return [];
     return computeTopPerformers(
       sourceCampaigns,
       role === "cs" ? "cs_email" : "cp_email",
       { requireCurrentlyActive: !isHistorical },
+      isHistorical ? {} : detailMap,
     );
-  }, [sourceCampaigns, role, isHistorical]);
+  }, [sourceCampaigns, role, isHistorical, detailMap]);
 
   const selectedPerformer = useMemo(
     () => (selected ? performers.find((p) => p.email === selected) : null),

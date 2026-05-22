@@ -15,6 +15,8 @@
 // usar a versão dele (que tem sparkline + trend) sem precisar de
 // mudança aqui. Esse fallback fica como segurança de produção.
 
+import { computeMediaPacing } from "../../../shared/aggregations";
+
 const TODAY = () => new Date().toISOString().slice(0, 10);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -409,6 +411,75 @@ const CTR_THRESHOLD_DISPLAY      = 0.7;
 const CTR_THRESHOLD_DISPLAY_ABS  = 0.5;
 const VTR_THRESHOLD              = 80;
 
+// Mínimo de share contratado pra uma frente entrar na conta de pacing.
+// Frente com <5% do contrato é tipicamente OOH residual em campanha O2O-heavy
+// (ou vice-versa) — penalizar isso seria injusto, e o ruído contamina o sinal
+// da frente principal. Frente única (single-tactic) também não passa por aqui:
+// o caller cai no fallback de pacing agregado abaixo.
+const MIN_FRENTE_CONTRACTED_SHARE = 0.05;
+
+/**
+ * Score de pacing por frente (O2O/OOH) pra uma mídia, ponderado pelo SHARE
+ * CONTRATADO de cada frente (não pelo entregue — peso entregue criaria
+ * incentivo perverso onde frente under entrega menos e pesa menos).
+ *
+ * Returns:
+ *   { pts, max, frenteReasons }
+ *   - pts: pontos somados das duas frentes, ponderados.
+ *   - max: 35 (ou proporcional se share total < 100%).
+ *   - frenteReasons: array de { tactic, pacing, share, lost } pra diagnostics.
+ *
+ * Retorna null quando:
+ *   - Detail não disponível ou sem totals
+ *   - Mídia não tem frente válida (single tactic — caller usa fallback)
+ *   - Ambas frentes têm contracted=0 (100% bonificada — sem régua de pacing)
+ */
+function pacingScorePerFrente(detail, mediaType) {
+  if (!detail?.totals || !Array.isArray(detail.totals)) return null;
+  const camp = detail.campaign;
+  if (!camp) return null;
+
+  const isVideo = mediaType === "VIDEO";
+  const o2oRows = detail.totals.filter((r) => r.media_type === mediaType && r.tactic_type === "O2O");
+  const oohRows = detail.totals.filter((r) => r.media_type === mediaType && r.tactic_type === "OOH");
+
+  // Contracted (sem bônus) por frente — bonificada parcial entra com peso
+  // proporcional ao contratado dela. Se TODA a mídia é bonificada (sem
+  // contracted_*), não há régua → retorna null e caller usa fallback.
+  const r0 = (o2oRows[0] || oohRows[0] || {});
+  const contractedO2O = isVideo
+    ? Number(r0.contracted_o2o_video_completions   || 0)
+    : Number(r0.contracted_o2o_display_impressions || 0);
+  const contractedOOH = isVideo
+    ? Number(r0.contracted_ooh_video_completions   || 0)
+    : Number(r0.contracted_ooh_display_impressions || 0);
+  const contractedTotal = contractedO2O + contractedOOH;
+  if (contractedTotal <= 0) return null;
+
+  const shareO2O = contractedO2O / contractedTotal;
+  const shareOOH = contractedOOH / contractedTotal;
+
+  // Frente única (uma das duas é 0 ou está abaixo do mínimo) → null pra cair
+  // no fallback de pacing agregado. Não dá pra ter "frente desbalanceada"
+  // com uma só.
+  const validO2O = o2oRows.length > 0 && shareO2O >= MIN_FRENTE_CONTRACTED_SHARE;
+  const validOOH = oohRows.length > 0 && shareOOH >= MIN_FRENTE_CONTRACTED_SHARE;
+  if (!validO2O || !validOOH) return null;
+
+  const pacingO2O = computeMediaPacing(o2oRows, camp, mediaType, "O2O");
+  const pacingOOH = computeMediaPacing(oohRows, camp, mediaType, "OOH");
+
+  const ptsO2O = pacingScore(pacingO2O);
+  const ptsOOH = pacingScore(pacingOOH);
+
+  const pts = ptsO2O * shareO2O + ptsOOH * shareOOH;
+  const frenteReasons = [
+    { tactic: "O2O", pacing: pacingO2O, share: shareO2O, lost: (35 - ptsO2O) * shareO2O },
+    { tactic: "OOH", pacing: pacingOOH, share: shareOOH, lost: (35 - ptsOOH) * shareOOH },
+  ];
+  return { pts, max: 35, frenteReasons };
+}
+
 // Breakdown completo do score de uma campanha. Retorna pts atuais e máximos
 // por categoria, pesos por mídia, e diagnósticos textuais ordenados por
 // impacto (perda em pts). Usado pelo PerformerDrawer pra explicar onde
@@ -419,6 +490,10 @@ const VTR_THRESHOLD              = 80;
 //
 // Distribuição de pontos:
 //   - Pacing  (35) ponderado por mídia (Display + Video contam).
+//     Quando `detail` está disponível e a mídia tem ambas frentes (O2O+OOH)
+//     com contrato ≥5% cada, o pacing dessa mídia é calculado POR FRENTE
+//     (ponderado por share contratado), não pela média agregada. Isso evita
+//     o blindspot "média 110% esconde OOH 92%".
 //   - eCPM    (30 × wDsp) APENAS Display. Threshold ABS-aware.
 //   - CTR     (25 × wDsp) APENAS Display. Threshold ABS-aware.
 //   - VTR     (10 × wVid) APENAS Video.
@@ -432,7 +507,7 @@ const VTR_THRESHOLD              = 80;
 //
 // ABS: thresholds eCPM/CTR de Display ficam mais permissivos quando
 // `c.display_has_abs` é true (DV360, Xandr DV/IAS, ou override manual).
-function scoreCampaignDetailed(c) {
+function scoreCampaignDetailed(c, detail = null) {
   const dImpr = Number(c.display_impressions || 0);
   const vImpr = Number(c.video_impressions   || 0);
   const totalImpr = dImpr + vImpr;
@@ -450,8 +525,18 @@ function scoreCampaignDetailed(c) {
   const wVid = vImpr / totalImpr;
 
   // ── Pacing (35 pts) ──────────────────────────────────────────
-  const dPacingPts = c.display_pacing != null ? pacingScore(Number(c.display_pacing)) : null;
-  const vPacingPts = c.video_pacing   != null ? pacingScore(Number(c.video_pacing))   : null;
+  // Quando detail está disponível e a mídia tem ambas as frentes válidas
+  // (O2O+OOH com ≥5% contratado cada), substituímos o pacingScore(media)
+  // pelo pacingScorePerFrente. Caso contrário, cai no comportamento legado
+  // (média agregada do list endpoint).
+  const dFrente = pacingScorePerFrente(detail, "DISPLAY");
+  const vFrente = pacingScorePerFrente(detail, "VIDEO");
+  const dPacingPts = dFrente
+    ? dFrente.pts
+    : (c.display_pacing != null ? pacingScore(Number(c.display_pacing)) : null);
+  const vPacingPts = vFrente
+    ? vFrente.pts
+    : (c.video_pacing != null ? pacingScore(Number(c.video_pacing)) : null);
   let pacingPts = 0;
   let maxPacing = 35;
   if (dPacingPts != null && vPacingPts != null) {
@@ -505,14 +590,40 @@ function scoreCampaignDetailed(c) {
   const diagnostics = [];
   if (maxPacing > 0 && pacingPts < maxPacing - 0.5) {
     const reasons = [];
-    if (c.display_pacing != null && wDsp > 0) {
+    // Quando há frente desbalanceada, mostra cada frente individualmente
+    // (mais útil que a média — admin precisa saber QUAL frente puxou).
+    // Ordena por lost desc pra a frente que mais penalizou aparecer primeiro.
+    const frenteReasonsList = [];
+    if (dFrente && wDsp > 0) {
+      for (const f of dFrente.frenteReasons) frenteReasonsList.push({ media: "Display", ...f });
+    }
+    if (vFrente && wVid > 0) {
+      for (const f of vFrente.frenteReasons) frenteReasonsList.push({ media: "Video", ...f });
+    }
+    frenteReasonsList.sort((a, b) => b.lost - a.lost);
+    const FRENTE_PACING_LABEL = {
+      critical:  "under",
+      attention: "sub-ideal",
+      over:      "acima do ideal",
+    };
+    for (const f of frenteReasonsList) {
+      // Só lista frentes que efetivamente penalizaram (lost > 0.3pts ponderado).
+      if (f.lost < 0.3) continue;
+      const tag = classifyPacing(f.pacing);
+      const label = FRENTE_PACING_LABEL[tag];
+      if (!label) continue; // healthy não vira diagnóstico
+      reasons.push(`${f.media} ${f.tactic} ${f.pacing.toFixed(0)}% (${label})`);
+    }
+    // Fallback pra mídia sem detail (single-frente ou detail ainda não chegou)
+    // — comportamento legado, baseado na média agregada do list endpoint.
+    if (!dFrente && c.display_pacing != null && wDsp > 0) {
       const dp = Number(c.display_pacing);
       if (dp < 90)       reasons.push(`Display ${dp.toFixed(0)}% (under)`);
       else if (dp > 150) reasons.push(`Display ${dp.toFixed(0)}% (over)`);
       else if (dp < 100) reasons.push(`Display ${dp.toFixed(0)}% (sub-ideal)`);
       else if (dp > 125) reasons.push(`Display ${dp.toFixed(0)}% (acima do ideal)`);
     }
-    if (c.video_pacing != null && wVid > 0) {
+    if (!vFrente && c.video_pacing != null && wVid > 0) {
       const vp = Number(c.video_pacing);
       if (vp < 90)       reasons.push(`Video ${vp.toFixed(0)}% (under)`);
       else if (vp > 150) reasons.push(`Video ${vp.toFixed(0)}% (over)`);
@@ -564,7 +675,7 @@ function scoreCampaignDetailed(c) {
 }
 
 
-export function computeTopPerformers(campaigns, ownerKey = "cs_email", options = {}) {
+export function computeTopPerformers(campaigns, ownerKey = "cs_email", options = {}, detailMap = {}) {
   const { requireCurrentlyActive = true } = options;
   const today = TODAY();
   // Modo "Agora": campanha entra no ranking quando está EM VÔO (end_date >= hoje
@@ -601,7 +712,7 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
     let maxPacingSum = 0, maxEcpmSum = 0, maxCtrSum = 0, maxVtrSum = 0;
 
     for (const c of list) {
-      const detailed = scoreCampaignDetailed(c);
+      const detailed = scoreCampaignDetailed(c, detailMap[c.short_token] || null);
       const w = c.admin_impressions ? Number(c.admin_impressions) : 1;
       scoreSum  += detailed.total * w;
       weightSum += w;
