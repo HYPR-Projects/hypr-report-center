@@ -238,8 +238,21 @@ export function deriveMediaMetrics({
   if (!s || !e) return null;
 
   const today = todayUTC();
+  // Janela calendar — EXATAMENTE igual ao backend (main.py linha 5141-5148
+  // `pacing_expected_to_date`) e ao frontend canônico (shared/aggregations.js
+  // linha 342-343 `computeMediaPacing`):
+  //
+  //   total_days   = (end - start) + 1            ← inclui o end_date
+  //   elapsed_days = (today - start)              ← SEM +1 (não inclui hoje)
+  //
+  // Esse alinhamento é crítico — se elapsedRatio aqui diferir do que o
+  // backend usou pra calcular `expected_to_date`, a reconstrução do
+  // negotiated (= expected/elapsedRatio) fica errada, e por consequência
+  // o % entregue (= delivered/negotiated) também. Bug visível: dava
+  // 154% aqui vs 139% no report cliente.
   const totalDays   = daysBetween(s, e) + 1;
-  const elapsedDays = Math.max(0, Math.min(totalDays, daysBetween(s, today) + 1));
+  const elapsedDaysRaw = daysBetween(s, today);
+  const elapsedDays = today > e ? totalDays : Math.max(0, elapsedDaysRaw);
   if (totalDays <= 0 || elapsedDays <= 0) return null;
 
   const elapsedRatio = elapsedDays / totalDays;
@@ -257,9 +270,53 @@ export function deriveMediaMetrics({
   }
 
   // % do contrato total entregue até agora.
-  const totalEntreguePct = (pacing != null && Number.isFinite(pacing))
-    ? pacing * elapsedRatio
+  //
+  // IMPORTANTE: calculamos como `delivered / negotiated × 100` direto, NÃO
+  // como `pacing × elapsedRatio` (atalho matemático que assumia equivalência
+  // — só vale se elapsedRatio do frontend == ratio implícito no pacing do
+  // backend). Na prática, eles divergem quando há campanhas com dias sem
+  // delivery, pausas, ou início atrasado, porque o backend calcula
+  // `expected_to_date` baseado em dias com entrega real, não dias de
+  // calendário. Resultado: o valor exibido aqui passa a bater exatamente
+  // com a divisão "viewable acumulado / impressions contratadas" que o
+  // operador faz na mão olhando o report da campanha.
+  const totalEntreguePct = (negotiated != null && negotiated > 0 && delivered != null && delivered >= 0)
+    ? (delivered / negotiated) * 100
     : null;
+
+  // ── Projeção D-1 ────────────────────────────────────────────────────────
+  // "Se o ritmo de ontem (D-1) se mantiver até o fim, quanto vai entregar?"
+  //
+  // Fórmula:
+  //   projeção_total = delivered_acumulado + (entrega_D1 × dias_restantes)
+  //   % projetada    = projeção_total / negotiated × 100
+  //
+  // dias_restantes inclui HOJE (porque a campanha ainda pode entregar hoje).
+  //
+  // Fallback: quando D-1 vier null/zero (rollup ainda não rodou ou campanha
+  // não entregou ontem), cai pro pacing histórico do backend. Decisão
+  // operacional: "se não tenho dado fresco, melhor mostrar a média histórica
+  // do que esconder informação". O fallback é transparente — usuário vê o
+  // número que esperava ver, sem indicação visual que foi fallback (sinal
+  // de "sem D-1" já aparece na coluna "Viewable Imps. D-1" mostrando "—"
+  // na mesma linha).
+  //
+  // Sem cap: deixa passar de 999% intencionalmente. Quando D-1 é muito alto
+  // (spike), o número grande É o sinal operacional importante — capar
+  // mascararia exatamente o que o CS precisa ver.
+  const daysRemainingProj = Math.max(0, totalDays - elapsedDays);
+  let projetadaPct = null;
+  if (lastDayDelivered != null && lastDayDelivered > 0
+      && negotiated != null && negotiated > 0
+      && delivered != null) {
+    // Caminho feliz: projetar pelo ritmo de ontem
+    const projecaoTotal = delivered + (lastDayDelivered * daysRemainingProj);
+    projetadaPct = (projecaoTotal / negotiated) * 100;
+  } else if (pacing != null && Number.isFinite(pacing)) {
+    // Fallback: pacing histórico do backend (mesmo número que aparecia antes
+    // do D-1 ser implementado). Usado quando lastDayDelivered ausente/zero.
+    projetadaPct = pacing;
+  }
 
   // ── Mínima diária RESTANTE ──────────────────────────────────────────────
   // "Quanto ainda preciso entregar por dia daqui pra frente pra fechar 100%."
@@ -309,13 +366,17 @@ export function deriveMediaMetrics({
   if (viewability != null && viewability > 100) viewability = 100;
 
   return {
-    // status
-    status: classifyStatus(pacing),
-    pacing: pacing ?? null,
+    // status — classifica baseado na PROJEÇÃO D-1 (que reflete o ritmo
+    // recente com fallback pro pacing histórico). Mantém consistência
+    // entre Status e a coluna Projetada: se Projetada diz 333%, Status
+    // diz "Super Over" — não uma classificação baseada num pacing
+    // histórico que pode estar desatualizado.
+    status: classifyStatus(projetadaPct),
+    pacing: pacing ?? null,                   // pacing histórico (cru) — não usado na UI, fica pra debug
     // colunas da tabela
     totalEntreguePct,
-    projetadaPct: pacing ?? null,
-    deliveredD1: lastDayDelivered ?? null,    // backend novo (undefined até deploy)
+    projetadaPct,                             // projeção D-1 (com fallback) — exibida na UI
+    deliveredD1: lastDayDelivered ?? null,    // entrega de ontem (BRT)
     minDiariaContratada,
     mediaDiariaAtual,
     viewability,
