@@ -934,9 +934,10 @@ export function PmpLineRow({
         </div>
       )}
       {/* Pra lines ativas que entregaram ontem, mostra a margem do dia + uma
-          seta direcional vs média/dia dos 6 dias anteriores. Dá ao admin uma
-          leitura rápida de "estamos avançando?" sem precisar abrir o drawer.
-          Outras lines mantêm o relativo ("há Xd", "Pausado", etc). */}
+          seta direcional vs média/dia dos 6 dias anteriores, e o % de delta
+          embaixo. Dá ao admin uma leitura rápida de "estamos avançando?"
+          sem precisar abrir o drawer. Outras lines mantêm o relativo
+          ("há Xd", "Pausado", etc). */}
       <div className="text-right">
         {(() => {
           const my = Number(line.margin_yesterday || 0);
@@ -950,6 +951,10 @@ export function PmpLineRow({
                        : diff > 0.10  ? "text-emerald-600 dark:text-emerald-300"
                        : diff < -0.10 ? "text-amber-600 dark:text-amber-300"
                        :                "text-fg-muted";
+            const pct = diff != null ? Math.round(diff * 100) : null;
+            const pctLabel = pct != null
+              ? ` · ${pct >= 0 ? "+" : ""}${pct}%`
+              : "";
             const title = avg > 0
               ? `Margem entregue ontem · média/dia dos 6d anteriores: ${formatBRL(avg)}`
               : "Margem entregue ontem (sem histórico de 6d pra comparar)";
@@ -958,7 +963,9 @@ export function PmpLineRow({
                 <div className={cn("text-[12px] font-semibold tabular-nums", tone)}>
                   {formatBRLCompact(my)}{arrow ? ` ${arrow}` : ""}
                 </div>
-                <div className="text-[10px] text-fg-subtle mt-0.5">ontem</div>
+                <div className="text-[10px] text-fg-subtle mt-0.5 tabular-nums">
+                  ontem{pctLabel}
+                </div>
               </div>
             );
           }
