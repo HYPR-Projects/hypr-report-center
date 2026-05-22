@@ -405,6 +405,11 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
         <RoleToggle value={role} onChange={setRole} />
       </div>
 
+      {/* Banner explicativo da nova régua de pacing por frente. Some
+          automaticamente em 2026-05-29 (7 dias após o deploy) ou quando o
+          user clica em "Entendi". Sinalização leve — info, não warning. */}
+      <PacingPerFrenteBanner />
+
       {/* Filtro de período */}
       <PeriodPicker
         preset={preset}
@@ -769,6 +774,66 @@ function PerformerSkeleton() {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// Banner explicativo da régua de pacing por frente (deploy 2026-05-22).
+// Visível até 2026-05-29 — depois disso, vira ruído pra quem já se acostumou
+// com a nova mecânica. Dismiss persiste em localStorage por user.
+const PACING_PER_FRENTE_BANNER_KEY    = "hypr.performers.pacingFrenteBannerDismissed";
+const PACING_PER_FRENTE_BANNER_EXPIRY = "2026-05-29";
+
+function PacingPerFrenteBanner() {
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      if (localStorage.getItem(PACING_PER_FRENTE_BANNER_KEY) === "true") return true;
+    } catch { /* ignore */ }
+    return false;
+  });
+
+  // Auto-hide após a data de expiração — sem precisar do user clicar.
+  const today = new Date().toISOString().slice(0, 10);
+  const expired = today >= PACING_PER_FRENTE_BANNER_EXPIRY;
+
+  if (dismissed || expired) return null;
+
+  const handleDismiss = () => {
+    setDismissed(true);
+    try { localStorage.setItem(PACING_PER_FRENTE_BANNER_KEY, "true"); } catch { /* ignore */ }
+  };
+
+  return (
+    <div
+      role="status"
+      className="rounded-xl border border-signature/30 bg-signature/8 px-4 py-3 flex items-start gap-3"
+    >
+      <svg
+        width="16" height="16" viewBox="0 0 24 24"
+        fill="none" stroke="currentColor" strokeWidth="2"
+        strokeLinecap="round" strokeLinejoin="round"
+        className="shrink-0 mt-0.5 text-signature"
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="12" r="10" />
+        <path d="M12 8v4M12 16h.01" />
+      </svg>
+      <div className="flex-1 min-w-0">
+        <p className="text-[12.5px] font-semibold text-fg leading-snug">
+          Nova régua de pacing — O2O e OOH avaliados separadamente
+        </p>
+        <p className="text-[11.5px] text-fg-muted leading-snug mt-0.5">
+          O score agora reflete o cumprimento de cada frente. Antes, média Display 110% (com OOH 92% escondido) valia 35/35. Agora cada frente pontua proporcional ao contrato dela. Score caiu? Abre o card da campanha pra ver qual frente puxou.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={handleDismiss}
+        className="shrink-0 text-[11px] font-semibold text-signature hover:text-signature-hover cursor-pointer rounded px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature/50"
+        aria-label="Fechar aviso"
+      >
+        Entendi
+      </button>
     </div>
   );
 }
