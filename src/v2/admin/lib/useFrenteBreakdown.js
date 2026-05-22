@@ -20,23 +20,10 @@
 
 import { useSyncExternalStore } from "react";
 import { getPrefetchedDetail, subscribeDetail } from "../../../lib/prefetchReport";
-import { computeMediaPacing } from "../../../shared/aggregations";
+import { buildFrenteSubBars } from "../../../shared/aggregations";
 
-/**
- * Calcula pacing por frente (O2O/OOH) pra uma media (DISPLAY ou VIDEO).
- * Devolve null quando há frente única — caller mantém comportamento padrão.
- */
-export function buildFrenteSubBars(rows, camp, mediaType) {
-  if (!rows || rows.length === 0) return null;
-  const o2oRows = rows.filter((r) => r.tactic_type === "O2O");
-  const oohRows = rows.filter((r) => r.tactic_type === "OOH");
-  // Frente única (campanha só O2O ou só OOH) — sem breakdown.
-  if (o2oRows.length === 0 || oohRows.length === 0) return null;
-  return [
-    { label: "O2O", pacing: computeMediaPacing(o2oRows, camp, mediaType, "O2O") },
-    { label: "OOH", pacing: computeMediaPacing(oohRows, camp, mediaType, "OOH") },
-  ];
-}
+// Re-exporta pra preservar imports legados do CampaignDrawer.
+export { buildFrenteSubBars };
 
 export function useFrenteBreakdown(token) {
   const detail = useSyncExternalStore(

@@ -30,6 +30,7 @@ import {
   FRAUD_CPM_BRL,
 } from "./constants";
 import { staleHours } from "./derive";
+import { buildFrenteSubBars } from "../../../../shared/aggregations";
 
 const fmtBrl = (n) => (n == null || !Number.isFinite(n))
   ? "—"
@@ -158,6 +159,66 @@ const RULES_PER_MEDIA = [
         message: `${rawCampaign.client_name}/${rawCampaign.campaign_name} reporta OK mas D-1 = 0`,
         detail:  `${mediaLabel(media)} · pacing ${fmtPct(pacing, 0)} · investigar inconsistência`,
         impactBrl: m.client_budget || 0,
+      };
+    },
+  },
+  {
+    // A6 — Frente desbalanceada (O2O vs OOH escondida pela média).
+    //
+    // Caso operacional típico: Display O2O 128% + Display OOH 92% → média
+    // 110% verde. CS olha a média e segue em frente; OOH continua under,
+    // não cumpre o contrato com o meio, e ninguém pega o problema. A
+    // regra protege contra exatamente esse "blindspot" da média agregada.
+    //
+    // Severidade é função do quão under a pior frente está:
+    //   - frente <90% e média ≥100%   → CRITICAL (deep red escondido)
+    //   - frente 90-100% e média ≥100% → WARNING (zona de atenção)
+    //
+    // Precisa do `detail` (per-token endpoint) pra ler tactic_type das rows;
+    // o list endpoint não devolve esse split. Quando detail ainda não chegou
+    // (bulk prefetch em background), a regra não dispara — vira gracioso.
+    id: "A6",
+    category: CATEGORY.OPERATIONAL,
+    severity: SEVERITY.CRITICAL,
+    label: "Frente desbalanceada (O2O/OOH)",
+    evaluate: ({ enriched, media, rawCampaign, detail }) => {
+      if (!detail?.campaign) return null;
+      const m = enriched[media];
+      if (!m) return null;
+      // Média projetada (forward-looking, mesma régua das outras A*).
+      // Só dispara quando o agregado dá conforto pro CS — abaixo de 100%
+      // outras regras (A1/A3/A4/E2) já cobrem o cenário.
+      if (m.projected_pacing == null || m.projected_pacing < 100) return null;
+
+      const mediaType = media === "video" ? "VIDEO" : "DISPLAY";
+      const rows = media === "video" ? detail.video : detail.display;
+      const subBars = buildFrenteSubBars(rows, detail.campaign, mediaType);
+      if (!subBars || subBars.length < 2) return null;
+
+      // Pega a frente mais under. Se nenhuma está under (<100%), ignora.
+      const under = subBars
+        .filter((s) => s.pacing != null && s.pacing < 100)
+        .sort((a, b) => a.pacing - b.pacing)[0];
+      if (!under) return null;
+
+      const isDeepUnder = under.pacing < 90;
+      // impactBrl estimado: gap até 100% × budget × share-of-spend da
+      // frente (~50% como aproximação — backend não devolve breakdown
+      // de budget por tactic). Pacing 92% → gap 8% × budget × 0.5.
+      const gap = Math.max(0, 100 - under.pacing) / 100;
+      const impactBrl = (m.client_budget || 0) * gap * 0.5;
+
+      return {
+        // Override de severity dentro do result não é suportado pelo
+        // engine — então mapeio via duas regras-irmãs (A6 critical, A6w
+        // warning) NÃO. Solução: deixo o severity fixo no objeto-regra
+        // como CRITICAL e o caller (engine.buildAlert) lê do rule. Pra
+        // diferenciar warning vs critical aqui, anexo `_severity` no
+        // result que o engine respeita (ver buildAlert override abaixo).
+        _severity: isDeepUnder ? SEVERITY.CRITICAL : SEVERITY.WARNING,
+        message: `${rawCampaign.client_name}/${rawCampaign.campaign_name} com ${under.label} em ${fmtPct(under.pacing, 0)} escondido pela média`,
+        detail:  `${mediaLabel(media)} · média ${fmtPct(m.projected_pacing, 0)} esconde ${under.label} ${fmtPct(under.pacing, 0)} · risco de não cumprir contrato com a frente`,
+        impactBrl,
       };
     },
   },

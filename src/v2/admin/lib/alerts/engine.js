@@ -54,8 +54,14 @@ function computeScore(severity, impactBrl) {
  * Gera todos os alertas. `campaigns` é o array cru de listCampaigns,
  * `statusFn` é o `getCampaignStatus` do format.js, `teamMap` é { email → name }
  * pra renderizar nome de owner nas regras macro.
+ *
+ * `detailMap` (opcional) é { short_token → detailPayload } com o resultado
+ * do endpoint per-token (campaign + display/video rows). Regras que precisam
+ * de dados granulares por tactic_type (ex: A6 frente desbalanceada) usam
+ * essa fonte. Sem detailMap, essas regras simplesmente não disparam — UX
+ * graceful: alertas populam quando os detalhes chegam.
  */
-export function generateAlerts(campaigns, statusFn, teamMap = {}) {
+export function generateAlerts(campaigns, statusFn, teamMap = {}, detailMap = {}) {
   if (!Array.isArray(campaigns) || campaigns.length === 0) return [];
 
   // ── 1. Enriquece + filtra in_flight ─────────────────────────────────
@@ -69,11 +75,12 @@ export function generateAlerts(campaigns, statusFn, teamMap = {}) {
     const raw = e.raw;
     const hasAbsDisplay = !!raw.display_has_abs;
     const hasAbsVideo   = !!raw.video_has_abs;
+    const detail        = detailMap[raw.short_token] || null;
 
     for (const rule of RULES_PER_MEDIA) {
       // Regras campaign-level (A2 — pipeline travado) só rodam uma vez.
       if (rule.isCampaignLevel) {
-        const result = rule.evaluate({ enriched: e, rawCampaign: raw });
+        const result = rule.evaluate({ enriched: e, rawCampaign: raw, detail });
         if (result) {
           alerts.push(buildAlert(rule, raw, null, result));
         }
@@ -88,6 +95,7 @@ export function generateAlerts(campaigns, statusFn, teamMap = {}) {
           media,
           hasAbs,
           rawCampaign: raw,
+          detail,
         });
         if (result) {
           alerts.push(buildAlert(rule, raw, media, result));
@@ -131,11 +139,15 @@ export function generateAlerts(campaigns, statusFn, teamMap = {}) {
 
 function buildAlert(rule, raw, media, result) {
   const impactBrl = Math.max(0, result.impactBrl || 0);
+  // Regras como A6 (frente desbalanceada) decidem a severity em tempo de
+  // avaliação — `result._severity` override o default da regra. Resto das
+  // regras continua usando rule.severity sem mudança.
+  const severity = result._severity || rule.severity;
   return {
     id: `${rule.id}:${raw.short_token}${media ? ":" + media : ""}`,
     ruleId:    rule.id,
     category:  rule.category,
-    severity:  rule.severity,
+    severity,
     campaign:  { short_token: raw.short_token, client_name: raw.client_name, campaign_name: raw.campaign_name },
     owner:     null,
     media:     media || null,
@@ -147,7 +159,7 @@ function buildAlert(rule, raw, media, result) {
     message:   result.message,
     detail:    result.detail,
     impactBrl,
-    score:     computeScore(rule.severity, impactBrl),
+    score:     computeScore(severity, impactBrl),
   };
 }
 

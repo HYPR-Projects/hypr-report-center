@@ -888,3 +888,30 @@ function recomputeTotalsByMember(members, detail0, totalsRaw, mainRange) {
   });
 }
 
+/**
+ * ─────────────────────────────────────────────────────────────────────
+ * buildFrenteSubBars — pacing por frente (O2O/OOH) pra uma mídia
+ * ─────────────────────────────────────────────────────────────────────
+ *
+ * Filtra `rows` por tactic_type e devolve um array
+ * `[{ label, pacing }, ...]` com pacings calculados por frente, usando
+ * a mesma régua de `computeMediaPacing` (calendar-elapsed, runway da
+ * campanha inteira). Retorna null quando há frente única ou sem rows
+ * — caller usa null pra omitir o breakdown.
+ *
+ * Por que aqui em vez do hook React: a engine de alertas e o card admin
+ * precisam dessa lógica em contextos diferentes (síncrono puro vs hook
+ * com subscribe). Mantemos a forma pura aqui pra reuso, e o hook
+ * `useFrenteBreakdown` apenas reembala.
+ */
+export function buildFrenteSubBars(rows, camp, mediaType) {
+  if (!rows || rows.length === 0) return null;
+  const o2oRows = rows.filter((r) => r.tactic_type === "O2O");
+  const oohRows = rows.filter((r) => r.tactic_type === "OOH");
+  if (o2oRows.length === 0 || oohRows.length === 0) return null;
+  return [
+    { label: "O2O", pacing: computeMediaPacing(o2oRows, camp, mediaType, "O2O") },
+    { label: "OOH", pacing: computeMediaPacing(oohRows, camp, mediaType, "OOH") },
+  ];
+}
+

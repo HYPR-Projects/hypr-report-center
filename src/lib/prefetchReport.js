@@ -51,7 +51,21 @@ const prefetchedAt  = new Map(); // token -> ms timestamp
 const detailCache = new Map(); // token -> parsed payload (saída de getCampaign)
 const listeners   = new Set(); // fn() -> chamada quando detailCache muda
 
+// Snapshot estável do cache pra useSyncExternalStore. Rebuild só acontece
+// quando notifyListeners dispara — entre notifies, `cachedSnapshot` mantém
+// a mesma referência, evitando loop infinito de re-render no React.
+let cachedSnapshot = {};
+
+function rebuildSnapshot() {
+  const out = {};
+  for (const [token, payload] of detailCache) {
+    out[token] = payload;
+  }
+  cachedSnapshot = out;
+}
+
 function notifyListeners() {
+  rebuildSnapshot();
   for (const fn of listeners) {
     try { fn(); } catch { /* listener isolado */ }
   }
@@ -91,6 +105,18 @@ function fireFetch(token) {
 export function getPrefetchedDetail(token) {
   if (!token) return null;
   return detailCache.get(token) || null;
+}
+
+/**
+ * Snapshot estável do cache (todos os tokens com detail carregado).
+ * MESMA referência entre notifies — seguro pra useSyncExternalStore.
+ *
+ * Pareado com `subscribeDetail`: chamadores reativos re-leem após cada
+ * notify pra incluir os novos tokens chegados. Reference equality muda
+ * só quando o cache realmente mudou.
+ */
+export function getAllPrefetchedDetails() {
+  return cachedSnapshot;
 }
 
 /**

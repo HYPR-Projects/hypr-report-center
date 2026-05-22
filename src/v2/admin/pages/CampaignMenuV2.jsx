@@ -17,7 +17,7 @@
 //   - todas as ações (Loom, Survey, Logo, Owner, Link Cliente) — agora
 //     dentro do CampaignDrawer que abre ao clicar no card
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useSyncExternalStore } from "react";
 // IMPORT CRÍTICO — sem isso o Tailwind+theme.css não chega no bundle do
 // admin (v2.css é onde @import "tailwindcss" e tokens HYPR vivem). O
 // ClientDashboardV2 já importa em outro chunk lazy, mas o admin é a
@@ -49,7 +49,7 @@ import LogoModal from "../../../components/modals/LogoModal";
 import OwnerModal from "../../../components/modals/OwnerModal";
 import MergeModal from "../../../components/modals/MergeModal";
 import RmndUploadModal from "../../../components/modals/RmndUploadModal";
-import SimpleUploadModal from "../../../components/modals/SimpleUploadModal";
+import PdoohUploadModal from "../../../components/modals/PdoohUploadModal";
 import { NegotiationModal } from "../../components/NegotiationModal";
 import { getOrIssueAdminJwt } from "../../../shared/auth";
 
@@ -77,6 +77,11 @@ import { AlertsBell } from "../components/AlertsBell";
 import { AlertCampaignSheet } from "../components/AlertCampaignSheet";
 import { generateAlerts } from "../lib/alerts/engine";
 import { TooltipProvider } from "../../../ui/Tooltip";
+import {
+  schedulePrefetch,
+  subscribeDetail,
+  getAllPrefetchedDetails,
+} from "../../../lib/prefetchReport";
 
 // localStorage key pra persistir o layout escolhido entre sessões.
 const LAYOUT_STORAGE_KEY = "hypr.admin.layout";
@@ -712,12 +717,45 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   // KPIs agregados das campanhas ativas — alimenta a MetricStrip do topo.
   const metricsSummary = useMemo(() => computeMetricsSummary(campaigns), [campaigns]);
 
+  // Bulk-prefetch de detail pra todas as campanhas in_flight assim que a
+  // lista carrega. Sem isso, a regra A6 (frente desbalanceada) só dispara
+  // quando o user passa o mouse em cada card — admin pode não chegar perto
+  // do card que tá com problema, e o alerta nunca sobe pro sino.
+  //
+  // Escalonamento: 40ms entre cada call evita rajada de N fetches
+  // simultâneos no Worker quando há ~50 campanhas in_flight. O `schedulePrefetch`
+  // já tem TTL 50s + dedup por token, então re-chamadas (mount, refetch da
+  // lista) viram no-op naturalmente.
+  useEffect(() => {
+    if (!campaigns?.length) return;
+    const inFlight = campaigns.filter(
+      (c) => getCampaignStatus(c.end_date, c.closed_at, c.paused_at, c.early_end_date) === "in_flight"
+    );
+    const timers = [];
+    inFlight.forEach((c, idx) => {
+      const t = setTimeout(() => schedulePrefetch(c.short_token), idx * 40);
+      timers.push(t);
+    });
+    return () => timers.forEach(clearTimeout);
+  }, [campaigns]);
+
+  // Snapshot reativo do detailCache — re-renderiza quando qualquer detail
+  // novo chega. Estável via getSnapshot referencial (objeto novo a cada
+  // notify) — useSyncExternalStore só dispara quando o serverSnapshot muda,
+  // e como buildAlerts é memoized abaixo em [detailMap], react só re-roda
+  // quando o snapshot referência muda.
+  const detailMap = useSyncExternalStore(
+    subscribeDetail,
+    getAllPrefetchedDetails,
+    () => ({}),
+  );
+
   // Engine de alertas — gera lista priorizada de riscos (A + C + E + H).
-  // Memoiza em `campaigns + teamMap` pra não recomputar a cada keystroke
-  // de filtro. Saída alimenta o sino no header.
+  // Memoiza em `campaigns + teamMap + detailMap` pra recomputar quando o
+  // detalhe de cada campanha chega (A6 depende disso).
   const alerts = useMemo(
-    () => generateAlerts(campaigns, getCampaignStatus, teamMap),
-    [campaigns, teamMap]
+    () => generateAlerts(campaigns, getCampaignStatus, teamMap, detailMap),
+    [campaigns, teamMap, detailMap]
   );
 
   // Atalho do rodapé do popover de alertas — leva pra aba Diagnóstico já
@@ -1096,14 +1134,12 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
         />
       )}
       {pdoohModal && (
-        <SimpleUploadModal
+        <PdoohUploadModal
           shortToken={pdoohModal}
-          type="PDOOH"
           adminJwt={adminJwtForUploads}
           onClose={() => setPdoohModal(null)}
           onSaved={() => setPdoohModal(null)}
           theme={legacyModalTheme(isDark)}
-          description="Suba o relatório PDOOH (.csv ou .xlsx) para "
         />
       )}
       <NegotiationModal
