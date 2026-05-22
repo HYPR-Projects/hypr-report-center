@@ -10,6 +10,7 @@
 
 import { useState, useMemo } from "react";
 import { cn } from "../../../ui/cn";
+import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
 import { localPartFromEmail, ecpmToneClass, formatDateRange } from "../lib/format";
 import {
   STATUS_META,
@@ -19,30 +20,49 @@ import {
   techCostToneClass,
   mediaDiariaToneClass,
   viewabilityToneClass,
+  d1VsMediaInfo,
   compareNullableNumbers,
 } from "../lib/diagnostico";
 
 // ────────────────────────────────────────────────────────────────────────
-// Pílula de status — dot + label
+// Dot de status — bolinha colorida com glow + tooltip no hover
 // ────────────────────────────────────────────────────────────────────────
-function StatusPill({ status }) {
+//
+// Substituiu a pílula textual: a coluna Status Pacing fica como bolinha
+// na primeira posição da tabela, deixando o status como sinal visual
+// rápido (pré-atentivo: cor + posição). O label completo aparece no
+// tooltip do hover. O glow usa `currentColor` pra herdar a cor do status
+// sem precisar mapear shadow por status no STATUS_META.
+function StatusDot({ status }) {
   const meta = STATUS_META[status];
   if (!meta) return <span className="text-fg-subtle">—</span>;
   return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full",
-        "text-[11px] font-semibold whitespace-nowrap",
-        "border",
-        meta.bgClass,
-        meta.borderClass,
-        meta.textClass
-      )}
-      title={meta.description}
-    >
-      <span className={cn("size-1.5 rounded-full", meta.dotClass)} />
-      {meta.shortLabel}
-    </span>
+    <Tooltip delayDuration={150}>
+      <TooltipTrigger asChild>
+        <span
+          // Wrapper inline-block com padding pra aumentar a hitbox do hover
+          // (o dot tem 10px — sem padding o hover é frágil).
+          className="inline-flex items-center justify-center p-1 align-middle cursor-help"
+          aria-label={meta.label}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span
+            className={cn(
+              "inline-block size-2.5 rounded-full",
+              meta.dotClass,
+              meta.textClass,
+              "shadow-[0_0_6px_currentColor]"
+            )}
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="right">
+        <div className="flex flex-col gap-0.5">
+          <span className={cn("font-semibold", meta.textClass)}>{meta.label}</span>
+          <span className="text-fg-muted">{meta.description}</span>
+        </div>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -55,7 +75,7 @@ function Th({ children, align = "left", sortable = false, active = false, dir, o
       scope="col"
       className={cn(
         "sticky top-0 z-10 bg-canvas-deeper",
-        "px-3 py-2.5",
+        "px-2 py-2.5",
         "text-[10px] font-bold uppercase tracking-wider text-fg-subtle",
         "border-b border-border",
         "whitespace-nowrap",
@@ -87,7 +107,7 @@ function Td({ children, align = "left", className, tabular = false, title }) {
   return (
     <td
       className={cn(
-        "px-3 py-2.5",
+        "px-2 py-2.5",
         "text-xs text-fg",
         "border-b border-border/40",
         "whitespace-nowrap",
@@ -237,25 +257,38 @@ export function DiagnosticoTable({
           <table className="w-full text-left">
             <thead>
               <tr>
+                <Th align="center" {...headerProps("status")} className="w-6 px-2">Status</Th>
                 <Th align="left"  {...headerProps("client_name")}>Cliente</Th>
                 <Th align="left"  {...headerProps("campaign_name")}>Campanha</Th>
-                <Th align="left"  {...headerProps("cs_name")}>CS Responsável</Th>
+                <Th align="left"  {...headerProps("cs_name")}>CS</Th>
                 <Th align="left"  {...headerProps("start_date")}>Período</Th>
                 <Th align="right" {...headerProps("totalEntreguePct")}>Entregue</Th>
                 <Th align="right" {...headerProps("projetadaPct")}>Projetada</Th>
                 <Th align="right" {...headerProps("idealDiaria")}>Ideal/Dia</Th>
                 <Th align="right" {...headerProps("mediaDiariaAtual")}>Média/Dia</Th>
-                <Th align="center" {...headerProps("status")}>Status Pacing</Th>
-                <Th align="right" {...headerProps("realEcpm")}>CPM Real</Th>
-                <Th align="right" {...headerProps("realTotalCost")}>Custo Real</Th>
-                <Th align="right" {...headerProps("techCostPct")}>Tech Cost</Th>
-                <Th align="right" {...headerProps("viewability")}>Viewability</Th>
+                <Th align="right" {...headerProps("deliveredD1")}>Ontem (D-1)</Th>
+                <Th align="right" {...headerProps("realEcpm")}>CPM</Th>
+                <Th align="right" {...headerProps("realTotalCost")}>Custo</Th>
+                <Th align="right" {...headerProps("techCostPct")}>Tech</Th>
+                <Th align="right" {...headerProps("viewability")}>View.</Th>
               </tr>
             </thead>
             <tbody>
               {sortedRows.map((r) => {
-                const csName = r.cs_email
+                const csFullName = r.cs_email
                   ? (teamMap[r.cs_email] || localPartFromEmail(r.cs_email))
+                  : null;
+                // Compacta "Thiago Nascimento" → "Thiago N." pra reduzir
+                // a largura da coluna. Split por espaço OU ponto cobre
+                // tanto teamMap ("Thiago Nascimento") quanto fallback de
+                // email ("thiago.nascimento"). Capitalize CSS já normaliza
+                // o resultado pro caso do fallback.
+                const csName = csFullName
+                  ? (() => {
+                      const parts = csFullName.trim().split(/[\s.]+/).filter(Boolean);
+                      if (parts.length < 2) return parts[0] || csFullName;
+                      return `${parts[0]} ${parts[1][0].toUpperCase()}.`;
+                    })()
                   : null;
                 const projTone = STATUS_META[r.status]?.textClass || "";
                 // Régua de CPM segue exatamente os mesmos tiers do card "Por mês"
@@ -285,13 +318,28 @@ export function DiagnosticoTable({
                       "focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-signature"
                     )}
                   >
-                    <Td align="left">
-                      <span className="font-medium text-fg">{r.client_name || "—"}</span>
+                    <Td align="center" className="w-6 px-2">
+                      <StatusDot status={r.status} />
                     </Td>
-                    <Td align="left" className="max-w-[280px]">
+                    <Td align="left" title={r.client_name || undefined}>
+                      <span className="font-medium text-fg">
+                        {(() => {
+                          const name = r.client_name || "—";
+                          // Trunca em 12 chars pra enxutar a coluna —
+                          // nome completo fica no tooltip do <td>.
+                          return name.length > 12 ? name.slice(0, 11) + "…" : name;
+                        })()}
+                      </span>
+                    </Td>
+                    <Td align="left" className="max-w-[200px]">
                       <div className="flex items-center gap-1.5 min-w-0">
                         <span className="truncate" title={r.campaign_name}>
-                          {r.campaign_name || "—"}
+                          {(() => {
+                            const name = r.campaign_name || "—";
+                            // Trunca em 20 chars pra enxutar a coluna —
+                            // nome completo fica no tooltip do span.
+                            return name.length > 20 ? name.slice(0, 19) + "…" : name;
+                          })()}
                         </span>
                         {r.has_abs && (
                           <span
@@ -311,7 +359,7 @@ export function DiagnosticoTable({
                         )}
                       </div>
                     </Td>
-                    <Td align="left">
+                    <Td align="left" title={csFullName || undefined}>
                       {csName ? (
                         <span className="capitalize">{csName}</span>
                       ) : (
@@ -353,9 +401,32 @@ export function DiagnosticoTable({
                     >
                       {formatIntRow(r.mediaDiariaAtual)}
                     </Td>
-                    <Td align="center">
-                      <StatusPill status={r.status} />
-                    </Td>
+                    {(() => {
+                      const d1Trend = d1VsMediaInfo(r.deliveredD1, r.mediaDiariaAtual);
+                      return (
+                        <Td
+                          align="right"
+                          tabular
+                          title={
+                            d1Trend
+                              ? `Ontem (D-1) entregou ${formatIntRow(r.deliveredD1)} — ${d1Trend.deltaLabel} vs Média histórica (${formatIntRow(r.mediaDiariaAtual)}/dia). ` +
+                                (Math.abs(d1Trend.deltaPct) > 15 ? "Destoando da média." : "Próximo da média.")
+                              : "Sem entrega registrada ontem (D-1)"
+                          }
+                        >
+                          {d1Trend ? (
+                            <span className="inline-flex items-baseline gap-1.5">
+                              <span>{formatIntRow(r.deliveredD1)}</span>
+                              <span className={cn("text-[11px] font-medium", d1Trend.tone)}>
+                                {d1Trend.arrow}{d1Trend.deltaLabel}
+                              </span>
+                            </span>
+                          ) : (
+                            <span className="text-fg-subtle">—</span>
+                          )}
+                        </Td>
+                      );
+                    })()}
                     <Td
                       align="right"
                       tabular

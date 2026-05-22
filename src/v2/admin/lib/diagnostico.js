@@ -680,6 +680,36 @@ export function viewabilityToneClass(pct) {
   return "text-danger";
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// D-1 vs Média/Dia — destoou da média histórica?
+// ────────────────────────────────────────────────────────────────────────
+//
+// Compara o D-1 (entrega de ontem) com a Média histórica da campanha.
+// Responde direto a pergunta operacional: "o que entregou ontem destoa
+// do ritmo médio?". Quanto mais longe da média, mais forte o sinal.
+//
+// Régua simétrica (sinaliza aceleração E desaceleração):
+//   |delta| ≤ 15%  → cinza sutil (estável, dentro da margem normal)
+//   |delta| ≤ 30%  → amarelo (destoando — atenção)
+//   |delta| >  30% → vermelho (destoando muito)
+//
+// @returns {{arrow:string, tone:string, deltaPct:number, deltaLabel:string}|null}
+export function d1VsMediaInfo(d1, media) {
+  if (d1 == null || !Number.isFinite(d1) || d1 <= 0) return null;
+  if (media == null || !Number.isFinite(media) || media <= 0) return null;
+  const deltaPct = ((d1 - media) / media) * 100;
+  const absPct = Math.abs(deltaPct);
+  const arrow = absPct <= 5 ? "→" : deltaPct > 0 ? "↑" : "↓";
+  const tone = absPct <= 15
+    ? "text-fg-subtle"
+    : absPct <= 30
+      ? "text-warning"
+      : "text-danger";
+  const rounded = Math.round(deltaPct);
+  const deltaLabel = rounded >= 0 ? `+${rounded}%` : `${rounded}%`;
+  return { arrow, tone, deltaPct, deltaLabel };
+}
+
 /**
  * Compara dois valores pra ordenação. null/undefined sempre vão pro fim.
  */
