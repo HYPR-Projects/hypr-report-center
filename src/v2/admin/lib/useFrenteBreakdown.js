@@ -36,7 +36,7 @@ export function useFrenteBreakdown(token) {
     return { displaySubBars: null, videoSubBars: null };
   }
   return {
-    displaySubBars: buildFrenteSubBars(detail.display, detail.campaign, "DISPLAY"),
-    videoSubBars:   buildFrenteSubBars(detail.video,   detail.campaign, "VIDEO"),
+    displaySubBars: buildFrenteSubBars(detail, "DISPLAY"),
+    videoSubBars:   buildFrenteSubBars(detail, "VIDEO"),
   };
 }

@@ -191,8 +191,7 @@ const RULES_PER_MEDIA = [
       if (m.projected_pacing == null || m.projected_pacing < 100) return null;
 
       const mediaType = media === "video" ? "VIDEO" : "DISPLAY";
-      const rows = media === "video" ? detail.video : detail.display;
-      const subBars = buildFrenteSubBars(rows, detail.campaign, mediaType);
+      const subBars = buildFrenteSubBars(detail, mediaType);
       if (!subBars || subBars.length < 2) return null;
 
       // Pega a frente mais under. Se nenhuma está under (<100%), ignora.

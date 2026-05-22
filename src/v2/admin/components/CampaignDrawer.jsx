@@ -310,13 +310,8 @@ export function CampaignDrawer({
   // Pacing por frente (O2O/OOH) calculado a partir do detail full carregado
   // em background. Cada subBars é null quando há frente única; nesse caso
   // o bloco "Pacing por frente" some inteiro (não há o que comparar).
-  const detailCamp = reportData?.campaign || null;
-  const displaySubBars = detailCamp
-    ? buildFrenteSubBars(reportData.display, detailCamp, "DISPLAY")
-    : null;
-  const videoSubBars = detailCamp
-    ? buildFrenteSubBars(reportData.video, detailCamp, "VIDEO")
-    : null;
+  const displaySubBars = reportData ? buildFrenteSubBars(reportData, "DISPLAY") : null;
+  const videoSubBars   = reportData ? buildFrenteSubBars(reportData, "VIDEO")   : null;
   const hasFrenteBreakdown = !!(displaySubBars || videoSubBars);
   // Pausa só faz sentido em vôo. Após end_date, o ciclo natural toma conta.
   const canPause = status === "in_flight" || status === "paused";

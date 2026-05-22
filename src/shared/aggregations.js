@@ -893,7 +893,8 @@ function recomputeTotalsByMember(members, detail0, totalsRaw, mainRange) {
  * buildFrenteSubBars — pacing por frente (O2O/OOH) pra uma mídia
  * ─────────────────────────────────────────────────────────────────────
  *
- * Filtra `rows` por tactic_type e devolve um array
+ * Recebe o payload `detail` (saída de getCampaign) + mediaType. Filtra
+ * `detail.totals` por media_type+tactic_type e devolve
  * `[{ label, pacing }, ...]` com pacings calculados por frente, usando
  * a mesma régua de `computeMediaPacing` (calendar-elapsed, runway da
  * campanha inteira). Retorna null quando há frente única ou sem rows
@@ -903,11 +904,15 @@ function recomputeTotalsByMember(members, detail0, totalsRaw, mainRange) {
  * precisam dessa lógica em contextos diferentes (síncrono puro vs hook
  * com subscribe). Mantemos a forma pura aqui pra reuso, e o hook
  * `useFrenteBreakdown` apenas reembala.
+ *
+ * @param {object} detail   Payload do getCampaign (com `campaign` e `totals`)
+ * @param {"DISPLAY"|"VIDEO"} mediaType
  */
-export function buildFrenteSubBars(rows, camp, mediaType) {
-  if (!rows || rows.length === 0) return null;
-  const o2oRows = rows.filter((r) => r.tactic_type === "O2O");
-  const oohRows = rows.filter((r) => r.tactic_type === "OOH");
+export function buildFrenteSubBars(detail, mediaType) {
+  if (!detail?.campaign || !Array.isArray(detail.totals)) return null;
+  const camp = detail.campaign;
+  const o2oRows = detail.totals.filter((r) => r.media_type === mediaType && r.tactic_type === "O2O");
+  const oohRows = detail.totals.filter((r) => r.media_type === mediaType && r.tactic_type === "OOH");
   if (o2oRows.length === 0 || oohRows.length === 0) return null;
   return [
     { label: "O2O", pacing: computeMediaPacing(o2oRows, camp, mediaType, "O2O") },
