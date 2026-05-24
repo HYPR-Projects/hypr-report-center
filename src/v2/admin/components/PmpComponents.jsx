@@ -933,19 +933,21 @@ export function PmpLineRow({
           {formatRatioPct(pctToShow, 0)}
         </div>
       )}
-      {/* Pra lines ativas que entregaram ontem, mostra o revenue do dia + uma
+      {/* Pra lines ativas que entregaram ontem, mostra a margem do dia + uma
           seta direcional vs média/dia dos 6 dias anteriores, e o % de delta
           embaixo. Dá ao admin uma leitura rápida de "estamos avançando?"
-          sem precisar abrir o drawer. Outras lines mantêm o relativo
-          ("há Xd", "Pausado", etc). */}
+          sem precisar abrir o drawer. Mantém consistência com a coluna
+          Margem HYPR e com o toggle MARGEM do gráfico do drawer — tudo
+          falando da mesma métrica (margem = curator_margin). Outras lines
+          mantêm o relativo ("há Xd", "Pausado", etc). */}
       <div className="text-right">
         {(() => {
-          const ry = Number(line.revenue_yesterday || 0);
-          if (effStatus === "Andamento" && ry > 0) {
-            const avg = Number(line.revenue_prev_6d_avg || 0);
+          const my = Number(line.margin_yesterday || 0);
+          if (effStatus === "Andamento" && my > 0) {
+            const avg = Number(line.margin_prev_6d_avg || 0);
             // Tolerância de ±10% — abaixo disso é flutuação normal entre dias
             // úteis/fim-de-semana e não vale piscar verde/amarelo.
-            const diff = avg > 0 ? (ry - avg) / avg : null;
+            const diff = avg > 0 ? (my - avg) / avg : null;
             const arrow = diff == null ? "" : diff > 0.10 ? "↗" : diff < -0.10 ? "↘" : "→";
             const tone = diff == null ? "text-fg-muted"
                        : diff > 0.10  ? "text-emerald-600 dark:text-emerald-300"
@@ -956,12 +958,12 @@ export function PmpLineRow({
               ? ` · ${pct >= 0 ? "+" : ""}${pct}%`
               : "";
             const title = avg > 0
-              ? `Revenue entregue ontem · média/dia dos 6d anteriores: ${formatBRL(avg)}`
-              : "Revenue entregue ontem (sem histórico de 6d pra comparar)";
+              ? `Margem entregue ontem · média/dia dos 6d anteriores: ${formatBRL(avg)}`
+              : "Margem entregue ontem (sem histórico de 6d pra comparar)";
             return (
               <div title={title}>
                 <div className={cn("text-[12px] font-semibold tabular-nums", tone)}>
-                  {formatBRLCompact(ry)}{arrow ? ` ${arrow}` : ""}
+                  {formatBRLCompact(my)}{arrow ? ` ${arrow}` : ""}
                 </div>
                 <div className="text-[10px] text-fg-subtle mt-0.5 tabular-nums">
                   ontem{pctLabel}
