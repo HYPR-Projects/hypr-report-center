@@ -362,7 +362,8 @@ export const computeVideoKpis = ({ rows, detail, tactic, checklist }) => {
  * @returns {number} pacing em % (ex.: 87.4 = 87.4%)
  */
 export function computeMediaPacing(rows, camp, mediaType, tactic = "ALL") {
-  if (!rows?.length || !camp?.start_date || !camp?.end_date) return 0;
+  if (!camp?.start_date || !camp?.end_date) return 0;
+  rows = rows || [];
 
   const isVideo = mediaType === "VIDEO";
   const [sy, sm, sd] = camp.start_date.split("-").map(Number);
@@ -378,8 +379,7 @@ export function computeMediaPacing(rows, camp, mediaType, tactic = "ALL") {
   // Negociado (contratado + bônus). Campos *_<tactic>_<media>_<unit> são
   // denormalizados — todas as rows carregam o mesmo valor da campanha,
   // basta ler de rows[0]. Quando tactic="ALL", soma O2O+OOH; quando é
-  // "O2O" ou "OOH", lê só aquela frente — assim o numerador (delivered
-  // já restrito pelo filtro do caller) bate com o denominador.
+  // "O2O" ou "OOH", lê só aquela frente.
   const r0 = rows[0] || {};
   const includeO2O = tactic === "ALL" || tactic === "O2O";
   const includeOOH = tactic === "ALL" || tactic === "OOH";
@@ -391,7 +391,15 @@ export function computeMediaPacing(rows, camp, mediaType, tactic = "ALL") {
     : (r0.contracted_ooh_display_impressions || 0) + (r0.bonus_ooh_display_impressions || 0);
   const negTotal = (includeO2O ? negO2O : 0) + (includeOOH ? negOOH : 0);
 
-  const totalDelivered = rows.reduce((s, r) => s + (isVideo
+  // Filtra delivered por tactic INTERNAMENTE. Permite passar rows do
+  // media inteiro + tactic="OOH" pra calcular pacing dessa frente
+  // mesmo sem delivery row da tactic (entrega não iniciada → 0%).
+  // Callers que já filtram externamente continuam funcionando — o
+  // re-filter é no-op.
+  const matchingRows = tactic === "ALL"
+    ? rows
+    : rows.filter((r) => r.tactic_type === tactic);
+  const totalDelivered = matchingRows.reduce((s, r) => s + (isVideo
     ? (r.viewable_video_view_100_complete || r.completions || 0)
     : (r.viewable_impressions || 0)), 0);
 
@@ -943,12 +951,25 @@ function recomputeTotalsByMember(members, detail0, totalsRaw, mainRange) {
 export function buildFrenteSubBars(detail, mediaType) {
   if (!detail?.campaign || !Array.isArray(detail.totals)) return null;
   const camp = detail.campaign;
-  const o2oRows = detail.totals.filter((r) => r.media_type === mediaType && r.tactic_type === "O2O");
-  const oohRows = detail.totals.filter((r) => r.media_type === mediaType && r.tactic_type === "OOH");
-  if (o2oRows.length === 0 || oohRows.length === 0) return null;
+  const mediaRows = detail.totals.filter((r) => r.media_type === mediaType);
+  if (mediaRows.length === 0) return null;
+
+  // Mostra breakdown quando ambas as tactics têm CONTRATO (mesmo sem
+  // delivery em uma delas) — frente OOH vendida mas ainda não iniciada
+  // aparece como 0%, lembrando o CS de cobrar o cliente.
+  const r0 = mediaRows[0] || {};
+  const isVideo = mediaType === "VIDEO";
+  const negO2O = isVideo
+    ? (r0.contracted_o2o_video_completions   || 0) + (r0.bonus_o2o_video_completions   || 0)
+    : (r0.contracted_o2o_display_impressions || 0) + (r0.bonus_o2o_display_impressions || 0);
+  const negOOH = isVideo
+    ? (r0.contracted_ooh_video_completions   || 0) + (r0.bonus_ooh_video_completions   || 0)
+    : (r0.contracted_ooh_display_impressions || 0) + (r0.bonus_ooh_display_impressions || 0);
+  if (negO2O === 0 || negOOH === 0) return null;
+
   return [
-    { label: "O2O", pacing: computeMediaPacing(o2oRows, camp, mediaType, "O2O") },
-    { label: "OOH", pacing: computeMediaPacing(oohRows, camp, mediaType, "OOH") },
+    { label: "O2O", pacing: computeMediaPacing(mediaRows, camp, mediaType, "O2O") },
+    { label: "OOH", pacing: computeMediaPacing(mediaRows, camp, mediaType, "OOH") },
   ];
 }
 

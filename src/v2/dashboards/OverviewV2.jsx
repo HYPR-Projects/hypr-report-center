@@ -90,17 +90,26 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
 
   // Breakdown por tactic (O2O/OOH) sob cada barra principal. Só faz
   // sentido quando o filtro Core Product é "ALL" — caso contrário a barra
-  // principal já é da tactic única e o breakdown seria redundante. Por
-  // mídia, só renderiza quando ambas as tactics têm row (caso O2O-only
-  // ou OOH-only mantém visual atual, sem ruído).
+  // principal já é da tactic única e o breakdown seria redundante.
+  //
+  // Render quando ambas as tactics têm CONTRATO (não exige delivery em
+  // ambas). Frente vendida mas ainda não iniciada aparece como 0%,
+  // sinalizando pro CS que tem entrega pendente. Quando só uma tactic foi
+  // contratada, esconde o breakdown (não há frentes pra comparar).
   const buildTacticSubBars = (rows, mediaType) => {
     if (coreFilter !== "ALL") return null;
-    const o2oRows = rows.filter((r) => r.tactic_type === "O2O");
-    const oohRows = rows.filter((r) => r.tactic_type === "OOH");
-    if (o2oRows.length === 0 || oohRows.length === 0) return null;
+    const r0 = rows[0] || {};
+    const isVideo = mediaType === "VIDEO";
+    const negO2O = isVideo
+      ? (r0.contracted_o2o_video_completions   || 0) + (r0.bonus_o2o_video_completions   || 0)
+      : (r0.contracted_o2o_display_impressions || 0) + (r0.bonus_o2o_display_impressions || 0);
+    const negOOH = isVideo
+      ? (r0.contracted_ooh_video_completions   || 0) + (r0.bonus_ooh_video_completions   || 0)
+      : (r0.contracted_ooh_display_impressions || 0) + (r0.bonus_ooh_display_impressions || 0);
+    if (negO2O === 0 || negOOH === 0) return null;
     return [
-      { label: "O2O", pacing: computeMediaPacing(o2oRows, camp, mediaType, "O2O") },
-      { label: "OOH", pacing: computeMediaPacing(oohRows, camp, mediaType, "OOH") },
+      { label: "O2O", pacing: computeMediaPacing(rows, camp, mediaType, "O2O") },
+      { label: "OOH", pacing: computeMediaPacing(rows, camp, mediaType, "OOH") },
     ];
   };
   const displaySubBars = buildTacticSubBars(display, "DISPLAY");
