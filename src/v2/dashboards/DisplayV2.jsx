@@ -144,6 +144,7 @@ export default function DisplayV2({
       detailAll,
       tactic: effectiveTactic,
       camp,
+      checklist: t0Display,
     });
 
     const daily = groupByDate(detailFiltered, "clicks", "viewable_impressions", "ctr");
@@ -156,16 +157,17 @@ export default function DisplayV2({
 
   const { totals, detailAll, detailFiltered, lineOptions, creativeLineOptions, kpis, daily, bySize, byCreative, byAudience } = view;
 
-  // Empty state: a tactic atual não tem entregas. Antes a gente fazia
-  // early return aqui sem renderizar a toolbar — o usuário ficava preso
-  // sem conseguir voltar pra outra tactic. Agora a toolbar fica sempre
-  // visível e só substituímos o conteúdo abaixo.
-  const isEmpty = totals.length === 0 && view.detailAll.length === 0;
+  // Empty state vs notStarted:
+  //  - notStarted: há contrato negociado pra essa tactic mas zero delivery
+  //    (campanha aguardando início). Mostra contratual + disclaimer pro CS
+  //    lembrar de cobrar/destravar.
+  //  - isEmpty: zero contrato E zero delivery — caso raro, só acontece se
+  //    availableTactics permitiu render mesmo sem contrato (defensivo).
+  const isEmpty = totals.length === 0 && view.detailAll.length === 0 && !kpis.notStarted;
 
-  // Imp. contratadas e bonus por tactic (vêm do row[0] em totals).
-  // Quando isEmpty, row0 é {} e tudo fica em 0 — irrelevante porque o
-  // ramo do JSX que usa esses valores não renderiza nesse caso.
-  const row0 = totals[0] || {};
+  // Imp. contratadas e bonus — prioriza qualquer row, cai pro checklist
+  // (t0Display) quando a tactic ainda não entregou nada.
+  const row0 = totals[0] || t0Display || {};
   const contractedImps =
     effectiveTactic === "O2O"
       ? row0.contracted_o2o_display_impressions || 0
@@ -198,7 +200,7 @@ export default function DisplayV2({
         ) : (
           <div />
         )}
-        {!isEmpty && (
+        {!isEmpty && !kpis.notStarted && (
           <div className="flex flex-wrap items-center gap-2">
             <CreativeLineFilterV2
               lines={creativeLineOptions}
@@ -234,6 +236,7 @@ export default function DisplayV2({
           byAudience={byAudience}
           contractedImps={contractedImps}
           bonusImps={bonusImps}
+          notStarted={kpis.notStarted}
         />
       )}
     </div>
@@ -256,9 +259,25 @@ function DisplayContent({
   byAudience,
   contractedImps,
   bonusImps,
+  notStarted,
 }) {
   return (
     <>
+      {/* Disclaimer "Entrega não iniciada" — pra contratos vendidos sem
+          delivery ainda. Mantém os contratuais visíveis pro CS lembrar
+          de destravar com o cliente. Pacing 0% reforça visualmente. */}
+      {notStarted && (
+        <div className="rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 flex items-start gap-3">
+          <span className="size-2 rounded-full bg-warning mt-1.5 shrink-0" aria-hidden />
+          <div className="text-sm">
+            <div className="font-medium text-fg">Entrega {tactic} ainda não iniciada</div>
+            <div className="text-fg-muted mt-0.5">
+              Exibindo apenas os valores negociados. Verifique pendências com o cliente.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ─── 2. Hero ComparisonCard ──────────────────────────────────── */}
       <ComparisonCardV2
         title={`CPM Display · ${tactic}`}

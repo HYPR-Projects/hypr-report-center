@@ -135,6 +135,7 @@ export default function VideoV2({
       rows: totals,
       detail: detailFiltered,
       tactic: effectiveTactic,
+      checklist: t0Video,
     });
 
     // Normaliza creative_size pra Video: backend retorna "0x0" quando o
@@ -159,13 +160,14 @@ export default function VideoV2({
 
   const { totals, detailAll, detailFiltered, detailNormalized, lineOptions, creativeLineOptions, kpis, daily, bySize, byCreative, byAudience } = view;
 
-  // Empty state: a tactic atual não tem entregas. Mantém a toolbar
-  // visível pra o usuário poder voltar pra outra tactic — antes
-  // ficava preso sem toggle.
-  const isEmpty = totals.length === 0 && view.detailAll.length === 0;
+  // Empty state vs notStarted (mesma lógica do DisplayV2):
+  //  - notStarted: há contrato sem delivery — mostra contratual + disclaimer
+  //  - isEmpty: zero contrato E zero delivery (defensivo)
+  const isEmpty = totals.length === 0 && view.detailAll.length === 0 && !kpis.notStarted;
 
-  // Views contratadas e bonus por tactic (vêm do row[0] em totals).
-  const row0 = totals[0] || {};
+  // Views contratadas e bonus — fallback pro checklist (t0Video) quando
+  // a tactic ainda não entregou (caso "notStarted").
+  const row0 = totals[0] || t0Video || {};
   const contractedViews =
     effectiveTactic === "O2O"
       ? row0.contracted_o2o_video_completions || 0
@@ -196,7 +198,7 @@ export default function VideoV2({
         ) : (
           <div />
         )}
-        {!isEmpty && (
+        {!isEmpty && !kpis.notStarted && (
           <div className="flex flex-wrap items-center gap-2">
             <CreativeLineFilterV2
               lines={creativeLineOptions}
@@ -233,6 +235,7 @@ export default function VideoV2({
           byAudience={byAudience}
           contractedViews={contractedViews}
           bonusViews={bonusViews}
+          notStarted={kpis.notStarted}
         />
       )}
     </div>
@@ -255,9 +258,22 @@ function VideoContent({
   byAudience,
   contractedViews,
   bonusViews,
+  notStarted,
 }) {
   return (
     <>
+      {notStarted && (
+        <div className="rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 flex items-start gap-3">
+          <span className="size-2 rounded-full bg-warning mt-1.5 shrink-0" aria-hidden />
+          <div className="text-sm">
+            <div className="font-medium text-fg">Entrega {tactic} ainda não iniciada</div>
+            <div className="text-fg-muted mt-0.5">
+              Exibindo apenas os valores negociados. Verifique pendências com o cliente.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ─── 2. Hero ComparisonCard ──────────────────────────────────── */}
       <ComparisonCardV2
         title={`CPCV Video · ${tactic}`}

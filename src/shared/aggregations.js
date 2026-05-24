@@ -207,7 +207,7 @@ export const buildLineOptions = (rows) =>
  * @returns {object} KPIs computados — mantém os mesmos nomes que o código
  *                   antigo usava nas variáveis locais.
  */
-export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp }) => {
+export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp, checklist }) => {
   const sumD    = k => detail.reduce((s, r) => s + (r[k] || 0), 0);
   const sumDAll = k => detailAll.reduce((s, r) => s + (r[k] || 0), 0);
 
@@ -218,8 +218,16 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp }) =>
   const ctr  = vi > 0 ? clks / vi * 100 : 0;
 
   const viAll  = sumDAll("viewable_impressions");
-  const budget = rows.reduce((s, r) => s + (tactic === "O2O" ? (r.o2o_display_budget || 0) : (r.ooh_display_budget || 0)), 0);
-  const cpmNeg = rows[0]?.deal_cpm_amount || 0;
+
+  // Fonte dos contratuais: prioriza qualquer row dessa tactic; cai pro
+  // `checklist` (data.totals[0]) quando a tactic ainda não entregou nada
+  // (campanha pendente de início). Sem o fallback, OOH contratado mas sem
+  // delivery aparecia como empty state em vez de exibir o que foi vendido.
+  const src = rows[0] || checklist || {};
+  const budget = rows.length > 0
+    ? rows.reduce((s, r) => s + (tactic === "O2O" ? (r.o2o_display_budget || 0) : (r.ooh_display_budget || 0)), 0)
+    : (tactic === "O2O" ? (src.o2o_display_budget || 0) : (src.ooh_display_budget || 0));
+  const cpmNeg = src.deal_cpm_amount || 0;
 
   const [sy, sm, sd] = camp.start_date.split("-").map(Number);
   const [ey, em, ed] = camp.end_date.split("-").map(Number);
@@ -227,9 +235,14 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp }) =>
   const end   = new Date(ey, em - 1, ed);
   const today = new Date();
 
-  const contracted = tactic === "O2O" ? (rows[0]?.contracted_o2o_display_impressions || 0) : (rows[0]?.contracted_ooh_display_impressions || 0);
-  const bonus      = tactic === "O2O" ? (rows[0]?.bonus_o2o_display_impressions || 0)      : (rows[0]?.bonus_ooh_display_impressions || 0);
+  const contracted = tactic === "O2O" ? (src.contracted_o2o_display_impressions || 0) : (src.contracted_ooh_display_impressions || 0);
+  const bonus      = tactic === "O2O" ? (src.bonus_o2o_display_impressions || 0)      : (src.bonus_ooh_display_impressions || 0);
   const totalNeg   = contracted + bonus;
+
+  // notStarted = há contrato (cpmNeg + algum volume) mas zero delivery
+  // detectada. Sinaliza pro UI mostrar contratual + disclaimer em vez
+  // do empty state genérico.
+  const notStarted = rows.length === 0 && detailAll.length === 0 && cpmNeg > 0 && totalNeg > 0;
 
   const tDays         = (end - start) / 864e5 + 1;
   const eDays         = today < start ? 0 : today > end ? tDays : Math.floor((today - start) / 864e5);
@@ -243,9 +256,11 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp }) =>
   // → cliente via rentabilidade > 0 com pacing < 100%.
   const expected = today > end ? totalNeg : (totalNeg > 0 && tDays > 0 ? totalNeg / tDays * eDays : 0);
   const over     = viAll > expected;
-  const cpmEf    = cpmNeg > 0 ? (over && viAll > 0 ? budgetProp / viAll * 1000 : cpmNeg) : 0;
-  const cpc      = clks > 0 ? cpmEf / 1000 * (viAll / clks) : 0;
-  const rentab   = cpmNeg > 0 ? (cpmNeg - cpmEf) / cpmNeg * 100 : 0;
+  // Quando notStarted, cpmEf=null faz o Hero/Card mostrar "—" em vez de
+  // duplicar o negociado (que dá impressão de já ter dado calculado).
+  const cpmEf    = notStarted ? null : (cpmNeg > 0 ? (over && viAll > 0 ? budgetProp / viAll * 1000 : cpmNeg) : 0);
+  const cpc      = clks > 0 && cpmEf ? cpmEf / 1000 * (viAll / clks) : 0;
+  const rentab   = notStarted ? null : (cpmNeg > 0 ? (cpmNeg - cpmEf) / cpmNeg * 100 : 0);
 
   const pac      = totalNeg > 0
     ? (today > end ? viAll / totalNeg * 100 : expected > 0 ? viAll / expected * 100 : 0)
@@ -258,6 +273,7 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp }) =>
     viAll, budget, cpmNeg, contracted, bonus,
     cpmEf, cpc, rentab,
     pac, pacBase, pacOver,
+    notStarted,
   };
 };
 
@@ -270,18 +286,29 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp }) =>
  * KPIs que respeitam o filtro de line continuam calculados no front
  * (vi, views100, starts, vtr).
  */
-export const computeVideoKpis = ({ rows, detail, tactic }) => {
+export const computeVideoKpis = ({ rows, detail, tactic, checklist }) => {
   const cost     = rows.reduce((s, r) => s + (r.effective_total_cost || 0), 0);
   const vi       = detail.reduce((s, r) => s + (r.viewable_impressions || 0), 0);
   const views100 = detail.reduce((s, r) => s + (r.video_view_100 || 0), 0);
   const starts   = detail.reduce((s, r) => s + (r.video_starts || 0), 0);
   const vtr      = vi > 0 ? views100 / vi * 100 : 0;
 
-  const budget  = rows.reduce((s, r) => s + (tactic === "O2O" ? (r.o2o_video_budget || 0) : (r.ooh_video_budget || 0)), 0);
-  const cpcvNeg = rows[0]?.deal_cpcv_amount    || 0;
-  const cpcvEf  = rows[0]?.effective_cpcv_amount || 0;
-  const rentab  = rows[0]?.rentabilidade       || 0;
-  const pac     = rows[0]?.pacing              || 0;
+  // Fallback pro checklist quando a tactic ainda não entregou nada — mesma
+  // lógica do Display. Sem isso, OOH negociado sem delivery aparecia vazio.
+  const src = rows[0] || checklist || {};
+  const budget = rows.length > 0
+    ? rows.reduce((s, r) => s + (tactic === "O2O" ? (r.o2o_video_budget || 0) : (r.ooh_video_budget || 0)), 0)
+    : (tactic === "O2O" ? (src.o2o_video_budget || 0) : (src.ooh_video_budget || 0));
+  const cpcvNeg = src.deal_cpcv_amount || 0;
+
+  const contracted = tactic === "O2O" ? (src.contracted_o2o_video_completions || 0) : (src.contracted_ooh_video_completions || 0);
+  const bonus      = tactic === "O2O" ? (src.bonus_o2o_video_completions || 0)      : (src.bonus_ooh_video_completions || 0);
+  const totalNeg   = contracted + bonus;
+  const notStarted = rows.length === 0 && detail.length === 0 && cpcvNeg > 0 && totalNeg > 0;
+
+  const cpcvEf  = notStarted ? null : (rows[0]?.effective_cpcv_amount || 0);
+  const rentab  = notStarted ? null : (rows[0]?.rentabilidade       || 0);
+  const pac     = notStarted ? 0    : (rows[0]?.pacing              || 0);
   const pacBase = Math.min(pac, 100);
   const pacOver = Math.max(0, pac - 100);
 
@@ -289,6 +316,7 @@ export const computeVideoKpis = ({ rows, detail, tactic }) => {
     cost, vi, views100, starts, vtr,
     budget, cpcvNeg, cpcvEf, rentab,
     pac, pacBase, pacOver,
+    notStarted,
   };
 };
 
