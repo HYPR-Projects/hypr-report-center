@@ -4939,6 +4939,19 @@ def query_campaigns_list():
                 SUM(IF(media_type='VIDEO', viewable_impressions, 0)) AS v_viewable_impressions,
                 COUNT(DISTINCT IF(media_type='DISPLAY', date, NULL)) AS d_days_with_delivery,
                 SUM(IF(media_type='DISPLAY', viewable_impressions, 0)) AS d_viewable_impressions,
+                -- Splits por tactic (O2O/OOH) pra pacing per-frente direto na
+                -- lista — sem isso o front precisava do detail prefetched, o
+                -- que gerava flicker (verde no primeiro paint, amarelo depois).
+                -- Usa TACTIC_EXPR (line_name override) pra alinhar com o resto
+                -- do app. Zero custo extra de BQ — mesma varredura.
+                SUM(IF(media_type='DISPLAY' AND ({TACTIC_EXPR})='O2O', viewable_impressions, 0)) AS d_o2o_viewable_impressions,
+                SUM(IF(media_type='DISPLAY' AND ({TACTIC_EXPR})='OOH', viewable_impressions, 0)) AS d_ooh_viewable_impressions,
+                SUM(IF(media_type='VIDEO' AND ({TACTIC_EXPR})='O2O' AND impressions > 0,
+                        video_view_100_complete * (viewable_impressions / impressions),
+                        0)) AS v_o2o_viewable_completions,
+                SUM(IF(media_type='VIDEO' AND ({TACTIC_EXPR})='OOH' AND impressions > 0,
+                        video_view_100_complete * (viewable_impressions / impressions),
+                        0)) AS v_ooh_viewable_completions,
                 -- ADMIN-ONLY: custo cru do DSP (sem margem/over) + impressions
                 -- gross. Usados pra calcular eCPM real (= cost/impressions*1000)
                 -- na view "Por cliente". NÃO BUBBLE para client-facing endpoints.
@@ -5065,6 +5078,8 @@ def query_campaigns_list():
             u.v_actual_start_date,    u.v_days_with_delivery,  u.v_viewable_completions,
             u.v_viewable_impressions,
             u.d_days_with_delivery,   u.d_viewable_impressions,
+            u.d_o2o_viewable_impressions, u.d_ooh_viewable_impressions,
+            u.v_o2o_viewable_completions, u.v_ooh_viewable_completions,
             u.admin_total_cost,       u.admin_impressions,
             u.d_admin_total_cost,     u.d_admin_impressions,
             u.v_admin_total_cost,     u.v_admin_impressions,
@@ -5181,6 +5196,30 @@ def query_campaigns_list():
         d_expected = pacing_expected_to_date(d_neg, start_date, end_date)
         v_expected = pacing_expected_to_date(v_neg, start_date, end_date)
 
+        # Negociado por tactic (contrato + bonus) — denominador do pacing per-frente.
+        d_o2o_neg = float(r["contracted_o2o_display"] or 0) + float(r["bonus_o2o_display"] or 0)
+        d_ooh_neg = float(r["contracted_ooh_display"] or 0) + float(r["bonus_ooh_display"] or 0)
+        v_o2o_neg = float(r["contracted_o2o_video"]   or 0) + float(r["bonus_o2o_video"]   or 0)
+        v_ooh_neg = float(r["contracted_ooh_video"]   or 0) + float(r["bonus_ooh_video"]   or 0)
+
+        # Entrega por tactic (viewable impressions/completions) — numerador.
+        d_o2o_viewable = float(r["d_o2o_viewable_impressions"]  or 0)
+        d_ooh_viewable = float(r["d_ooh_viewable_impressions"]  or 0)
+        v_o2o_viewable = float(r["v_o2o_viewable_completions"]  or 0)
+        v_ooh_viewable = float(r["v_ooh_viewable_completions"]  or 0)
+
+        # Pacing per-frente. Emite só quando há contrato pra aquela frente
+        # — sem contrato (None) o front esconde a sub-barra (sem ruído).
+        # Com contrato + zero delivery → 0.0% (sinaliza "vendido, não iniciou").
+        d_o2o_expected = pacing_expected_to_date(d_o2o_neg, start_date, end_date)
+        d_ooh_expected = pacing_expected_to_date(d_ooh_neg, start_date, end_date)
+        v_o2o_expected = pacing_expected_to_date(v_o2o_neg, start_date, end_date)
+        v_ooh_expected = pacing_expected_to_date(v_ooh_neg, start_date, end_date)
+        display_pacing_o2o = round(d_o2o_viewable / d_o2o_expected * 100, 1) if d_o2o_expected and d_o2o_expected > 0 else None
+        display_pacing_ooh = round(d_ooh_viewable / d_ooh_expected * 100, 1) if d_ooh_expected and d_ooh_expected > 0 else None
+        video_pacing_o2o   = round(v_o2o_viewable / v_o2o_expected * 100, 1) if v_o2o_expected and v_o2o_expected > 0 else None
+        video_pacing_ooh   = round(v_ooh_viewable / v_ooh_expected * 100, 1) if v_ooh_expected and v_ooh_expected > 0 else None
+
         display_pacing = round(d_viewable_impr / d_expected     * 100, 1) if d_expected and d_expected > 0 else None
         video_pacing   = round(v_viewable_comp  / v_expected    * 100, 1) if v_expected and v_expected > 0 else None
         display_ctr    = round(d_clicks         / d_vi          * 100, 2) if d_vi             > 0       else None
@@ -5204,6 +5243,13 @@ def query_campaigns_list():
         }
         if display_pacing is not None: entry["display_pacing"] = display_pacing
         if video_pacing   is not None: entry["video_pacing"]   = video_pacing
+        # Pacing por frente — front usa pra colorir o card no primeiro paint
+        # (sem precisar do detail prefetched). Só sai no payload quando há
+        # contrato pra aquela frente; 0% sinaliza "vendido, não iniciou".
+        if display_pacing_o2o is not None: entry["display_pacing_o2o"] = display_pacing_o2o
+        if display_pacing_ooh is not None: entry["display_pacing_ooh"] = display_pacing_ooh
+        if video_pacing_o2o   is not None: entry["video_pacing_o2o"]   = video_pacing_o2o
+        if video_pacing_ooh   is not None: entry["video_pacing_ooh"]   = video_pacing_ooh
         if display_ctr    is not None: entry["display_ctr"]    = display_ctr
         if video_ctr      is not None: entry["video_ctr"]      = video_ctr
         if video_vtr      is not None: entry["video_vtr"]      = video_vtr

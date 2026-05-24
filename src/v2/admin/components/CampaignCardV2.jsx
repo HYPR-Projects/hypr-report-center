@@ -82,17 +82,23 @@ function pacingTier(pacing) {
 }
 
 /**
- * Health do card = pior pacing entre DSP e VID.
+ * Health do card = pior pacing entre DSP, VID e suas sub-frentes (O2O/OOH).
  *
  * Severidade descendente: critical > attention > healthy > over.
  * Se uma métrica está crítica e a outra over, mostra crítico (a pior
  * cor ganha). Quando há mistura entre healthy e over, prefere healthy
  * (leitura conservadora — azul é destaque, não default).
+ *
+ * As sub-frentes (O2O/OOH por mídia) entram no mesmo pool — uma frente
+ * under puxa o card pra amarelo mesmo se a média agregada está saudável.
+ * Sem isso, O2O super-over esconde OOH parado e o CS perde o sinal visual.
  */
-function classifyHealth(displayPacing, videoPacing) {
+function classifyHealth(displayPacing, videoPacing, displaySubBars, videoSubBars) {
   const cands = [];
   if (displayPacing != null) cands.push(Number(displayPacing));
   if (videoPacing   != null) cands.push(Number(videoPacing));
+  for (const s of displaySubBars || []) if (s.pacing != null) cands.push(Number(s.pacing));
+  for (const s of videoSubBars   || []) if (s.pacing != null) cands.push(Number(s.pacing));
   if (!cands.length) return null;
   const tiers = cands.map(pacingTier);
   for (const t of ["critical", "attention", "healthy", "over"]) {
@@ -155,10 +161,10 @@ export function CampaignCardV2({
   } = campaign;
   const has_abs = display_has_abs || video_has_abs;
 
-  // Pacing por frente (O2O/OOH) — lido do detalhe prefetched (cache em
-  // memória populado pelo hover do card). Devolve null até o detalhe chegar;
-  // PacingRow cai no comportamento legado (cor pela média) nesse intervalo.
-  const { displaySubBars, videoSubBars } = useFrenteBreakdown(short_token);
+  // Pacing por frente (O2O/OOH). Lê primeiro de `campaign.display_pacing_o2o/ooh`
+  // (mandado direto pelo `?list=true`, sem flicker) e cai pro detail prefetched
+  // como fallback pra deployments antigos do backend.
+  const { displaySubBars, videoSubBars } = useFrenteBreakdown(short_token, campaign);
 
   // Dispara o prefetch assim que o card entra no viewport. Sem isso, a média
   // saudável esconde uma frente under até o user passar o mouse — a janela
@@ -196,7 +202,7 @@ export function CampaignCardV2({
   const health  = ended    ? "ended"
                 : awaiting ? "awaiting"
                 : paused   ? "paused"
-                : classifyHealth(display_pacing, video_pacing);
+                : classifyHealth(display_pacing, video_pacing, displaySubBars, videoSubBars);
   const cpName = cp_email ? (teamMap[cp_email] || localPartFromEmail(cp_email)) : null;
   const csName = cs_email ? (teamMap[cs_email] || localPartFromEmail(cs_email)) : null;
 
