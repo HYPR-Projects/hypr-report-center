@@ -425,6 +425,28 @@ export function worstStatus(...statuses) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// Imbalance entre frentes (O2O vs OOH)
+// ────────────────────────────────────────────────────────────────────────
+/**
+ * Quando uma mídia tem ambas as frentes contratadas, o pacing combinado
+ * pode esconder uma frente em risco — caso típico: OOH vendido mas não
+ * iniciado (pacing 0%) com O2O over-delivering, gerando média "saudável"
+ * que mascara um descumprimento contratual com o meio.
+ *
+ * Mirror conceitual do alert A6 ([rules.js](src/v2/admin/lib/alerts/rules.js)).
+ * Retorna `null` quando há frente única (só uma das duas presente) — caller
+ * preserva o status combinado nesse caso.
+ */
+function computeFrontImbalance(o2oPacing, oohPacing) {
+  if (o2oPacing == null || oohPacing == null) return null;
+  const worstPacing = Math.min(o2oPacing, oohPacing);
+  const worstLabel  = o2oPacing <= oohPacing ? "O2O" : "OOH";
+  const status      = classifyStatus(worstPacing);
+  if (!status) return null;
+  return { worstLabel, worstPacing, status };
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // Filtro principal: monta linhas de Display + Video pras tabelas
 // ────────────────────────────────────────────────────────────────────────
 /**
@@ -485,10 +507,21 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
       const displayProjTech = displayFin.techCostPct != null && multiplier
         ? displayFin.techCostPct * multiplier
         : null;
+      // Imbalance entre frentes (O2O vs OOH): quando ambas estão contratadas,
+      // a média combinada pode esconder uma frente under (OOH não iniciada,
+      // por exemplo). Mirror do alert A6 — promove o status pra UNDER/OVER
+      // quando a pior frente é mais alarmante que o combinado, evitando
+      // que o chip "OK" engane o CS num cenário em que uma frente vai falhar.
+      const displayImbalance = computeFrontImbalance(c.display_pacing_o2o, c.display_pacing_ooh);
+      const displayFinalStatus = displayImbalance
+        ? worstStatus(displayMetrics.status, displayImbalance.status) || displayMetrics.status
+        : displayMetrics.status;
       displayRows.push({
         ...identity,
         ...displayMetrics,
         ...displayFin,
+        status: displayFinalStatus,
+        front_imbalance: displayImbalance,
         has_abs: !!c.display_has_abs,
         media: "display",
         // Brutos pro CSV — totais, não viewable. delivered (viewable) já vai
@@ -517,10 +550,16 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
       const videoProjTech = videoFin.techCostPct != null && multiplier
         ? videoFin.techCostPct * multiplier
         : null;
+      const videoImbalance = computeFrontImbalance(c.video_pacing_o2o, c.video_pacing_ooh);
+      const videoFinalStatus = videoImbalance
+        ? worstStatus(videoMetrics.status, videoImbalance.status) || videoMetrics.status
+        : videoMetrics.status;
       videoRows.push({
         ...identity,
         ...videoMetrics,
         ...videoFin,
+        status: videoFinalStatus,
+        front_imbalance: videoImbalance,
         has_abs: !!c.video_has_abs,
         media: "video",
         // Brutos pro CSV. Video não tem "starts" no payload da list (só

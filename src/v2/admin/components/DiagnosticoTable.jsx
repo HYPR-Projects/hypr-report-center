@@ -33,9 +33,13 @@ import {
 // rápido (pré-atentivo: cor + posição). O label completo aparece no
 // tooltip do hover. O glow usa `currentColor` pra herdar a cor do status
 // sem precisar mapear shadow por status no STATUS_META.
-function StatusDot({ status }) {
+function StatusDot({ status, frontImbalance }) {
   const meta = STATUS_META[status];
   if (!meta) return <span className="text-fg-subtle">—</span>;
+  // Status promovido pela pior frente: deixa óbvio no tooltip que o chip
+  // não reflete o pacing combinado, e sim a frente em risco — evita
+  // confusão quando a coluna Projetada mostra um número saudável.
+  const imbalancePromoted = frontImbalance && frontImbalance.status === status;
   return (
     <Tooltip delayDuration={150}>
       <TooltipTrigger asChild>
@@ -60,6 +64,11 @@ function StatusDot({ status }) {
         <div className="flex flex-col gap-0.5">
           <span className={cn("font-semibold", meta.textClass)}>{meta.label}</span>
           <span className="text-fg-muted">{meta.description}</span>
+          {imbalancePromoted && (
+            <span className="text-fg-muted">
+              Frente {frontImbalance.worstLabel} em {frontImbalance.worstPacing.toFixed(1)}% — combinado esconde o risco
+            </span>
+          )}
         </div>
       </TooltipContent>
     </Tooltip>
@@ -319,7 +328,7 @@ export function DiagnosticoTable({
                     )}
                   >
                     <Td align="center" className="w-6 px-2">
-                      <StatusDot status={r.status} />
+                      <StatusDot status={r.status} frontImbalance={r.front_imbalance} />
                     </Td>
                     <Td align="left" title={r.client_name || undefined}>
                       <span className="font-medium text-fg">
