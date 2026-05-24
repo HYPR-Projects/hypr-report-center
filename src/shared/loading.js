@@ -31,6 +31,13 @@ import { useEffect, useSyncExternalStore } from "react";
 let _count = 0;
 const _listeners = new Set();
 
+// Watchdog: se uma task ficar mais de MAX_TASK_MS, força decremento e
+// loga warning com a stack que criou. Sintoma a tratar é a barrinha
+// global travada eternamente quando algum callsite esquece de mudar
+// `isLoading` pra false (ex: fetch hang, cleanup que não roda,
+// componente desmontado antes de finalizar).
+const MAX_TASK_MS = 30_000;
+
 function emit() {
   _listeners.forEach((fn) => fn());
 }
@@ -47,15 +54,35 @@ function getSnapshot() {
 /**
  * Registra/desregistra a presença de uma task ativa quando `isLoading`
  * muda. Chamada de um componente React.
+ *
+ * Watchdog de 30s: se a task não terminar nesse prazo, decrementa
+ * forçado + emite. Mantém a barra honesta sem precisar caçar quem
+ * esqueceu de mudar o estado.
  */
 export function useLoadingTask(isLoading) {
   useEffect(() => {
     if (!isLoading) return;
     _count += 1;
     emit();
-    return () => {
+    let released = false;
+    const release = (forced) => {
+      if (released) return;
+      released = true;
       _count = Math.max(0, _count - 1);
       emit();
+      if (forced) {
+        // Stack ajuda a identificar de onde veio a task vazada.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[useLoadingTask] watchdog liberou task após ${MAX_TASK_MS}ms — provavelmente uma flag isLoading ficou true sem ser resetada.\n` +
+          new Error().stack,
+        );
+      }
+    };
+    const watchdog = setTimeout(() => release(true), MAX_TASK_MS);
+    return () => {
+      clearTimeout(watchdog);
+      release(false);
     };
   }, [isLoading]);
 }
