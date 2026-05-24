@@ -102,12 +102,13 @@ delivery_yesterday AS (
   GROUP BY line_id
 ),
 delivery_prev_6d AS (
-  -- Média diária de margem nos 6 dias ANTES de ontem (D-7..D-2). Usada como
-  -- baseline pra setinha ↗/↘ ao lado da margem de ontem. Exclui ontem pra
-  -- evitar bias do próprio dia comparado.
+  -- Média diária de margem E revenue nos 6 dias ANTES de ontem (D-7..D-2).
+  -- Usadas como baseline pra setinha ↗/↘ ao lado do valor de ontem. Exclui
+  -- ontem pra evitar bias do próprio dia comparado.
   SELECT
     line_id,
-    SAFE_DIVIDE(SUM(curator_margin), 6) AS margin_prev_6d_avg
+    SAFE_DIVIDE(SUM(curator_margin),  6) AS margin_prev_6d_avg,
+    SAFE_DIVIDE(SUM(curator_revenue), 6) AS revenue_prev_6d_avg
   FROM `site-hypr.prod_assets.pmp_line_delivery_daily`
   WHERE day BETWEEN DATE_SUB(CURRENT_DATE('America/Sao_Paulo'), INTERVAL 7 DAY)
                 AND DATE_SUB(CURRENT_DATE('America/Sao_Paulo'), INTERVAL 2 DAY)
@@ -202,9 +203,10 @@ joined AS (
     COALESCE(d7.margin_last_7d, 0)  AS margin_last_7d,
     COALESCE(d7.imps_last_7d, 0)    AS imps_last_7d,
 
-    COALESCE(dy.margin_yesterday, 0)   AS margin_yesterday,
-    COALESCE(dy.revenue_yesterday, 0)  AS revenue_yesterday,
-    COALESCE(dp.margin_prev_6d_avg, 0) AS margin_prev_6d_avg,
+    COALESCE(dy.margin_yesterday, 0)    AS margin_yesterday,
+    COALESCE(dy.revenue_yesterday, 0)   AS revenue_yesterday,
+    COALESCE(dp.margin_prev_6d_avg, 0)  AS margin_prev_6d_avg,
+    COALESCE(dp.revenue_prev_6d_avg, 0) AS revenue_prev_6d_avg,
 
     li.created_by, li.created_at, li.updated_by, li.updated_at
   FROM `site-hypr.prod_assets.pmp_line_items` li
