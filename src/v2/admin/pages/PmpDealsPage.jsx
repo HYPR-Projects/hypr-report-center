@@ -2038,15 +2038,28 @@ function DeliveryChart({ daily }) {
         )}
       </div>
 
-      {/* Eixo X — abreviação do dia (dom/seg/…) + dd/mm. "hoje" no último. */}
+      {/* Eixo X — dd/mm em todos. Hoje/ontem ganham label relativo quando
+          corresponderem à data real (importante: a sync tem política D-1
+          então o dia mais recente do gráfico é, em geral, ontem — rotular
+          de "hoje" às cegas mente sobre a referência temporal). */}
       <div className="flex px-4 pb-3 text-[10px] text-fg-subtle font-mono tabular-nums">
-        {days.map((d, i) => (
-          <div key={i} className="flex-1 text-center">
-            <div className={cn("leading-none", hoverIdx === i && "text-fg")}>
-              {i === days.length - 1 ? "hoje" : formatYmdShort(d.day)}
-            </div>
-          </div>
-        ))}
+        {(() => {
+          const todayStr = ymd(new Date());
+          const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+          const yesterdayStr = ymd(yesterday);
+          return days.map((d, i) => {
+            const label = d.day === todayStr     ? "hoje"
+                       : d.day === yesterdayStr  ? "ontem"
+                       :                           formatYmdShort(d.day);
+            return (
+              <div key={i} className="flex-1 text-center">
+                <div className={cn("leading-none", hoverIdx === i && "text-fg")}>
+                  {label}
+                </div>
+              </div>
+            );
+          });
+        })()}
       </div>
     </section>
   );
