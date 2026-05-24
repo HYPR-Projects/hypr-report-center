@@ -4944,12 +4944,17 @@ def query_campaigns_list():
                 -- que gerava flicker (verde no primeiro paint, amarelo depois).
                 -- Usa TACTIC_EXPR (line_name override) pra alinhar com o resto
                 -- do app. Zero custo extra de BQ — mesma varredura.
-                SUM(IF(media_type='DISPLAY' AND ({TACTIC_EXPR})='O2O', viewable_impressions, 0)) AS d_o2o_viewable_impressions,
-                SUM(IF(media_type='DISPLAY' AND ({TACTIC_EXPR})='OOH', viewable_impressions, 0)) AS d_ooh_viewable_impressions,
-                SUM(IF(media_type='VIDEO' AND ({TACTIC_EXPR})='O2O' AND impressions > 0,
+                -- Regex inline (sem ELSE tactic_type) porque
+                -- unified_daily_performance_metrics não tem a coluna tactic_type
+                -- — só line_name. Naming malformado (sem _O2O/_OOH no nome) fica
+                -- fora da contagem per-frente, mas continua contando no agregado
+                -- (d_viewable_impressions / v_viewable_impressions acima).
+                SUM(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)_O2O(_|$)'), viewable_impressions, 0)) AS d_o2o_viewable_impressions,
+                SUM(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)_OOH(_|$)'), viewable_impressions, 0)) AS d_ooh_viewable_impressions,
+                SUM(IF(media_type='VIDEO' AND REGEXP_CONTAINS(line_name, r'(?i)_O2O(_|$)') AND impressions > 0,
                         video_view_100_complete * (viewable_impressions / impressions),
                         0)) AS v_o2o_viewable_completions,
-                SUM(IF(media_type='VIDEO' AND ({TACTIC_EXPR})='OOH' AND impressions > 0,
+                SUM(IF(media_type='VIDEO' AND REGEXP_CONTAINS(line_name, r'(?i)_OOH(_|$)') AND impressions > 0,
                         video_view_100_complete * (viewable_impressions / impressions),
                         0)) AS v_ooh_viewable_completions,
                 -- ADMIN-ONLY: custo cru do DSP (sem margem/over) + impressions
