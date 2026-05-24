@@ -235,14 +235,18 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp }) =>
   const eDays         = today < start ? 0 : today > end ? tDays : Math.floor((today - start) / 864e5);
   const budgetProp    = today > end ? budget : budget / tDays * eDays;
 
-  // CPM Efetivo trava no negociado pra não exibir CPM "negativo" em over.
-  // Mesma lógica do backend (compute_metrics): se entregou MENOS que esperado,
-  // CPM fica no negociado e rentab=0; se entregou MAIS, CPM cai e rentab>0.
-  const cpmEf  = cpmNeg > 0 ? Math.min(viAll > 0 ? budgetProp / viAll * 1000 : 0, cpmNeg) : 0;
-  const cpc    = clks > 0 ? cpmEf / 1000 * (viAll / clks) : 0;
-  const rentab = cpmNeg > 0 ? (cpmNeg - cpmEf) / cpmNeg * 100 : 0;
+  // CPM Efetivo / Rentabilidade — espelha backend (main.py:4582-4590).
+  // Over-detection contra meta total (contracted+bonus) proporcional aos
+  // dias, MESMA baseline do pacing. Só rentabiliza se entregou ACIMA do
+  // pacing ideal. Sem isso o front rentabilizava quando viAll > contracted
+  // × eDays/tDays (ignorava o bonus), enquanto o pacing usa contracted+bonus
+  // → cliente via rentabilidade > 0 com pacing < 100%.
+  const expected = today > end ? totalNeg : (totalNeg > 0 && tDays > 0 ? totalNeg / tDays * eDays : 0);
+  const over     = viAll > expected;
+  const cpmEf    = cpmNeg > 0 ? (over && viAll > 0 ? budgetProp / viAll * 1000 : cpmNeg) : 0;
+  const cpc      = clks > 0 ? cpmEf / 1000 * (viAll / clks) : 0;
+  const rentab   = cpmNeg > 0 ? (cpmNeg - cpmEf) / cpmNeg * 100 : 0;
 
-  const expected = totalNeg * (eDays / tDays);
   const pac      = totalNeg > 0
     ? (today > end ? viAll / totalNeg * 100 : expected > 0 ? viAll / expected * 100 : 0)
     : 0;
