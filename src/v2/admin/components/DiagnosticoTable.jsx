@@ -11,7 +11,7 @@
 import { useState, useMemo } from "react";
 import { cn } from "../../../ui/cn";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
-import { localPartFromEmail, ecpmToneClass, formatDateRange } from "../lib/format";
+import { localPartFromEmail, ecpmToneClass, formatDateRange, ctrColorClass } from "../lib/format";
 import {
   STATUS_META,
   formatPctRow,
@@ -84,7 +84,7 @@ function Th({ children, align = "left", sortable = false, active = false, dir, o
       scope="col"
       className={cn(
         "sticky top-0 z-10 bg-canvas-deeper",
-        "px-2 py-2.5",
+        "px-1.5 py-2.5",
         "text-[10px] font-bold uppercase tracking-wider text-fg-subtle",
         "border-b border-border",
         "whitespace-nowrap",
@@ -116,7 +116,7 @@ function Td({ children, align = "left", className, tabular = false, title }) {
   return (
     <td
       className={cn(
-        "px-2 py-2.5",
+        "px-1.5 py-2.5",
         "text-xs text-fg",
         "border-b border-border/40",
         "whitespace-nowrap",
@@ -266,7 +266,7 @@ export function DiagnosticoTable({
           <table className="w-full text-left">
             <thead>
               <tr>
-                <Th align="center" {...headerProps("status")} className="w-6 px-2">Status</Th>
+                <Th align="center" {...headerProps("status")} className="w-6 px-1.5">Status</Th>
                 <Th align="left"  {...headerProps("client_name")}>Cliente</Th>
                 <Th align="left"  {...headerProps("campaign_name")}>Campanha</Th>
                 <Th align="left"  {...headerProps("cs_name")}>CS</Th>
@@ -280,6 +280,7 @@ export function DiagnosticoTable({
                 <Th align="right" {...headerProps("realTotalCost")}>Custo</Th>
                 <Th align="right" {...headerProps("techCostPct")}>Tech</Th>
                 <Th align="right" {...headerProps("viewability")}>View.</Th>
+                <Th align="right" {...headerProps("ctr")}>CTR</Th>
               </tr>
             </thead>
             <tbody>
@@ -327,7 +328,7 @@ export function DiagnosticoTable({
                       "focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-signature"
                     )}
                   >
-                    <Td align="center" className="w-6 px-2">
+                    <Td align="center" className="w-6 px-1.5">
                       <StatusDot status={r.status} frontImbalance={r.front_imbalance} />
                     </Td>
                     <Td align="left" title={r.client_name || undefined}>
@@ -340,14 +341,12 @@ export function DiagnosticoTable({
                         })()}
                       </span>
                     </Td>
-                    <Td align="left" className="max-w-[200px]">
+                    <Td align="left" className="max-w-[180px]">
                       <div className="flex items-center gap-1.5 min-w-0">
                         <span className="truncate" title={r.campaign_name}>
                           {(() => {
                             const name = r.campaign_name || "—";
-                            // Trunca em 20 chars pra enxutar a coluna —
-                            // nome completo fica no tooltip do span.
-                            return name.length > 20 ? name.slice(0, 19) + "…" : name;
+                            return name.length > 18 ? name.slice(0, 17) + "…" : name;
                           })()}
                         </span>
                         {r.has_abs && (
@@ -476,6 +475,14 @@ export function DiagnosticoTable({
                       title="Viewability: <60% vermelho · 60–70% amarelo · >70% verde"
                     >
                       {formatPctRow(r.viewability, 1)}
+                    </Td>
+                    <Td
+                      align="right"
+                      tabular
+                      className={cn("font-semibold", ctrColorClass(r.ctr))}
+                      title="CTR (clicks / impressões totais): <0,50% vermelho · 0,50–0,65% amarelo · ≥0,65% verde"
+                    >
+                      {formatPctRow(r.ctr, 2)}
                     </Td>
                   </tr>
                 );

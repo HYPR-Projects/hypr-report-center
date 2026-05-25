@@ -528,6 +528,11 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
         // separado via spread de displayMetrics.
         totalImpressions: c.display_impressions ?? null,
         clicks:           c.display_clicks      ?? null,
+        // CTR = clicks / impressões totais × 100. Mesmo cálculo do export
+        // (diagnosticoExport.js) — mantém consistência entre tabela e XLSX.
+        ctr: (c.display_impressions && c.display_impressions > 0 && c.display_clicks)
+          ? (c.display_clicks / c.display_impressions) * 100
+          : null,
         tech_status: classifyTechCostStatus(displayFin.techCostPct, !!c.display_has_abs, displayProjTech),
       });
     }
@@ -568,6 +573,10 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
         totalImpressions:    c.video_impressions            ?? null,
         viewableImpressions: c.video_viewable_impressions   ?? null,
         clicks:              c.video_clicks                 ?? null,
+        // CTR — clicks raros em video mas existem. Mesma fórmula do Display.
+        ctr: (c.video_impressions && c.video_impressions > 0 && c.video_clicks)
+          ? (c.video_clicks / c.video_impressions) * 100
+          : null,
         tech_status: classifyTechCostStatus(videoFin.techCostPct, !!c.video_has_abs, videoProjTech),
       });
     }
