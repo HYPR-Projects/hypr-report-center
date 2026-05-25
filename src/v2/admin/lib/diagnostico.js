@@ -225,7 +225,8 @@ export function deriveMediaMetrics({
   pacing,            // display_pacing OU video_pacing
   delivered,         // display_viewable_impressions OU video_viewable_completions
   expectedToDate,    // display_expected_impressions OU video_expected_completions
-  startDate,         // start_date ISO
+  startDate,         // start_date contratual ISO (fallback)
+  actualStartDate,   // <media>_actual_start_date ISO (preferido) — primeiro dia que a frente entregou
   endDate,           // end_date ISO (NÃO usar early_end_date — pacing é vs contrato original)
   impressions,       // display_impressions OU video_impressions (denom. da viewability)
   lastDayDelivered,  // display_last_day_viewable OU video_last_day_completions (opcional, futuro)
@@ -233,23 +234,19 @@ export function deriveMediaMetrics({
   // Sem mídia? retorna sentinel "vazio".
   if (pacing == null && !delivered && !expectedToDate) return null;
 
-  const s = parseDateUTC(startDate);
+  // Runway baseado no actual_start da frente — espelha o backend
+  // (main.py:5215 `pacing_expected_to_date` agora aceita actual_start).
+  // Frente que atrasou pra começar usa seu próprio start, não o contratual.
+  // Fallback pra startDate quando actual_start ausente (frente não entregou).
+  const s = parseDateUTC(actualStartDate || startDate);
   const e = parseDateUTC(endDate);
   if (!s || !e) return null;
 
   const today = todayUTC();
-  // Janela calendar — EXATAMENTE igual ao backend (main.py linha 5141-5148
-  // `pacing_expected_to_date`) e ao frontend canônico (shared/aggregations.js
-  // linha 342-343 `computeMediaPacing`):
-  //
-  //   total_days   = (end - start) + 1            ← inclui o end_date
-  //   elapsed_days = (today - start)              ← SEM +1 (não inclui hoje)
-  //
-  // Esse alinhamento é crítico — se elapsedRatio aqui diferir do que o
-  // backend usou pra calcular `expected_to_date`, a reconstrução do
-  // negotiated (= expected/elapsedRatio) fica errada, e por consequência
-  // o % entregue (= delivered/negotiated) também. Bug visível: dava
-  // 154% aqui vs 139% no report cliente.
+  // Janela: total_days e elapsed_days baseados em `s` (actual_start_date
+  // da frente quando disponível). Esse alinhamento é crítico — se
+  // elapsedRatio aqui diferir do que o backend usou pra calcular
+  // `expected_to_date`, a reconstrução do negotiated fica errada.
   const totalDays   = daysBetween(s, e) + 1;
   const elapsedDaysRaw = daysBetween(s, today);
   const elapsedDays = today > e ? totalDays : Math.max(0, elapsedDaysRaw);
@@ -497,13 +494,18 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
       delivered:        c.display_viewable_impressions,
       expectedToDate:   c.display_expected_impressions,
       startDate:        c.start_date,
+      actualStartDate:  c.display_actual_start_date,
       endDate:          c.end_date,
       impressions:      c.d_admin_impressions,
       lastDayDelivered: c.display_yesterday_viewable,
     });
     if (displayMetrics && displayMetrics.status) {
       const displayFin = computeFinancials(c, "display");
-      const multiplier = dayProjMultiplier(c.start_date, c.end_date);
+      // Multiplier de projeção alinhado com o runway da frente (actual_start
+      // quando disponível). Sem isso, projeção de tech cost usaria janela
+      // calendar enquanto o pacing já está em janela actual_start — gerando
+      // % projetada inconsistente com a Projetada de pacing.
+      const multiplier = dayProjMultiplier(c.display_actual_start_date || c.start_date, c.end_date);
       const displayProjTech = displayFin.techCostPct != null && multiplier
         ? displayFin.techCostPct * multiplier
         : null;
@@ -545,13 +547,14 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
       delivered:        c.video_viewable_completions,
       expectedToDate:   c.video_expected_completions,
       startDate:        c.start_date,
+      actualStartDate:  c.video_actual_start_date,
       endDate:          c.end_date,
       impressions:      c.v_admin_impressions,
       lastDayDelivered: c.video_yesterday_completions,
     });
     if (videoMetrics && videoMetrics.status) {
       const videoFin = computeFinancials(c, "video");
-      const multiplier = dayProjMultiplier(c.start_date, c.end_date);
+      const multiplier = dayProjMultiplier(c.video_actual_start_date || c.start_date, c.end_date);
       const videoProjTech = videoFin.techCostPct != null && multiplier
         ? videoFin.techCostPct * multiplier
         : null;

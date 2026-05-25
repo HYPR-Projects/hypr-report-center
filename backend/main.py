@@ -4931,7 +4931,18 @@ def query_campaigns_list():
         unified AS (
             SELECT
                 short_token,
-                MIN(IF(media_type='VIDEO', date, NULL))            AS v_actual_start_date,
+                -- Actual start dates: primeiro dia que cada frente realmente
+                -- entregou. Usados como base do pacing (em vez do start
+                -- contratual da campanha) — frente que atrasa não é punida
+                -- pelos dias em que não rodou. Per-tactic é necessário porque
+                -- O2O e OOH podem começar em dias diferentes mesmo dentro
+                -- da mesma mídia.
+                MIN(IF(media_type='VIDEO', date, NULL))              AS v_actual_start_date,
+                MIN(IF(media_type='DISPLAY', date, NULL))            AS d_actual_start_date,
+                MIN(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)_O2O(_|$)'), date, NULL)) AS d_o2o_actual_start_date,
+                MIN(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)_OOH(_|$)'), date, NULL)) AS d_ooh_actual_start_date,
+                MIN(IF(media_type='VIDEO'   AND REGEXP_CONTAINS(line_name, r'(?i)_O2O(_|$)'), date, NULL)) AS v_o2o_actual_start_date,
+                MIN(IF(media_type='VIDEO'   AND REGEXP_CONTAINS(line_name, r'(?i)_OOH(_|$)'), date, NULL)) AS v_ooh_actual_start_date,
                 COUNT(DISTINCT IF(media_type='VIDEO', date, NULL)) AS v_days_with_delivery,
                 SUM(IF(media_type='VIDEO' AND impressions > 0,
                         video_view_100_complete * (viewable_impressions / impressions),
@@ -5082,6 +5093,9 @@ def query_campaigns_list():
             c.bonus_o2o_video,        c.bonus_ooh_video,
             u.v_actual_start_date,    u.v_days_with_delivery,  u.v_viewable_completions,
             u.v_viewable_impressions,
+            u.d_actual_start_date,
+            u.d_o2o_actual_start_date, u.d_ooh_actual_start_date,
+            u.v_o2o_actual_start_date, u.v_ooh_actual_start_date,
             u.d_days_with_delivery,   u.d_viewable_impressions,
             u.d_o2o_viewable_impressions, u.d_ooh_viewable_impressions,
             u.v_o2o_viewable_completions, u.v_ooh_viewable_completions,
@@ -5140,9 +5154,19 @@ def query_campaigns_list():
         v_days_delivery   = int(r["v_days_with_delivery"]     or 0)
         v_viewable_comp   = float(r["v_viewable_completions"] or 0)
         v_viewable_impr   = float(r["v_viewable_impressions"] or 0)
-        v_actual_start    = r["v_actual_start_date"]
-        if v_actual_start and hasattr(v_actual_start, "date"):
-            v_actual_start = v_actual_start.date()
+        # Parse actual_start_date helper — BQ pode devolver datetime ou date.
+        # Fallback null preservado (None significa "frente nunca entregou").
+        def _coerce_date(val):
+            if val is None:
+                return None
+            return val.date() if hasattr(val, "date") else val
+
+        v_actual_start    = _coerce_date(r["v_actual_start_date"])
+        d_actual_start    = _coerce_date(r["d_actual_start_date"])
+        d_o2o_actual_start = _coerce_date(r["d_o2o_actual_start_date"])
+        d_ooh_actual_start = _coerce_date(r["d_ooh_actual_start_date"])
+        v_o2o_actual_start = _coerce_date(r["v_o2o_actual_start_date"])
+        v_ooh_actual_start = _coerce_date(r["v_ooh_actual_start_date"])
         d_days_delivery   = int(r["d_days_with_delivery"]     or 0)
         d_viewable_impr   = float(r["d_viewable_impressions"] or 0)
 
@@ -5177,16 +5201,23 @@ def query_campaigns_list():
         # NÃO alinhei aqui o per-row pacing (campo `pacing` em totals),
         # que é consumido pelo Resumo por mídia + Detalhamento e ainda
         # usa days_with_delivery. Próximo PR.
-        # Retorna o "esperado até hoje" segundo o pacing canônico calendar-based.
+        # Retorna o "esperado até hoje" pra base do pacing.
         # delivered/expected × 100 dá a % de pacing — exposta como métrica
         # calculada no payload. expected também vai cru pro front pra permitir
         # agregação correta (Σdelivered / Σexpected) por owner/cliente em vez
         # de média de razões (que distorce por amostra pequena).
-        def pacing_expected_to_date(negotiated, sd, ed):
+        #
+        # `actual_start` opcional: quando a frente atrasou pra começar, usar
+        # o primeiro dia de entrega real evita penalizar a frente pelos dias
+        # em que não rodou. Fallback pra `sd` (start contratual) quando a
+        # frente ainda não entregou nada — nesse caso delivered=0 e o pacing
+        # será 0% independente do start usado.
+        def pacing_expected_to_date(negotiated, sd, ed, actual_start=None):
             if negotiated <= 0 or not sd or not ed:
                 return None
-            s = sd.date() if hasattr(sd, "date") else sd
+            s_camp = sd.date() if hasattr(sd, "date") else sd
             e = ed.date() if hasattr(ed, "date") else ed
+            s = actual_start or s_camp
             today = date.today()
             total_days = (e - s).days + 1
             if total_days <= 0:
@@ -5198,8 +5229,8 @@ def query_campaigns_list():
 
         d_clicks = float(r["d_clicks"] or 0)
         v_clicks = float(r["v_clicks"] or 0)
-        d_expected = pacing_expected_to_date(d_neg, start_date, end_date)
-        v_expected = pacing_expected_to_date(v_neg, start_date, end_date)
+        d_expected = pacing_expected_to_date(d_neg, start_date, end_date, d_actual_start)
+        v_expected = pacing_expected_to_date(v_neg, start_date, end_date, v_actual_start)
 
         # Negociado por tactic (contrato + bonus) — denominador do pacing per-frente.
         d_o2o_neg = float(r["contracted_o2o_display"] or 0) + float(r["bonus_o2o_display"] or 0)
@@ -5216,10 +5247,11 @@ def query_campaigns_list():
         # Pacing per-frente. Emite só quando há contrato pra aquela frente
         # — sem contrato (None) o front esconde a sub-barra (sem ruído).
         # Com contrato + zero delivery → 0.0% (sinaliza "vendido, não iniciou").
-        d_o2o_expected = pacing_expected_to_date(d_o2o_neg, start_date, end_date)
-        d_ooh_expected = pacing_expected_to_date(d_ooh_neg, start_date, end_date)
-        v_o2o_expected = pacing_expected_to_date(v_o2o_neg, start_date, end_date)
-        v_ooh_expected = pacing_expected_to_date(v_ooh_neg, start_date, end_date)
+        # Usa actual_start_date per-tactic — frente atrasada não é penalizada.
+        d_o2o_expected = pacing_expected_to_date(d_o2o_neg, start_date, end_date, d_o2o_actual_start)
+        d_ooh_expected = pacing_expected_to_date(d_ooh_neg, start_date, end_date, d_ooh_actual_start)
+        v_o2o_expected = pacing_expected_to_date(v_o2o_neg, start_date, end_date, v_o2o_actual_start)
+        v_ooh_expected = pacing_expected_to_date(v_ooh_neg, start_date, end_date, v_ooh_actual_start)
         display_pacing_o2o = round(d_o2o_viewable / d_o2o_expected * 100, 1) if d_o2o_expected and d_o2o_expected > 0 else None
         display_pacing_ooh = round(d_ooh_viewable / d_ooh_expected * 100, 1) if d_ooh_expected and d_ooh_expected > 0 else None
         video_pacing_o2o   = round(v_o2o_viewable / v_o2o_expected * 100, 1) if v_o2o_expected and v_o2o_expected > 0 else None
@@ -5258,6 +5290,17 @@ def query_campaigns_list():
         if display_ctr    is not None: entry["display_ctr"]    = display_ctr
         if video_ctr      is not None: entry["video_ctr"]      = video_ctr
         if video_vtr      is not None: entry["video_vtr"]      = video_vtr
+
+        # Actual start dates — usados pelo admin diagnostic pra reconstruir
+        # negotiated/ideal_diaria a partir do mesmo runway que o backend usou
+        # pro pacing. Sem isso, o front recalculava com camp.start_date e
+        # divergia do display_pacing/video_pacing que o backend já emitiu.
+        if d_actual_start: entry["display_actual_start_date"] = d_actual_start.isoformat()
+        if v_actual_start: entry["video_actual_start_date"]   = v_actual_start.isoformat()
+        if d_o2o_actual_start: entry["display_o2o_actual_start_date"] = d_o2o_actual_start.isoformat()
+        if d_ooh_actual_start: entry["display_ooh_actual_start_date"] = d_ooh_actual_start.isoformat()
+        if v_o2o_actual_start: entry["video_o2o_actual_start_date"]   = v_o2o_actual_start.isoformat()
+        if v_ooh_actual_start: entry["video_ooh_actual_start_date"]   = v_ooh_actual_start.isoformat()
 
         # Campos brutos pra agregação correta no frontend. CTR/VTR/Pacing
         # são razões — agregar via "média de razões por campanha" infla VTR
