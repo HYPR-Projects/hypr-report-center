@@ -252,14 +252,16 @@ if [ -n "$PMP_SCHEDULER_SECRET" ] && [ -n "$XANDR_CURATE_USER" ]; then
   SCHEDULER_SCHEDULE="0 4 * * *"
   SCHEDULER_TZ="America/Sao_Paulo"
 
+  # Delete + create em vez de branchar create/update: o flag de headers mudou
+  # de nome entre os dois (`--headers` no create, `--update-headers` no update)
+  # no gcloud recente, e recriar do zero é mais simples que manter os dois caminhos.
   if gcloud scheduler jobs describe "$SCHEDULER_JOB" \
         --location="$REGION" --project=site-hypr >/dev/null 2>&1; then
-    SCHEDULER_OP="update"
-  else
-    SCHEDULER_OP="create"
+    gcloud scheduler jobs delete "$SCHEDULER_JOB" \
+      --location="$REGION" --project=site-hypr --quiet >/dev/null
   fi
 
-  gcloud scheduler jobs "$SCHEDULER_OP" http "$SCHEDULER_JOB" \
+  gcloud scheduler jobs create http "$SCHEDULER_JOB" \
     --location="$REGION" \
     --project=site-hypr \
     --schedule="$SCHEDULER_SCHEDULE" \
@@ -271,7 +273,7 @@ if [ -n "$PMP_SCHEDULER_SECRET" ] && [ -n "$XANDR_CURATE_USER" ]; then
     --attempt-deadline=600s \
     --description="Sync diario Xandr Curate -> pmp_lines_enriched (v2)" \
     >/dev/null
-  echo "  ✓ Job ${SCHEDULER_OP}d ($SCHEDULER_SCHEDULE $SCHEDULER_TZ → $SCHEDULER_URI)"
+  echo "  ✓ Job recriado ($SCHEDULER_SCHEDULE $SCHEDULER_TZ → $SCHEDULER_URI)"
 fi
 
 # ── 6. Output final ──────────────────────────────────────────────────────────
