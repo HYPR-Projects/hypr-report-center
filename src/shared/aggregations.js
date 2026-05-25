@@ -229,7 +229,12 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp, chec
     : (tactic === "O2O" ? (src.o2o_display_budget || 0) : (src.ooh_display_budget || 0));
   const cpmNeg = src.deal_cpm_amount || 0;
 
-  const [sy, sm, sd] = camp.start_date.split("-").map(Number);
+  // Start da frente: prioriza actual_start_date do row (primeiro dia que
+  // a frente realmente entregou). Fallback pra camp.start_date quando a
+  // frente ainda não entregou nada — nesse caso o pacing vai ser 0%
+  // porque viAll=0, então a escolha do start não afeta o resultado.
+  const startISO = rows[0]?.actual_start_date || camp.start_date;
+  const [sy, sm, sd] = startISO.split("-").map(Number);
   const [ey, em, ed] = camp.end_date.split("-").map(Number);
   const start = new Date(sy, sm - 1, sd);
   const end   = new Date(ey, em - 1, ed);
@@ -329,36 +334,33 @@ export const computeVideoKpis = ({ rows, detail, tactic, checklist }) => {
  *   "Baseado na média diária de entrega até agora, qual % do contrato
  *    a campanha vai entregar até o final?"
  *
- * Escopo: SOMENTE Visão Geral. As abas Display e Video continuam usando
- * cálculo per-frente (computeDisplayKpis / computeVideoKpis), que olha
- * cada tática (O2O/OOH) separadamente com sua própria janela de entrega.
- *
- * Fórmula (calendar-elapsed, runway = campanha inteira):
- *     expected = neg_total × elapsed_camp / total_camp
- *     pacing   = delivered_total / expected × 100
+ * Fórmula (per-frente, runway = actual_start_date da frente):
+ *     expected_frente = neg_frente × elapsed_frente / total_frente
+ *     pacing = Σ delivered_frente / Σ expected_frente × 100
  *
  *   onde:
- *     neg_total      = Σ (contracted_<tactic>_<media> + bonus_<tactic>_<media>)
- *                      somando O2O+OOH (campos denormalizados — pega de rows[0])
- *     delivered_total = Σ entregue de cada row (O2O+OOH)
- *     elapsed_camp   = Math.floor((today - camp.start_date) / 1d), capado em total_camp
- *     total_camp     = (end - start) + 1
+ *     neg_frente     = contracted_<tactic>_<media> + bonus_<tactic>_<media>
+ *     total_frente   = (end - actual_start_frente) + 1
+ *     elapsed_frente = today - actual_start_frente (capado em total_frente)
  *
- * Por que runway da campanha (e não actual_start por frente)?
- *   Quando uma frente atrasa (ex: Display começa 6 dias depois do start
- *   contratual), usar actual_start comprime o runway pela metade e
- *   superinflada o pacing — Display aparecia 313% quando o esperado
- *   linear era 150%. Na Visão Geral o cliente quer ler "estamos no
- *   ritmo do contrato?" — e a régua é a campanha como um todo.
+ * Cada frente (O2O/OOH) usa seu próprio `actual_start_date` (primeiro dia
+ * em que a frente realmente entregou — vem do backend em cada row). Se a
+ * frente tem contrato mas ainda não entregou (notStarted), cai pro start
+ * contratual da campanha — delivered=0 garante pacing=0% nesse caso.
+ *
+ * Quando tactic="ALL", soma expected per-frente (numerador e denominador
+ * agregam corretamente — cada frente com sua janela).
+ *
+ * Mantém consistência com o backend per-row (main.py:4516,4565 usa
+ * actual_start_date pra row_total_days/row_elapsed_days). Antes do fix,
+ * Visão Geral usava camp.start_date e divergia da aba Video — bug visível
+ * quando a frente começava com atraso (Video OOH 117,8% vs Overview 98,2%).
  *
  * @param {Array} rows         totals filtrados por media_type
  * @param {object} camp        data.campaign (precisa de start_date e end_date)
  * @param {"DISPLAY"|"VIDEO"} mediaType
  * @param {"ALL"|"O2O"|"OOH"} tactic  Quando "O2O"/"OOH", restringe NEG e
- *   ENTREGUE só a essa frente. Crítico quando rows já foi filtrado por
- *   tactic — sem esse arg, neg seguiria usando contratado O2O+OOH (campos
- *   denormalizados em rows[0]) e pacing seria entregue_X / contrato_total,
- *   matematicamente errado.
+ *   ENTREGUE só a essa frente.
  * @returns {number} pacing em % (ex.: 87.4 = 87.4%)
  */
 export function computeMediaPacing(rows, camp, mediaType, tactic = "ALL") {
@@ -366,36 +368,50 @@ export function computeMediaPacing(rows, camp, mediaType, tactic = "ALL") {
   rows = rows || [];
 
   const isVideo = mediaType === "VIDEO";
-  const [sy, sm, sd] = camp.start_date.split("-").map(Number);
   const [ey, em, ed] = camp.end_date.split("-").map(Number);
-  const start = new Date(sy, sm - 1, sd);
   const end   = new Date(ey, em - 1, ed);
   const now   = new Date();
 
-  const tDays = (end - start) / 864e5 + 1;
-  const eDays = now < start ? 0 : now > end ? tDays : Math.floor((now - start) / 864e5);
-  if (tDays <= 0 || eDays <= 0) return 0;
+  // Parse ISO yyyy-mm-dd → Date (midnight local). Fallback pra
+  // camp.start_date quando a frente não tem actual_start_date (frente
+  // ainda não entregou nada).
+  const parseStart = (iso) => {
+    const src = iso || camp.start_date;
+    const [y, m, d] = src.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  };
 
-  // Negociado (contratado + bônus). Campos *_<tactic>_<media>_<unit> são
-  // denormalizados — todas as rows carregam o mesmo valor da campanha,
-  // basta ler de rows[0]. Quando tactic="ALL", soma O2O+OOH; quando é
-  // "O2O" ou "OOH", lê só aquela frente.
+  // Negociado (contratado + bônus) — denormalizado em rows[0].
   const r0 = rows[0] || {};
-  const includeO2O = tactic === "ALL" || tactic === "O2O";
-  const includeOOH = tactic === "ALL" || tactic === "OOH";
   const negO2O = isVideo
     ? (r0.contracted_o2o_video_completions   || 0) + (r0.bonus_o2o_video_completions   || 0)
     : (r0.contracted_o2o_display_impressions || 0) + (r0.bonus_o2o_display_impressions || 0);
   const negOOH = isVideo
     ? (r0.contracted_ooh_video_completions   || 0) + (r0.bonus_ooh_video_completions   || 0)
     : (r0.contracted_ooh_display_impressions || 0) + (r0.bonus_ooh_display_impressions || 0);
-  const negTotal = (includeO2O ? negO2O : 0) + (includeOOH ? negOOH : 0);
 
-  // Filtra delivered por tactic INTERNAMENTE. Permite passar rows do
-  // media inteiro + tactic="OOH" pra calcular pacing dessa frente
-  // mesmo sem delivery row da tactic (entrega não iniciada → 0%).
-  // Callers que já filtram externamente continuam funcionando — o
-  // re-filter é no-op.
+  // Calcula expected pra UMA frente usando o actual_start dela.
+  // Quando a frente atrasa, runway = (end - actual_start), refletindo o
+  // ritmo real esperado da frente (não punindo dias em que ela não rodou).
+  const expectedForFrente = (frenteRow, neg) => {
+    if (neg <= 0) return 0;
+    const start = parseStart(frenteRow?.actual_start_date);
+    const tDays = (end - start) / 864e5 + 1;
+    const eDays = now < start ? 0 : now > end ? tDays : Math.floor((now - start) / 864e5);
+    if (tDays <= 0 || eDays <= 0) return 0;
+    return neg * eDays / tDays;
+  };
+
+  // Localiza a row de cada frente (denormalizado por tactic_type).
+  const o2oRow = rows.find((r) => r.tactic_type === "O2O");
+  const oohRow = rows.find((r) => r.tactic_type === "OOH");
+
+  const includeO2O = tactic === "ALL" || tactic === "O2O";
+  const includeOOH = tactic === "ALL" || tactic === "OOH";
+  const totalExpected = (includeO2O ? expectedForFrente(o2oRow, negO2O) : 0)
+                      + (includeOOH ? expectedForFrente(oohRow, negOOH) : 0);
+
+  // Delivered: filtra por tactic e soma.
   const matchingRows = tactic === "ALL"
     ? rows
     : rows.filter((r) => r.tactic_type === tactic);
@@ -403,8 +419,7 @@ export function computeMediaPacing(rows, camp, mediaType, tactic = "ALL") {
     ? (r.viewable_video_view_100_complete || r.completions || 0)
     : (r.viewable_impressions || 0)), 0);
 
-  const expected = negTotal * (eDays / tDays);
-  return expected > 0 ? (totalDelivered / expected) * 100 : 0;
+  return totalExpected > 0 ? (totalDelivered / totalExpected) * 100 : 0;
 }
 
 
