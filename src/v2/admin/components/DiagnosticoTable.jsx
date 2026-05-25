@@ -84,7 +84,7 @@ function Th({ children, align = "left", sortable = false, active = false, dir, o
       scope="col"
       className={cn(
         "sticky top-0 z-10 bg-canvas-deeper",
-        "px-1.5 py-2.5",
+        "px-2 py-2.5",
         "text-[10px] font-bold uppercase tracking-wider text-fg-subtle",
         "border-b border-border",
         "whitespace-nowrap",
@@ -116,7 +116,7 @@ function Td({ children, align = "left", className, tabular = false, title }) {
   return (
     <td
       className={cn(
-        "px-1.5 py-2.5",
+        "px-2 py-2.5",
         "text-xs text-fg",
         "border-b border-border/40",
         "whitespace-nowrap",
@@ -263,24 +263,28 @@ export function DiagnosticoTable({
 
       <div className="rounded-xl border border-border bg-surface overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left">
+          {/* table-fixed + larguras explícitas por coluna pra ritmo visual
+              consistente — sem table-fixed o browser distribui excesso de
+              forma desigual e a grade fica visualmente "respirando" demais
+              entre as colunas numéricas. */}
+          <table className="w-full text-left table-fixed">
             <thead>
               <tr>
-                <Th align="center" {...headerProps("status")} className="w-6 px-1.5">Status</Th>
-                <Th align="left"  {...headerProps("client_name")}>Cliente</Th>
-                <Th align="left"  {...headerProps("campaign_name")}>Campanha</Th>
-                <Th align="left"  {...headerProps("cs_name")}>CS</Th>
-                <Th align="left"  {...headerProps("start_date")}>Período</Th>
-                <Th align="right" {...headerProps("totalEntreguePct")}>Entregue</Th>
-                <Th align="right" {...headerProps("projetadaPct")}>Projetada</Th>
-                <Th align="right" {...headerProps("idealDiaria")}>Ideal/Dia</Th>
-                <Th align="right" {...headerProps("mediaDiariaAtual")}>Média/Dia</Th>
-                <Th align="right" {...headerProps("deliveredD1")}>Ontem (D-1)</Th>
-                <Th align="right" {...headerProps("realEcpm")}>CPM</Th>
-                <Th align="right" {...headerProps("realTotalCost")}>Custo</Th>
-                <Th align="right" {...headerProps("techCostPct")}>Tech</Th>
-                <Th align="right" {...headerProps("viewability")}>View.</Th>
-                <Th align="right" {...headerProps("ctr")}>CTR</Th>
+                <Th align="center" {...headerProps("status")} className="w-10 px-2">Status</Th>
+                <Th align="left"  {...headerProps("client_name")}    className="w-[9%]">Cliente</Th>
+                <Th align="left"  {...headerProps("campaign_name")}  className="w-[13%]">Campanha</Th>
+                <Th align="left"  {...headerProps("cs_name")}        className="w-[6%]">CS</Th>
+                <Th align="left"  {...headerProps("start_date")}     className="w-[8%]">Período</Th>
+                <Th align="right" {...headerProps("totalEntreguePct")} className="w-[6%]">Entregue</Th>
+                <Th align="right" {...headerProps("projetadaPct")}     className="w-[6%]">Projetada</Th>
+                <Th align="right" {...headerProps("idealDiaria")}      className="w-[6%]">Ideal/Dia</Th>
+                <Th align="right" {...headerProps("mediaDiariaAtual")} className="w-[6%]">Média/Dia</Th>
+                <Th align="right" {...headerProps("deliveredD1")}      className="w-[9%]">Ontem (D-1)</Th>
+                <Th align="right" {...headerProps("realEcpm")}         className="w-[6%]">CPM</Th>
+                <Th align="right" {...headerProps("realTotalCost")}    className="w-[8%]">Custo</Th>
+                <Th align="right" {...headerProps("techCostPct")}      className="w-[5%]">Tech</Th>
+                <Th align="right" {...headerProps("viewability")}      className="w-[6%]">View.</Th>
+                <Th align="right" {...headerProps("ctr")}              className="w-[6%]">CTR</Th>
               </tr>
             </thead>
             <tbody>
@@ -328,7 +332,7 @@ export function DiagnosticoTable({
                       "focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-signature"
                     )}
                   >
-                    <Td align="center" className="w-6 px-1.5">
+                    <Td align="center" className="w-10 px-2">
                       <StatusDot status={r.status} frontImbalance={r.front_imbalance} />
                     </Td>
                     <Td align="left" title={r.client_name || undefined}>
@@ -341,12 +345,12 @@ export function DiagnosticoTable({
                         })()}
                       </span>
                     </Td>
-                    <Td align="left" className="max-w-[180px]">
+                    <Td align="left" className="max-w-[200px]">
                       <div className="flex items-center gap-1.5 min-w-0">
                         <span className="truncate" title={r.campaign_name}>
                           {(() => {
                             const name = r.campaign_name || "—";
-                            return name.length > 18 ? name.slice(0, 17) + "…" : name;
+                            return name.length > 20 ? name.slice(0, 19) + "…" : name;
                           })()}
                         </span>
                         {r.has_abs && (
