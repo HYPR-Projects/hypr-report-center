@@ -466,14 +466,16 @@ export function CampaignDrawer({
         />
         <DrawerBody>
           {/* Badge "agrupado" — sinaliza que ações como Loom/Logo/Survey
-              continuam afetando ESTE token, mas o report público mostra
-              dados unificados de todos os membros do grupo. */}
+              continuam afetando ESTE token, mas o cliente tem acesso aos
+              outros meses via o seletor no header. "Abrir Report" agora
+              entra direto NESTE mês (não mais no active_token), então
+              admin não precisa navegar pra ver os dados do token clicado. */}
           {merge_id && (
             <div className="drawer-section-rise mb-4 px-3 py-2 rounded-lg bg-signature/8 border border-signature/30 flex items-center gap-2">
               <span className="text-signature shrink-0">{ICON.merge}</span>
               <p className="text-xs text-fg-muted leading-snug">
                 <span className="text-fg font-semibold">Agrupado</span> com outros tokens deste cliente.
-                O link do report mostra a visão unificada.
+                O link abre neste mês — cliente alterna entre meses no seletor do header.
               </p>
             </div>
           )}
