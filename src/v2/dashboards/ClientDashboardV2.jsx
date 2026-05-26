@@ -29,7 +29,7 @@ import "../../ui/typography";
 
 import { getCampaign, getShareId, getCachedShareId } from "../../lib/api";
 import { gaPageView } from "../../shared/analytics";
-import { computeAggregates } from "../../shared/aggregations";
+import { computeAggregates, extractAudience, getCreativeLineKey } from "../../shared/aggregations";
 import { useLoadingTask } from "../../shared/loading";
 import {
   readRangeFromUrl,
@@ -50,6 +50,7 @@ import {
 
 import { TopBarV2 } from "../components/TopBarV2";
 import { CampaignHeaderV2 } from "../components/CampaignHeaderV2";
+import { GlobalDataFilterBarV2 } from "../components/GlobalDataFilterBarV2";
 import { useReportTracking } from "../hooks/useReportTracking";
 import { ReportTrackingProvider } from "../contexts/ReportTrackingContext";
 import { DateRangeFilterV2 } from "../components/DateRangeFilterV2";
@@ -256,10 +257,17 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   const [mainCore, setMainCoreState] = useState(() => readCoreFromUrl());
   const [view, setViewState] = useState(() => readViewFromUrl());
 
-  const [displayLines, setDisplayLines] = useState([]);
-  const [videoLines, setVideoLines] = useState([]);
-  const [displayCreativeLines, setDisplayCreativeLines] = useState([]);
-  const [videoCreativeLines, setVideoCreativeLines] = useState([]);
+  // Filtros globais — compartilhados entre Visão Geral, Display e Video.
+  // Substituem o estado per-tab (displayLines/videoLines/displayCreativeLines/
+  // videoCreativeLines) que existia antes. Aplicados upstream em
+  // computeAggregates via creativeFilters, então todas as 3 abas vêem
+  // aggregates já recortados. Base de Dados NÃO usa esses — tem seus
+  // próprios filtros internos (local ao DataTableV2).
+  const [audiences, setAudiences] = useState([]);
+  const [lineNames, setLineNames] = useState([]);
+  const [creativeLines, setCreativeLines] = useState([]);
+  const [sizes, setSizes] = useState([]);
+  const [formats, setFormats] = useState([]);
 
   // Hook de tracking — moved up pra que `trackCta` esteja disponível
   // nos setters dos filtros logo abaixo. Hook tem skip-admin interno e
@@ -454,13 +462,64 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   // (consumido por todas as outras tabs) e um filtrado por core (só pro
   // OverviewV2). useMemo separa o custo — quando o user mexe só no core,
   // só `aggregatesOverview` recalcula.
+  // creativeFilters memoizado: agrupa os 5 filtros num único objeto que
+  // entra em computeAggregates. useMemo evita criar nova referência a cada
+  // render quando os arrays não mudaram (importante porque computeAggregates
+  // é caro e recomputa quando creativeFilters muda por identity).
+  const creativeFilters = useMemo(
+    () => ({ audiences, lineNames, sizes, formats, creativeLines }),
+    [audiences, lineNames, sizes, formats, creativeLines],
+  );
+
+  // Options dos filtros — derivadas do data.detail BRUTO (não-filtrado).
+  // Importante usar a fonte crua: se derivássemos do aggregates.detail
+  // (que já é filtrado), as options encolheriam conforme o usuário
+  // filtra, virando experiência ruim (não consegue ADICIONAR um valor
+  // depois de filtrar). Ignora rows com line_name de survey/_(CONTROLE
+  // |EXPOSTO) — backend já filtra mas defensive na ponta também.
+  const filterOptions = useMemo(() => {
+    if (!data?.detail) {
+      return { audiences: [], lines: [], creativeLines: [], sizes: [], formats: [] };
+    }
+    const noSurvey = (r) =>
+      !/survey/i.test(r.line_name || "") &&
+      !/survey/i.test(r.creative_name || "");
+    const aud = new Set();
+    const lin = new Set();
+    const cre = new Set();
+    const siz = new Set();
+    const fmt = new Set();
+    for (const r of data.detail) {
+      if (!noSurvey(r)) continue;
+      const a = extractAudience(r.line_name);
+      if (a && a !== "N/A") aud.add(a);
+      if (r.line_name) lin.add(r.line_name);
+      const ck = getCreativeLineKey(r);
+      if (ck && ck !== "N/A") cre.add(ck);
+      if (r.creative_size) siz.add(r.creative_size);
+      if (r.media_type) fmt.add(r.media_type);
+    }
+    return {
+      audiences: [...aud].sort((a, b) => a.localeCompare(b)),
+      lines: [...lin].sort((a, b) => a.localeCompare(b)),
+      creativeLines: [...cre].sort((a, b) => a.localeCompare(b)),
+      sizes: [...siz].sort((a, b) => {
+        const na = parseInt(a, 10);
+        const nb = parseInt(b, 10);
+        if (!Number.isNaN(na) && !Number.isNaN(nb) && na !== nb) return na - nb;
+        return a.localeCompare(b);
+      }),
+      formats: [...fmt].sort((a, b) => a.localeCompare(b)),
+    };
+  }, [data?.detail]);
+
   const aggregates = useMemo(
-    () => (data ? computeAggregates(data, mainRange) : null),
-    [data, mainRange],
+    () => (data ? computeAggregates(data, mainRange, "ALL", creativeFilters) : null),
+    [data, mainRange, creativeFilters],
   );
   const aggregatesOverview = useMemo(
-    () => (data ? computeAggregates(data, mainRange, effectiveMainCore) : null),
-    [data, mainRange, effectiveMainCore],
+    () => (data ? computeAggregates(data, mainRange, effectiveMainCore, creativeFilters) : null),
+    [data, mainRange, effectiveMainCore, creativeFilters],
   );
 
   // shareState: "idle" | "copying" | "copied" | "error" — controla o ícone
@@ -728,6 +787,33 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
               </div>
             </div>
 
+            {/* Barra global de filtros — abaixo da linha fina (que é o
+                border-b do container das tabs acima) e do botão de Período.
+                Só renderiza nas 3 abas que consomem o pipeline de aggregates
+                (Overview/Display/Video). Base de Dados tem filtros próprios
+                no DataTableV2; RMND/PDOOH/Loom/Survey usam datasources
+                separados, não compartilham este pipeline. */}
+            {(effectiveTab === "overview" || effectiveTab === "display" || effectiveTab === "video") && (
+              <GlobalDataFilterBarV2
+                audienceOptions={filterOptions.audiences}
+                lineOptions={filterOptions.lines}
+                creativeLineOptions={filterOptions.creativeLines}
+                sizeOptions={filterOptions.sizes}
+                formatOptions={filterOptions.formats}
+                audiences={audiences}
+                setAudiences={setAudiences}
+                lineNames={lineNames}
+                setLineNames={setLineNames}
+                creativeLines={creativeLines}
+                setCreativeLines={setCreativeLines}
+                sizes={sizes}
+                setSizes={setSizes}
+                formats={formats}
+                setFormats={setFormats}
+                showFormatFilter={showDisplay && showVideo}
+              />
+            )}
+
             <TabsContent value="overview">
               <OverviewV2
                 data={data}
@@ -748,10 +834,6 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 aggregates={aggregates}
                 tactic={displayTactic}
                 setTactic={setDisplayTactic}
-                lines={displayLines}
-                setLines={setDisplayLines}
-                creativeLines={displayCreativeLines}
-                setCreativeLines={setDisplayCreativeLines}
               />
             </TabsContent>
 
@@ -761,10 +843,6 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 aggregates={aggregates}
                 tactic={videoTactic}
                 setTactic={setVideoTactic}
-                lines={videoLines}
-                setLines={setVideoLines}
-                creativeLines={videoCreativeLines}
-                setCreativeLines={setVideoCreativeLines}
               />
             </TabsContent>
 

@@ -30,21 +30,18 @@
 
 import { useMemo } from "react";
 import {
-  buildLineOptions,
   computeDisplayKpis,
   extractAudience,
+  getCreativeLineKey,
   groupByDate,
   groupBySize,
   groupByCreativeName,
-  getCreativeLineKey,
   groupByAudience,
 } from "../../shared/aggregations";
 import { fmt, fmtP, fmtP2, fmtR } from "../../shared/format";
 
 import { Button } from "../../ui/Button";
 
-import { AudienceFilterV2 } from "../components/AudienceFilterV2";
-import { CreativeLineFilterV2 } from "../components/CreativeLineFilterV2";
 import { useReportTrackingContext } from "../contexts/ReportTrackingContext";
 import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
 import { ComparisonCardV2 } from "../components/ComparisonCardV2";
@@ -76,10 +73,6 @@ export default function DisplayV2({
   aggregates,
   tactic,
   setTactic,
-  lines,
-  setLines,
-  creativeLines,
-  setCreativeLines,
 }) {
   const camp = data.campaign;
   // trackCta vem do contexto montado pelo ClientDashboardV2. Noop fora dele.
@@ -114,13 +107,11 @@ export default function DisplayV2({
     || availableTactics[0]?.value
     || tactic;
 
-  // Derivações por tactic + filtros (audiência ∧ linha criativa). Combinam
-  // como AND: row passa se line_name está em `lines` (ou `lines` vazio) E
-  // a chave de linha criativa está em `creativeLines` (ou `creativeLines`
-  // vazio). Opções dos dois filtros vêm de `detailAll` (independentes
-  // entre si) — mesmo padrão do `lineOptions` original. byAudience
-  // continua sobre detailAll cru pra preservar a visão de todas
-  // audiências (mesma quirk Legacy do filtro original).
+  // Derivações por tactic. Os filtros multi-select (audiência/line/creative
+  // line/tamanho/formato) ficam no GlobalDataFilterBarV2 do dashboard pai —
+  // já aplicados upstream em computeAggregates, então `aggregates.detail`
+  // que chega aqui já está recortado pelo recorte global do usuário. Aqui
+  // só fatiamos por mídia (DISPLAY) e tactic.
   const view = useMemo(() => {
     const totals = aggregates.totals.filter(
       (r) => r.media_type === "DISPLAY" && r.tactic_type === effectiveTactic,
@@ -128,34 +119,29 @@ export default function DisplayV2({
     const detailAll = aggregates.detail.filter(
       (r) => r.media_type === "DISPLAY" && deriveTactic(r.line_name) === effectiveTactic,
     );
-    const lineOptions = buildLineOptions(detailAll).filter((l) => l !== "ALL");
-    const creativeLineOptions = [
-      ...new Set(detailAll.map(getCreativeLineKey).filter(Boolean)),
-    ].sort();
-    const detailFiltered = detailAll.filter((r) => {
-      if (lines.length > 0 && !lines.includes(r.line_name)) return false;
-      if (creativeLines.length > 0 && !creativeLines.includes(getCreativeLineKey(r))) return false;
-      return true;
-    });
 
     const kpis = computeDisplayKpis({
       rows: totals,
-      detail: detailFiltered,
+      detail: detailAll,
       detailAll,
       tactic: effectiveTactic,
       camp,
       checklist: t0Display,
     });
 
-    const daily = groupByDate(detailFiltered, "clicks", "viewable_impressions", "ctr");
-    const bySize = groupBySize(detailFiltered, "clicks", "viewable_impressions", "ctr");
-    const byCreative = groupByCreativeName(detailFiltered, "clicks", "viewable_impressions", "ctr");
+    const daily = groupByDate(detailAll, "clicks", "viewable_impressions", "ctr");
+    const bySize = groupBySize(detailAll, "clicks", "viewable_impressions", "ctr");
+    const byCreative = groupByCreativeName(detailAll, "clicks", "viewable_impressions", "ctr");
     const byAudience = groupByAudience(detailAll, "clicks", "viewable_impressions", "ctr");
 
-    return { totals, detailAll, detailFiltered, lineOptions, creativeLineOptions, kpis, daily, bySize, byCreative, byAudience };
-  }, [aggregates, effectiveTactic, lines, creativeLines, camp]);
+    return { totals, detailAll, kpis, daily, bySize, byCreative, byAudience };
+  }, [aggregates, effectiveTactic, camp, t0Display]);
 
-  const { totals, detailAll, detailFiltered, lineOptions, creativeLineOptions, kpis, daily, bySize, byCreative, byAudience } = view;
+  const { totals, detailAll, kpis, daily, bySize, byCreative, byAudience } = view;
+  // Alias mantido pelos consumers internos que esperavam `detailFiltered`.
+  // Agora "filtered" e "all" são equivalentes dentro do DisplayV2 (o filtro
+  // de verdade aconteceu antes, no computeAggregates).
+  const detailFiltered = detailAll;
 
   // Empty state vs notStarted:
   //  - notStarted: há contrato negociado pra essa tactic mas zero delivery
@@ -193,26 +179,14 @@ export default function DisplayV2({
             onChange={(t) => {
               trackCta("tactic_change_display");
               setTactic(t);
-              setLines([]);
-              setCreativeLines([]);
+              // Os filtros de audience/line/creative-line foram movidos pro
+              // GlobalDataFilterBarV2 do dashboard pai (compartilhados com
+              // Overview/Video). Não resetamos eles aqui — alternar O2O/OOH
+              // deve preservar a seleção do usuário.
             }}
           />
         ) : (
           <div />
-        )}
-        {!isEmpty && !kpis.notStarted && (
-          <div className="flex flex-wrap items-center gap-2">
-            <CreativeLineFilterV2
-              lines={creativeLineOptions}
-              selected={creativeLines}
-              onChange={(v) => { trackCta("creative_line_change"); setCreativeLines(v); }}
-            />
-            <AudienceFilterV2
-              lines={lineOptions}
-              selected={lines}
-              onChange={(v) => { trackCta("audience_filter_change"); setLines(v); }}
-            />
-          </div>
         )}
       </div>
 

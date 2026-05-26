@@ -473,7 +473,7 @@ export function computeMediaPacing(rows, camp, mediaType, tactic = "ALL") {
  * sobre o custo total de totalsRaw (que é correto) baseado em delivery
  * do detail filtrado — exatamente o que enrichDetailCosts já faz.
  */
-export function computeAggregates(data, mainRange, mainTactic = "ALL") {
+export function computeAggregates(data, mainRange, mainTactic = "ALL", creativeFilters = null) {
   if (!data || !data.campaign) return null;
 
   // Filtra survey por line_name (regra principal) E por creative_name —
@@ -491,11 +491,57 @@ export function computeAggregates(data, mainRange, mainTactic = "ALL") {
   // de cálculo abaixo (proporção por membro, charts, sumários) trabalhe
   // sobre o subset coerente. Sem branch novo no resto do código.
   const tacticOk = (r) => mainTactic === "ALL" || r.tactic_type === mainTactic;
-  const totalsRaw = (data.totals || []).filter(noSurvey).filter(tacticOk);
-  const dailyRaw  = (data.daily  || []).filter(noSurvey).filter(tacticOk);
-  const detailRaw = (data.detail || []).filter(noSurvey).filter(tacticOk);
 
-  const isFiltered = !!mainRange;
+  // creativeFilters = { audiences, lineNames, sizes, formats, creativeLines }
+  // — todos arrays de strings; [] ou ausente = filtro inativo. Combinam
+  // como AND. Aplicado uma vez aqui pra que TODOS os consumers
+  // (Overview/Display/Video) vejam aggregates já recortados, sem precisar
+  // refazer logic de filtro em cada tab.
+  //
+  // Estratégia "strict vs loose":
+  //   - detail/daily: têm line_name/creative_name/creative_size. Filtro
+  //     completo (strict): rows que não batem somem.
+  //   - totals: row é agregada por media_type+tactic_type, NÃO tem
+  //     creative_name/creative_size/line_name. Aplicar filtros que
+  //     dependem desses campos zeraria totals. Em vez disso, mantemos
+  //     totalsRaw fiel (só aplicamos format=media_type, que totals tem)
+  //     e forçamos isFiltered=true pra que recomputeTotalsProportional
+  //     escale o custo proporcionalmente baseado em detail0 (que é o
+  //     que de fato representa o recorte).
+  const cf = creativeFilters || {};
+  const fAud  = cf.audiences     || [];
+  const fLine = cf.lineNames     || [];
+  const fSize = cf.sizes         || [];
+  const fFmt  = cf.formats       || [];
+  const fCL   = cf.creativeLines || [];
+  const hasCreativeFilters =
+    fAud.length || fLine.length || fSize.length || fFmt.length || fCL.length;
+
+  const passesStrict = (r) => {
+    if (fAud.length > 0 && !fAud.includes(extractAudience(r.line_name))) return false;
+    if (fLine.length > 0 && !fLine.includes(r.line_name)) return false;
+    if (fSize.length > 0 && !fSize.includes(r.creative_size)) return false;
+    if (fFmt.length > 0 && !fFmt.includes(r.media_type)) return false;
+    if (fCL.length > 0 && !fCL.includes(getCreativeLineKey(r))) return false;
+    return true;
+  };
+  // Pra totals: só aplica format (única coluna creative-level que totals
+  // tem). Os outros filtros não filtram totals diretamente — quem cuida
+  // de refletir o recorte no custo é recomputeTotalsProportional via
+  // detail0 abaixo.
+  const passesTotals = (r) => {
+    if (fFmt.length > 0 && !fFmt.includes(r.media_type)) return false;
+    return true;
+  };
+
+  const totalsRaw = (data.totals || []).filter(noSurvey).filter(tacticOk).filter(passesTotals);
+  const dailyRaw  = (data.daily  || []).filter(noSurvey).filter(tacticOk).filter(passesStrict);
+  const detailRaw = (data.detail || []).filter(noSurvey).filter(tacticOk).filter(passesStrict);
+
+  // Trata creative filters como "filtrado" pra disparar o recompute
+  // proporcional dos totals — sem isso, os KPIs leriam do totalsRaw
+  // (não filtrado) e divergiriam de detail/daily.
+  const isFiltered = !!mainRange || !!hasCreativeFilters;
   const daily0  = isFiltered ? dailyRaw.filter(r => inRange(r.date, mainRange))   : dailyRaw;
   const detail0 = isFiltered ? detailRaw.filter(r => inRange(r.date, mainRange))  : detailRaw;
 

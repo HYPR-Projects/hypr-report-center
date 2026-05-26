@@ -31,19 +31,16 @@
 
 import { useMemo } from "react";
 import {
-  buildLineOptions,
   computeVideoKpis,
   extractAudience,
+  getCreativeLineKey,
   groupByDate,
   groupBySize,
   groupByCreativeName,
-  getCreativeLineKey,
   groupByAudience,
 } from "../../shared/aggregations";
 import { fmt, fmtP, fmtP2, fmtR } from "../../shared/format";
 
-import { AudienceFilterV2 } from "../components/AudienceFilterV2";
-import { CreativeLineFilterV2 } from "../components/CreativeLineFilterV2";
 import { useReportTrackingContext } from "../contexts/ReportTrackingContext";
 import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
 import { ComparisonCardV2 } from "../components/ComparisonCardV2";
@@ -82,10 +79,6 @@ export default function VideoV2({
   aggregates,
   tactic,
   setTactic,
-  lines,
-  setLines,
-  creativeLines,
-  setCreativeLines,
 }) {
   const camp = data.campaign;
   const { trackCta } = useReportTrackingContext();
@@ -114,6 +107,9 @@ export default function VideoV2({
     || availableTactics[0]?.value
     || tactic;
 
+  // Filtros multi-select (audience/line/creative/size/formato) ficam no
+  // GlobalDataFilterBarV2 do dashboard pai — já aplicados upstream em
+  // computeAggregates. Aqui só fatiamos por mídia e tactic.
   const view = useMemo(() => {
     const totals = aggregates.totals.filter(
       (r) => r.media_type === "VIDEO" && r.tactic_type === effectiveTactic,
@@ -121,19 +117,10 @@ export default function VideoV2({
     const detailAll = aggregates.detail.filter(
       (r) => r.media_type === "VIDEO" && deriveTactic(r.line_name) === effectiveTactic,
     );
-    const lineOptions = buildLineOptions(detailAll).filter((l) => l !== "ALL");
-    const creativeLineOptions = [
-      ...new Set(detailAll.map(getCreativeLineKey).filter(Boolean)),
-    ].sort();
-    const detailFiltered = detailAll.filter((r) => {
-      if (lines.length > 0 && !lines.includes(r.line_name)) return false;
-      if (creativeLines.length > 0 && !creativeLines.includes(getCreativeLineKey(r))) return false;
-      return true;
-    });
 
     const kpis = computeVideoKpis({
       rows: totals,
-      detail: detailFiltered,
+      detail: detailAll,
       tactic: effectiveTactic,
       checklist: t0Video,
     });
@@ -142,23 +129,23 @@ export default function VideoV2({
     // DSP não preenche dimensões em criativos de video, mas operacionalmente
     // é o mesmo formato 16:9 standard. Unifica antes do groupBySize pra
     // evitar 2 linhas separadas pra mesma coisa na Distribuição por Tamanho.
-    //
-    // Aplicado só pro bySize (e pro extraRows da tabela de formato, mais
-    // abaixo). detailFiltered original é preservado pros outros usos —
-    // KPIs, daily, audience — onde creative_size não importa.
-    const detailNormalized = detailFiltered.map((r) =>
+    const detailNormalized = detailAll.map((r) =>
       r.creative_size === "0x0" ? { ...r, creative_size: "16x9" } : r,
     );
 
-    const daily = groupByDate(detailFiltered, "video_view_100", "viewable_impressions", "vtr");
+    const daily = groupByDate(detailAll, "video_view_100", "viewable_impressions", "vtr");
     const bySize = groupBySize(detailNormalized, "video_view_100", "viewable_impressions", "vtr");
-    const byCreative = groupByCreativeName(detailFiltered, "video_view_100", "viewable_impressions", "vtr");
+    const byCreative = groupByCreativeName(detailAll, "video_view_100", "viewable_impressions", "vtr");
     const byAudience = groupByAudience(detailAll, "video_view_100", "viewable_impressions", "vtr");
 
-    return { totals, detailAll, detailFiltered, detailNormalized, lineOptions, creativeLineOptions, kpis, daily, bySize, byCreative, byAudience };
-  }, [aggregates, effectiveTactic, lines, creativeLines]);
+    return { totals, detailAll, detailNormalized, kpis, daily, bySize, byCreative, byAudience };
+  }, [aggregates, effectiveTactic, t0Video]);
 
-  const { totals, detailAll, detailFiltered, detailNormalized, lineOptions, creativeLineOptions, kpis, daily, bySize, byCreative, byAudience } = view;
+  const { totals, detailAll, detailNormalized, kpis, daily, bySize, byCreative, byAudience } = view;
+  // Alias mantido pelos consumers internos (`detailFiltered`). Pós-refactor
+  // filtered === all dentro do VideoV2 (filtro real é upstream em
+  // computeAggregates).
+  const detailFiltered = detailAll;
 
   // Empty state vs notStarted (mesma lógica do DisplayV2):
   //  - notStarted: há contrato sem delivery — mostra contratual + disclaimer
@@ -191,28 +178,17 @@ export default function VideoV2({
             onChange={(t) => {
               trackCta("tactic_change_video");
               setTactic(t);
-              setLines([]);
-              setCreativeLines([]);
+              // Filtros movidos pro GlobalDataFilterBarV2 — não resetam aqui.
             }}
           />
         ) : (
           <div />
         )}
-        {!isEmpty && !kpis.notStarted && (
-          <div className="flex flex-wrap items-center gap-2">
-            <CreativeLineFilterV2
-              lines={creativeLineOptions}
-              selected={creativeLines}
-              onChange={(v) => { trackCta("creative_line_change"); setCreativeLines(v); }}
-            />
-            <AudienceFilterV2
-              lines={lineOptions}
-              selected={lines}
-              onChange={(v) => { trackCta("audience_filter_change"); setLines(v); }}
-            />
-          </div>
-        )}
       </div>
+      {/* Filtros multi-select (audience/line/creative line/tamanho/formato)
+          movidos pro GlobalDataFilterBarV2 do dashboard pai em PR-22 —
+          agora ficam abaixo da tab bar, compartilhados entre Overview/
+          Display/Video. */}
 
       {isEmpty ? (
         <div className="rounded-xl border border-border bg-surface p-8 text-center">
