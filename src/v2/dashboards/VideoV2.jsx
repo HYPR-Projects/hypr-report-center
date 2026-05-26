@@ -164,6 +164,15 @@ export default function VideoV2({
       ? row0.bonus_o2o_video_completions || 0
       : row0.bonus_ooh_video_completions || 0;
 
+  // CPCV "com bonus": equivalente ao cpmNegBonus do Display. Mesmo budget
+  // dividido pela entrega total prometida (contracted + bonus completions).
+  // Reflete o que o cliente paga POR view 100% entregue de fato (incluindo
+  // bonus). Só calcula quando bonus > 0 — sem bonus, manter o cpcv contratual
+  // já cobre.
+  const cpcvNegBonus = bonusViews > 0 && contractedViews > 0 && kpis.cpcvNeg > 0
+    ? (kpis.cpcvNeg * contractedViews) / (contractedViews + bonusViews)
+    : null;
+
   return (
     <div className="space-y-6">
       {/* ─── 1. Toolbar interna ──────────────────────────────────────── */}
@@ -211,6 +220,7 @@ export default function VideoV2({
           byAudience={byAudience}
           contractedViews={contractedViews}
           bonusViews={bonusViews}
+          cpcvNegBonus={cpcvNegBonus}
           notStarted={kpis.notStarted}
         />
       )}
@@ -234,6 +244,7 @@ function VideoContent({
   byAudience,
   contractedViews,
   bonusViews,
+  cpcvNegBonus,
   notStarted,
 }) {
   return (
@@ -255,6 +266,7 @@ function VideoContent({
         title={`CPCV Video · ${tactic}`}
         negociado={kpis.cpcvNeg}
         efetivo={kpis.cpcvEf}
+        negociadoComBonus={cpcvNegBonus}
         formatValue={(v) => `R$ ${(v || 0).toFixed(3).replace(".", ",")}`}
       />
 

@@ -163,6 +163,18 @@ export default function DisplayV2({
       ? row0.bonus_o2o_display_impressions || 0
       : row0.bonus_ooh_display_impressions || 0;
 
+  // CPM "com bonus": divide o mesmo budget pela entrega total prometida
+  // (contratadas + bonus). Reflete a economia real do deal — cliente paga
+  // R$ X mas recebe ~contracted+bonus impressões visíveis, então o CPM
+  // por entrega de fato é mais baixo que o cpm contratual.
+  //   CPM c/ Bonus = (cpmNeg × contracted) / (contracted + bonus)
+  // Equivale a (budget / total) × 1000 — escrito assim pra evitar
+  // depender de orçamento explícito (que vem em coluna separada e nem
+  // sempre é populada). Só faz sentido quando há bonus > 0.
+  const cpmNegBonus = bonusImps > 0 && contractedImps > 0 && kpis.cpmNeg > 0
+    ? (kpis.cpmNeg * contractedImps) / (contractedImps + bonusImps)
+    : null;
+
   return (
     <div className="space-y-6">
       {/* ─── 1. Toolbar interna ──────────────────────────────────────── */}
@@ -210,6 +222,7 @@ export default function DisplayV2({
           byAudience={byAudience}
           contractedImps={contractedImps}
           bonusImps={bonusImps}
+          cpmNegBonus={cpmNegBonus}
           notStarted={kpis.notStarted}
         />
       )}
@@ -233,6 +246,7 @@ function DisplayContent({
   byAudience,
   contractedImps,
   bonusImps,
+  cpmNegBonus,
   notStarted,
 }) {
   return (
@@ -257,6 +271,7 @@ function DisplayContent({
         title={`CPM Display · ${tactic}`}
         negociado={kpis.cpmNeg}
         efetivo={kpis.cpmEf}
+        negociadoComBonus={cpmNegBonus}
         formatValue={(v) => fmtR(v)}
       />
 
