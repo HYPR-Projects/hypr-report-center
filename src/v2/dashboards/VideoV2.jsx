@@ -173,6 +173,27 @@ export default function VideoV2({
     ? (kpis.cpcvNeg * contractedViews) / (contractedViews + bonusViews)
     : null;
 
+  // CPCV Efetivo PROJETADO — ver doc equivalente em DisplayV2 (cpmEfProjected).
+  // Aqui a unidade é views 100% (completions) em vez de impressões visíveis.
+  const cpcvEfProjected = (() => {
+    if (!bonusViews || bonusViews <= 0) return null;
+    if (!contractedViews || !kpis.cpcvNeg || !(kpis.pac > 0)) return null;
+    const totalPromise = contractedViews + bonusViews;
+    const budget = kpis.cpcvNeg * contractedViews;
+    const pacingRatio = Math.min(kpis.pac / 100, 1);
+    const projectedViews = pacingRatio * totalPromise;
+    if (projectedViews <= 0) return null;
+    const projectedCost = projectedViews > contractedViews
+      ? budget
+      : kpis.cpcvNeg * projectedViews;
+    return projectedCost / projectedViews;
+  })();
+  const useProjection = cpcvEfProjected !== null;
+  const cpcvEfDisplay = useProjection ? cpcvEfProjected : kpis.cpcvEf;
+  const rentabDisplay = useProjection && kpis.cpcvNeg > 0
+    ? ((kpis.cpcvNeg - cpcvEfProjected) / kpis.cpcvNeg) * 100
+    : kpis.rentab;
+
   return (
     <div className="space-y-6">
       {/* ─── 1. Toolbar interna ──────────────────────────────────────── */}
@@ -221,6 +242,9 @@ export default function VideoV2({
           contractedViews={contractedViews}
           bonusViews={bonusViews}
           cpcvNegBonus={cpcvNegBonus}
+          cpcvEfDisplay={cpcvEfDisplay}
+          rentabDisplay={rentabDisplay}
+          useProjection={useProjection}
           notStarted={kpis.notStarted}
         />
       )}
@@ -245,6 +269,9 @@ function VideoContent({
   contractedViews,
   bonusViews,
   cpcvNegBonus,
+  cpcvEfDisplay,
+  rentabDisplay,
+  useProjection,
   notStarted,
 }) {
   return (
@@ -265,8 +292,9 @@ function VideoContent({
       <ComparisonCardV2
         title={`CPCV Video · ${tactic}`}
         negociado={kpis.cpcvNeg}
-        efetivo={kpis.cpcvEf}
+        efetivo={cpcvEfDisplay}
         negociadoComBonus={cpcvNegBonus}
+        efetivoIsProjection={useProjection}
         formatValue={(v) => `R$ ${(v || 0).toFixed(3).replace(".", ",")}`}
       />
 
@@ -325,16 +353,20 @@ function VideoContent({
             hint="View-Through Rate: Views 100% / Imp. Visíveis."
           />
           <KpiCardV2
-            label="CPCV Efetivo"
-            value={fmtCpcv(kpis.cpcvEf)}
+            label={useProjection ? "CPCV Efetivo *" : "CPCV Efetivo"}
+            value={fmtCpcv(cpcvEfDisplay)}
             accent
-            hint="Custo Efetivo / Views 100%. Quando filtrado, recalculado proporcionalmente ao período."
+            hint={useProjection
+              ? "Projeção mantendo o ritmo atual de entrega até o fim da campanha. Considera o bonus de views contratado: se o pacing levar a entrega total além das views contratadas, o custo capa no budget e o CPCV cai. Converge para o Negociado Ajustado em 100% de pacing."
+              : "Custo Efetivo / Views 100%. Quando filtrado, recalculado proporcionalmente ao período."}
           />
           <KpiCardV2
             label="Rentabilidade"
-            value={fmtP(kpis.rentab)}
+            value={fmtP(rentabDisplay)}
             accent
-            hint="(CPCV Negociado − CPCV Efetivo) / CPCV Negociado. Positivo = a HYPR entregou mais que o contratado."
+            hint={useProjection
+              ? "(CPCV Tabela HYPR − CPCV Efetivo projetado) / CPCV Tabela HYPR. Positivo = projeção indica entrega abaixo do CPCV contratual graças ao bonus."
+              : "(CPCV Negociado − CPCV Efetivo) / CPCV Negociado. Positivo = a HYPR entregou mais que o contratado."}
           />
           <KpiCardV2
             label="Custo Efetivo Total"

@@ -175,6 +175,46 @@ export default function DisplayV2({
     ? (kpis.cpmNeg * contractedImps) / (contractedImps + bonusImps)
     : null;
 
+  // CPM Efetivo PROJETADO — só em campanhas com bonus. Mostra onde o CPM
+  // vai parar SE o ritmo atual de entrega continuar até o fim da campanha.
+  // Bonus faz parte da promessa contratual, então o cliente espera ver o
+  // benefício no Efetivo conforme a entrega total avança em direção a
+  // contracted+bonus. A regra:
+  //
+  //   pacingRatio    = MIN(kpis.pac / 100, 1)   // cap em 100% (não da pra > 8M)
+  //   projectedVisible = pacingRatio × (contracted + bonus)
+  //   projectedCost  = projectedVisible > contracted
+  //                      ? budget                              // capou (bonus rolou)
+  //                      : (cpmNeg × projectedVisible) / 1000  // ainda contratado
+  //   cpmEfProjected = projectedCost / projectedVisible × 1000
+  //
+  // Quando o pacing é tão baixo que a entrega projetada nem atinge as
+  // contratadas, o resultado é cpmEf=cpmNeg (=tabela) — correto: sem
+  // bonus efetivamente entregue, não há economia. Campanhas SEM bonus
+  // pulam isso e mantêm o cpmEf factual do computeDisplayKpis.
+  const cpmEfProjected = (() => {
+    if (!bonusImps || bonusImps <= 0) return null;
+    if (!contractedImps || !kpis.cpmNeg || !(kpis.pac > 0)) return null;
+    const totalPromise = contractedImps + bonusImps;
+    const budget = (kpis.cpmNeg * contractedImps) / 1000;
+    const pacingRatio = Math.min(kpis.pac / 100, 1);
+    const projectedVisible = pacingRatio * totalPromise;
+    if (projectedVisible <= 0) return null;
+    const projectedCost = projectedVisible > contractedImps
+      ? budget
+      : (kpis.cpmNeg * projectedVisible) / 1000;
+    return (projectedCost / projectedVisible) * 1000;
+  })();
+  const useProjection = cpmEfProjected !== null;
+  // cpmEf "renderizado" — em campanhas com bonus, sobrescreve com a
+  // projeção. Rentabilidade segue a mesma fonte pra consistência visual
+  // (Efetivo aqui vira X% melhor que Tabela = a Rentabilidade fica
+  // positiva conforme o bonus rola).
+  const cpmEfDisplay = useProjection ? cpmEfProjected : kpis.cpmEf;
+  const rentabDisplay = useProjection && kpis.cpmNeg > 0
+    ? ((kpis.cpmNeg - cpmEfProjected) / kpis.cpmNeg) * 100
+    : kpis.rentab;
+
   return (
     <div className="space-y-6">
       {/* ─── 1. Toolbar interna ──────────────────────────────────────── */}
@@ -223,6 +263,9 @@ export default function DisplayV2({
           contractedImps={contractedImps}
           bonusImps={bonusImps}
           cpmNegBonus={cpmNegBonus}
+          cpmEfDisplay={cpmEfDisplay}
+          rentabDisplay={rentabDisplay}
+          useProjection={useProjection}
           notStarted={kpis.notStarted}
         />
       )}
@@ -247,6 +290,9 @@ function DisplayContent({
   contractedImps,
   bonusImps,
   cpmNegBonus,
+  cpmEfDisplay,
+  rentabDisplay,
+  useProjection,
   notStarted,
 }) {
   return (
@@ -270,8 +316,9 @@ function DisplayContent({
       <ComparisonCardV2
         title={`CPM Display · ${tactic}`}
         negociado={kpis.cpmNeg}
-        efetivo={kpis.cpmEf}
+        efetivo={cpmEfDisplay}
         negociadoComBonus={cpmNegBonus}
+        efetivoIsProjection={useProjection}
         formatValue={(v) => fmtR(v)}
       />
 
@@ -322,16 +369,20 @@ function DisplayContent({
             hint="Soma de viewable impressions filtradas pelo período/audiência."
           />
           <KpiCardV2
-            label="CPM Efetivo"
-            value={fmtR(kpis.cpmEf)}
+            label={useProjection ? "CPM Efetivo *" : "CPM Efetivo"}
+            value={fmtR(cpmEfDisplay)}
             accent
-            hint="Custo entregue / Imp. Visíveis × 1000 — capado no negociado."
+            hint={useProjection
+              ? "Projeção mantendo o ritmo atual de entrega até o fim da campanha. Considera o bonus contratado: se o pacing levar a entrega total além das impressões contratadas, o custo capa no budget e o CPM cai. Converge para o Negociado Ajustado em 100% de pacing."
+              : "Custo entregue / Imp. Visíveis × 1000 — capado no negociado."}
           />
           <KpiCardV2
             label="Rentabilidade"
-            value={fmtP(kpis.rentab)}
+            value={fmtP(rentabDisplay)}
             accent
-            hint="(CPM Negociado − CPM Efetivo) / CPM Negociado. Positivo = a HYPR entregou mais que o contratado."
+            hint={useProjection
+              ? "(CPM Tabela HYPR − CPM Efetivo projetado) / CPM Tabela HYPR. Positivo = projeção indica entrega abaixo do CPM contratual graças ao bonus."
+              : "(CPM Negociado − CPM Efetivo) / CPM Negociado. Positivo = a HYPR entregou mais que o contratado."}
           />
           <KpiCardV2 label="Cliques" value={fmt(kpis.clks)} />
           <KpiCardV2

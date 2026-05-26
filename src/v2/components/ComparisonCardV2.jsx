@@ -60,12 +60,17 @@
 
 import { Card } from "../../ui/Card";
 import { cn } from "../../ui/cn";
+import { Tooltip, TooltipTrigger, TooltipContent } from "../../ui/Tooltip";
 
 export function ComparisonCardV2({
   title,
   negociado,
   efetivo,
   negociadoComBonus,
+  // Quando true, o cell "Efetivo" ganha sublinhado pontilhado + asterisco
+  // e tooltip explicando que é projeção (não factual atual). Usado em
+  // campanhas com bonus negociado — ver DisplayV2/VideoV2.
+  efetivoIsProjection = false,
   formatValue,
   decimalsForDelta = 1,
   className,
@@ -143,6 +148,10 @@ export function ComparisonCardV2({
               label="Efetivo"
               value={hasValues ? formatValue(efetivo) : "—"}
               tone="accent"
+              indicator={efetivoIsProjection ? "*" : null}
+              tooltip={efetivoIsProjection
+                ? "Projeção mantendo o ritmo atual de entrega até o fim da campanha. Conforme o pacing oscila, o valor se ajusta. Se o pacing chegar a 100%, este número converge para o Negociado Ajustado."
+                : null}
             />
           </>
         ) : (
@@ -169,7 +178,20 @@ export function ComparisonCardV2({
   );
 }
 
-function ComparisonCell({ label, value, tone = "default" }) {
+function ComparisonCell({ label, value, tone = "default", indicator = null, tooltip = null }) {
+  // Quando há tooltip, o label vira "trigger" com sublinhado pontilhado
+  // (mesmo padrão do KpiCardV2.hint pra consistência visual).
+  const labelEl = (
+    <span
+      className={cn(
+        "inline-block text-[11px] text-fg-muted truncate",
+        tooltip &&
+          "underline decoration-dotted decoration-fg-subtle underline-offset-4 cursor-help",
+      )}
+    >
+      {label}
+    </span>
+  );
   return (
     <div className="px-5 py-4 min-w-0 h-full flex flex-col">
       <div
@@ -183,8 +205,24 @@ function ComparisonCell({ label, value, tone = "default" }) {
         )}
       >
         {value}
+        {indicator && (
+          <sup className="ml-0.5 text-[14px] font-medium text-fg-subtle">
+            {indicator}
+          </sup>
+        )}
       </div>
-      <div className="text-[11px] text-fg-muted mt-1.5 truncate">{label}</div>
+      <div className="mt-1.5">
+        {tooltip ? (
+          <Tooltip>
+            <TooltipTrigger asChild>{labelEl}</TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-[280px]">
+              {tooltip}
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          labelEl
+        )}
+      </div>
     </div>
   );
 }
