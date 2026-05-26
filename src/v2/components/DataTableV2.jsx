@@ -1,12 +1,20 @@
 // src/v2/components/DataTableV2.jsx
 //
 // Tabela detalhada da Visão Geral V2. Mostra `detail` (já enriquecido
-// pelo computeAggregates), filtra por mídia (Tudo/Display/Video) e
-// exporta CSV.
+// pelo computeAggregates), filtra por audiência, tamanho e formato
+// (multi-select), e exporta CSV.
+//
+// Filtros (multi-select, todos opcionais, combinam como AND):
+//   - Audiência: extractAudience(line_name) → penúltimo token do _
+//   - Tamanho:   creative_size              → "300x250", "970x250", ...
+//   - Formato:   media_type                 → DISPLAY / VIDEO
+// "Selected vazio" = filtro inativo (mostra tudo). Substituiu a barra
+// antiga de chips Tudo/Display/Video (que era single-select e só cobria
+// média).
 //
 // Diferenças vs Legacy DetailTable
-//   - Filtro por chips em vez de botões inline (consistente com
-//     DateRangeFilterV2)
+//   - Filtros multi-select em vez de chips (escala melhor com campanhas
+//     com muitas audiências/tamanhos)
 //   - Estilo HYPR (header sticky, hover row, zebra sutil)
 //   - Mostra contador "X de Y" sempre (não só quando trunca)
 //   - Header sticky funciona via position:sticky no <thead> dentro do
@@ -24,10 +32,12 @@
 //   Renderizar 10k+ linhas no DOM degrada scroll. Mostra primeiras 200
 //   e oferece CSV pra ver tudo. Mesma regra do Legacy.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { fmt } from "../../shared/format";
+import { extractAudience } from "../../shared/aggregations";
 import { cn } from "../../ui/cn";
 import { Button } from "../../ui/Button";
+import { TableMultiSelectFilter } from "./TableMultiSelectFilter";
 import { useReportTrackingContext } from "../contexts/ReportTrackingContext";
 
 const COLUMNS = [
@@ -52,8 +62,53 @@ const COLUMNS = [
 const ROW_LIMIT = 200;
 
 export function DataTableV2({ detail, campaignName }) {
-  const [filter, setFilter] = useState("ALL");
-  const filtered = filter === "ALL" ? detail : detail.filter((r) => r.media_type === filter);
+  // Filtros multi-select. Cada um é independente — empty = "todos".
+  //   audience: extractAudience(line_name) → token do penúltimo segmento
+  //   size:     creative_size              → "300x250", "970x250", etc.
+  //   format:   media_type                 → DISPLAY / VIDEO
+  // Filtros combinam como AND: row passa se atende a TODOS os filtros ativos.
+  const [audiences, setAudiences] = useState([]);
+  const [sizes, setSizes] = useState([]);
+  const [formats, setFormats] = useState([]);
+
+  // Opções únicas extraídas do `detail` cru — recalcula só quando detail
+  // muda (troca de view ou filtro de período no dashboard pai).
+  // Ordenação alfabética estável pra dropdown não pular ao re-render.
+  const { audienceOptions, sizeOptions, formatOptions } = useMemo(() => {
+    const aud = new Set();
+    const siz = new Set();
+    const fmt = new Set();
+    for (const r of detail) {
+      const a = extractAudience(r.line_name);
+      if (a && a !== "N/A") aud.add(a);
+      if (r.creative_size) siz.add(r.creative_size);
+      if (r.media_type) fmt.add(r.media_type);
+    }
+    return {
+      audienceOptions: [...aud].sort((a, b) => a.localeCompare(b)),
+      // Size: ordena numericamente pelo primeiro número (larguras) pra que
+      // "300x50" venha antes de "970x250" — alpha simples colocaria "970"
+      // antes de "300" se string. Default fallback pra string-compare.
+      sizeOptions: [...siz].sort((a, b) => {
+        const na = parseInt(a, 10);
+        const nb = parseInt(b, 10);
+        if (!Number.isNaN(na) && !Number.isNaN(nb) && na !== nb) return na - nb;
+        return a.localeCompare(b);
+      }),
+      formatOptions: [...fmt].sort((a, b) => a.localeCompare(b)),
+    };
+  }, [detail]);
+
+  const filtered = useMemo(() => detail.filter((r) => {
+    if (audiences.length > 0) {
+      const a = extractAudience(r.line_name);
+      if (!audiences.includes(a)) return false;
+    }
+    if (sizes.length > 0 && !sizes.includes(r.creative_size)) return false;
+    if (formats.length > 0 && !formats.includes(r.media_type)) return false;
+    return true;
+  }), [detail, audiences, sizes, formats]);
+
   const visible = filtered.slice(0, ROW_LIMIT);
 
   // trackCta vem do contexto montado pelo ClientDashboardV2; noop fora
@@ -80,30 +135,89 @@ export function DataTableV2({ detail, campaignName }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div role="radiogroup" aria-label="Filtrar por mídia" className="flex gap-1.5">
-          {["ALL", "DISPLAY", "VIDEO"].map((f) => {
-            const active = filter === f;
-            return (
-              <button
-                key={f}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                onClick={() => setFilter(f)}
-                className={cn(
-                  "h-8 px-3 rounded-full text-[11px] font-bold uppercase tracking-wider",
-                  "border transition-colors duration-150 cursor-pointer",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
-                  active
-                    ? "bg-signature border-signature text-on-signature"
-                    : "bg-surface border-border text-fg-muted hover:text-fg hover:border-border-strong",
-                )}
+      {/* Barra de filtros + download. Antes era radio Tudo/Display/Video.
+          Agora 3 multi-selects (Audiência, Tamanho, Formato) — substituem
+          o chip de mídia (que vira o filtro "Formato") e adicionam dois
+          eixos novos pra investigação fina. Layout: filtros à esquerda,
+          download à direita. flex-wrap permite quebra natural em telas
+          estreitas (cada filtro tem max-w-[240px]).
+          gap-y-2 evita que filtros e botão fiquem colados quando quebram. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <TableMultiSelectFilter
+            label="Audiência"
+            pluralLabel="audiências"
+            options={audienceOptions}
+            selected={audiences}
+            onChange={setAudiences}
+            icon={
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
               >
-                {f === "ALL" ? "Tudo" : f}
-              </button>
-            );
-          })}
+                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+            }
+          />
+          <TableMultiSelectFilter
+            label="Tamanho"
+            pluralLabel="tamanhos"
+            options={sizeOptions}
+            selected={sizes}
+            onChange={setSizes}
+            icon={
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="2" y="3" width="12" height="10" rx="1" />
+                <path d="M2 7h12M6 3v10" />
+              </svg>
+            }
+          />
+          <TableMultiSelectFilter
+            label="Formato"
+            pluralLabel="formatos"
+            options={formatOptions}
+            selected={formats}
+            onChange={setFormats}
+            // Display/Video vêm em UPPERCASE do BQ — exibir capitalizado
+            // pra leitura (Display/Video) sem mudar o valor interno.
+            formatLabel={(v) => v.charAt(0) + v.slice(1).toLowerCase()}
+            icon={
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="2" y="2.5" width="12" height="9" rx="1" />
+                <path d="M5 14h6" />
+              </svg>
+            }
+          />
         </div>
 
         <Button
