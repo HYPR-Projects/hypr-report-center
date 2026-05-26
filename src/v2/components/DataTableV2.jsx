@@ -23,10 +23,13 @@
 // Cores (PR-16 audit visual)
 //   - Container: bg-surface-2 (sólido, consistente com KpiCard/HeroKpi/etc).
 //     Antes era bg-canvas-deeper (#0F1419 — quase preto, destoava do resto).
-//   - Header sticky: bg-surface-strong (overlay 10% sobre surface-2, sutil
-//     mas visível pra distinguir de tbody). Antes bg-canvas-elevated, quase
-//     idêntico ao novo container — sem contraste.
-//   - Hover row: bg-surface-strong (mais claro que zebra surface/40).
+//   - Header e footer sticky: bg-surface-3 (sólido em ambos os temas).
+//     Antes usava bg-surface-strong (overlay 10%) — quando sticky, rows
+//     scrolladas vazavam por baixo (10% transparente NÃO esconde nada).
+//     surface-3 dark=#2D3D4F / light=#F1F3F6: opaco e ainda diferencia
+//     do container bg-surface-2.
+//   - Hover row: bg-surface-strong (continua overlay — não é sticky, sem
+//     problema de pass-through).
 //
 // Limit de 200 linhas visuais
 //   Renderizar 10k+ linhas no DOM degrada scroll. Mostra primeiras 200
@@ -261,7 +264,10 @@ export function DataTableV2({ detail, campaignName }) {
                   key={c.key}
                   className={cn(
                     "px-3 py-2 text-[10px] font-bold uppercase tracking-wider whitespace-nowrap",
-                    "bg-surface-strong text-fg-muted border-b border-border-strong",
+                    // bg-surface-3 (sólido) em vez de bg-surface-strong
+                    // (overlay) — sticky precisa esconder o que scrolla
+                    // por baixo.
+                    "bg-surface-3 text-fg-muted border-b border-border-strong",
                     c.numeric ? "text-right" : "text-left",
                   )}
                 >
@@ -335,7 +341,8 @@ export function DataTableV2({ detail, campaignName }) {
                       key={c.key}
                       className={cn(
                         "px-3 py-2.5 text-xs whitespace-nowrap font-bold",
-                        "bg-surface-strong text-fg border-t-2 border-border-strong",
+                        // bg-surface-3 (sólido) — ver nota no thead acima.
+                        "bg-surface-3 text-fg border-t-2 border-border-strong",
                         c.numeric
                           ? "text-right tabular-nums"
                           : "text-left",
