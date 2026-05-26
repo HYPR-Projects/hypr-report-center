@@ -28,6 +28,8 @@ export function TableMultiSelectFilter({
   onChange,        // (newSelected: string[]) => void
   icon,            // ReactNode — SVG opcional (mesmo "slot" do AudienceFilterV2)
   formatLabel,     // (opt: string) => string — opcional, customiza display de cada item
+  popoverWidth = 280, // px — default 280, bump pra line_names longos
+  triggerMaxWidth = 240, // px — default 240, bump quando label do selected é longo
 }) {
   const headerId = useId();
   const isActive = selected.length > 0;
@@ -53,12 +55,12 @@ export function TableMultiSelectFilter({
           <button
             type="button"
             aria-label={`Filtrar por ${label.toLowerCase()}`}
+            style={{ maxWidth: `${triggerMaxWidth}px` }}
             className={cn(
               "inline-flex items-center gap-2 whitespace-nowrap",
               "h-8 px-3 rounded-full text-[11px] font-bold uppercase tracking-wider",
               "border transition-colors duration-150 cursor-pointer",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
-              "max-w-[240px]",
               isActive
                 ? "bg-signature-soft border-signature/40 text-signature hover:border-signature/70"
                 : "bg-surface border-border text-fg-muted hover:text-fg hover:border-border-strong",
@@ -89,8 +91,9 @@ export function TableMultiSelectFilter({
             sideOffset={6}
             collisionPadding={16}
             align="start"
+            style={{ width: `${popoverWidth}px` }}
             className={cn(
-              "z-50 w-[280px] max-w-[calc(100vw-32px)]",
+              "z-50 max-w-[calc(100vw-32px)]",
               "max-h-[min(360px,calc(100vh-32px))]",
               "rounded-xl border border-border bg-canvas-elevated shadow-lg",
               "overflow-hidden flex flex-col",

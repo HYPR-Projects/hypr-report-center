@@ -1,11 +1,12 @@
 // src/v2/components/DataTableV2.jsx
 //
 // Tabela detalhada da Visão Geral V2. Mostra `detail` (já enriquecido
-// pelo computeAggregates), filtra por audiência, tamanho e formato
+// pelo computeAggregates), filtra por audiência, line, tamanho e formato
 // (multi-select), e exporta CSV.
 //
 // Filtros (multi-select, todos opcionais, combinam como AND):
 //   - Audiência: extractAudience(line_name) → penúltimo token do _
+//   - Line:      line_name completo         → label encurtado (…_últ3 segs)
 //   - Tamanho:   creative_size              → "300x250", "970x250", ...
 //   - Formato:   media_type                 → DISPLAY / VIDEO
 // "Selected vazio" = filtro inativo (mostra tudo). Substituiu a barra
@@ -67,28 +68,33 @@ const ROW_LIMIT = 200;
 export function DataTableV2({ detail, campaignName }) {
   // Filtros multi-select. Cada um é independente — empty = "todos".
   //   audience: extractAudience(line_name) → token do penúltimo segmento
+  //   line:     line_name completo         → match exato
   //   size:     creative_size              → "300x250", "970x250", etc.
   //   format:   media_type                 → DISPLAY / VIDEO
   // Filtros combinam como AND: row passa se atende a TODOS os filtros ativos.
   const [audiences, setAudiences] = useState([]);
+  const [lines, setLines] = useState([]);
   const [sizes, setSizes] = useState([]);
   const [formats, setFormats] = useState([]);
 
   // Opções únicas extraídas do `detail` cru — recalcula só quando detail
   // muda (troca de view ou filtro de período no dashboard pai).
   // Ordenação alfabética estável pra dropdown não pular ao re-render.
-  const { audienceOptions, sizeOptions, formatOptions } = useMemo(() => {
+  const { audienceOptions, lineOptions, sizeOptions, formatOptions } = useMemo(() => {
     const aud = new Set();
+    const lin = new Set();
     const siz = new Set();
     const fmt = new Set();
     for (const r of detail) {
       const a = extractAudience(r.line_name);
       if (a && a !== "N/A") aud.add(a);
+      if (r.line_name) lin.add(r.line_name);
       if (r.creative_size) siz.add(r.creative_size);
       if (r.media_type) fmt.add(r.media_type);
     }
     return {
       audienceOptions: [...aud].sort((a, b) => a.localeCompare(b)),
+      lineOptions: [...lin].sort((a, b) => a.localeCompare(b)),
       // Size: ordena numericamente pelo primeiro número (larguras) pra que
       // "300x50" venha antes de "970x250" — alpha simples colocaria "970"
       // antes de "300" se string. Default fallback pra string-compare.
@@ -107,10 +113,11 @@ export function DataTableV2({ detail, campaignName }) {
       const a = extractAudience(r.line_name);
       if (!audiences.includes(a)) return false;
     }
+    if (lines.length > 0 && !lines.includes(r.line_name)) return false;
     if (sizes.length > 0 && !sizes.includes(r.creative_size)) return false;
     if (formats.length > 0 && !formats.includes(r.media_type)) return false;
     return true;
-  }), [detail, audiences, sizes, formats]);
+  }), [detail, audiences, lines, sizes, formats]);
 
   const visible = filtered.slice(0, ROW_LIMIT);
 
@@ -186,6 +193,39 @@ export function DataTableV2({ detail, campaignName }) {
                 <circle cx="9" cy="7" r="4" />
                 <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
                 <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+            }
+          />
+          <TableMultiSelectFilter
+            label="Line"
+            pluralLabel="lines"
+            options={lineOptions}
+            selected={lines}
+            onChange={setLines}
+            // Line names podem ter 100+ chars em campanhas reais (Itaú, etc).
+            // Popover maior (380) deixa mais legível; label encurtado pros
+            // últimos 3 segmentos quando passa de 3 (mesma convenção do
+            // AudienceFilterV2). Hover do <label> mostra nome completo via
+            // `title` (já implementado no TableMultiSelectFilter).
+            popoverWidth={380}
+            triggerMaxWidth={320}
+            formatLabel={(ln) => {
+              const parts = ln.split("_");
+              return parts.length > 3 ? "…_" + parts.slice(-3).join("_") : ln;
+            }}
+            icon={
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M2 4h12M2 8h12M2 12h8" />
               </svg>
             }
           />
