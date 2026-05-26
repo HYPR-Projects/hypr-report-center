@@ -4398,6 +4398,7 @@ def query_totals(token, campaign_info):
             FROM {UNIFIED}
             WHERE short_token = @token
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND UPPER(creative_name) NOT LIKE '%SURVEY%'
         )
         SELECT
             tactic_type,
@@ -4667,6 +4668,7 @@ def query_daily(token):
         FROM {table_ref()}
         WHERE short_token = @token
           AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+          AND UPPER(creative_name) NOT LIKE '%SURVEY%'
         GROUP BY date, media_type, 3
         ORDER BY date ASC
     """
@@ -4730,6 +4732,7 @@ def query_campaign_lines(token):
         WHERE short_token = @token
           AND media_type IN ('DISPLAY', 'VIDEO')
           AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+          AND UPPER(creative_name) NOT LIKE '%SURVEY%'
         GROUP BY line_name, media_type
         ORDER BY impressions DESC
     """
@@ -4742,6 +4745,7 @@ def query_campaign_lines(token):
         WHERE short_token = @token
           AND media_type IN ('DISPLAY', 'VIDEO')
           AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+          AND UPPER(creative_name) NOT LIKE '%SURVEY%'
         GROUP BY line_name, media_type
     """
     job_config = bigquery.QueryJobConfig(query_parameters=[
@@ -4803,6 +4807,7 @@ def query_detail(token):
         FROM {table_ref()}
         WHERE short_token = @token
           AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+          AND UPPER(creative_name) NOT LIKE '%SURVEY%'
         GROUP BY
             date, campaign_name, line_name,
             creative_name, creative_size, media_type, 7
@@ -4910,6 +4915,7 @@ def query_campaigns_list():
             FROM {table_ref()}
             WHERE media_type IN ('DISPLAY', 'VIDEO')
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND UPPER(creative_name) NOT LIKE '%SURVEY%'
             GROUP BY short_token, media_type, date, line_name, creative_name
         ),
         agg AS (
@@ -4984,6 +4990,7 @@ def query_campaigns_list():
             FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
             WHERE media_type IN ('DISPLAY', 'VIDEO')
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND UPPER(creative_name) NOT LIKE '%SURVEY%'
             GROUP BY short_token
         ),
         -- Entrega de ontem (D-1) por mídia. Alimenta a coluna "Viewable
@@ -5012,6 +5019,7 @@ def query_campaigns_list():
             WHERE date = DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY)
               AND media_type IN ('DISPLAY', 'VIDEO')
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND UPPER(creative_name) NOT LIKE '%SURVEY%'
             GROUP BY short_token
         ),
         -- Brand Safety pre-bid (ABS) detection por mídia, cobrindo DV360, Xandr
@@ -5545,6 +5553,7 @@ def query_performers_for_period(window_from: date, window_to: date):
             WHERE date BETWEEN @from_date AND @to_date
               AND media_type IN ('DISPLAY', 'VIDEO')
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND UPPER(creative_name) NOT LIKE '%SURVEY%'
             GROUP BY short_token, media_type, date, line_name, creative_name
         ),
         agg AS (
@@ -5577,6 +5586,7 @@ def query_performers_for_period(window_from: date, window_to: date):
             WHERE date BETWEEN @from_date AND @to_date
               AND media_type IN ('DISPLAY', 'VIDEO')
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND UPPER(creative_name) NOT LIKE '%SURVEY%'
             GROUP BY short_token
         ),
         -- ABS detection: mesma estrutura de query_campaigns_list. Não filtra

@@ -433,6 +433,7 @@ def query_client_timeseries(weeks=12):
             FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
             WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL {int(weeks) * 7} DAY)
               AND UPPER(line_name) NOT LIKE '%SURVEY%'
+              AND UPPER(creative_name) NOT LIKE '%SURVEY%'
             GROUP BY client_name, week_start
         )
         SELECT client_name, week_start, vi

@@ -476,7 +476,16 @@ export function computeMediaPacing(rows, camp, mediaType, tactic = "ALL") {
 export function computeAggregates(data, mainRange, mainTactic = "ALL") {
   if (!data || !data.campaign) return null;
 
-  const noSurvey = (r) => !/survey/i.test(r.line_name || "");
+  // Filtra survey por line_name (regra principal) E por creative_name —
+  // alguns clientes (ex: Itaú/Médicos) colocam o criativo de survey
+  // (HYPR_SURVEY_*) dentro de uma line "normal" de Display, então só
+  // filtrar por line_name deixava esses criativos contaminarem totals
+  // e tabelas de distribuição. O backend já filtra antes de devolver,
+  // mas mantemos aqui como defense-in-depth (cache antigo / payloads
+  // de versões anteriores ainda em vôo).
+  const noSurvey = (r) =>
+    !/survey/i.test(r.line_name || "") &&
+    !/survey/i.test(r.creative_name || "");
   // mainTactic = "O2O" | "OOH" | "ALL". Filtro do "core product" da Visão
   // Geral. Aplicado na entrada (totals/daily/detail) pra que toda a árvore
   // de cálculo abaixo (proporção por membro, charts, sumários) trabalhe
@@ -847,7 +856,11 @@ function recomputeTotalsProportional(detail0, totalsRaw, camp, mainRange) {
 // membros) — eles não dependem do filtro de tempo, são da campanha como
 // um todo.
 function recomputeTotalsByMember(members, detail0, totalsRaw, mainRange) {
-  const noSurvey = (r) => !/survey/i.test(r.line_name || "");
+  // Mesma regra do noSurvey de cima (line_name + creative_name) — ver
+  // comentário em computeAggregates.
+  const noSurvey = (r) =>
+    !/survey/i.test(r.line_name || "") &&
+    !/survey/i.test(r.creative_name || "");
 
   // Pré-classifica cada membro:
   //   • fullCoverage: filtro engloba toda a janela do membro → contribui
