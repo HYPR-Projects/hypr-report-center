@@ -37,15 +37,26 @@
 //
 // negociadoComBonus
 //   CPM contratual recalculado contra (contracted + bonus). Quando
-//   presente E diferente do negociado, a card insere um 4º cell entre
-//   Negociado e Efetivo, expondo a economia REAL do deal (bonus
-//   reduz o CPM por impressão entregue). Pra campanhas sem bonus, é
-//   omitido e a card mantém o layout 3-cells original.
+//   presente E diferente do negociado, a card RESTRUTURA o layout em
+//   3 cells com semântica diferente, exibindo a trajetória real do
+//   deal (bonus é considerado parte do contrato):
 //
-//   A "Economia" continua comparando Negociado vs Efetivo (contrato
-//   formal). Sem isso, antes da entrega cruzar a faixa contratada o
-//   delta seria sempre "↑ X%" porque Efetivo > Negociado c/ Bonus,
-//   o que confundiria CS (campanha rodando dentro do esperado).
+//     ┌───────────────────┬────────────────────┬────────────┐
+//     │ CPM Tabela HYPR   │ Negociado Ajustado │ Efetivo    │
+//     │ (rate contrato    │ (rate considerando │ (entrega   │
+//     │  pré-bonus)       │  bonus)            │  real)     │
+//     └───────────────────┴────────────────────┴────────────┘
+//
+//   Drop da cell "Economia" nesse caso é proposital: comparar
+//   Efetivo contra Tabela mostra "Sem variação" enquanto bonus não
+//   roda (uninformativo); comparar contra Ajustado mostra "↑ 44%
+//   Variação" durante todo o período contratado (alarmista falso).
+//   A trajetória Tabela → Ajustado → Efetivo já comunica visualmente
+//   onde o cliente está vs onde o deal vai chegar.
+//
+//   Pra campanhas SEM bonus, mantém o layout 3-cells clássico
+//   (Negociado | Efetivo | Economia) — Economia é informativa quando
+//   não há bonus distorcendo o cálculo.
 
 import { Card } from "../../ui/Card";
 import { cn } from "../../ui/cn";
@@ -85,19 +96,16 @@ export function ComparisonCardV2({
       ? "Variação"
       : "Sem variação";
 
-  // Mostra a cell de "Negociado c/ Bonus" só quando o valor existe E
-  // é meaningfully diferente do negociado contratual (threshold de 1
-  // centavo evita ruído de arredondamento, ex: 14.397 vs 14.40).
-  const showBonusCell =
+  // Switch de layout: campanhas COM bonus mostram a trajetória
+  // Tabela → Ajustado → Efetivo (sem Economia — ver doc no topo).
+  // Campanhas SEM bonus mantêm Negociado | Efetivo | Economia. Threshold
+  // de 1 centavo evita falso-positivo por arredondamento.
+  const hasBonus =
     typeof negociadoComBonus === "number" &&
     negociadoComBonus > 0 &&
     typeof negociado === "number" &&
     negociado > 0 &&
     Math.abs(negociadoComBonus - negociado) >= 0.01;
-
-  // Layout responsivo: 3 ou 4 colunas conforme bonus presente. Mobile
-  // continua coluna única (1 cell por linha).
-  const gridCols = showBonusCell ? "md:grid-cols-4" : "md:grid-cols-3";
 
   return (
     <Card
@@ -111,36 +119,51 @@ export function ComparisonCardV2({
         <div className="text-[12px] font-medium text-fg-muted">{title}</div>
       </div>
 
-      {/* Strip 3 ou 4 cells iguais com dividers verticais em desktop;
+      {/* Strip 3 cells iguais com dividers verticais em desktop;
           coluna única com dividers horizontais em mobile.
           items-stretch + h-full nas cells garantem altura consistente
           do border-l mesmo se conteúdo quebrar linha. */}
-      <div className={cn(
-        "grid grid-cols-1 items-stretch divide-y md:divide-y-0 md:divide-x divide-border/60",
-        gridCols,
-      )}>
-        <ComparisonCell
-          label="Negociado"
-          value={hasValues ? formatValue(negociado) : "—"}
-          tone="muted"
-        />
-        {showBonusCell && (
-          <ComparisonCell
-            label="Negociado c/ Bonus"
-            value={formatValue(negociadoComBonus)}
-            tone="muted"
-          />
+      <div className="grid grid-cols-1 md:grid-cols-3 items-stretch divide-y md:divide-y-0 md:divide-x divide-border/60">
+        {hasBonus ? (
+          <>
+            {/* Trajetória pra campanhas com bonus negociado. Tabela
+                HYPR = CPM contratual cru; Ajustado = mesmo budget
+                contra (contracted + bonus); Efetivo = entrega real. */}
+            <ComparisonCell
+              label="CPM Tabela HYPR"
+              value={formatValue(negociado)}
+              tone="muted"
+            />
+            <ComparisonCell
+              label="Negociado Ajustado"
+              value={formatValue(negociadoComBonus)}
+              tone="muted"
+            />
+            <ComparisonCell
+              label="Efetivo"
+              value={hasValues ? formatValue(efetivo) : "—"}
+              tone="accent"
+            />
+          </>
+        ) : (
+          <>
+            <ComparisonCell
+              label="Negociado"
+              value={hasValues ? formatValue(negociado) : "—"}
+              tone="muted"
+            />
+            <ComparisonCell
+              label="Efetivo"
+              value={hasValues ? formatValue(efetivo) : "—"}
+              tone="accent"
+            />
+            <ComparisonCell
+              label={economyLabel}
+              value={economyDisplay}
+              tone={isEconomy ? "success" : isLoss ? "danger" : "muted"}
+            />
+          </>
         )}
-        <ComparisonCell
-          label="Efetivo"
-          value={hasValues ? formatValue(efetivo) : "—"}
-          tone="accent"
-        />
-        <ComparisonCell
-          label={economyLabel}
-          value={economyDisplay}
-          tone={isEconomy ? "success" : isLoss ? "danger" : "muted"}
-        />
       </div>
     </Card>
   );
