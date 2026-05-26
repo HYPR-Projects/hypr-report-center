@@ -22,7 +22,7 @@
 //   - Sincronizar com URL (popstate)
 //   - Renderizar loading state (Skeleton) e error state
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import "../v2.css";
 import "../../ui/typography";
@@ -227,6 +227,13 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   // troca de token sem reload, etc). Renderiza barra fina de progresso
   // sem mexer no skeleton inicial — UX de "algo tá vindo" sem flash.
   const [refreshing, setRefreshing] = useState(false);
+  // `switchingView` é um subset de `refreshing`: true só quando o usuário
+  // troca de view (clica em pill ou hits back/forward com ?view= diferente).
+  // Quando true, o conteúdo principal é dimado e fica não-clicável — sem
+  // isso o cliente vê dados do mês antigo enquanto carrega o novo (UX ruim
+  // descrita pelo usuário). Refetches passivos (mesmo view) NÃO disparam o
+  // dim — só a barrinha discreta.
+  const [switchingView, setSwitchingView] = useState(false);
 
   // 1ª carga (sem `data` ainda) e refetches em background entram no
   // contador global → barrinha no topo só aparece se demorar > 200ms.
@@ -297,17 +304,64 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     writeViewToUrl(v);
   };
 
+  // Ref pra detectar troca de view (vs. 1ª carga / refetch passivo). Comparar
+  // antes do fetch resolver evita race condition: se o usuário clica em pill
+  // duas vezes rápido, o cancelled flag descarta a primeira; o ref só
+  // atualiza quando a fetch certa resolve.
+  const loadedViewRef = useRef(view);
+  const loadedTokenRef = useRef(token);
+
+  // Cache em memória por (token, view) — revisitar uma view (ex: Mai → Abr
+  // → Mai) é instantâneo em vez de pagar ~1s de fetch de novo. Em ref pra
+  // não disparar re-render. Não há invalidação por TTL porque o payload
+  // dum report não muda durante a sessão do cliente; uploads admin acontecem
+  // em /admin/* (outra árvore React) e a navegação até /report/X é sempre
+  // page-load fresco. Reload da página zera o Map naturalmente.
+  const viewCacheRef = useRef(new Map());
+  const cacheKey = `${token}::${view ?? ""}`;
+
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
+
+    // Cache hit: aplica o payload direto, sem fetch e sem dim. É o caso
+    // comum quando o cliente alterna entre views já visitadas na sessão.
+    const cached = viewCacheRef.current.get(cacheKey);
+    if (cached) {
+      setData(cached);
+      loadedViewRef.current = view;
+      loadedTokenRef.current = token;
+      // Limpa erros de uma tentativa anterior (improvável, mas defensivo).
+      setError(null);
+      return;
+    }
+
     // Não chamamos setData(null) aqui — manter o payload anterior durante
-    // o refetch (ex: trocar de visão agregada → Fev) é UX melhor que flash
-    // de skeleton. Em vez disso, sinalizamos `refreshing=true` pra TopProgressBar.
+    // o refetch é melhor que flash de skeleton. Em troca de view, o dim
+    // overlay + spinner na pill cobrem a comunicação "carregando novo
+    // contexto" (ver switchingView).
     setRefreshing(true);
+
+    // Dim com delay: só dima o conteúdo se o fetch passar de 250ms. Pra
+    // requests rápidas (cache hit no backend, conexão boa), evita flicker
+    // visual a cada troca. Pra fetches lentos (1s+, caso típico hoje),
+    // sinaliza claramente "tô carregando" sem deixar dado antigo visível.
+    const isViewSwitch =
+      loadedTokenRef.current === token && loadedViewRef.current !== view;
+    let dimTimer = null;
+    if (isViewSwitch) {
+      dimTimer = setTimeout(() => {
+        if (!cancelled) setSwitchingView(true);
+      }, 250);
+    }
+
     getCampaign(token, view ? { view } : undefined)
       .then((d) => {
         if (cancelled) return;
+        viewCacheRef.current.set(cacheKey, d);
         setData(d);
+        loadedViewRef.current = view;
+        loadedTokenRef.current = token;
         gaPageView(`/report/${token}`, token);
       })
       .catch((e) => {
@@ -316,12 +370,15 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
       })
       .finally(() => {
         if (cancelled) return;
+        if (dimTimer) clearTimeout(dimTimer);
         setRefreshing(false);
+        setSwitchingView(false);
       });
     return () => {
       cancelled = true;
+      if (dimTimer) clearTimeout(dimTimer);
     };
-  }, [token, view]);
+  }, [token, view, cacheKey]);
 
   useEffect(() => {
     const onPop = () => {
@@ -553,6 +610,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
             mergeMeta={data.merge_meta}
             currentView={view}
             onViewChange={setView}
+            switchingView={switchingView}
             isBonusOnly={isBonusOnly}
             legacyTotals={(data.totals || [])[0]}
             reportData={data}
@@ -563,7 +621,20 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
               Mobile: stack vertical — tabs em scroll horizontal full-width na 1ª
               linha, filtros embaixo. Desktop: row única com filtros à direita.
               border-b vai no container externo pra ficar contínuo entre tabs
-              e o espaço dos filtros (visual de tab bar única). */}
+              e o espaço dos filtros (visual de tab bar única).
+
+              `switchingView`: durante troca de view (mês → agregada, etc) o
+              container aqui é dimado e fica não-clicável. Sem isso o cliente
+              veria dados/tabs do mês antigo enquanto o novo carrega (UX
+              confusa). O CampaignHeaderV2 acima FICA fora desse wrapper —
+              pills continuam clicáveis pra usuário corrigir/cancelar. */}
+          <div
+            className={[
+              "relative transition-opacity duration-200",
+              switchingView ? "opacity-40 pointer-events-none select-none" : "",
+            ].join(" ")}
+            aria-busy={switchingView || undefined}
+          >
           <Tabs value={effectiveTab} onValueChange={setTab}>
             <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3 md:gap-4 border-b border-border">
               <TabsList variant="underline" className="border-b-0 -mx-4 md:mx-0 px-4 md:px-0">
@@ -739,6 +810,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
               />
             </TabsContent>
           </Tabs>
+          </div>
         </div>
       </div>
     </TooltipProvider>

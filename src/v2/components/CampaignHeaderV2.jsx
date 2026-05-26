@@ -69,6 +69,12 @@ export function CampaignHeaderV2({
   mergeMeta = null,
   currentView = null,
   onViewChange,
+  // `switchingView`: true enquanto o fetch de uma nova view (mês ou
+  // agregada) está em vôo. Propagado pro MergeViewSwitcher pra renderizar
+  // spinner na pill clicada e dim/disable nas outras — feedback imediato
+  // de que o sistema reagiu, sem o usuário ficar olhando dados do report
+  // antigo achando que nada aconteceu.
+  switchingView = false,
   isBonusOnly = false,
   // Totals legacy do checklist_info (data.totals[0]) — usado pelo
   // NegotiationModal pra preencher OOH/Display/Video que o Sales Center
@@ -254,6 +260,7 @@ export function CampaignHeaderV2({
               activeToken={mergeMeta.active_token}
               currentView={currentView}
               onChange={onViewChange}
+              switchingView={switchingView}
               isEnded={status.label === "Encerrada"}
             />
           )}
@@ -527,7 +534,7 @@ function MergeIcon({ className }) {
 //                        no UI, o pill do active_token vem destacado.
 // Click em qualquer pill atualiza URL e o ClientDashboardV2 refaz o fetch.
 // ─────────────────────────────────────────────────────────────────────────────
-function MergeViewSwitcher({ members, activeToken, currentView, onChange, isEnded = false }) {
+function MergeViewSwitcher({ members, activeToken, currentView, onChange, switchingView = false, isEnded = false }) {
   // Ordem desc por start_date — mais recente primeiro. Cliente abre o
   // report e vê o mês atual em destaque, com os anteriores em ordem
   // decrescente. A agregada vem por último (resumo do conjunto).
@@ -557,6 +564,8 @@ function MergeViewSwitcher({ members, activeToken, currentView, onChange, isEnde
             sublabel={<CopyableToken token={m.short_token} selected={selected} />}
             selected={selected}
             badge={isActive && !isEnded ? "atual" : null}
+            loading={switchingView && selected}
+            disabled={switchingView && !selected}
             onClick={() => onChange?.(m.short_token)}
           />
         );
@@ -565,24 +574,35 @@ function MergeViewSwitcher({ members, activeToken, currentView, onChange, isEnde
         label="Visão agregada"
         sublabel="todos os meses"
         selected={isAggregatedSelected}
+        loading={switchingView && isAggregatedSelected}
+        disabled={switchingView && !isAggregatedSelected}
         onClick={() => onChange?.("aggregated")}
       />
     </div>
   );
 }
 
-function ViewPill({ label, sublabel, selected, badge, onClick }) {
+function ViewPill({ label, sublabel, selected, badge, loading = false, disabled = false, onClick }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled || loading}
+      aria-busy={loading || undefined}
       className={[
-        "inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-semibold border transition-colors cursor-pointer",
+        "inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-semibold border transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
         selected
-          ? "bg-signature text-white border-signature hover:bg-signature-hover"
-          : "bg-surface-2 text-fg-muted border-border hover:text-fg hover:bg-surface-3 hover:border-signature/40",
-      ].join(" ")}
+          ? "bg-signature text-white border-signature"
+          : "bg-surface-2 text-fg-muted border-border",
+        // Hover só fora de transição — durante switchingView a pill fica
+        // travada (loading na selecionada, disabled nas outras).
+        !disabled && !loading && (selected
+          ? "hover:bg-signature-hover cursor-pointer"
+          : "hover:text-fg hover:bg-surface-3 hover:border-signature/40 cursor-pointer"),
+        disabled && "opacity-50 cursor-not-allowed",
+        loading && "cursor-wait",
+      ].filter(Boolean).join(" ")}
     >
       <span>{label}</span>
       {sublabel && (
@@ -596,7 +616,9 @@ function ViewPill({ label, sublabel, selected, badge, onClick }) {
           {sublabel}
         </span>
       )}
-      {badge && (
+      {loading ? (
+        <PillSpinner selected={selected} />
+      ) : badge ? (
         <span
           className={[
             "text-[8.5px] uppercase tracking-widest font-bold px-1 py-px rounded",
@@ -607,8 +629,42 @@ function ViewPill({ label, sublabel, selected, badge, onClick }) {
         >
           {badge}
         </span>
-      )}
+      ) : null}
     </button>
+  );
+}
+
+// Spinner inline pra estado de troca de view. Tamanho propositalmente
+// pequeno (10px) pra ocupar a mesma "footprint" visual que o badge "atual"
+// — evita reflow nas outras pills quando alterna entre estados.
+function PillSpinner({ selected }) {
+  return (
+    <svg
+      className={[
+        "animate-spin",
+        selected ? "text-white" : "text-fg-muted",
+      ].join(" ")}
+      width="10"
+      height="10"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeOpacity="0.25"
+      />
+      <path
+        d="M22 12a10 10 0 0 1-10 10"
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeLinecap="round"
+      />
+    </svg>
   );
 }
 
