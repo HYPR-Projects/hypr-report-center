@@ -16,7 +16,7 @@
 // na barra da DataTableV2 sem dominar visualmente. AudienceFilterV2 (h-9)
 // é usado nas abas Display/Video onde os filtros são protagonistas.
 
-import { useId } from "react";
+import { useId, useMemo, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { cn } from "../../ui/cn";
 
@@ -27,13 +27,32 @@ export function TableMultiSelectFilter({
   selected,        // string[] — subset de `options`
   onChange,        // (newSelected: string[]) => void
   icon,            // ReactNode — SVG opcional (mesmo "slot" do AudienceFilterV2)
-  formatLabel,     // (opt: string) => string — opcional, customiza display de cada item
+  formatLabel,     // (opt: string) => string — opcional, customiza display do trigger
+                   // e dos itens (a menos que formatItem seja passado).
+  formatItem,      // (opt: string) => string — opcional, override só pros itens
+                   // do popover. Usado quando o trigger precisa de label curto
+                   // mas o popover deve mostrar o nome completo (ex: Line).
   popoverWidth = 280, // px — default 280, bump pra line_names longos
   triggerMaxWidth = 240, // px — default 240, bump quando label do selected é longo
+  wrapItems = false,  // se true, items podem quebrar linha (úteis pra line_names
+                      // longos onde truncate esconderia info crítica)
+  searchable = false, // se true, mostra input de busca no topo do popover
+                      // (substring case-insensitive sobre o opt cru, não sobre
+                      // formatItem — assim o usuário busca pelo nome real)
 }) {
   const headerId = useId();
   const isActive = selected.length > 0;
   const display = formatLabel || ((s) => s);
+  const displayItem = formatItem || display;
+
+  // Search query — só ativo quando searchable=true. Reset ao fechar o
+  // popover via onOpenChange.
+  const [query, setQuery] = useState("");
+  const filteredOptions = useMemo(() => {
+    if (!searchable || !query.trim()) return options;
+    const q = query.trim().toLowerCase();
+    return options.filter((opt) => opt.toLowerCase().includes(q));
+  }, [options, query, searchable]);
 
   const triggerLabel = !isActive
     ? label
@@ -50,7 +69,7 @@ export function TableMultiSelectFilter({
 
   return (
     <div className="inline-flex items-center gap-1.5">
-      <Popover.Root>
+      <Popover.Root onOpenChange={(open) => { if (!open) setQuery(""); }}>
         <Popover.Trigger asChild>
           <button
             type="button"
@@ -122,13 +141,67 @@ export function TableMultiSelectFilter({
               )}
             </div>
 
+            {searchable && (
+              // Search box no topo do popover. Radix dá autofocus pro 1º
+              // interactive child quando abre — pega no input naturalmente.
+              // Substring case-insensitive sobre o opt cru (o user digita o
+              // que vê na tabela, não o label truncado).
+              <div className="px-3 py-2 border-b border-border bg-surface-2">
+                <div className="relative">
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    aria-hidden="true"
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-subtle pointer-events-none"
+                  >
+                    <circle cx="7" cy="7" r="4.5" />
+                    <path d="M11 11l3 3" />
+                  </svg>
+                  <input
+                    type="text"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Buscar..."
+                    aria-label={`Buscar ${label.toLowerCase()}`}
+                    className={cn(
+                      "w-full h-8 pl-7 pr-7 rounded-md text-xs",
+                      "bg-surface border border-border text-fg",
+                      "placeholder:text-fg-subtle",
+                      "focus:outline-none focus:border-signature/60 focus:ring-1 focus:ring-signature/40",
+                    )}
+                  />
+                  {query && (
+                    <button
+                      type="button"
+                      onClick={() => setQuery("")}
+                      aria-label="Limpar busca"
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 w-5 h-5 inline-flex items-center justify-center rounded-full text-fg-subtle hover:text-fg hover:bg-surface-strong transition-colors cursor-pointer"
+                    >
+                      <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                        <path d="M2 2L10 10M10 2L2 10" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="overflow-y-auto flex-1">
               {options.length === 0 ? (
                 <div className="px-4 py-6 text-center text-xs text-fg-subtle">
                   Sem opções disponíveis.
                 </div>
+              ) : filteredOptions.length === 0 ? (
+                <div className="px-4 py-6 text-center text-xs text-fg-subtle">
+                  Nenhum resultado para "{query}".
+                </div>
               ) : (
-                options.map((opt) => {
+                filteredOptions.map((opt) => {
                   const checked = selected.includes(opt);
                   return (
                     <label
@@ -177,13 +250,18 @@ export function TableMultiSelectFilter({
                       </span>
                       <span
                         className={cn(
-                          "text-xs flex-1 min-w-0 truncate",
+                          "text-xs flex-1 min-w-0",
+                          // wrapItems: nomes longos (line_name) quebram em
+                          // várias linhas com break-all (porque _ não é
+                          // break point natural pro browser). Sem isso o
+                          // truncate cortaria info crítica do meio do nome.
+                          wrapItems ? "break-all leading-snug" : "truncate",
                           checked
                             ? "text-fg font-semibold"
                             : "text-fg-muted font-normal",
                         )}
                       >
-                        {display(opt)}
+                        {displayItem(opt)}
                       </span>
                     </label>
                   );

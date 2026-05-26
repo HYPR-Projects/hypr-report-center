@@ -202,16 +202,23 @@ export function DataTableV2({ detail, campaignName }) {
             options={lineOptions}
             selected={lines}
             onChange={setLines}
-            // Line names podem ter 100+ chars em campanhas reais (Itaú, etc).
-            // Popover maior (380) deixa mais legível; label encurtado pros
-            // últimos 3 segmentos quando passa de 3 (mesma convenção do
-            // AudienceFilterV2). Hover do <label> mostra nome completo via
-            // `title` (já implementado no TableMultiSelectFilter).
-            popoverWidth={380}
-            triggerMaxWidth={320}
+            // Line names podem ter 100+ chars em campanhas reais (Itaú etc).
+            // Estratégia:
+            //   - Popover bumpado pra 420px (mais respiro horizontal)
+            //   - wrapItems: itens quebram em várias linhas, mostrando o
+            //     nome COMPLETO em vez de truncar
+            //   - formatLabel só aplica ao trigger (pill compacto), via
+            //     últimos 4 segmentos — formatItem não passado, então
+            //     popover mostra raw line_name por completo
+            //   - searchable: line names são longos e parecidos; busca por
+            //     substring resolve "qual era a line que tinha CONGRESSO?"
+            popoverWidth={420}
+            triggerMaxWidth={360}
+            wrapItems={true}
+            searchable={true}
             formatLabel={(ln) => {
               const parts = ln.split("_");
-              return parts.length > 3 ? "…_" + parts.slice(-3).join("_") : ln;
+              return parts.length > 4 ? "…_" + parts.slice(-4).join("_") : ln;
             }}
             icon={
               <svg
