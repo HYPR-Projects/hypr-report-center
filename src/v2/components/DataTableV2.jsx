@@ -111,6 +111,23 @@ export function DataTableV2({ detail, campaignName }) {
 
   const visible = filtered.slice(0, ROW_LIMIT);
 
+  // Totais agregados das colunas numéricas. Calculado sobre `filtered`
+  // (NÃO `visible`) — quando há mais de ROW_LIMIT rows, a tabela mostra
+  // só as primeiras 200 mas o total ainda reflete o conjunto inteiro.
+  // Sem isso, o "TOTAL" mentiria pra qualquer filtro com >200 resultados.
+  const totals = useMemo(() => {
+    const acc = {};
+    for (const col of COLUMNS) {
+      if (col.numeric) acc[col.key] = 0;
+    }
+    for (const r of filtered) {
+      for (const col of COLUMNS) {
+        if (col.numeric) acc[col.key] += Number(r[col.key]) || 0;
+      }
+    }
+    return acc;
+  }, [filtered]);
+
   // trackCta vem do contexto montado pelo ClientDashboardV2; noop fora
   // dele (preview/teste isolado).
   const { trackCta } = useReportTrackingContext();
@@ -298,6 +315,43 @@ export function DataTableV2({ detail, campaignName }) {
               ))
             )}
           </tbody>
+          {/* Linha de TOTAL — sticky no fundo do scroll container, sempre
+              visível enquanto o usuário rola pela tabela. Soma é sobre
+              `filtered` (todas as rows que passam pelos filtros), não
+              `visible` (que pode estar truncado em ROW_LIMIT). Sem isso,
+              o total mentiria pra filtros com >200 resultados.
+              Atualiza automaticamente quando audiences/sizes/formats mudam
+              via re-render → useMemo recompute. */}
+          {filtered.length > 0 && (
+            <tfoot className="sticky bottom-0 z-10">
+              <tr>
+                {COLUMNS.map((c, i) => {
+                  // Primeira coluna textual recebe o label "TOTAL".
+                  // Outras colunas textuais ficam vazias (espaço pro número
+                  // alinhar visualmente com os headers numéricos à direita).
+                  const isFirstText = !c.numeric && i === 0;
+                  return (
+                    <td
+                      key={c.key}
+                      className={cn(
+                        "px-3 py-2.5 text-xs whitespace-nowrap font-bold",
+                        "bg-surface-strong text-fg border-t-2 border-border-strong",
+                        c.numeric
+                          ? "text-right tabular-nums"
+                          : "text-left",
+                      )}
+                    >
+                      {c.numeric
+                        ? fmt(totals[c.key])
+                        : isFirstText
+                        ? "TOTAL"
+                        : ""}
+                    </td>
+                  );
+                })}
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
 
