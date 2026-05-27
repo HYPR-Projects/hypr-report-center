@@ -5117,6 +5117,34 @@ def query_campaigns_list():
                 MAX(IF(media_type = 'VIDEO',   TRUE, FALSE)) AS video_has_abs
             FROM abs_signals
             GROUP BY short_token
+        ),
+        -- Custo TOTAL incluindo lines de survey — ADMIN-ONLY, usado pelo
+        -- KPI strip (tech cost agregado) e pela coluna Custo/Tech do
+        -- diagnostico. Survey custa dinheiro real no DSP e sai da carteira
+        -- HYPR, então pra visão de margem da operação ele PRECISA entrar.
+        --
+        -- Decisão: NÃO mexer no `admin_total_cost` da CTE `unified` (que ja
+        -- exclui survey). Aquele campo alimenta o eCPM (cost/impressions),
+        -- que precisa de cost E impressions ambos sem survey pra ratio
+        -- fazer sentido. Tech cost usa outro denominador (PI cliente em
+        -- R$, não em impressions), então pode incluir survey no numerador
+        -- sem distorcer a matematica.
+        --
+        -- Pacing, BID, CTR, VTR, viewability continuam sem survey (usam
+        -- viewable_impressions da `unified` que mantem filtro de survey).
+        -- Report do cliente NÃO usa essa CTE — endpoint single-token
+        -- tem sua propria query que mantem survey fora.
+        unified_cost_full AS (
+            SELECT
+                short_token,
+                SUM(total_cost)                              AS admin_total_cost_full,
+                SUM(IF(media_type='DISPLAY', total_cost, 0)) AS d_admin_total_cost_full,
+                SUM(IF(media_type='VIDEO',   total_cost, 0)) AS v_admin_total_cost_full
+            FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+            WHERE media_type IN ('DISPLAY', 'VIDEO')
+              -- INTENCIONAL: sem filtro de SURVEY/CONTROLE/EXPOSTO aqui.
+              -- Survey faz parte do custo real DSP — admin precisa ver.
+            GROUP BY short_token
         )
         SELECT
             b.short_token, b.client_name, b.campaign_name,
@@ -5141,6 +5169,7 @@ def query_campaigns_list():
             u.v_admin_total_cost,     u.v_admin_impressions,
             yd.d_yesterday_viewable,  yd.v_yesterday_completions,
             l7.d_last7d_viewable,     l7.v_last7d_completions,
+            uf.admin_total_cost_full, uf.d_admin_total_cost_full, uf.v_admin_total_cost_full,
             ab.display_has_abs,       ab.video_has_abs
         FROM base b
         LEFT JOIN agg                a USING (short_token)
@@ -5148,6 +5177,7 @@ def query_campaigns_list():
         LEFT JOIN unified            u USING (short_token)
         LEFT JOIN yesterday_delivery yd USING (short_token)
         LEFT JOIN last7d_delivery    l7 USING (short_token)
+        LEFT JOIN unified_cost_full  uf USING (short_token)
         LEFT JOIN campaign_abs       ab USING (short_token)
         ORDER BY b.start_date DESC
     """
@@ -5391,6 +5421,23 @@ def query_campaigns_list():
             entry["admin_total_cost"] = round(admin_total_cost, 2)
             entry["admin_impressions"] = admin_impressions
             entry["admin_ecpm"] = round(admin_total_cost / admin_impressions * 1000, 2)
+
+        # Custo TOTAL incluindo lines de survey — admin-only. Usado SOMENTE
+        # pelo calculo de Tech Cost (numerador do `cost / client_budget`).
+        # NÃO usar pra eCPM: o denominador `admin_impressions` ignora survey,
+        # então misturar inflaria o eCPM artificialmente. Tech cost usa PI
+        # cliente em R$, então survey entra sem distorcer a matematica.
+        # Frontend faz fallback pro `admin_total_cost` (sem survey) quando o
+        # campo `_full` esta ausente — graceful degradation pre-deploy.
+        admin_total_cost_full   = float(r["admin_total_cost_full"]   or 0)
+        d_admin_cost_full       = float(r["d_admin_total_cost_full"] or 0)
+        v_admin_cost_full       = float(r["v_admin_total_cost_full"] or 0)
+        if admin_total_cost_full > 0:
+            entry["admin_total_cost_full"]   = round(admin_total_cost_full,   2)
+        if d_admin_cost_full > 0:
+            entry["d_admin_total_cost_full"] = round(d_admin_cost_full,       2)
+        if v_admin_cost_full > 0:
+            entry["v_admin_total_cost_full"] = round(v_admin_cost_full,       2)
 
         # eCPM por mídia (admin-only, mesmo conceito do admin_ecpm — custo cru
         # do DSP / impressions gross). Usado pelo Top Performers que avalia

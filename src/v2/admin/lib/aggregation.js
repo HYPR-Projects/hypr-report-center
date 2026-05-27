@@ -257,13 +257,18 @@ function aggregateMetrics(set) {
   const dCostImpr  = sumField(set, "d_admin_impressions");
   const vCost      = sumField(set, "v_admin_total_cost");
   const vCostImpr  = sumField(set, "v_admin_impressions");
-  // Tech Cost agregado = Σ custo cru DSP / Σ valor PI cliente × 100.
+  // Custo COM survey — usado SÓ pro tech cost (não pro eCPM, que precisa
+  // de cost e impressions ambos sem survey pra ratio fazer sentido).
+  // Fallback pro admin_total_cost sem survey enquanto backend não tem o
+  // campo `_full` (pre-deploy ou cache antigo).
+  const costFull = sumField(set, "admin_total_cost_full") || cost;
+  // Tech Cost agregado = Σ custo cru DSP (com survey) / Σ valor PI cliente × 100.
   // Backend emite d_client_budget/v_client_budget só pra campanhas com
   // CPM/CPCV e contratado > 0 — então campanhas 100% bonificadas ou sem
   // checklist somam 0 no denominador e ficam fora do agregado naturalmente.
   // Mesma lógica que o tier do diagnostico — mas global em vez de por
-  // campanha. Delta vs cohort de 30d mostra se a operação como um todo
-  // tá comendo mais ou menos margem ao longo do tempo.
+  // campanha. Survey entra no numerador (sai da carteira HYPR) mas não
+  // no denominador (PI cliente não fatura survey).
   const clientBudget = sumField(set, "d_client_budget") + sumField(set, "v_client_budget");
 
   return {
@@ -274,7 +279,7 @@ function aggregateMetrics(set) {
     ecpm:         impr      > 0 ? (cost  / impr)     * 1000 : null,
     ecpm_display: dCostImpr > 0 ? (dCost / dCostImpr) * 1000 : null,
     ecpm_video:   vCostImpr > 0 ? (vCost / vCostImpr) * 1000 : null,
-    tech_cost:    clientBudget > 0 ? (cost / clientBudget) * 100 : null,
+    tech_cost:    clientBudget > 0 ? (costFull / clientBudget) * 100 : null,
   };
 }
 
@@ -300,7 +305,9 @@ function aggregateProjectedTechCost(set) {
     const dBudget = Number(c.d_client_budget) || 0;
     const vBudget = Number(c.v_client_budget) || 0;
     const budget  = dBudget + vBudget;
-    const realCost = Number(c.admin_total_cost) || 0;
+    // Custo com survey (mesma régua do tech cost agregado). Fallback pro
+    // admin_total_cost sem survey enquanto backend não tem `_full`.
+    const realCost = Number(c.admin_total_cost_full) || Number(c.admin_total_cost) || 0;
     if (budget <= 0 || realCost <= 0) continue;
     if (!c.start_date || !c.end_date) continue;
 

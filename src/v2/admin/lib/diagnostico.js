@@ -623,18 +623,32 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
 //
 // Tech Cost
 // ─────────
-//   numerador   = custo real DSP HYPR (d_admin_total_cost / v_admin_total_cost)
+//   numerador   = custo real DSP HYPR INCLUINDO survey
+//                 (d_admin_total_cost_full / v_admin_total_cost_full)
 //   denominador = valor PI cliente daquela mídia (d_client_budget / v_client_budget,
 //                 calculado server-side como `contracted × CPM/CPCV` SEM bônus)
+//
+// Survey entra no numerador porque sai da carteira HYPR (custo real DSP)
+// — admin precisa enxergar isso pra detectar campanhas onde survey tá
+// inflando tech cost. Não entra no eCPM (que usa numerador e denominador
+// ambos sem survey, pra ratio fazer sentido).
+//
+// Fallback: backend antigo sem campo `_full` cai pro `*_admin_total_cost`
+// sem survey. Não quebra, só não captura o custo de survey ate redeploy.
 //
 // Campanhas 100% bonificadas, single-media, ou sem CPM/CPCV preenchido na
 // checklist saem do backend sem `*_client_budget` → Tech Cost = null → UI "—".
 function computeFinancials(campaign, media) {
   const isDisplay = media === "display";
 
-  const realEcpm      = isDisplay ? (campaign.display_ecpm       ?? null) : (campaign.video_ecpm        ?? null);
-  const realTotalCost = isDisplay ? (campaign.d_admin_total_cost ?? null) : (campaign.v_admin_total_cost ?? null);
-  const clientBudget  = isDisplay ? (campaign.d_client_budget    ?? null) : (campaign.v_client_budget    ?? null);
+  const realEcpm     = isDisplay ? (campaign.display_ecpm ?? null) : (campaign.video_ecpm ?? null);
+  // realTotalCost (coluna Custo + numerador do tech cost) com survey
+  // incluso, com fallback pro campo sem survey enquanto backend não
+  // redeployou.
+  const realTotalCost = isDisplay
+    ? (campaign.d_admin_total_cost_full ?? campaign.d_admin_total_cost ?? null)
+    : (campaign.v_admin_total_cost_full ?? campaign.v_admin_total_cost ?? null);
+  const clientBudget  = isDisplay ? (campaign.d_client_budget ?? null) : (campaign.v_client_budget ?? null);
 
   const techCostPct = (realTotalCost != null && clientBudget != null && clientBudget > 0)
     ? (realTotalCost / clientBudget) * 100
