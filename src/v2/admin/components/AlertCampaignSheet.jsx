@@ -617,6 +617,138 @@ function CriticalLines({ shortToken, hasAbsDisplay, hasAbsVideo }) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// Survey lines acima da régua — operação HYPR teto R$ 1.000 por line
+// ────────────────────────────────────────────────────────────────────────
+//
+// Survey nunca entra em "Lines Críticas" (que avalia CPM/CTR/VTR/viewability,
+// e survey é excluído dessas métricas). Mas survey custa dinheiro real, sai
+// da carteira HYPR e entra no tech cost — então precisa de visibilidade
+// própria pra admin detectar quando tá inflando margem.
+//
+// Régua operacional: R$ 1.000 por line de survey por campanha. Acima disso
+// flag pra revisão. Em campanha com várias lines de survey, é comum 1 ou 2
+// passarem do teto — não necessariamente é erro, mas precisa decisão.
+//
+// Detecção espelha o filtro SQL do backend ([main.py:5021](unified CTE)):
+//   line_name match SURVEY|_(CONTROLE|EXPOSTO)(_|$)  OU
+//   creative_name contém SURVEY
+const SURVEY_COST_THRESHOLD = 1000;
+
+function isSurveyLine(line) {
+  const lname = String(line.line_name || "").toUpperCase();
+  if (/SURVEY/.test(lname)) return true;
+  if (/_(?:CONTROLE|EXPOSTO)(?:_|$)/.test(lname)) return true;
+  const cname = String(line.creative_name || "").toUpperCase();
+  if (/SURVEY/.test(cname)) return true;
+  return false;
+}
+
+function SurveyLines({ shortToken }) {
+  const [state, setState] = useState({ loading: true, lines: [], error: null });
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ loading: true, lines: [], error: null });
+    getCampaignLines({ short_token: shortToken })
+      .then((lines) => {
+        if (cancelled) return;
+        setState({ loading: false, lines: lines || [], error: null });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setState({ loading: false, lines: [], error: err.message || String(err) });
+      });
+    return () => { cancelled = true; };
+  }, [shortToken]);
+
+  // Filtra survey + ordena por gasto desc. Inclui TODAS as survey (acima e
+  // abaixo do teto) pra dar contexto — admin precisa ver "as 3 surveys
+  // gastaram R$ X total, sendo Y acima da régua".
+  const surveyLines = useMemo(() => {
+    const out = [];
+    for (const l of state.lines) {
+      if (!isSurveyLine(l)) continue;
+      const cost = Number(l.admin_total_cost ?? l.total_cost) || 0;
+      if (cost <= 0) continue;
+      out.push({ ...l, cost });
+    }
+    out.sort((a, b) => b.cost - a.cost);
+    return out;
+  }, [state.lines]);
+
+  const acimaTeto = useMemo(
+    () => surveyLines.filter((l) => l.cost > SURVEY_COST_THRESHOLD),
+    [surveyLines]
+  );
+  const totalSurveyCost = useMemo(
+    () => surveyLines.reduce((s, l) => s + l.cost, 0),
+    [surveyLines]
+  );
+
+  // Strip prefixo comum (mesma lógica de CriticalLines).
+  const commonPrefix = useMemo(
+    () => longestCommonPrefix(surveyLines.map((l) => l.line_name || "")),
+    [surveyLines]
+  );
+  const cleanName = (name) => {
+    if (!name) return "—";
+    if (!commonPrefix) return name;
+    return name.startsWith(commonPrefix) ? name.slice(commonPrefix.length) : name;
+  };
+
+  if (state.loading) return null; // já temos loading no CriticalLines acima
+  if (state.error) return null;   // erro já mostrado no CriticalLines
+  if (surveyLines.length === 0) return null; // sem survey, esconde a seção inteira
+
+  return (
+    <section className="space-y-2">
+      <div>
+        <h3 className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
+          Survey acima da régua
+        </h3>
+        <p className="mt-1 text-[11px] text-fg-muted leading-snug">
+          Régua HYPR: máx <strong>{formatBrlRow(SURVEY_COST_THRESHOLD, 0)}</strong> por
+          line de survey. {surveyLines.length} survey{surveyLines.length > 1 ? "s" : ""} nessa
+          campanha, total {formatBrlRow(totalSurveyCost, 0)}.
+          {acimaTeto.length > 0 && (
+            <> <span className="text-danger font-semibold">{acimaTeto.length} acima do teto.</span></>
+          )}
+        </p>
+      </div>
+      <div className="rounded-lg border border-border bg-surface overflow-hidden">
+        <ul className="divide-y divide-border/40">
+          {surveyLines.map((l, i) => {
+            const acima = l.cost > SURVEY_COST_THRESHOLD;
+            return (
+              <li key={`survey-${l.line_name}-${i}`} className="px-3 py-2.5 flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[12px] font-semibold text-fg truncate" title={l.line_name}>
+                    {cleanName(l.line_name)}
+                  </p>
+                </div>
+                <div className="shrink-0 text-right">
+                  <p
+                    className={cn(
+                      "text-[12px] font-bold tabular-nums",
+                      acima ? "text-danger" : "text-fg-muted"
+                    )}
+                    title={acima
+                      ? `R$ ${(l.cost - SURVEY_COST_THRESHOLD).toFixed(0)} acima do teto`
+                      : "Dentro da régua"}
+                  >
+                    {formatBrlRow(l.cost, 0)}
+                  </p>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </section>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // Componente principal
 // ────────────────────────────────────────────────────────────────────────
 /**
@@ -792,6 +924,11 @@ export function AlertCampaignSheet({
               hasAbsVideo={!!campaign.video_has_abs}
             />
           </section>
+
+          {/* ── Survey acima da régua (R$ 1.000) ────────────────────────
+              Renderiza condicional: se não há survey na campanha, o
+              componente devolve null e a seção some inteira. */}
+          <SurveyLines shortToken={campaign.short_token} />
         </DrawerBody>
 
         <DrawerFooter>
