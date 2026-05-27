@@ -926,6 +926,11 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
       vid_pacing:   m.vid_pacing,
       ctr:          m.ctr,
       vtr:          m.vtr,
+      // Tech cost médio do CS = Σ admin_total_cost_full / Σ client_budget
+      // sobre as campanhas ativas dele. Inclui survey (régua admin).
+      // Métrica cosmética — NÃO entra no cálculo do score (que é só
+      // pacing/eCPM/CTR/VTR). Aparece como coluna informativa no ranking.
+      tech_cost:    m.tech_cost,
       // Breakdown agregado por categoria (pts médios ponderados / max realista).
       breakdown: weightSum > 0 ? {
         pacing_pts: pacingPtsSum / weightSum,

@@ -85,6 +85,16 @@ function toneVtr(value) {
   return value >= 80 ? "success" : "danger";
 }
 
+// Tech cost agregado do CS — mesma régua do KPI strip (toneTechCost em
+// MetricStrip.jsx). Sem distinção ABS porque é média ponderada de várias
+// campanhas, mistura é a regra.
+function toneTechCost(value) {
+  if (value == null) return "muted";
+  if (value <= 8)  return "success";
+  if (value <= 10) return "warning";
+  return "danger";
+}
+
 const BAR_BG = {
   success:   "bg-success",
   signature: "bg-signature",
@@ -157,6 +167,7 @@ function PerformerRow({ rank, performer, displayName, scorePrev, onClick }) {
   const {
     email, score, breakdown: bd, campaign_count, ideal_pacing_count,
     dsp_pacing, vid_pacing, ctr, vtr, ecpm_display, ecpm_video, ecpm_avg,
+    tech_cost,
   } = performer;
   // Fallback: payload antigo (sem split por mídia) cai no ecpm_avg como
   // se fosse Display — VideoecPM fica null e renderiza "—" sem cor.
@@ -236,16 +247,17 @@ function PerformerRow({ rank, performer, displayName, scorePrev, onClick }) {
         />
       </div>
 
-      {/* Métricas agregadas. Mobile: grid 3 cols (cabe Pacing DSP/VID/CTR
-          em uma linha, VTR/eCPM Disp/Vid na outra). Desktop: 6 cols
-          inline com divisor vertical (border-l no MicroMetric). */}
-      <div className="grid grid-cols-3 lg:flex-1 lg:grid-cols-6 gap-x-3 gap-y-2 min-w-0 pl-8 lg:pl-0">
+      {/* Métricas agregadas. Mobile: grid 3 cols (com 7 métricas a última
+          fica solo na 3ª linha). Desktop: 7 cols inline com divisor
+          vertical (border-l no MicroMetric). */}
+      <div className="grid grid-cols-3 lg:flex-1 lg:grid-cols-7 gap-x-3 gap-y-2 min-w-0 pl-8 lg:pl-0">
         <MicroMetric label="Pacing DSP" value={formatPctInt(dsp_pacing)} tone={tonePacing(dsp_pacing)} />
         <MicroMetric label="Pacing VID" value={formatPctInt(vid_pacing)} tone={tonePacing(vid_pacing)} />
         <MicroMetric label="CTR"        value={formatPctTwo(ctr)}        tone={toneCtr(ctr)} />
         <MicroMetric label="VTR"        value={formatPctTwo(vtr)}        tone={toneVtr(vtr)} />
         <MicroMetric label="eCPM Disp"  value={formatBRL(ecpmDisplay)}   tone={toneEcpm(ecpmDisplay)} />
         <MicroMetric label="eCPM Vid"   value={formatBRL(ecpmVideo)}     tone="fg" />
+        <MicroMetric label="Tech Cost"  value={formatPctTwo(tech_cost)}  tone={toneTechCost(tech_cost)} />
       </div>
 
       {/* Score desktop (barra + número juntos, à direita). Some no mobile
