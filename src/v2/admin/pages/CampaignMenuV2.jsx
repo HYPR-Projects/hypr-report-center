@@ -71,7 +71,7 @@ import { CampaignDrawer } from "../components/CampaignDrawer";
 import { ReportAnalyticsModal } from "../components/ReportAnalyticsModal";
 import { prefetchAccessSummaries } from "../lib/accessSummaryCache";
 import { MonthGroupedSections } from "../components/MonthGroupedSections";
-import { formatMonthLabel, getCampaignStatus } from "../lib/format";
+import { formatMonthLabel, formatTimeAgo, getCampaignStatus } from "../lib/format";
 import { DiagnosticoLayout } from "../components/DiagnosticoLayout";
 import { AlertsBell } from "../components/AlertsBell";
 import { AlertCampaignSheet } from "../components/AlertCampaignSheet";
@@ -264,7 +264,8 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   // Estratégia: usar Promise.allSettled (não Promise.all) pra que falha
   // de uma das duas queries não corrompa os dados da outra. Cada seção
   // que sucede é commitada e cacheada individualmente; falhas vão pro
-  // `refreshError` que renderiza o banner de "dados desatualizados".
+  // `refreshError` que alimenta o banner de "dados desatualizados"
+  // renderizado mais abaixo no JSX.
   //
   // Note que `listClients` NÃO está aqui — fetch é lazy via outro
   // useEffect quando o user troca pra layout "client". Worklist é
@@ -335,6 +336,14 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   useEffect(() => {
     const cancel = runRefresh();
     return cancel;
+  }, [runRefresh]);
+
+  // Botão "Tentar de novo" do banner de erro. setRefreshing(true) antes
+  // de chamar pra reaparecer o spinner global imediatamente, espelhando
+  // o pattern de ClientDetailPage.jsx#handleRetry.
+  const handleRetry = useCallback(() => {
+    setRefreshing(true);
+    runRefresh();
   }, [runRefresh]);
 
   // Lazy fetch da lista rica de clientes (com sparklines + trend).
@@ -886,6 +895,41 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
             </Button>
           </div>
         </div>
+
+        {/* Banner de "dados desatualizados" — refresh em background falhou.
+            Sem ele, qualquer 5xx/timeout/malformed em listCampaigns deixava
+            o user com "0 campanhas" e zero pista do que rolou. Mostra o
+            erro cru quando NÃO há cache pra cair (cache invalidado pós-deploy
+            via BUILD_ID, primeira call falhou) — é admin-only, faz triagem
+            instantânea. Com cache, mostra "atualizado há X". */}
+        {refreshError && (
+          <div className="mb-4 px-4 py-2.5 rounded-lg flex items-center justify-between gap-3"
+               style={{
+                 background: "var(--color-warning-soft)",
+                 border: "1px solid var(--color-warning)",
+               }}>
+            <p className="text-[12px] text-fg">
+              Não consegui atualizar a lista de campanhas.{" "}
+              {lastFetchedAt ? (
+                <span className="text-fg-muted">
+                  Mostrando dados de {formatTimeAgo(lastFetchedAt)}.
+                </span>
+              ) : (
+                <span className="text-fg-muted">
+                  ({refreshError})
+                </span>
+              )}
+            </p>
+            <button
+              type="button"
+              onClick={handleRetry}
+              disabled={refreshing}
+              className="text-[11px] font-medium text-fg px-3 h-7 rounded-md border border-warning/40 hover:bg-warning/10 transition-colors disabled:opacity-50 whitespace-nowrap cursor-pointer"
+            >
+              {refreshing ? "Tentando…" : "Tentar de novo"}
+            </button>
+          </div>
+        )}
 
         {/* MetricStrip no topo — KPIs das campanhas ativas em grid de cards
             bordados leves. Alertas operacionais (críticas, sem owner,
