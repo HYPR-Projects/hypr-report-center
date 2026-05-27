@@ -5138,7 +5138,7 @@ def query_campaigns_list():
         --
         -- Estrutura ARRAY<STRUCT<month_key, cost>> permite JOIN sem fanout
         -- no SELECT principal (uma row por token) — Python desempacota
-        -- pra dict {month_key: cost} no entry.
+        -- pra dict {{month_key: cost}} no entry.
         monthly_cost_full AS (
             SELECT
                 short_token,
