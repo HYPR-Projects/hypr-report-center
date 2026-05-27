@@ -182,11 +182,31 @@ export function DiagnosticoTable({
 
   const sortedRows = useMemo(() => {
     const arr = [...filteredRows];
+    // Resolve o nome do CS do row do mesmo jeito que o render faz: row só
+    // carrega `cs_email`, e o display passa por teamMap (nome bonito) com
+    // fallback pro local-part do email. Sem isso, sortar por "cs_name"
+    // virava no-op porque o campo não existe no row → tudo "" → toggles
+    // de asc/desc não reordenavam nada (esse era o bug reportado).
+    const resolveCsName = (r) => {
+      if (!r.cs_email) return "";
+      return (teamMap[r.cs_email] || localPartFromEmail(r.cs_email) || "").toLowerCase();
+    };
     arr.sort((a, b) => {
-      // Strings (client_name, campaign_name, cs_name, start_date ISO)
-      // ordenam alfabeticamente. start_date como "YYYY-MM-DD" já bate com
-      // ordem cronológica via localeCompare.
-      if (sortKey === "client_name" || sortKey === "campaign_name" || sortKey === "cs_name" || sortKey === "start_date") {
+      // CS: nome derivado de cs_email via teamMap. Rows sem CS ("Sem CS")
+      // vão sempre pro fim, independente da direção — não faz sentido
+      // misturar com nomes ordenados.
+      if (sortKey === "cs_name") {
+        const av = resolveCsName(a);
+        const bv = resolveCsName(b);
+        if (!av && bv) return 1;
+        if (av && !bv) return -1;
+        if (!av && !bv) return 0;
+        return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+      }
+      // Strings (client_name, campaign_name, start_date ISO) ordenam
+      // alfabeticamente. start_date como "YYYY-MM-DD" já bate com ordem
+      // cronológica via localeCompare.
+      if (sortKey === "client_name" || sortKey === "campaign_name" || sortKey === "start_date") {
         const av = String(a[sortKey] || "").toLowerCase();
         const bv = String(b[sortKey] || "").toLowerCase();
         return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
@@ -202,7 +222,7 @@ export function DiagnosticoTable({
       return compareNullableNumbers(a[sortKey], b[sortKey], sortDir);
     });
     return arr;
-  }, [filteredRows, sortKey, sortDir]);
+  }, [filteredRows, sortKey, sortDir, teamMap]);
 
   const handleSort = (key) => {
     if (sortKey === key) {
