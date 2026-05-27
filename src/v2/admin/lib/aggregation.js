@@ -398,7 +398,13 @@ function aggregateMonthlyTechCost(campaigns, monthKey) {
     }
   }
   if (!hasMonthlyData) return null;  // backend sem o campo — caller cai pro legado
-  return budget > 0 ? (cost / budget) * 100 : null;
+  // Retorna objeto com pct + brutos pro tooltip do card mostrar a conta.
+  // Caller que só quer o pct usa .pct.
+  return {
+    pct:    budget > 0 ? (cost / budget) * 100 : null,
+    cost,
+    budget,
+  };
 }
 
 // Projeção da Big Metric — APENAS mês corrente.
@@ -484,8 +490,13 @@ export function computeMetricsSummary(campaigns, options = {}) {
   // tech_cost do cohort (régua antiga). Não quebra durante deploy.
   const techCostMonthly = aggregateMonthlyTechCost(campaigns, monthKey);
   const techCostPrev    = aggregateMonthlyTechCost(campaigns, prevMonth);
-  const techCost        = techCostMonthly != null ? techCostMonthly : cur.tech_cost;
-  const techCostPrevVal = techCostPrev    != null ? techCostPrev    : prev.tech_cost;
+  const techCost        = techCostMonthly != null ? techCostMonthly.pct : cur.tech_cost;
+  const techCostPrevVal = techCostPrev    != null ? techCostPrev.pct    : prev.tech_cost;
+  // Brutos pro tooltip do card (Custo / Investimento). Quando estamos no
+  // fallback legado (sem monthly_cost_full do backend), expõe os valores
+  // do cohort lifetime — ainda assim útil pro tooltip explicar a conta.
+  const techCostCost   = techCostMonthly != null ? techCostMonthly.cost   : null;
+  const techCostBudget = techCostMonthly != null ? techCostMonthly.budget : null;
 
   // Projeção mensal: MTD extrapolado pelo ritmo diário até fim do mês.
   // Só pro mês corrente. Mês fechado já é tech cost final. Fallback pro
@@ -524,6 +535,8 @@ export function computeMetricsSummary(campaigns, options = {}) {
     tech_cost:           techCost,
     tech_cost_prev:      techCostPrevVal,
     tech_cost_projected: techCostProjected,
+    tech_cost_cost:      techCostCost,
+    tech_cost_budget:    techCostBudget,
   };
 }
 
@@ -844,7 +857,10 @@ function scoreCampaignDetailed(c, detail = null) {
 
 
 export function computeTopPerformers(campaigns, ownerKey = "cs_email", options = {}, detailMap = {}) {
-  const { requireCurrentlyActive = true } = options;
+  const { requireCurrentlyActive = true, periodFrom = null, periodTo = null } = options;
+  // Período histórico (Mês passado / 7d / 30d / 90d / Custom) passa
+  // periodFrom/periodTo. Sem eles = modo "Agora" → usa mês corrente.
+  const hasPeriod = Boolean(periodFrom && periodTo);
   const today = TODAY();
   // Modo "Agora": campanha entra no ranking quando está EM VÔO (end_date >= hoje
   // + não pausada). Paused (paused_at != null) tem performance congelada no
@@ -914,28 +930,55 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
     const m = aggregateMetrics(list);
     const rawScore = weightSum > 0 ? scoreSum / weightSum : 0;
 
-    // Totais do mês corrente atribuídos ao CS — exibidos no PerformerDrawer
-    // como "Investido no mês" / "Custo no mês". Régua assimétrica igual à
-    // Big Metric Tech Cost:
-    //   Custo       = Σ monthly_cost_full[mês] de TODAS campanhas do CS
-    //                 (pega cross-month que rolou no mês)
-    //   Investimento = Σ client_budget SÓ de PIs do CS com start no mês
-    // Fallback pra null se backend sem monthly_cost_full — drawer esconde
-    // a seção nesse caso.
-    const mk = currentMonthKey();
+    // Totais do período atribuídos ao CS — exibidos no PerformerDrawer
+    // como "Investido no mês" / "Custo no mês".
+    //
+    // Modo "Agora" (sem período):
+    //   Custo       = Σ monthly_cost_full[mês_corrente] das campanhas do CS
+    //   Investimento = Σ client_budget das PIs do CS com start no mês corrente
+    //
+    // Modo histórico (com periodFrom/periodTo):
+    //   Custo       = Σ admin_total_cost_full (já windowed pelo backend
+    //                 — query_performers_for_period filtra date no período)
+    //   Investimento = Σ client_budget das PIs do CS com start_date dentro
+    //                  do período (cohort do período)
+    //
+    // Régua assimétrica preservada: custo pega tudo que rolou no período,
+    // budget só PIs que iniciaram no período. Fallback pra null quando
+    // backend não tem os campos — drawer esconde a seção.
     let monthCost = 0;
     let monthBudget = 0;
     let hasMonthlyData = false;
-    for (const c of list) {
-      const mcMap = c.monthly_cost_full;
-      if (mcMap && typeof mcMap === "object") {
-        hasMonthlyData = true;
-        const mc = Number(mcMap[mk]);
-        if (Number.isFinite(mc) && mc > 0) monthCost += mc;
+    if (hasPeriod) {
+      // Modo histórico — backend já filtrou cost pelo período.
+      for (const c of list) {
+        const cf = Number(c.admin_total_cost_full);
+        if (Number.isFinite(cf) && cf > 0) {
+          hasMonthlyData = true;
+          monthCost += cf;
+        }
+        if (c.start_date) {
+          const sd = c.start_date.slice(0, 10);
+          if (sd >= periodFrom && sd <= periodTo) {
+            const b = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
+            if (b > 0) monthBudget += b;
+          }
+        }
       }
-      if (c.start_date && c.start_date.slice(0, 7) === mk) {
-        const b = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
-        if (b > 0) monthBudget += b;
+    } else {
+      // Modo "Agora" — usa monthly_cost_full do mês corrente.
+      const mk = currentMonthKey();
+      for (const c of list) {
+        const mcMap = c.monthly_cost_full;
+        if (mcMap && typeof mcMap === "object") {
+          hasMonthlyData = true;
+          const mc = Number(mcMap[mk]);
+          if (Number.isFinite(mc) && mc > 0) monthCost += mc;
+        }
+        if (c.start_date && c.start_date.slice(0, 7) === mk) {
+          const b = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
+          if (b > 0) monthBudget += b;
+        }
       }
     }
 
@@ -946,7 +989,9 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
       ideal_pacing_count: idealPacing,
       month_cost:    hasMonthlyData ? monthCost   : null,
       month_budget:  monthBudget > 0 ? monthBudget : null,
-      month_key:     mk,
+      month_key:     hasPeriod ? null : currentMonthKey(),
+      period_from:   periodFrom,
+      period_to:     periodTo,
       ecpm_avg:     m.ecpm,
       ecpm_display: m.ecpm_display,
       ecpm_video:   m.ecpm_video,

@@ -366,10 +366,17 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
     return computeTopPerformers(
       sourceCampaigns,
       role === "cs" ? "cs_email" : "cp_email",
-      { requireCurrentlyActive: !isHistorical },
+      {
+        requireCurrentlyActive: !isHistorical,
+        // Em modo histórico passa as datas pro big numbers do
+        // PerformerDrawer refletirem o período selecionado (custo
+        // já-windowed pelo backend, budget cohort por start_date no período).
+        periodFrom: isHistorical ? from : null,
+        periodTo:   isHistorical ? to   : null,
+      },
       isHistorical ? {} : detailMap,
     );
-  }, [sourceCampaigns, role, isHistorical, detailMap]);
+  }, [sourceCampaigns, role, isHistorical, from, to, detailMap]);
 
   const selectedPerformer = useMemo(
     () => (selected ? performers.find((p) => p.email === selected) : null),

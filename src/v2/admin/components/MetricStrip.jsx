@@ -20,6 +20,20 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "../../../ui/cn";
 import { formatBRL } from "../lib/format";
+import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
+
+// BRL compacto sem centavos pro tooltip de breakdown do Tech Cost. Numbers
+// na casa de centena de milhar ficam mais legíveis sem ",00" no fim.
+const _BRL_COMPACT_STRIP = new Intl.NumberFormat("pt-BR", {
+  style: "currency",
+  currency: "BRL",
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 0,
+});
+function formatBrlCompact(value) {
+  if (value == null || !Number.isFinite(Number(value))) return "—";
+  return _BRL_COMPACT_STRIP.format(Number(value));
+}
 
 /**
  * Anima um valor numérico do anterior pro novo via requestAnimationFrame
@@ -231,6 +245,8 @@ export function MetricStrip({ summary, className }) {
     tech_cost,
     tech_cost_prev,
     tech_cost_projected,
+    tech_cost_cost,
+    tech_cost_budget,
   } = summary;
 
   // Fallback pra eCPM combinado quando o backend ainda não envia os splits
@@ -306,24 +322,54 @@ export function MetricStrip({ summary, className }) {
         />
       )}
       {hasTechCost && (
-        <MetricCard
-          label="Tech Cost"
-          value={<AnimatedValue value={tech_cost} format={formatPctTwo} />}
-          tone={toneTechCost(tech_cost)}
-          aside={
-            // Projeção só faz sentido no mês corrente — em mês fechado a
-            // tech_cost_projected vem null e o componente já fica oculto.
-            is_current_month ? (
-              <ProjectionInline
-                current={tech_cost}
-                projected={tech_cost_projected}
-                format={formatPctTwo}
-                goodDirection="down"
+        <Tooltip delayDuration={150}>
+          <TooltipTrigger asChild>
+            {/* Wrapper inline pra Radix conseguir aplicar ref/eventos no
+                card. tabindex=0 deixa o tooltip acessível por teclado. */}
+            <div className="cursor-help" tabIndex={0}>
+              <MetricCard
+                label="Tech Cost"
+                value={<AnimatedValue value={tech_cost} format={formatPctTwo} />}
+                tone={toneTechCost(tech_cost)}
+                aside={
+                  // Projeção só faz sentido no mês corrente — em mês fechado a
+                  // tech_cost_projected vem null e o componente já fica oculto.
+                  is_current_month ? (
+                    <ProjectionInline
+                      current={tech_cost}
+                      projected={tech_cost_projected}
+                      format={formatPctTwo}
+                      goodDirection="down"
+                    />
+                  ) : null
+                }
+                footer={<MetricDelta current={tech_cost} previous={tech_cost_prev} goodDirection="down" />}
               />
-            ) : null
-          }
-          footer={<MetricDelta current={tech_cost} previous={tech_cost_prev} goodDirection="down" />}
-        />
+            </div>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" sideOffset={8} className="px-3.5 py-2.5 min-w-[200px]">
+            {/* Breakdown da conta — Custo / Investimento → Tech Cost.
+                Minimalista: 2 linhas com label esquerda + valor direita,
+                divisor sutil, resultado em destaque na cor do tom. */}
+            <div className="flex flex-col gap-1.5 text-[11px]">
+              <div className="flex items-baseline justify-between gap-4">
+                <span className="text-fg-subtle">Custo</span>
+                <span className="font-semibold tabular-nums">{formatBrlCompact(tech_cost_cost)}</span>
+              </div>
+              <div className="flex items-baseline justify-between gap-4">
+                <span className="text-fg-subtle">Investimento</span>
+                <span className="font-semibold tabular-nums">{formatBrlCompact(tech_cost_budget)}</span>
+              </div>
+              <div className="border-t border-border/60 my-0.5" />
+              <div className="flex items-baseline justify-between gap-4">
+                <span className="text-fg-subtle">Tech Cost</span>
+                <span className={cn("font-bold tabular-nums", TONE_CLASS[toneTechCost(tech_cost)])}>
+                  {formatPctTwo(tech_cost)}
+                </span>
+              </div>
+            </div>
+          </TooltipContent>
+        </Tooltip>
       )}
     </div>
   );
