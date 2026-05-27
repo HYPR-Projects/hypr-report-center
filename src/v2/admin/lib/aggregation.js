@@ -322,33 +322,82 @@ function aggregateProjectedTechCost(set) {
     : null;
 }
 
-export function computeMetricsSummary(campaigns) {
-  const today = TODAY();
-  const prev30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+// "YYYY-MM" do mês corrente, derivado de TODAY().
+function currentMonthKey() {
+  return TODAY().slice(0, 7);
+}
 
-  const active = (campaigns || []).filter(
-    (c) => c.end_date && c.end_date.slice(0, 10) >= today
+// "2026-05" → "2026-04". "2026-01" → "2025-12".
+function previousMonthKey(monthKey) {
+  if (!monthKey) return null;
+  const [yStr, mStr] = monthKey.split("-");
+  const y = Number(yStr);
+  const m = Number(mStr);
+  if (!Number.isFinite(y) || !Number.isFinite(m)) return null;
+  if (m === 1) return `${y - 1}-12`;
+  return `${y}-${String(m - 1).padStart(2, "0")}`;
+}
+
+// Cohort por start_date — "campanhas que iniciaram no mês X". Mesma regra
+// que o MonthFilterPills usa pra agrupar (slice(0,7) === monthKey), então
+// strip de KPIs e chips de filtro ficam sempre coerentes.
+function filterByStartMonth(campaigns, monthKey) {
+  if (!monthKey) return [];
+  return (campaigns || []).filter(
+    (c) => c.start_date && c.start_date.slice(0, 7) === monthKey
   );
-  const recentlyEnded = (campaigns || []).filter((c) => {
-    const end = c.end_date?.slice(0, 10);
-    return end && end >= prev30 && end < today;
-  });
+}
 
-  const cur  = aggregateMetrics(active);
-  const prev = aggregateMetrics(recentlyEnded);
-  // Projeção só faz sentido pras campanhas ativas (que têm futuro).
-  const techCostProjected = aggregateProjectedTechCost(active);
+// Resumo de KPIs por cohort de mês (campanhas que iniciaram no mês
+// selecionado). Default = mês corrente.
+//
+// Por que cohort-by-start em vez de "ativas globais":
+//   - Time olha tech cost em ciclo mensal de fechamento de PI.
+//   - Permite comparar mês-vs-mês (delta vs cohort do mês anterior).
+//   - Filtro de chips no rodapé já usa essa mesma regra.
+//
+// Trade-off: "CTR de Mai" = CTR lifetime das campanhas que começaram em
+// maio (inclui dados de jun/jul se elas se estenderam). Não é "CTR
+// observado dentro do mês de maio" — esse não é computável sem dados
+// temporais por campanha.
+//
+// Projeção: só roda no mês corrente. Mês fechado já é realizado, projetar
+// não faz sentido — strip mostra só a barra atual sem a setinha.
+export function computeMetricsSummary(campaigns, options = {}) {
+  const monthKey   = options.monthKey || currentMonthKey();
+  const prevMonth  = previousMonthKey(monthKey);
+  const today      = TODAY();
+  const isCurrent  = monthKey === currentMonthKey();
+
+  const cohort     = filterByStartMonth(campaigns, monthKey);
+  const prevCohort = filterByStartMonth(campaigns, prevMonth);
+
+  const cur  = aggregateMetrics(cohort);
+  const prev = aggregateMetrics(prevCohort);
+
+  // Projeção só pro mês vigente — fechado já é histórico, não tem futuro.
+  const techCostProjected = isCurrent ? aggregateProjectedTechCost(cohort) : null;
+
+  // "Ativas" do cohort = subset que ainda tá rodando hoje. Pra mês corrente
+  // a maioria do cohort ainda tá in flight; pra mês passado, mostra quantas
+  // PIs daquela safra escaparam pro presente.
+  const activeInCohort = cohort.filter(
+    (c) => c.end_date && c.end_date.slice(0, 10) >= today
+  ).length;
 
   return {
-    active_count: active.length,
-    dsp_pacing:   cur.dsp_pacing,
-    vid_pacing:   cur.vid_pacing,
-    ctr:          cur.ctr,
-    ctr_prev:     prev.ctr,
-    vtr:          cur.vtr,
-    vtr_prev:     prev.vtr,
-    ecpm:         cur.ecpm,
-    ecpm_prev:    prev.ecpm,
+    month_key:       monthKey,
+    is_current_month: isCurrent,
+    cohort_size:     cohort.length,
+    active_count:    activeInCohort,
+    dsp_pacing:      cur.dsp_pacing,
+    vid_pacing:      cur.vid_pacing,
+    ctr:             cur.ctr,
+    ctr_prev:        prev.ctr,
+    vtr:             cur.vtr,
+    vtr_prev:        prev.vtr,
+    ecpm:            cur.ecpm,
+    ecpm_prev:       prev.ecpm,
     ecpm_display:      cur.ecpm_display,
     ecpm_display_prev: prev.ecpm_display,
     ecpm_video:        cur.ecpm_video,

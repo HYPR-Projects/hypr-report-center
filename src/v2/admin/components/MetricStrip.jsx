@@ -1,11 +1,17 @@
 // src/v2/admin/components/MetricStrip.jsx
 //
-// Faixa de KPIs no topo do menu admin — substitui os 4 cards de Worklist
-// (action-oriented) por 6 cards de performance (KPIs) das campanhas ativas.
+// Faixa de KPIs no topo do menu admin — cards de performance por cohort
+// mensal (campanhas que iniciaram no mês selecionado). Default = mês
+// corrente. Cliclar nos chips "Mai 26 / Abr 26 / ..." troca o cohort e a
+// strip reage.
 //
-// Layout: grid responsivo 2/3/6 colunas, cards bordados leves pra dar
-// estrutura sem peso. eCPM tem delta vs cohort que encerrou nos últimos
-// 30 dias (verde se caiu = mais eficiente, vermelho se subiu).
+// Layout: grid responsivo 2/3/6+ colunas, cards bordados leves pra dar
+// estrutura sem peso. Deltas (CTR/VTR/eCPM/Tech Cost) comparam contra o
+// cohort do mês anterior calendário — mesma régua, janelas iguais. Verde
+// = melhor que mês passado, vermelho = pior.
+//
+// Tech Cost mostra projeção (setinha ↗/↘) APENAS no mês corrente; em mês
+// fechado já é tudo realizado, projetar não faz sentido.
 //
 // Alertas operacionais (críticas, sem owner, encerram em 7d) descem pra
 // uma linha discreta de pills via SecondaryAlerts — preserva a função
@@ -166,8 +172,9 @@ function ProjectionInline({ current, projected, format, goodDirection = "down" }
   );
 }
 
-// Delta vs cohort que encerrou nos últimos 30 dias.
-//   goodDirection="down": queda é bom (eCPM — mais eficiente)
+// Delta vs cohort do mês anterior calendário. Quando o mês selecionado é
+// Mai, previous = cohort de Abr (mesma régra de start_date).
+//   goodDirection="down": queda é bom (eCPM/tech cost — mais eficiente)
 //   goodDirection="up":   alta é bom (CTR/VTR — performance maior)
 function MetricDelta({ current, previous, goodDirection = "up" }) {
   if (current == null || previous == null || previous <= 0) {
@@ -194,7 +201,7 @@ function MetricDelta({ current, previous, goodDirection = "up" }) {
     <span className={cn("inline-flex items-center gap-1 font-medium", colorClass)}>
       <span className="text-[10px] leading-none">{arrow}</span>
       <span className="tabular-nums">{Math.abs(rounded).toFixed(1)}%</span>
-      <span className="text-fg-subtle font-normal">vs últimas 30d</span>
+      <span className="text-fg-subtle font-normal">vs mês anterior</span>
     </span>
   );
 }
@@ -204,6 +211,8 @@ export function MetricStrip({ summary, className }) {
 
   const {
     active_count,
+    cohort_size,
+    is_current_month,
     dsp_pacing,
     vid_pacing,
     ctr,
@@ -240,11 +249,16 @@ export function MetricStrip({ summary, className }) {
         className
       )}
       role="region"
-      aria-label="Performance das campanhas ativas"
+      aria-label="Performance do cohort do mês"
     >
       <MetricCard
         label="Ativas"
         value={<AnimatedValue value={active_count} format={(n) => n == null ? "—" : Math.round(n)} />}
+        footer={
+          cohort_size != null
+            ? <span className="whitespace-nowrap">de {cohort_size} no mês</span>
+            : null
+        }
       />
       <MetricCard
         label="Pacing DSP"
@@ -294,12 +308,16 @@ export function MetricStrip({ summary, className }) {
           value={<AnimatedValue value={tech_cost} format={formatPctTwo} />}
           tone={toneTechCost(tech_cost)}
           aside={
-            <ProjectionInline
-              current={tech_cost}
-              projected={tech_cost_projected}
-              format={formatPctTwo}
-              goodDirection="down"
-            />
+            // Projeção só faz sentido no mês corrente — em mês fechado a
+            // tech_cost_projected vem null e o componente já fica oculto.
+            is_current_month ? (
+              <ProjectionInline
+                current={tech_cost}
+                projected={tech_cost_projected}
+                format={formatPctTwo}
+                goodDirection="down"
+              />
+            ) : null
           }
           footer={<MetricDelta current={tech_cost} previous={tech_cost_prev} goodDirection="down" />}
         />

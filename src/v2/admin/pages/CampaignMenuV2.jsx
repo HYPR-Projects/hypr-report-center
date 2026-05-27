@@ -714,8 +714,15 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   }, [campaigns]);
   const totalCampaigns = campaigns.length;
 
-  // KPIs agregados das campanhas ativas — alimenta a MetricStrip do topo.
-  const metricsSummary = useMemo(() => computeMetricsSummary(campaigns), [campaigns]);
+  // KPIs agregados por cohort do mês (campanhas que iniciaram em `activeMonth`,
+  // default = mês corrente). Comparação é vs cohort do mês anterior, e a
+  // projeção do Tech Cost só roda quando o mês selecionado é o corrente.
+  // Filtro de chips de mês alimenta direto a strip — clicar "Abr 26" troca os
+  // números sem mudar de aba.
+  const metricsSummary = useMemo(
+    () => computeMetricsSummary(campaigns, { monthKey: activeMonth }),
+    [campaigns, activeMonth]
+  );
 
   // Bulk-prefetch de detail pra todas as campanhas in_flight assim que a
   // lista carrega. Sem isso, a regra A6 (frente desbalanceada) só dispara
