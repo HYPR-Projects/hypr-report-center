@@ -345,6 +345,98 @@ function previousMonthKey(monthKey) {
   return `${y}-${String(m - 1).padStart(2, "0")}`;
 }
 
+// Dias no mês — 28/29/30/31 automatico. Day 0 do mês seguinte = ultimo dia.
+function daysInMonth(monthKey) {
+  if (!monthKey) return 0;
+  const [y, m] = monthKey.split("-").map(Number);
+  if (!Number.isFinite(y) || !Number.isFinite(m)) return 0;
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+// Dias elapsed dentro do mês até hoje. Mês corrente: dia de hoje. Mês
+// passado: total de dias. Mês futuro: 0 (não começou).
+function daysElapsedInMonth(monthKey) {
+  if (!monthKey) return 0;
+  const today = TODAY();
+  const todayMonth = today.slice(0, 7);
+  if (monthKey === todayMonth) return Number(today.slice(8, 10));
+  return monthKey < todayMonth ? daysInMonth(monthKey) : 0;
+}
+
+// Tech cost da Big Metric — REGRA ASSIMETRICA:
+//   Numerador   = Σ custo gasto DENTRO de M por TODAS campanhas que tocaram M
+//                 (vem do campo monthly_cost_full do backend, com survey)
+//   Denominador = Σ budget SO de campanhas com start_date em M
+//
+// Por que assimetrico:
+//   - Custo é "real" — todo dinheiro de DSP que saiu da carteira HYPR em M,
+//     independente de qual mês a PI foi vendida.
+//   - Budget é "contractual" — só conta budget de PIs realmente vendidas
+//     pra M. Não pega budget de PI vendida em Abril que cruzou pra Maio
+//     (essa fica em Abril).
+//
+// Cross-month edge case (Neutrogena 27/04→31/05): custo de Abr fica em
+// Abr, custo de Mai vai pra Mai. Budget cheio em Abr (sold em Abr).
+//
+// Fallback: se backend ainda não tem `monthly_cost_full`, retorna null
+// e o caller decide o que fazer (provavelmente cai pra calculo antigo).
+function aggregateMonthlyTechCost(campaigns, monthKey) {
+  if (!monthKey || !Array.isArray(campaigns) || campaigns.length === 0) return null;
+  let cost = 0;
+  let budget = 0;
+  let hasMonthlyData = false;
+  for (const c of campaigns) {
+    const m = c.monthly_cost_full;
+    if (m && typeof m === "object") {
+      hasMonthlyData = true;
+      const mc = Number(m[monthKey]);
+      if (Number.isFinite(mc) && mc > 0) cost += mc;
+    }
+    if (c.start_date && c.start_date.slice(0, 7) === monthKey) {
+      const b = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
+      if (b > 0) budget += b;
+    }
+  }
+  if (!hasMonthlyData) return null;  // backend sem o campo — caller cai pro legado
+  return budget > 0 ? (cost / budget) * 100 : null;
+}
+
+// Projeção da Big Metric — APENAS mês corrente.
+//   projected_cost = MTD_cost × (days_in_month / days_elapsed_in_month)
+//   projected_tech_cost = projected_cost / budget × 100
+//
+// Lógica: assume que o ritmo diário de gasto do mês até agora se mantém
+// até o fim do mês. Linear, sem cap. Mês fechado → null (já é realizado).
+function aggregateMonthlyProjectedTechCost(campaigns, monthKey) {
+  if (!monthKey || !Array.isArray(campaigns) || campaigns.length === 0) return null;
+  const todayMonth = currentMonthKey();
+  if (monthKey !== todayMonth) return null;  // só projeta mês vigente
+
+  const totalDays = daysInMonth(monthKey);
+  const elapsed   = daysElapsedInMonth(monthKey);
+  if (totalDays <= 0 || elapsed <= 0) return null;
+
+  let mtdCost = 0;
+  let budget = 0;
+  let hasMonthlyData = false;
+  for (const c of campaigns) {
+    const m = c.monthly_cost_full;
+    if (m && typeof m === "object") {
+      hasMonthlyData = true;
+      const mc = Number(m[monthKey]);
+      if (Number.isFinite(mc) && mc > 0) mtdCost += mc;
+    }
+    if (c.start_date && c.start_date.slice(0, 7) === monthKey) {
+      const b = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
+      if (b > 0) budget += b;
+    }
+  }
+  if (!hasMonthlyData || budget <= 0) return null;
+
+  const projectedCost = mtdCost * (totalDays / elapsed);
+  return (projectedCost / budget) * 100;
+}
+
 // Cohort por start_date — "campanhas que iniciaram no mês X". Mesma regra
 // que o MonthFilterPills usa pra agrupar (slice(0,7) === monthKey), então
 // strip de KPIs e chips de filtro ficam sempre coerentes.
@@ -382,8 +474,28 @@ export function computeMetricsSummary(campaigns, options = {}) {
   const cur  = aggregateMetrics(cohort);
   const prev = aggregateMetrics(prevCohort);
 
-  // Projeção só pro mês vigente — fechado já é histórico, não tem futuro.
-  const techCostProjected = isCurrent ? aggregateProjectedTechCost(cohort) : null;
+  // ── Tech Cost: regra ASSIMETRICA (diferente das outras métricas) ───
+  // CTR/VTR/eCPM continuam por cohort (start_date em M). Tech cost usa
+  // monthly_cost_full do backend pra capturar cost real gasto no mês,
+  // independente de quando a campanha começou. Budget continua só do
+  // cohort (PI vendida pra M). Ver aggregateMonthlyTechCost pra racional.
+  //
+  // Fallback: backend sem campo monthly_cost_full → cai pro lifetime
+  // tech_cost do cohort (régua antiga). Não quebra durante deploy.
+  const techCostMonthly = aggregateMonthlyTechCost(campaigns, monthKey);
+  const techCostPrev    = aggregateMonthlyTechCost(campaigns, prevMonth);
+  const techCost        = techCostMonthly != null ? techCostMonthly : cur.tech_cost;
+  const techCostPrevVal = techCostPrev    != null ? techCostPrev    : prev.tech_cost;
+
+  // Projeção mensal: MTD extrapolado pelo ritmo diário até fim do mês.
+  // Só pro mês corrente. Mês fechado já é tech cost final. Fallback pro
+  // método antigo (lifetime extrapolado) se monthly_cost_full ausente.
+  const techCostProjectedMonthly = isCurrent
+    ? aggregateMonthlyProjectedTechCost(campaigns, monthKey)
+    : null;
+  const techCostProjected = techCostProjectedMonthly != null
+    ? techCostProjectedMonthly
+    : (isCurrent ? aggregateProjectedTechCost(cohort) : null);
 
   // "Ativas" do cohort = subset que ainda tá rodando hoje. Pra mês corrente
   // a maioria do cohort ainda tá in flight; pra mês passado, mostra quantas
@@ -409,8 +521,8 @@ export function computeMetricsSummary(campaigns, options = {}) {
     ecpm_display_prev: prev.ecpm_display,
     ecpm_video:        cur.ecpm_video,
     ecpm_video_prev:   prev.ecpm_video,
-    tech_cost:           cur.tech_cost,
-    tech_cost_prev:      prev.tech_cost,
+    tech_cost:           techCost,
+    tech_cost_prev:      techCostPrevVal,
     tech_cost_projected: techCostProjected,
   };
 }

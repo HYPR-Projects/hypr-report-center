@@ -5118,6 +5118,44 @@ def query_campaigns_list():
             FROM abs_signals
             GROUP BY short_token
         ),
+        -- Custo TOTAL por (token, mês calendário) — ADMIN-ONLY.
+        --
+        -- Usado pelo KPI strip pra calcular tech cost com a régua
+        -- assimetrica HYPR: numerador soma o custo gasto DENTRO do mês
+        -- selecionado por TODAS campanhas que tocaram esse mês (incluindo
+        -- cross-month tail tipo Neutrogena 27/04→31/05); denominador soma
+        -- só os budgets de PIs vendidas pra aquele mês (start_date em M).
+        --
+        -- Granularidade mês resolve o problema do modelo vintage puro:
+        --   - PI sold pra Abr que cruza pra Mai → custo de Abr fica em
+        --     Abr, custo de Mai vai pra Mai. Budget fica em Abr (PI foi
+        --     vendida em Abr).
+        --   - Não tem double counting entre meses do custo.
+        --
+        -- Sem filtro de SURVEY/CONTROLE/EXPOSTO: admin precisa do custo
+        -- real DSP, survey incluso. Espelha a regra do `unified_cost_full`
+        -- abaixo (que é o total lifetime sem survey).
+        --
+        -- Estrutura ARRAY<STRUCT<month_key, cost>> permite JOIN sem fanout
+        -- no SELECT principal (uma row por token) — Python desempacota
+        -- pra dict {month_key: cost} no entry.
+        monthly_cost_full AS (
+            SELECT
+                short_token,
+                ARRAY_AGG(STRUCT(month_key, cost) ORDER BY month_key) AS months
+            FROM (
+                SELECT
+                    short_token,
+                    FORMAT_DATE('%Y-%m', date) AS month_key,
+                    SUM(total_cost) AS cost
+                FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+                WHERE media_type IN ('DISPLAY', 'VIDEO')
+                  -- INTENCIONAL: sem filtro de survey (mesmo motivo do
+                  -- unified_cost_full — tech cost considera custo real).
+                GROUP BY short_token, month_key
+            )
+            GROUP BY short_token
+        ),
         -- Custo TOTAL incluindo lines de survey — ADMIN-ONLY, usado pelo
         -- KPI strip (tech cost agregado) e pela coluna Custo/Tech do
         -- diagnostico. Survey custa dinheiro real no DSP e sai da carteira
@@ -5170,6 +5208,7 @@ def query_campaigns_list():
             yd.d_yesterday_viewable,  yd.v_yesterday_completions,
             l7.d_last7d_viewable,     l7.v_last7d_completions,
             uf.admin_total_cost_full, uf.d_admin_total_cost_full, uf.v_admin_total_cost_full,
+            mcf.months                AS monthly_cost_full_arr,
             ab.display_has_abs,       ab.video_has_abs
         FROM base b
         LEFT JOIN agg                a USING (short_token)
@@ -5178,6 +5217,7 @@ def query_campaigns_list():
         LEFT JOIN yesterday_delivery yd USING (short_token)
         LEFT JOIN last7d_delivery    l7 USING (short_token)
         LEFT JOIN unified_cost_full  uf USING (short_token)
+        LEFT JOIN monthly_cost_full  mcf USING (short_token)
         LEFT JOIN campaign_abs       ab USING (short_token)
         ORDER BY b.start_date DESC
     """
@@ -5438,6 +5478,23 @@ def query_campaigns_list():
             entry["d_admin_total_cost_full"] = round(d_admin_cost_full,       2)
         if v_admin_cost_full > 0:
             entry["v_admin_total_cost_full"] = round(v_admin_cost_full,       2)
+
+        # Custo por mês calendário — usado pelo KPI strip pra tech cost
+        # com regra assimetrica: numerador soma cost gasto NO mês por
+        # qualquer campanha que tocou esse mês (incluindo cross-month),
+        # denominador soma só os budgets de PIs com start_date em M.
+        # Estrutura: dict {"2026-04": 1200.0, "2026-05": 7500.0, ...}
+        # Omite chaves com zero pra reduzir payload. ARRAY do BQ vem como
+        # lista de Row objects que tem .month_key e .cost.
+        monthly_arr = r["monthly_cost_full_arr"] or []
+        monthly_dict = {}
+        for m in monthly_arr:
+            mk = m.get("month_key") if isinstance(m, dict) else m["month_key"]
+            mc = m.get("cost")      if isinstance(m, dict) else m["cost"]
+            if mk and mc and float(mc) > 0:
+                monthly_dict[mk] = round(float(mc), 2)
+        if monthly_dict:
+            entry["monthly_cost_full"] = monthly_dict
 
         # eCPM por mídia (admin-only, mesmo conceito do admin_ecpm — custo cru
         # do DSP / impressions gross). Usado pelo Top Performers que avalia
