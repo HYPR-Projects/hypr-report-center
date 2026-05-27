@@ -312,21 +312,26 @@ export function DiagnosticoTable({
           <table className="w-full text-left table-fixed">
             <thead>
               <tr>
-                <Th align="left" {...headerProps("status")} className="w-[7%] px-2">Status</Th>
-                <Th align="left"  {...headerProps("client_name")}    className="w-[9%]">Cliente</Th>
-                <Th align="left"  {...headerProps("campaign_name")}  className="w-[13%]">Campanha</Th>
-                <Th align="left"  {...headerProps("cs_name")}        className="w-[6%]">CS</Th>
-                <Th align="left"  {...headerProps("start_date")}     className="w-[8%]">Período</Th>
-                <Th align="right" {...headerProps("totalEntreguePct")} className="w-[6%]">Entregue</Th>
-                <Th align="right" {...headerProps("projetadaPct")}     className="w-[6%]">Projetada</Th>
+                {/* Larguras balanceadas: colunas com texto (Cliente, Campanha)
+                    ganham espaço; colunas com % curto (Entregue, View, CTR,
+                    Tech) encolhem. Ontem (D-1) encolheu porque virou só
+                    "número + ✓/✗" depois da remoção do delta vs média.
+                    Soma = 100%. */}
+                <Th align="left"  {...headerProps("status")}            className="w-[7%] px-2">Status</Th>
+                <Th align="left"  {...headerProps("client_name")}       className="w-[10%]">Cliente</Th>
+                <Th align="left"  {...headerProps("campaign_name")}     className="w-[14%]">Campanha</Th>
+                <Th align="left"  {...headerProps("cs_name")}           className="w-[5%]">CS</Th>
+                <Th align="left"  {...headerProps("start_date")}        className="w-[7%]">Período</Th>
+                <Th align="right" {...headerProps("totalEntreguePct")}  className="w-[5%]">Entregue</Th>
+                <Th align="right" {...headerProps("projetadaPct")}      className="w-[6%]">Projetada</Th>
                 <Th align="right" {...headerProps("minDiariaContratada")} className="w-[6%]">Falta/Dia</Th>
-                <Th align="right" {...headerProps("mediaDiariaAtual")} className="w-[6%]">Média/Dia</Th>
-                <Th align="right" {...headerProps("deliveredD1")}      className="w-[9%]">Ontem (D-1)</Th>
-                <Th align="right" {...headerProps("realEcpm")}         className="w-[6%]">CPM</Th>
-                <Th align="right" {...headerProps("realTotalCost")}    className="w-[8%]">Custo</Th>
-                <Th align="right" {...headerProps("techCostPct")}      className="w-[5%]">Tech</Th>
-                <Th align="right" {...headerProps("viewability")}      className="w-[6%]">View.</Th>
-                <Th align="right" {...headerProps("ctr")}              className="w-[6%]">CTR</Th>
+                <Th align="right" {...headerProps("mediaDiariaAtual")}  className="w-[6%]">Média/Dia</Th>
+                <Th align="right" {...headerProps("deliveredD1")}       className="w-[7%]">Ontem (D-1)</Th>
+                <Th align="right" {...headerProps("realEcpm")}          className="w-[5%]">CPM</Th>
+                <Th align="right" {...headerProps("realTotalCost")}     className="w-[8%]">Custo</Th>
+                <Th align="right" {...headerProps("techCostPct")}       className="w-[4%]">Tech</Th>
+                <Th align="right" {...headerProps("viewability")}       className="w-[5%]">View.</Th>
+                <Th align="right" {...headerProps("ctr")}               className="w-[5%]">CTR</Th>
               </tr>
             </thead>
             <tbody>
@@ -381,18 +386,23 @@ export function DiagnosticoTable({
                       <span className="font-medium text-fg">
                         {(() => {
                           const name = r.client_name || "—";
-                          // Trunca em 12 chars pra enxutar a coluna —
-                          // nome completo fica no tooltip do <td>.
-                          return name.length > 12 ? name.slice(0, 11) + "…" : name;
+                          // Coluna ganhou ~10% de largura na redistribuição —
+                          // sobe limite de 12 → 15 chars pra "GeneralMotors"
+                          // (13) e "MERCEDES-BENZ" (13) caberem sem truncar.
+                          // Nome completo continua no tooltip do <td>.
+                          return name.length > 15 ? name.slice(0, 14) + "…" : name;
                         })()}
                       </span>
                     </Td>
-                    <Td align="left" className="max-w-[200px]">
+                    <Td align="left" className="max-w-[260px]">
                       <div className="flex items-center gap-1.5 min-w-0">
                         <span className="truncate" title={r.campaign_name}>
                           {(() => {
                             const name = r.campaign_name || "—";
-                            return name.length > 20 ? name.slice(0, 19) + "…" : name;
+                            // Limite sobe 20 → 24 chars junto com a coluna
+                            // (13% → 14% de largura) — cobre nomes operacionais
+                            // mais longos tipo "SPRINTER AUTOMÁTICA Q2".
+                            return name.length > 24 ? name.slice(0, 23) + "…" : name;
                           })()}
                         </span>
                         {r.has_abs && (
