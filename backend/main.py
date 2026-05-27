@@ -5668,6 +5668,8 @@ def query_performers_for_period(window_from: date, window_to: date):
         WITH checklist AS (
             SELECT
                 short_token,
+                MAX(cpm_amount)                         AS cpm_amount,
+                MAX(cpcv_amount)                        AS cpcv_amount,
                 MAX(contracted_o2o_display_impressions) AS contracted_o2o_display,
                 MAX(contracted_ooh_display_impressions) AS contracted_ooh_display,
                 MAX(contracted_o2o_video_completions)   AS contracted_o2o_video,
@@ -5734,6 +5736,23 @@ def query_performers_for_period(window_from: date, window_to: date):
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
             GROUP BY short_token
         ),
+        -- Custo TOTAL incluindo lines de survey (ADMIN-ONLY). Scoped pela
+        -- janela [@from_date, @to_date] como o `unified` acima — só muda
+        -- que NÃO filtra survey/controle/exposto. Usado pelo tech cost no
+        -- modo histórico (Top Performers em "Mês passado / 7d / 30d / 90d
+        -- / Custom"). Espelha unified_cost_full do query_campaigns_list.
+        unified_cost_full AS (
+            SELECT
+                short_token,
+                SUM(total_cost)                              AS admin_total_cost_full,
+                SUM(IF(media_type='DISPLAY', total_cost, 0)) AS d_admin_total_cost_full,
+                SUM(IF(media_type='VIDEO',   total_cost, 0)) AS v_admin_total_cost_full
+            FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+            WHERE date BETWEEN @from_date AND @to_date
+              AND media_type IN ('DISPLAY', 'VIDEO')
+              -- INTENCIONAL: sem filtro de survey aqui.
+            GROUP BY short_token
+        ),
         -- ABS detection: mesma estrutura de query_campaigns_list. Não filtra
         -- por janela — flag de ABS é propriedade da campanha (Brand Safety
         -- pre-bid foi contratado ou não), não do período.
@@ -5785,6 +5804,8 @@ def query_performers_for_period(window_from: date, window_to: date):
             u.admin_total_cost, u.admin_impressions,
             u.d_admin_total_cost, u.d_admin_impressions,
             u.v_admin_total_cost, u.v_admin_impressions,
+            uf.admin_total_cost_full, uf.d_admin_total_cost_full, uf.v_admin_total_cost_full,
+            c.cpm_amount, c.cpcv_amount,
             c.contracted_o2o_display, c.contracted_ooh_display,
             c.contracted_o2o_video,   c.contracted_ooh_video,
             c.bonus_o2o_display,      c.bonus_ooh_display,
@@ -5792,9 +5813,10 @@ def query_performers_for_period(window_from: date, window_to: date):
             ab.display_has_abs, ab.video_has_abs
         FROM unified u
         JOIN base b USING (short_token)
-        LEFT JOIN agg          a USING (short_token)
-        LEFT JOIN checklist    c USING (short_token)
-        LEFT JOIN campaign_abs ab USING (short_token)
+        LEFT JOIN agg              a USING (short_token)
+        LEFT JOIN checklist        c USING (short_token)
+        LEFT JOIN unified_cost_full uf USING (short_token)
+        LEFT JOIN campaign_abs     ab USING (short_token)
     """
 
     job_config = bigquery.QueryJobConfig(
@@ -5924,6 +5946,34 @@ def query_performers_for_period(window_from: date, window_to: date):
             entry["v_admin_impressions"] = v_admin_impr
             if v_admin_cost > 0:
                 entry["video_ecpm"] = round(v_admin_cost / v_admin_impr * 1000, 2)
+
+        # Custo COM survey (ADMIN-ONLY) — alimenta tech cost no Top Performers
+        # histórico. Numerador do tech cost agregado por CS na janela.
+        admin_total_cost_full = float(r["admin_total_cost_full"]   or 0)
+        d_admin_cost_full     = float(r["d_admin_total_cost_full"] or 0)
+        v_admin_cost_full     = float(r["v_admin_total_cost_full"] or 0)
+        if admin_total_cost_full > 0:
+            entry["admin_total_cost_full"]   = round(admin_total_cost_full,   2)
+        if d_admin_cost_full > 0:
+            entry["d_admin_total_cost_full"] = round(d_admin_cost_full,       2)
+        if v_admin_cost_full > 0:
+            entry["v_admin_total_cost_full"] = round(v_admin_cost_full,       2)
+
+        # Client budget por mídia (ADMIN-ONLY) — denominador do tech cost.
+        # Calculado a partir do checklist: contracted × CPM/CPCV. Bonus
+        # NÃO entra (bônus não fatura pro cliente). Quando CPM/CPCV vazio
+        # ou contratado zero (campanha 100% bonificada), o budget vira 0 e
+        # o tech cost sai como null naturalmente (sem ratio inflado).
+        cpm_amount  = float(r["cpm_amount"]  or 0)
+        cpcv_amount = float(r["cpcv_amount"] or 0)
+        d_contracted = float(r["contracted_o2o_display"] or 0) + float(r["contracted_ooh_display"] or 0)
+        v_contracted = float(r["contracted_o2o_video"]   or 0) + float(r["contracted_ooh_video"]   or 0)
+        d_client_budget = (d_contracted * cpm_amount / 1000.0) if cpm_amount  > 0 and d_contracted > 0 else 0.0
+        v_client_budget = (v_contracted * cpcv_amount)         if cpcv_amount > 0 and v_contracted > 0 else 0.0
+        if d_client_budget > 0:
+            entry["d_client_budget"] = round(d_client_budget, 2)
+        if v_client_budget > 0:
+            entry["v_client_budget"] = round(v_client_budget, 2)
 
         if r["display_has_abs"]:
             entry["display_has_abs"] = True
