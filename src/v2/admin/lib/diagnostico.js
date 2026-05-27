@@ -4,23 +4,28 @@
 // CampaignMenuV2. Recebe uma campanha crua do payload de listCampaigns e
 // devolve as métricas derivadas + classificação de status.
 //
-// Status (4 bandas, baseadas na projeção = display_pacing/video_pacing,
-// que o backend já calcula como "delivered / expected_to_date × 100" —
-// matematicamente equivale a "% que vai bater no fim mantendo o ritmo"):
+// Status (4 bandas, baseadas na projeção rolling 7 dias — "se o ritmo
+// médio da última semana se mantiver, quanto vai entregar do contrato"):
 //
-//   • Verificar Under    → projeção <  100%   (ritmo atual não bate o contrato)
+//   • Verificar Under    → projeção <  100%   (ritmo recente não bate o contrato)
 //   • Ok                 → projeção entre 100% e 125%  (até 25% over)
 //   • Over               → projeção entre 125% e 150%  (25–50% over)
 //   • Possível Super Over → projeção >  150%   (>50% over)
 //
-// NOTA sobre Viewable D-1:
-//   "D-1" = soma das viewable_impressions (Display) ou views 100%
-//   (Video) do dia anterior em BRT (America/Sao_Paulo). Vem do backend
-//   nos campos `display_yesterday_viewable` / `video_yesterday_completions`
-//   (CTE `yesterday_delivery` no main.py).
+// Antes usava D-1 (entrega de ontem) como base. Mudou pra média de 7 dias
+// porque D-1 puro era volátil: anomalia de DSP, fim de semana, spike
+// pontual flipavam o status entre Over/Under de um dia pro outro. Média
+// semanal suaviza variação sem carregar histórico antigo da campanha (que
+// é o problema de classificar pelo pacing histórico).
 //
-//   Quando o campo vier undefined (rollup das 6h BRT ainda não rodou OU
-//   a campanha não entregou ontem), a coluna renderiza "—".
+// NOTA sobre os dois campos D-1 / 7d:
+//   "D-1" = viewable do dia anterior em BRT. Campo `<media>_yesterday_*`.
+//   "7d"  = soma viewable dos últimos 7 dias (D-7..D-1) em BRT. Campo
+//           `<media>_last7d_*`. CTE `last7d_delivery` no main.py.
+//
+//   D-1 ainda é exposto na coluna "Viewable Imps. D-1" pra ser sinal de
+//   spike no dia. A projeção usa 7d com cadeia de fallback:
+//   7d → D-1 → pacing histórico.
 
 const TODAY = () => new Date();
 
@@ -229,7 +234,8 @@ export function deriveMediaMetrics({
   actualStartDate,   // <media>_actual_start_date ISO (preferido) — primeiro dia que a frente entregou
   endDate,           // end_date ISO (NÃO usar early_end_date — pacing é vs contrato original)
   impressions,       // display_impressions OU video_impressions (denom. da viewability)
-  lastDayDelivered,  // display_last_day_viewable OU video_last_day_completions (opcional, futuro)
+  lastDayDelivered,  // display_yesterday_viewable OU video_yesterday_completions (D-1)
+  last7dDelivered,   // display_last7d_viewable OU video_last7d_completions (soma D-7..D-1)
 }) {
   // Sem mídia? retorna sentinel "vazio".
   if (pacing == null && !delivered && !expectedToDate) return null;
@@ -281,37 +287,55 @@ export function deriveMediaMetrics({
     ? (delivered / negotiated) * 100
     : null;
 
-  // ── Projeção D-1 ────────────────────────────────────────────────────────
-  // "Se o ritmo de ontem (D-1) se mantiver até o fim, quanto vai entregar?"
+  // ── Projeção rolling 7 dias ─────────────────────────────────────────────
+  // "Se o ritmo médio da última semana se mantiver, quanto vai entregar?"
   //
   // Fórmula:
-  //   projeção_total = delivered_acumulado + (entrega_D1 × dias_restantes)
+  //   daily_rate_7d  = last7dDelivered / min(7, elapsed_days)
+  //   projeção_total = delivered_acumulado + (daily_rate_7d × dias_restantes)
   //   % projetada    = projeção_total / negotiated × 100
   //
-  // dias_restantes inclui HOJE (porque a campanha ainda pode entregar hoje).
+  // Por que 7 dias em vez de D-1:
+  //   - D-1 puro é volátil: anomalia de DSP, fim de semana, spike pontual
+  //     flipa o status entre Over/Under de um dia pro outro. Operação
+  //     calibrada em D-1 vira "alarme falso constante".
+  //   - Média semanal suaviza variação sem carregar histórico antigo da
+  //     campanha (que é o problema do pacing histórico). Captura tendência
+  //     recente sem ser refém de 1 ponto.
   //
-  // Fallback: quando D-1 vier null/zero (rollup ainda não rodou ou campanha
-  // não entregou ontem), cai pro pacing histórico do backend. Decisão
-  // operacional: "se não tenho dado fresco, melhor mostrar a média histórica
-  // do que esconder informação". O fallback é transparente — usuário vê o
-  // número que esperava ver, sem indicação visual que foi fallback (sinal
-  // de "sem D-1" já aparece na coluna "Viewable Imps. D-1" mostrando "—"
-  // na mesma linha).
+  // dias_restantes inclui HOJE (campanha ainda pode entregar hoje).
   //
-  // Sem cap: deixa passar de 999% intencionalmente. Quando D-1 é muito alto
-  // (spike), o número grande É o sinal operacional importante — capar
-  // mascararia exatamente o que o CS precisa ver.
+  // min(7, elapsed_days): pra campanha com < 7 dias de vida, divide pelos
+  // dias que existem. Sem isso, campanha de 3 dias com last7d cobrindo só 3
+  // dias divide por 7 e subestima ritmo. Match: backend só agrega dias que
+  // a campanha rodou (não tem registro antes do start).
+  //
+  // Cadeia de fallback (quando dado fresco ausente):
+  //   1º. 7d → 2º. D-1 → 3º. pacing histórico do backend
+  // Cobre: campanha nova (sem D-7), backend velho (sem campo 7d), rollup
+  // atrasado (sem D-1), fim de campanha. Sempre devolve um número.
+  //
+  // Sem cap: deixa passar de 999% intencionalmente quando há spike real —
+  // capar mascararia o sinal operacional que o CS precisa ver.
   const daysRemainingProj = Math.max(0, totalDays - elapsedDays);
   let projetadaPct = null;
-  if (lastDayDelivered != null && lastDayDelivered > 0
+  if (last7dDelivered != null && last7dDelivered > 0
+      && negotiated != null && negotiated > 0
+      && delivered != null && elapsedDays > 0) {
+    // Caminho feliz: ritmo médio dos últimos 7 dias
+    const windowDays   = Math.min(7, elapsedDays);
+    const dailyRate7d  = last7dDelivered / windowDays;
+    const projecaoTotal = delivered + (dailyRate7d * daysRemainingProj);
+    projetadaPct = (projecaoTotal / negotiated) * 100;
+  } else if (lastDayDelivered != null && lastDayDelivered > 0
       && negotiated != null && negotiated > 0
       && delivered != null) {
-    // Caminho feliz: projetar pelo ritmo de ontem
+    // Fallback 1: D-1 (backend velho sem campo 7d, ou campanha de 1 dia)
     const projecaoTotal = delivered + (lastDayDelivered * daysRemainingProj);
     projetadaPct = (projecaoTotal / negotiated) * 100;
   } else if (pacing != null && Number.isFinite(pacing)) {
-    // Fallback: pacing histórico do backend (mesmo número que aparecia antes
-    // do D-1 ser implementado). Usado quando lastDayDelivered ausente/zero.
+    // Fallback 2: pacing histórico do backend. Usado quando nem 7d nem D-1
+    // chegam (rollup atrasado, campanha não entregou, etc).
     projetadaPct = pacing;
   }
 
@@ -371,17 +395,19 @@ export function deriveMediaMetrics({
   if (viewability != null && viewability > 100) viewability = 100;
 
   return {
-    // status — classifica baseado na PROJEÇÃO D-1 (que reflete o ritmo
-    // recente com fallback pro pacing histórico). Mantém consistência
-    // entre Status e a coluna Projetada: se Projetada diz 333%, Status
-    // diz "Super Over" — não uma classificação baseada num pacing
-    // histórico que pode estar desatualizado.
+    // status — classifica baseado na PROJEÇÃO 7d (que reflete o ritmo
+    // médio da última semana, com fallback pra D-1 e depois pra pacing
+    // histórico). Mantém consistência entre Status e a coluna Projetada:
+    // se Projetada diz 333%, Status diz "Super Over" — não uma
+    // classificação baseada num pacing histórico que pode estar
+    // desatualizado.
     status: classifyStatus(projetadaPct),
     pacing: pacing ?? null,                   // pacing histórico (cru) — não usado na UI, fica pra debug
     // colunas da tabela
     totalEntreguePct,
-    projetadaPct,                             // projeção D-1 (com fallback) — exibida na UI
+    projetadaPct,                             // projeção 7d (com fallback) — exibida na UI
     deliveredD1: lastDayDelivered ?? null,    // entrega de ontem (BRT) — vai pro XLSX
+    delivered7d: last7dDelivered ?? null,     // soma últimos 7 dias (D-7..D-1) — base da projeção
     minDiariaContratada,                      // mínima RESTANTE — vai pro XLSX
     mediaDiariaAtual,                         // média real (entregue/elapsed) — coluna UI
     idealDiaria,                              // ritmo ideal linear (negotiated/total) — coluna UI
@@ -498,6 +524,7 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
       endDate:          c.end_date,
       impressions:      c.d_admin_impressions,
       lastDayDelivered: c.display_yesterday_viewable,
+      last7dDelivered:  c.display_last7d_viewable,
     });
     if (displayMetrics && displayMetrics.status) {
       const displayFin = computeFinancials(c, "display");
@@ -551,6 +578,7 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
       endDate:          c.end_date,
       impressions:      c.v_admin_impressions,
       lastDayDelivered: c.video_yesterday_completions,
+      last7dDelivered:  c.video_last7d_completions,
     });
     if (videoMetrics && videoMetrics.status) {
       const videoFin = computeFinancials(c, "video");
@@ -759,6 +787,77 @@ export function d1VsMediaInfo(d1, media) {
   const rounded = Math.round(deltaPct);
   const deltaLabel = rounded >= 0 ? `+${rounded}%` : `${rounded}%`;
   return { arrow, tone, deltaPct, deltaLabel };
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// D-1 vs Falta/Dia — ontem deu conta do que precisa?
+// ────────────────────────────────────────────────────────────────────────
+//
+// Compara D-1 com `minDiariaContratada` (Falta/Dia, ritmo dinâmico
+// necessário pra fechar 100%). Responde a pergunta direta: "ontem
+// entregou o suficiente?". Mais útil operacionalmente que d1VsMediaInfo
+// (que só diz se destoou da média, sem dizer se isso é bom ou ruim).
+//
+//   D-1 >= Falta/Dia  → ✓ verde   (ontem deu conta — vai virar / mantém)
+//   D-1 <  Falta/Dia  → ✗ vermelho (ontem ficou abaixo do necessário)
+//
+// Quando Falta/Dia é null (campanha já bateu 100%), retorna null — não
+// faz sentido comparar com "necessário" porque não tem mais necessário.
+//
+// @returns {{ok:boolean, icon:string, tone:string, gap:number|null}|null}
+export function d1VsFaltaInfo(d1, falta) {
+  if (d1 == null || !Number.isFinite(d1) || d1 <= 0) return null;
+  if (falta == null || !Number.isFinite(falta) || falta <= 0) return null;
+  const ok = d1 >= falta;
+  return {
+    ok,
+    icon: ok ? "✓" : "✗",
+    tone: ok ? "text-success" : "text-danger",
+    gap: d1 - falta,  // positivo se acima, negativo se abaixo
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Veredito da campanha — combina status com sinal de tendência D-1
+// ────────────────────────────────────────────────────────────────────────
+//
+// Constrói o "veredito" pra coluna Status: status base (Under/OK/Over/
+// Super Over) + modifier de tendência baseado em D-1 vs Falta/Dia.
+//
+// O modifier existe pra mostrar a HISTÓRIA da campanha em uma palavra:
+// uma Under pode estar "recuperando" (ontem virou) ou continuando ruim;
+// uma Over pode estar "caindo" (ontem desacelerou) ou mantendo. Sem o
+// modifier o status é estático e força o CS a olhar 3 colunas pra
+// decidir se precisa agir.
+//
+// Regras:
+//   • Under + D-1 >= Falta/Dia        → "↗ recuperando"
+//   • Over/Super Over + D-1 < Média   → "↘ desacelerando"
+//   • Caso contrário                   → sem modifier
+//
+// @returns {{label:string, trendLabel:string|null, trendTone:string|null}}
+export function buildVerdict({ status, deliveredD1, minDiariaContratada, mediaDiariaAtual }) {
+  const meta = STATUS_META[status];
+  if (!meta) return { label: "—", trendLabel: null, trendTone: null };
+
+  const label = meta.shortLabel;
+  let trendLabel = null;
+  let trendTone = null;
+
+  if (status === STATUS.UNDER && deliveredD1 != null && minDiariaContratada != null
+      && deliveredD1 >= minDiariaContratada) {
+    trendLabel = "↗ recuperando";
+    trendTone = "text-success";
+  } else if ((status === STATUS.OVER || status === STATUS.SUPER_OVER)
+             && deliveredD1 != null && mediaDiariaAtual != null
+             && deliveredD1 < mediaDiariaAtual * 0.85) {
+    // 0.85 = ontem ficou pelo menos 15% abaixo da média recente (sinal real
+    // de desaceleração, não só ruído diário).
+    trendLabel = "↘ desacelerando";
+    trendTone = "text-warning";
+  }
+
+  return { label, trendLabel, trendTone };
 }
 
 /**

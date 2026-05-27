@@ -20,53 +20,75 @@ import {
   techCostToneClass,
   mediaDiariaToneClass,
   viewabilityToneClass,
-  d1VsMediaInfo,
+  d1VsFaltaInfo,
+  buildVerdict,
   compareNullableNumbers,
 } from "../lib/diagnostico";
 
 // ────────────────────────────────────────────────────────────────────────
-// Dot de status — bolinha colorida com glow + tooltip no hover
+// Veredito da campanha — dot + label curto + modifier de tendência
 // ────────────────────────────────────────────────────────────────────────
 //
-// Substituiu a pílula textual: a coluna Status Pacing fica como bolinha
-// na primeira posição da tabela, deixando o status como sinal visual
-// rápido (pré-atentivo: cor + posição). O label completo aparece no
-// tooltip do hover. O glow usa `currentColor` pra herdar a cor do status
-// sem precisar mapear shadow por status no STATUS_META.
-function StatusDot({ status, frontImbalance }) {
-  const meta = STATUS_META[status];
+// Substituiu o StatusDot dot-only. Agora a coluna Status comunica direto:
+// "Under ↗ recuperando", "OK", "Over ↘ desacelerando" — em vez de obrigar
+// o CS a olhar Projetada + Falta/Dia + Ontem pra entender se a campanha
+// tá indo bem.
+//
+// Visual: dot pequeno colorido + texto curto. Modifier de tendência fica
+// abaixo do label principal em fonte menor, sem inflar a altura da row.
+// Tooltip mantém o detalhe operacional.
+function StatusVerdict({ row }) {
+  const meta = STATUS_META[row.status];
   if (!meta) return <span className="text-fg-subtle">—</span>;
-  // Status promovido pela pior frente: deixa óbvio no tooltip que o chip
-  // não reflete o pacing combinado, e sim a frente em risco — evita
-  // confusão quando a coluna Projetada mostra um número saudável.
-  const imbalancePromoted = frontImbalance && frontImbalance.status === status;
+  const verdict = buildVerdict({
+    status: row.status,
+    deliveredD1: row.deliveredD1,
+    minDiariaContratada: row.minDiariaContratada,
+    mediaDiariaAtual: row.mediaDiariaAtual,
+  });
+  const imbalancePromoted = row.front_imbalance && row.front_imbalance.status === row.status;
   return (
     <Tooltip delayDuration={150}>
       <TooltipTrigger asChild>
         <span
-          // Wrapper inline-block com padding pra aumentar a hitbox do hover
-          // (o dot tem 10px — sem padding o hover é frágil).
-          className="inline-flex items-center justify-center p-1 align-middle cursor-help"
+          className="inline-flex items-center gap-1.5 cursor-help align-middle"
           aria-label={meta.label}
           onClick={(e) => e.stopPropagation()}
         >
           <span
             className={cn(
-              "inline-block size-2.5 rounded-full",
+              "inline-block size-2 rounded-full shrink-0",
               meta.dotClass,
               meta.textClass,
-              "shadow-[0_0_6px_currentColor]"
+              "shadow-[0_0_4px_currentColor]"
             )}
           />
+          <span className="inline-flex flex-col items-start leading-tight">
+            <span className={cn("text-xs font-semibold whitespace-nowrap", meta.textClass)}>
+              {verdict.label}
+            </span>
+            {verdict.trendLabel && (
+              <span className={cn("text-[10px] font-medium whitespace-nowrap", verdict.trendTone)}>
+                {verdict.trendLabel}
+              </span>
+            )}
+          </span>
         </span>
       </TooltipTrigger>
       <TooltipContent side="right">
         <div className="flex flex-col gap-0.5">
           <span className={cn("font-semibold", meta.textClass)}>{meta.label}</span>
           <span className="text-fg-muted">{meta.description}</span>
+          {verdict.trendLabel && (
+            <span className="text-fg-muted">
+              {verdict.trendLabel === "↗ recuperando"
+                ? "Ontem (D-1) entregou acima do necessário pra fechar — pode virar."
+                : "Ontem (D-1) entregou abaixo da média recente — perdendo ritmo."}
+            </span>
+          )}
           {imbalancePromoted && (
             <span className="text-fg-muted">
-              Frente {frontImbalance.worstLabel} em {frontImbalance.worstPacing.toFixed(1)}% — combinado esconde o risco
+              Frente {row.front_imbalance.worstLabel} em {row.front_imbalance.worstPacing.toFixed(1)}% — combinado esconde o risco
             </span>
           )}
         </div>
@@ -290,14 +312,14 @@ export function DiagnosticoTable({
           <table className="w-full text-left table-fixed">
             <thead>
               <tr>
-                <Th align="center" {...headerProps("status")} className="w-10 px-2">Status</Th>
+                <Th align="left" {...headerProps("status")} className="w-[7%] px-2">Status</Th>
                 <Th align="left"  {...headerProps("client_name")}    className="w-[9%]">Cliente</Th>
                 <Th align="left"  {...headerProps("campaign_name")}  className="w-[13%]">Campanha</Th>
                 <Th align="left"  {...headerProps("cs_name")}        className="w-[6%]">CS</Th>
                 <Th align="left"  {...headerProps("start_date")}     className="w-[8%]">Período</Th>
                 <Th align="right" {...headerProps("totalEntreguePct")} className="w-[6%]">Entregue</Th>
                 <Th align="right" {...headerProps("projetadaPct")}     className="w-[6%]">Projetada</Th>
-                <Th align="right" {...headerProps("idealDiaria")}      className="w-[6%]">Ideal/Dia</Th>
+                <Th align="right" {...headerProps("minDiariaContratada")} className="w-[6%]">Falta/Dia</Th>
                 <Th align="right" {...headerProps("mediaDiariaAtual")} className="w-[6%]">Média/Dia</Th>
                 <Th align="right" {...headerProps("deliveredD1")}      className="w-[9%]">Ontem (D-1)</Th>
                 <Th align="right" {...headerProps("realEcpm")}         className="w-[6%]">CPM</Th>
@@ -352,8 +374,8 @@ export function DiagnosticoTable({
                       "focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-signature"
                     )}
                   >
-                    <Td align="center" className="w-10 px-2">
-                      <StatusDot status={r.status} frontImbalance={r.front_imbalance} />
+                    <Td align="left" className="w-[7%] px-2">
+                      <StatusVerdict row={r} />
                     </Td>
                     <Td align="left" title={r.client_name || undefined}>
                       <span className="font-medium text-fg">
@@ -413,7 +435,7 @@ export function DiagnosticoTable({
                       align="right"
                       tabular
                       className={cn("font-semibold", projTone)}
-                      title="% que vai bater no final mantendo o ritmo atual"
+                      title="% que vai bater no final mantendo o ritmo médio da última semana (7 dias). Fallback pra D-1 ou pacing histórico quando não tem dado recente."
                     >
                       {formatPctRow(r.projetadaPct, 1)}
                     </Td>
@@ -421,37 +443,46 @@ export function DiagnosticoTable({
                       align="right"
                       tabular
                       className="text-fg-muted"
-                      title="Ritmo ideal por dia pra bater 100% (contrato total ÷ dias totais da campanha) — baseline linear do plano"
+                      title="Ritmo diário NECESSÁRIO daqui pra frente pra fechar 100% do contrato — recalculado todo dia: (contrato − entregue) ÷ dias restantes. Se a campanha tá under, esse número sobe; se tá over, vira '—' (não precisa de mínima)."
                     >
-                      {formatIntRow(r.idealDiaria)}
+                      {formatIntRow(r.minDiariaContratada)}
                     </Td>
                     <Td
                       align="right"
                       tabular
-                      className={cn("font-semibold", mediaDiariaToneClass(r.mediaDiariaAtual, r.idealDiaria))}
-                      title="Média real de entrega por dia (entregue até hoje ÷ dias decorridos). Régua de proximidade ao Ideal/Dia: |delta| ≤ 15% verde · ≤ 30% amarelo · > 30% vermelho. Acima OU abaixo do ideal são problema."
+                      className={cn("font-semibold", mediaDiariaToneClass(r.mediaDiariaAtual, r.minDiariaContratada))}
+                      title="Média real de entrega por dia (entregue até hoje ÷ dias decorridos). Régua de proximidade à Falta/Dia: |delta| ≤ 15% verde · ≤ 30% amarelo · > 30% vermelho. Verde = no ritmo de catch-up; vermelho = falta entregar mais (under) ou tá entregando demais (over)."
                     >
                       {formatIntRow(r.mediaDiariaAtual)}
                     </Td>
                     {(() => {
-                      const d1Trend = d1VsMediaInfo(r.deliveredD1, r.mediaDiariaAtual);
+                      // Indicador principal: D-1 deu conta do necessário (Falta/Dia)?
+                      // Mais útil que comparar com a média histórica — responde
+                      // direto a pergunta "ontem foi suficiente pra fechar?".
+                      const d1Verdict = d1VsFaltaInfo(r.deliveredD1, r.minDiariaContratada);
                       return (
                         <Td
                           align="right"
                           tabular
                           title={
-                            d1Trend
-                              ? `Ontem (D-1) entregou ${formatIntRow(r.deliveredD1)} — ${d1Trend.deltaLabel} vs Média histórica (${formatIntRow(r.mediaDiariaAtual)}/dia). ` +
-                                (Math.abs(d1Trend.deltaPct) > 15 ? "Destoando da média." : "Próximo da média.")
-                              : "Sem entrega registrada ontem (D-1)"
+                            r.deliveredD1 == null || r.deliveredD1 <= 0
+                              ? "Sem entrega registrada ontem (D-1)"
+                              : d1Verdict
+                                ? `Ontem entregou ${formatIntRow(r.deliveredD1)} vs ${formatIntRow(r.minDiariaContratada)} necessário/dia. ` +
+                                  (d1Verdict.ok
+                                    ? `${formatIntRow(Math.abs(d1Verdict.gap))} acima do necessário — se mantiver, vai fechar 100%.`
+                                    : `Faltaram ${formatIntRow(Math.abs(d1Verdict.gap))}/dia — abaixo do ritmo de catch-up.`)
+                                : `Ontem entregou ${formatIntRow(r.deliveredD1)}. Sem Falta/Dia pra comparar (campanha já bateu 100%).`
                           }
                         >
-                          {d1Trend ? (
+                          {r.deliveredD1 != null && r.deliveredD1 > 0 ? (
                             <span className="inline-flex items-baseline gap-1.5">
                               <span>{formatIntRow(r.deliveredD1)}</span>
-                              <span className={cn("text-[11px] font-medium", d1Trend.tone)}>
-                                {d1Trend.arrow}{d1Trend.deltaLabel}
-                              </span>
+                              {d1Verdict && (
+                                <span className={cn("text-[11px] font-bold", d1Verdict.tone)}>
+                                  {d1Verdict.icon}
+                                </span>
+                              )}
                             </span>
                           ) : (
                             <span className="text-fg-subtle">—</span>

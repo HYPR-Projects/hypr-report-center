@@ -5022,6 +5022,35 @@ def query_campaigns_list():
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
             GROUP BY short_token
         ),
+        -- Entrega dos últimos 7 dias (janela rolling, exclui hoje porque hoje
+        -- ainda não fechou). Mesma matemática do yesterday_delivery, só muda
+        -- o filtro de data: BETWEEN D-7 AND D-1 (7 dias completos antes de
+        -- hoje). Usado pela aba Diagnóstico pra projetar pacing forward —
+        -- 7 dias suaviza variação diária (fim de semana, anomalia DSP, dia
+        -- de spike) sem carregar o histórico antigo da campanha.
+        --
+        -- Partition pruning aproveita: a tabela é particionada por date,
+        -- então o intervalo de 7 dias custa ~7x o yesterday_delivery, ainda
+        -- desprezível no custo total da query.
+        --
+        -- Campanha com elapsed < 7 dias: a soma vai cobrir só o que existir
+        -- (não há registro de dias antes do start). O frontend divide por
+        -- min(7, elapsed_days) pra não subestimar o ritmo de campanhas curtas.
+        last7d_delivery AS (
+            SELECT
+                short_token,
+                SUM(IF(media_type='DISPLAY', viewable_impressions, 0)) AS d_last7d_viewable,
+                SUM(IF(media_type='VIDEO' AND impressions > 0,
+                        video_view_100_complete * (viewable_impressions / impressions),
+                        0)) AS v_last7d_completions
+            FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+            WHERE date BETWEEN DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 7 DAY)
+                           AND DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY)
+              AND media_type IN ('DISPLAY', 'VIDEO')
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND UPPER(creative_name) NOT LIKE '%SURVEY%'
+            GROUP BY short_token
+        ),
         -- Brand Safety pre-bid (ABS) detection por mídia, cobrindo DV360, Xandr
         -- e override manual. Critério "qualquer linha" — uma campanha pode
         -- misturar linhas com e sem ABS, e cada mídia (Display/Video) é
@@ -5111,12 +5140,14 @@ def query_campaigns_list():
             u.d_admin_total_cost,     u.d_admin_impressions,
             u.v_admin_total_cost,     u.v_admin_impressions,
             yd.d_yesterday_viewable,  yd.v_yesterday_completions,
+            l7.d_last7d_viewable,     l7.v_last7d_completions,
             ab.display_has_abs,       ab.video_has_abs
         FROM base b
         LEFT JOIN agg                a USING (short_token)
         LEFT JOIN checklist          c USING (short_token)
         LEFT JOIN unified            u USING (short_token)
         LEFT JOIN yesterday_delivery yd USING (short_token)
+        LEFT JOIN last7d_delivery    l7 USING (short_token)
         LEFT JOIN campaign_abs       ab USING (short_token)
         ORDER BY b.start_date DESC
     """
@@ -5335,6 +5366,16 @@ def query_campaigns_list():
         v_yesterday_completions = float(r["v_yesterday_completions"] or 0)
         if d_yesterday_viewable    > 0: entry["display_yesterday_viewable"]    = int(d_yesterday_viewable)
         if v_yesterday_completions > 0: entry["video_yesterday_completions"]   = int(v_yesterday_completions)
+
+        # Entrega dos últimos 7 dias (janela rolling, BRT, exclui hoje). Usado
+        # pela projeção do diagnóstico em vez do D-1 puro — média semanal
+        # suaviza variação diária (anomalia de DSP, fim de semana, spike)
+        # mantendo o sinal recente. Omitido quando == 0 (frontend cai pra
+        # fallback de D-1 → pacing histórico).
+        d_last7d_viewable    = float(r["d_last7d_viewable"]    or 0)
+        v_last7d_completions = float(r["v_last7d_completions"] or 0)
+        if d_last7d_viewable    > 0: entry["display_last7d_viewable"]    = int(d_last7d_viewable)
+        if v_last7d_completions > 0: entry["video_last7d_completions"]   = int(v_last7d_completions)
 
         # ADMIN-ONLY: campos com prefixo `admin_` carregam dado confidencial
         # (custo cru do DSP, antes da margem/over que vai pro cliente).
