@@ -152,6 +152,7 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
     video_pacing,
     display_ctr,
     video_vtr,
+    display_has_abs,
     cp_email,
     cs_email,
     merge_id,
@@ -177,7 +178,7 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
 
   const dimColor = "text-fg-subtle";
   const colorPacing = (p) => (ended ? dimColor : pacingColorClass(p));
-  const colorCtr    = (v) => (ended ? dimColor : ctrColorClass(v));
+  const colorCtr    = (v) => (ended ? dimColor : ctrColorClass(v, !!display_has_abs));
   const colorVtr    = (v) => (ended ? dimColor : vtrColorClass(v));
 
   return (

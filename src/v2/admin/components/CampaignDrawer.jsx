@@ -504,7 +504,7 @@ export function CampaignDrawer({
                 <div className="rounded-lg bg-surface border border-border px-3 py-2.5 grid grid-cols-4 gap-2">
                   {display_pacing != null && <DrawerInlineStat label="DSP" value={formatPacingValue(display_pacing)} colorClass={pacingColorClass(display_pacing)} />}
                   {video_pacing   != null && <DrawerInlineStat label="VID" value={formatPacingValue(video_pacing)}   colorClass={pacingColorClass(video_pacing)} />}
-                  {display_ctr    != null && <DrawerInlineStat label="CTR" value={formatPct(display_ctr, 2)} colorClass={ctrColorClass(display_ctr)} />}
+                  {display_ctr    != null && <DrawerInlineStat label="CTR" value={formatPct(display_ctr, 2)} colorClass={ctrColorClass(display_ctr, !!display_has_abs)} />}
                   {video_vtr      != null && <DrawerInlineStat label="VTR" value={formatPct(video_vtr, 1)}  colorClass={vtrColorClass(video_vtr)} />}
                 </div>
               ) : (

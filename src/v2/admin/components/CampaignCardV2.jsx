@@ -341,7 +341,7 @@ export function CampaignCardV2({
                 <ResultRow
                   label="CTR"
                   value={display_ctr != null ? formatPct(display_ctr, 2) : null}
-                  colorClass={display_ctr != null ? ctrColorClass(display_ctr) : "text-fg-subtle"}
+                  colorClass={display_ctr != null ? ctrColorClass(display_ctr, !!display_has_abs) : "text-fg-subtle"}
                 />
               </>
             )}
@@ -454,7 +454,7 @@ export function CampaignCardV2({
             <ResultRow
               label="CTR"
               value={display_ctr != null ? formatPct(display_ctr, 2) : null}
-              colorClass={ended ? "text-fg-subtle" : (display_ctr != null ? ctrColorClass(display_ctr) : "text-fg-subtle")}
+              colorClass={ended ? "text-fg-subtle" : (display_ctr != null ? ctrColorClass(display_ctr, !!display_has_abs) : "text-fg-subtle")}
             />
           )}
           {hasVideo && (

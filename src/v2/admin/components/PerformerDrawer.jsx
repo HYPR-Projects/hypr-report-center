@@ -27,6 +27,21 @@ import { Drawer, DrawerContent, DrawerHeader, DrawerBody } from "../../../ui/Dra
 import { cn } from "../../../ui/cn";
 import { CampaignLines } from "./CampaignLines";
 
+// BRL compacto sem centavos — usado nos big numbers do header (Investido /
+// Custo do mês). Diferente de formatBRL do format.js que mantém 2 decimais
+// pra precisão em eCPM/custo unitário. Aqui R$ 1.250.000,00 vira
+// "R$ 1.250.000" pra economizar largura no card.
+const _BRL_COMPACT = new Intl.NumberFormat("pt-BR", {
+  style: "currency",
+  currency: "BRL",
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 0,
+});
+function formatBrlCompact(value) {
+  if (value == null || !Number.isFinite(Number(value))) return "—";
+  return _BRL_COMPACT.format(Number(value));
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function localPartFromEmail(email) {
   if (!email) return "";
@@ -389,8 +404,38 @@ function PerformerDrawerInner({ performer, displayName, onOpenReport }) {
         subtitle={`${performer.campaign_count} campanha${performer.campaign_count === 1 ? "" : "s"} ativa${performer.campaign_count === 1 ? "" : "s"} · ${performer.email}`}
       />
       <DrawerBody className="space-y-5">
+        {/* Big numbers do mês — Investido e Custo atribuídos ao CS no mês
+            corrente. Régua assimétrica idêntica à Big Metric Tech Cost:
+            custo pega tudo que rolou no mês (cross-month incluso), budget
+            só PIs com start no mês. Aparece quando backend tem
+            monthly_cost_full (fallback null esconde a seção). */}
+        {(performer.month_cost != null || performer.month_budget != null) && (
+          <section className="grid grid-cols-2 gap-3 -mt-2">
+            <div>
+              <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+                Investido no mês
+              </div>
+              <div className="text-2xl font-bold tabular-nums leading-none mt-1 text-fg">
+                {performer.month_budget != null
+                  ? formatBrlCompact(performer.month_budget)
+                  : <span className="text-fg-subtle">—</span>}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+                Custo no mês
+              </div>
+              <div className="text-2xl font-bold tabular-nums leading-none mt-1 text-fg">
+                {performer.month_cost != null
+                  ? formatBrlCompact(performer.month_cost)
+                  : <span className="text-fg-subtle">—</span>}
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* Score destaque com barra grande */}
-        <section className="space-y-2 -mt-2">
+        <section className="space-y-2">
           <div className="flex items-end justify-between gap-3">
             <div>
               <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">

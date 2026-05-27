@@ -69,10 +69,24 @@ export function pacingColorClass(pacing) {
   return "text-signature";
 }
 
-export function ctrColorClass(ctr) {
+// CTR — régua alinhada ao score HYPR (AlertCampaignSheet LINE_TH):
+//
+//   Sem ABS:  ≥ 0.70 verde · 0.50–0.70 amarelo · < 0.50 vermelho
+//   Com ABS:  ≥ 0.50 verde · 0.30–0.50 amarelo · < 0.30 vermelho
+//
+// ABS pre-bid (DV/IAS) filtra inventário antes do bid e naturalmente reduz
+// CTR — daí o threshold mais permissivo. Passar `hasAbs=true` pra cobrir.
+// Aggregates (strip, top performers, client card) chamam sem `hasAbs`
+// (default false) — mistura de campanhas usa régua mais rigorosa.
+export function ctrColorClass(ctr, hasAbs = false) {
   if (ctr == null || isNaN(ctr)) return "text-fg-subtle";
+  if (hasAbs) {
+    if (ctr < 0.30) return "text-danger";
+    if (ctr < 0.50) return "text-warning";
+    return "text-success";
+  }
   if (ctr < 0.50) return "text-danger";
-  if (ctr < 0.65) return "text-warning";
+  if (ctr < 0.70) return "text-warning";
   return "text-success";
 }
 

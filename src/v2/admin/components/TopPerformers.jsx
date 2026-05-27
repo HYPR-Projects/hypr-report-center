@@ -73,10 +73,13 @@ function toneEcpm(value) {
   return "danger";
 }
 
+// Régua sem-ABS (≥0.70 verde) porque é agregado de várias campanhas do CS —
+// mistura usa o threshold mais rigoroso. Alinhado com ctrColorClass do
+// format.js. Per-campanha usa ABS-aware.
 function toneCtr(value) {
   if (value == null)  return "muted";
-  if (value >= 0.6)   return "success";
-  if (value >= 0.5)   return "warning";
+  if (value >= 0.70)  return "success";
+  if (value >= 0.50)  return "warning";
   return "danger";
 }
 

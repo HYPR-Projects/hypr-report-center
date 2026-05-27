@@ -544,8 +544,10 @@ export function DiagnosticoTable({
                     <Td
                       align="right"
                       tabular
-                      className={cn("font-semibold", ctrColorClass(r.ctr))}
-                      title="CTR (clicks / impressões totais): <0,50% vermelho · 0,50–0,65% amarelo · ≥0,65% verde"
+                      className={cn("font-semibold", ctrColorClass(r.ctr, !!r.has_abs))}
+                      title={r.has_abs
+                        ? "CTR (com ABS): <0,30% vermelho · 0,30–0,50% amarelo · ≥0,50% verde"
+                        : "CTR (sem ABS): <0,50% vermelho · 0,50–0,70% amarelo · ≥0,70% verde"}
                     >
                       {formatPctRow(r.ctr, 2)}
                     </Td>

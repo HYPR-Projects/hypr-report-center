@@ -914,11 +914,39 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
     const m = aggregateMetrics(list);
     const rawScore = weightSum > 0 ? scoreSum / weightSum : 0;
 
+    // Totais do mês corrente atribuídos ao CS — exibidos no PerformerDrawer
+    // como "Investido no mês" / "Custo no mês". Régua assimétrica igual à
+    // Big Metric Tech Cost:
+    //   Custo       = Σ monthly_cost_full[mês] de TODAS campanhas do CS
+    //                 (pega cross-month que rolou no mês)
+    //   Investimento = Σ client_budget SÓ de PIs do CS com start no mês
+    // Fallback pra null se backend sem monthly_cost_full — drawer esconde
+    // a seção nesse caso.
+    const mk = currentMonthKey();
+    let monthCost = 0;
+    let monthBudget = 0;
+    let hasMonthlyData = false;
+    for (const c of list) {
+      const mcMap = c.monthly_cost_full;
+      if (mcMap && typeof mcMap === "object") {
+        hasMonthlyData = true;
+        const mc = Number(mcMap[mk]);
+        if (Number.isFinite(mc) && mc > 0) monthCost += mc;
+      }
+      if (c.start_date && c.start_date.slice(0, 7) === mk) {
+        const b = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
+        if (b > 0) monthBudget += b;
+      }
+    }
+
     out.push({
       email,
       score: Math.round(rawScore * 10) / 10,
       campaign_count: list.length,
       ideal_pacing_count: idealPacing,
+      month_cost:    hasMonthlyData ? monthCost   : null,
+      month_budget:  monthBudget > 0 ? monthBudget : null,
+      month_key:     mk,
       ecpm_avg:     m.ecpm,
       ecpm_display: m.ecpm_display,
       ecpm_video:   m.ecpm_video,
