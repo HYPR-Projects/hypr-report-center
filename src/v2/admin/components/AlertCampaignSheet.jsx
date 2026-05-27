@@ -854,7 +854,7 @@ export function AlertCampaignSheet({
                             <p className="text-[12.5px] font-semibold text-fg leading-snug">
                               {a.message.replace(`${campaign.client_name}/${campaign.campaign_name} `, "")}
                             </p>
-                            <p className="mt-0.5 text-[11px] text-fg-muted leading-snug">
+                            <p className="mt-0.5 text-[11px] text-fg-muted leading-snug whitespace-pre-line">
                               {a.detail}
                             </p>
                           </div>

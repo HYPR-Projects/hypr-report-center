@@ -48,7 +48,8 @@ function deriveMediaProjections({
   startDate,
   endDate,
   lastDayDelivered,
-  realCost,
+  realCost,            // custo COM survey (admin_total_cost_full) — base do tech cost
+  realCostNoSurvey,    // custo SEM survey (admin_total_cost) — pra disclaimer da Atenção
   clientBudget,
   ecpmReal,
   impressionsGross,
@@ -144,10 +145,29 @@ function deriveMediaProjections({
     : null;
   if (viewability != null && viewability > 100) viewability = 100;
 
-  // Tech cost atual (snapshot).
+  // Tech cost atual (snapshot). Usa realCost que JÁ é com survey (vem
+  // de admin_total_cost_full no caller).
   const tech_cost_pct = (realCost != null && clientBudget != null && clientBudget > 0)
     ? (realCost / clientBudget) * 100
     : null;
+
+  // Tech cost SEM survey + contribuição do survey — usado pelo disclaimer
+  // da Atenção. Quando survey representa parcela significativa do custo
+  // (>25%), o alerta mostra "↳ R$ X vem de survey, sem survey: Y%".
+  // Permite admin distinguir "tech cost alto operacional" de "tech cost
+  // alto por causa de survey grande".
+  const survey_cost_brl = (realCost != null && realCostNoSurvey != null)
+    ? Math.max(0, realCost - realCostNoSurvey)
+    : 0;
+  const tech_cost_pct_no_survey = (realCostNoSurvey != null && clientBudget != null && clientBudget > 0)
+    ? (realCostNoSurvey / clientBudget) * 100
+    : null;
+  // Share do survey no custo total. Se for >0.25 (25%), alertas tech cost
+  // adicionam disclaimer. Calculado aqui pra centralizar e evitar duplicar
+  // a régua nas 3 regras (C1/C2/C3).
+  const survey_share = (realCost != null && realCost > 0)
+    ? survey_cost_brl / realCost
+    : 0;
 
   // ── Análise de custo: alocado vs ideal ─────────────────────────────
   // Pra cada momento, computa quanto deveria ter sido alocado pra fechar
@@ -204,8 +224,12 @@ function deriveMediaProjections({
     projected_pacing,
     catch_up_multiplier,
     real_cost: realCost ?? null,
+    real_cost_no_survey: realCostNoSurvey ?? null,
+    survey_cost_brl,
+    survey_share,
     projected_real_cost,
     tech_cost_pct,
+    tech_cost_pct_no_survey,
     projected_tech_cost_pct,
     excess_brl,
     viewability,
@@ -231,6 +255,11 @@ function deriveMediaProjections({
 export function enrichCampaign(c, statusFn) {
   const camp_status = statusFn(c.end_date, c.closed_at, c.paused_at, c.early_end_date);
 
+  // realCost = COM survey (`_full`) — alinha com a régua do KPI strip e da
+  // tabela do diagnostico. Fallback pro sem-survey enquanto backend não tem
+  // o campo `_full` (deploy gracioso).
+  // realCostNoSurvey = SEM survey (campo legado) — usado pelo disclaimer
+  // das regras C1/C2/C3 quando survey é >25% do custo total.
   const display = deriveMediaProjections({
     pacing:           c.display_pacing,
     delivered:        c.display_viewable_impressions,
@@ -238,7 +267,8 @@ export function enrichCampaign(c, statusFn) {
     startDate:        c.start_date,
     endDate:          c.end_date,
     lastDayDelivered: c.display_yesterday_viewable,
-    realCost:         c.d_admin_total_cost,
+    realCost:         c.d_admin_total_cost_full ?? c.d_admin_total_cost,
+    realCostNoSurvey: c.d_admin_total_cost,
     clientBudget:     c.d_client_budget,
     ecpmReal:         c.display_ecpm,
     impressionsGross: c.d_admin_impressions,
@@ -251,7 +281,8 @@ export function enrichCampaign(c, statusFn) {
     startDate:        c.start_date,
     endDate:          c.end_date,
     lastDayDelivered: c.video_yesterday_completions,
-    realCost:         c.v_admin_total_cost,
+    realCost:         c.v_admin_total_cost_full ?? c.v_admin_total_cost,
+    realCostNoSurvey: c.v_admin_total_cost,
     clientBudget:     c.v_client_budget,
     ecpmReal:         c.video_ecpm,
     impressionsGross: c.v_admin_impressions,

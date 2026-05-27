@@ -45,6 +45,29 @@ const mediaLabel = (m) => m === "video" ? "Video" : "Display";
 // ────────────────────────────────────────────────────────────────────────
 const techTier = (hasAbs) => hasAbs ? TECH_COST.abs : TECH_COST.noAbs;
 
+// Threshold pra mostrar disclaimer de survey nos alertas de tech cost.
+// 25% = survey representa pelo menos 1/4 do custo total. Abaixo disso a
+// "contaminação" é pequena e o alerta com survey já é o tech cost real
+// que o admin deve agir. Acima, vale mostrar a quebra pra admin distinguir
+// "tech cost alto operacional" de "survey inflando margem".
+const SURVEY_SHARE_DISCLAIMER_THRESHOLD = 0.25;
+
+/**
+ * Concatena disclaimer de survey ao detail do alerta quando survey é
+ * parcela significativa do custo. Devolve detail original se não atinge
+ * o threshold ou se faltam dados.
+ *
+ * Ex: detail original = "Display · ~R$ 1.700 de margem comida"
+ *     com disclaimer  = "Display · ~R$ 1.700 de margem comida\n
+ *                        ↳ R$ 2.436 vem de SURVEY (87% do custo) — sem survey: 9.4%"
+ */
+function appendSurveyDisclaimer(detail, m) {
+  if (!m || !m.survey_share || m.survey_share < SURVEY_SHARE_DISCLAIMER_THRESHOLD) return detail;
+  if (!m.survey_cost_brl || m.tech_cost_pct_no_survey == null) return detail;
+  const sharePct = Math.round(m.survey_share * 100);
+  return `${detail}\n↳ ${fmtBrl(m.survey_cost_brl)} vem de SURVEY (${sharePct}% do custo) — sem survey: ${fmtPct(m.tech_cost_pct_no_survey, 1)}`;
+}
+
 // ────────────────────────────────────────────────────────────────────────
 // Cada rule.evaluate recebe { enriched, media, hasAbs, rawCampaign }
 // e retorna null OU { message, detail, impactBrl }
@@ -239,7 +262,10 @@ const RULES_PER_MEDIA = [
       const marginEaten = (excessPct / 100) * m.client_budget;
       return {
         message: `${rawCampaign.client_name}/${rawCampaign.campaign_name} com Tech Cost crítico (${fmtPct(m.tech_cost_pct, 1)})`,
-        detail:  `${mediaLabel(media)}${hasAbs ? " · ABS" : ""} · ~${fmtBrl(marginEaten)} de margem comida`,
+        detail:  appendSurveyDisclaimer(
+          `${mediaLabel(media)}${hasAbs ? " · ABS" : ""} · ~${fmtBrl(marginEaten)} de margem comida`,
+          m
+        ),
         impactBrl: marginEaten,
       };
     },
@@ -258,7 +284,10 @@ const RULES_PER_MEDIA = [
       if (m.tech_cost_pct > tiers.warning) return null;
       return {
         message: `${rawCampaign.client_name}/${rawCampaign.campaign_name} Tech Cost no amarelo (${fmtPct(m.tech_cost_pct, 1)})`,
-        detail:  `${mediaLabel(media)}${hasAbs ? " · ABS" : ""} · monitorar`,
+        detail:  appendSurveyDisclaimer(
+          `${mediaLabel(media)}${hasAbs ? " · ABS" : ""} · monitorar`,
+          m
+        ),
         impactBrl: m.client_budget * 0.02, // ~2% de "atenção"
       };
     },
@@ -279,7 +308,10 @@ const RULES_PER_MEDIA = [
       const projectedMarginEaten = ((m.projected_tech_cost_pct - tiers.healthy) / 100) * m.client_budget;
       return {
         message: `${rawCampaign.client_name}/${rawCampaign.campaign_name} Tech Cost vai cruzar vermelho`,
-        detail:  `${mediaLabel(media)} · hoje ${fmtPct(m.tech_cost_pct, 1)} → projetado ${fmtPct(m.projected_tech_cost_pct, 1)}`,
+        detail:  appendSurveyDisclaimer(
+          `${mediaLabel(media)} · hoje ${fmtPct(m.tech_cost_pct, 1)} → projetado ${fmtPct(m.projected_tech_cost_pct, 1)}`,
+          m
+        ),
         impactBrl: projectedMarginEaten,
       };
     },
