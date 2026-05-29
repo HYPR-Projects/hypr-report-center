@@ -205,7 +205,16 @@ export default function DisplayV2({
       : (kpis.cpmNeg * projectedVisible) / 1000;
     return (projectedCost / projectedVisible) * 1000;
   })();
-  const useProjection = cpmEfProjected !== null;
+  // A projeção só vale enquanto a entrega factual ainda NÃO realizou a
+  // economia. Assim que a entrega real ultrapassa contratadas+bonus, o
+  // cpmEf factual (= budget / visíveis reais) já caiu ABAIXO da projeção —
+  // que fica travada em budget/(contratadas+bonus) pelo cap de pacing em
+  // 100% (linha 200). Nesse ponto o factual É a verdade entregue, não uma
+  // estimativa, então mostramos ele. Ex.: pacing 107,8% → factual R$9,27
+  // vence a projeção capada em R$10,00.
+  const useProjection =
+    cpmEfProjected !== null &&
+    !(kpis.cpmEf != null && kpis.cpmEf < cpmEfProjected);
   // cpmEf "renderizado" — em campanhas com bonus, sobrescreve com a
   // projeção. Rentabilidade segue a mesma fonte pra consistência visual
   // (Efetivo aqui vira X% melhor que Tabela = a Rentabilidade fica
