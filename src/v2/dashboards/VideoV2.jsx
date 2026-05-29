@@ -188,7 +188,16 @@ export default function VideoV2({
       : kpis.cpcvNeg * projectedViews;
     return projectedCost / projectedViews;
   })();
-  const useProjection = cpcvEfProjected !== null;
+  // A projeção só vale enquanto a entrega factual ainda NÃO realizou a
+  // economia. Assim que a entrega real (completions) ultrapassa
+  // contratadas+bonus, o cpcvEf factual (= budget / completions) já caiu
+  // ABAIXO da projeção — que fica travada em budget/(contratadas+bonus)
+  // pelo cap de pacing em 100%. Nesse ponto o factual É a verdade
+  // entregue, não estimativa, então mostramos ele. Ex.: pacing 401,3% →
+  // factual R$0,05 vence a projeção capada em R$0,200.
+  const useProjection =
+    cpcvEfProjected !== null &&
+    !(kpis.cpcvEf != null && kpis.cpcvEf < cpcvEfProjected);
   const cpcvEfDisplay = useProjection ? cpcvEfProjected : kpis.cpcvEf;
   const rentabDisplay = useProjection && kpis.cpcvNeg > 0
     ? ((kpis.cpcvNeg - cpcvEfProjected) / kpis.cpcvNeg) * 100
