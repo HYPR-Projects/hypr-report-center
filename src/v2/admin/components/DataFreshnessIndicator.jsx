@@ -29,7 +29,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { cn } from "../../../ui/cn";
-import { getDataFreshness } from "../../../lib/api";
+import { getDataFreshness, triggerUnifiedRebuild } from "../../../lib/api";
 
 const REFETCH_MS       = 5 * 60 * 1000;
 const CUTOFF_HOUR_BR   = 7;
@@ -127,6 +127,9 @@ export function DataFreshnessIndicator({ className }) {
     lastFetch:  null,
   });
 
+  // Estado do botão de reconstrução manual (dispara o job no Dagster+).
+  const [rebuild, setRebuild] = useState({ busy: false, ok: null, msg: "", runUrl: null });
+
   // Ref pra cancelar fetches stale (modo strict + unmount durante refetch).
   const cancelRef = useRef({ cancelled: false });
 
@@ -145,6 +148,25 @@ export function DataFreshnessIndicator({ className }) {
     } catch (e) {
       if (cancelRef.current.cancelled) return;
       setState((prev) => ({ ...prev, loading: false, error: e }));
+    }
+  };
+
+  // Dispara a reconstrução manual no Dagster e re-checa o frescor depois (o
+  // job leva alguns minutos pra materializar). Não bloqueia o popover.
+  const onRebuild = async () => {
+    setRebuild({ busy: true, ok: null, msg: "", runUrl: null });
+    try {
+      const res = await triggerUnifiedRebuild();
+      setRebuild({
+        busy: false, ok: true,
+        msg: "Reconstrução disparada — leva alguns minutos.",
+        runUrl: res?.run_url || null,
+      });
+      // Re-checa o frescor conforme o job vai terminando.
+      setTimeout(fetchOnce, 90_000);
+      setTimeout(fetchOnce, 240_000);
+    } catch (e) {
+      setRebuild({ busy: false, ok: false, msg: e.message || "Falha ao disparar.", runUrl: null });
     }
   };
 
@@ -273,6 +295,46 @@ export function DataFreshnessIndicator({ className }) {
                   );
                 })}
               </ul>
+            )}
+          </div>
+
+          {/* Reconstrução manual — escape pra quando o run diário falhou
+              (fonte atrasada). Dispara o job no Dagster+. */}
+          <div className="px-4 pt-2 pb-3 border-t border-border">
+            <button
+              type="button"
+              onClick={onRebuild}
+              disabled={rebuild.busy}
+              className={cn(
+                "w-full h-8 rounded-md text-[12px] font-medium",
+                "border border-border bg-surface text-fg",
+                "hover:bg-surface-strong hover:border-border-strong transition-colors",
+                "disabled:opacity-60 disabled:cursor-not-allowed",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
+              )}
+            >
+              {rebuild.busy ? "Disparando…" : "Reconstruir agora"}
+            </button>
+            {rebuild.msg && (
+              <p className={cn(
+                "mt-2 text-[11px] leading-snug",
+                rebuild.ok ? "text-success" : "text-danger",
+              )}>
+                {rebuild.msg}
+                {rebuild.runUrl && (
+                  <>
+                    {" "}
+                    <a
+                      href={rebuild.runUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline hover:no-underline"
+                    >
+                      ver run ↗
+                    </a>
+                  </>
+                )}
+              </p>
             )}
           </div>
 
