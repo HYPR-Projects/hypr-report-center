@@ -4668,7 +4668,16 @@ def query_totals(token, campaign_info):
         #   - backend `pacing_calc_calendar` no `?list=true`
         # Resultado: a coluna Pacing do Detalhamento e o Resumo por mídia
         # mostram o MESMO número que a barra Pacing da Visão Geral.
-        pacing_capped_elapsed = min(row_elapsed_days, row_total_days) if row_total_days > 0 else 0
+        #
+        # No último dia / após o fim, a campanha já decorreu por inteiro — o
+        # esperado é 100% do negociado. Espelha o front (`computeMediaPacing`:
+        # `now > end ? tDays`) e o `?list` (`pacing_expected_to_date`: `today >=
+        # e`). Sem isso, o per-row prorrateava 30/31 no dia 31 e mostrava OVER
+        # enquanto Visão Geral/Admin já mostravam UNDER (bug Video OOH 101,6% vs
+        # 98,4%). Usa `today >= end` (inclui o último dia) — `row_is_ended` na
+        # 4630 usa `end < today` (estrito) só pro budget_prop, não serve aqui.
+        pacing_elapsed = row_total_days if (end and today >= end) else row_elapsed_days
+        pacing_capped_elapsed = min(pacing_elapsed, row_total_days) if row_total_days > 0 else 0
         pacing_expected = (neg / row_total_days * pacing_capped_elapsed) if (row_total_days > 0 and pacing_capped_elapsed > 0) else 0
 
         # Pacing: entregue vs esperado (fórmula canônica calendar-elapsed)
@@ -5418,9 +5427,10 @@ def query_campaigns_list():
         # tudo concentradamente em poucos dias (ex.: Diageo entregou
         # tudo em 1 dia de 9 → expected minúsculo → pacing 230%).
         #
-        # NÃO alinhei aqui o per-row pacing (campo `pacing` em totals),
-        # que é consumido pelo Resumo por mídia + Detalhamento e ainda
-        # usa days_with_delivery. Próximo PR.
+        # O per-row pacing (campo `pacing` em totals, consumido pelo Resumo
+        # por mídia + Detalhamento + barra da aba Video) já foi alinhado em
+        # query_totals (~4671): calendar-elapsed com cap em row_total_days e a
+        # regra `today >= end → esperado = negociado cheio`, igual a esta.
         # Retorna o "esperado até hoje" pra base do pacing.
         # delivered/expected × 100 dá a % de pacing — exposta como métrica
         # calculada no payload. expected também vai cru pro front pra permitir
