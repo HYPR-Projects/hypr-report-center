@@ -114,6 +114,13 @@ if [ -z "$PMP_SCHEDULER_SECRET" ]; then
   echo "     Configure o Cloud Scheduler job com este valor no header X-Scheduler-Secret."
 fi
 
+# DAGSTER_API_TOKEN — user token do Dagster+ usado pelo endpoint
+# rebuild_unified (botão "Reconstruir agora" no indicador Estado das bases),
+# que dispara o job dbt via GraphQL launchRun. Mesmo padrão dos demais:
+# captura da revisão ativa OU lê do Secret Manager.
+DAGSTER_API_TOKEN=$(extract_env "DAGSTER_API_TOKEN")
+DAGSTER_API_TOKEN=$(read_secret_if_missing "DAGSTER_API_TOKEN" "$DAGSTER_API_TOKEN")
+
 if [ -z "$JWT_SECRET" ]; then
   echo "✗ JWT_SECRET não encontrado na revisão $ACTIVE_REV. Abortando."
   echo "  (sem ele o login admin quebra em loop)"
@@ -158,6 +165,11 @@ else
 fi
 if [ -n "$PMP_SCHEDULER_SECRET" ]; then
   echo "  ✓ PMP_SCHEDULER_SECRET capturado"
+fi
+if [ -n "$DAGSTER_API_TOKEN" ]; then
+  echo "  ✓ DAGSTER_API_TOKEN capturado (botão Reconstruir agora habilitado)"
+else
+  echo "  ⚠ DAGSTER_API_TOKEN ausente — botão Reconstruir agora retorna erro de config"
 fi
 
 # ── 2. Montar arquivo YAML com todas as envvars ──────────────────────────────
@@ -205,6 +217,9 @@ if [ -n "$XANDR_CURATE_MEMBER_ID" ]; then
 fi
 if [ -n "$PMP_SCHEDULER_SECRET" ]; then
   echo "PMP_SCHEDULER_SECRET: '${PMP_SCHEDULER_SECRET}'" >> "$ENV_FILE"
+fi
+if [ -n "$DAGSTER_API_TOKEN" ]; then
+  echo "DAGSTER_API_TOKEN: '${DAGSTER_API_TOKEN}'" >> "$ENV_FILE"
 fi
 
 # ── 3. Deploy ────────────────────────────────────────────────────────────────

@@ -2030,6 +2030,25 @@ def report_data(request):
             logger.error(f"[ERROR data_freshness] {e}")
             return (jsonify({"error": "Erro ao buscar freshness"}), 500, headers)
 
+    # POST ?action=rebuild_unified — admin-only. Escape manual pra re-disparar
+    # o job do Dagster que reconstrói as bases unificadas, quando o run diário
+    # falhou (tipicamente porque uma fonte atrasou e a DAG pulou o `unified`).
+    # Ver trigger_dagster_rebuild(). Idempotente — o job é full-rebuild.
+    if request.method == "POST" and request.args.get("action") == "rebuild_unified":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            res = trigger_dagster_rebuild()
+            logger.info(f"[rebuild_unified] run {res['run_id']} disparada por {admin.get('email','?')}")
+            return (jsonify({"ok": True, **res}), 200, headers)
+        except RuntimeError as e:
+            # Falha esperada (config ausente / Dagster recusou) — mensagem amigável.
+            return (jsonify({"error": str(e)}), 502, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR rebuild_unified] {e}")
+            return (jsonify({"error": "Erro ao disparar reconstrução"}), 500, headers)
+
     # ── Endpoints: PMP Deals (admin) ──────────────────────────────────────────
     # Análise das entregas dos deals de pagamento HYPR — substitui o fluxo
     # manual de baixar o report do Xandr Curate e alimentar a planilha
@@ -3591,6 +3610,98 @@ def query_data_freshness():
         })
     _cache_set(_data_freshness_cache, "all", out)
     return out
+
+
+# ── Trigger de reconstrução das bases unificadas via Dagster+ ────────────────
+# A `prod_assets.unified_daily_performance_metrics` (e demais unified_*) é
+# materializada por um job dbt orquestrado no Dagster+ (org `hypr`, deployment
+# `prod`, location `hyprster`, job `dbt_assets_freshness_06am_job`). O job roda
+# 06h diário, mas depende das 4 fontes (DV360/Amazon/StackAdapt/Xandr) terem
+# aterrissado — quando uma atrasa (tipicamente o DV360, horário variável), o
+# run das 06h pula o `unified` e as bases congelam. Este endpoint é o escape
+# manual: dispara uma nova run do job sob demanda (mesmo efeito do "Materialize"
+# na UI). Idempotente — o job é full-rebuild.
+#
+# Config via env (injetada do Secret Manager no Cloud Run):
+#   DAGSTER_API_TOKEN     (obrigatório — user token do Dagster+)
+#   DAGSTER_GRAPHQL_URL   default https://hypr.dagster.cloud/prod/graphql
+#   DAGSTER_JOB_NAME      default dbt_assets_freshness_06am_job
+#   DAGSTER_REPO_LOCATION default hyprster
+#   DAGSTER_REPO_NAME     default __repository__
+_DAGSTER_LAUNCH_MUTATION = """
+mutation($params: ExecutionParams!) {
+  launchRun(executionParams: $params) {
+    __typename
+    ... on LaunchRunSuccess { run { runId } }
+    ... on PythonError { message }
+    ... on RunConfigValidationInvalid { errors { message } }
+    ... on PipelineNotFoundError { message }
+    ... on InvalidSubsetError { message }
+  }
+}
+"""
+
+
+def trigger_dagster_rebuild():
+    """Dispara uma run do job de bases unificadas no Dagster+.
+
+    Devolve {"run_id", "run_url"}. Lança RuntimeError com mensagem amigável em
+    qualquer falha (config ausente, HTTP, GraphQL, ou recusa do launchRun).
+    """
+    import urllib.error
+
+    token = os.environ.get("DAGSTER_API_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("Reconstrução não configurada (DAGSTER_API_TOKEN ausente no ambiente).")
+
+    graphql_url = os.environ.get("DAGSTER_GRAPHQL_URL", "https://hypr.dagster.cloud/prod/graphql")
+    job_name    = os.environ.get("DAGSTER_JOB_NAME", "dbt_assets_freshness_06am_job")
+    repo_loc    = os.environ.get("DAGSTER_REPO_LOCATION", "hyprster")
+    repo_name   = os.environ.get("DAGSTER_REPO_NAME", "__repository__")
+
+    payload = {
+        "query": _DAGSTER_LAUNCH_MUTATION,
+        "variables": {"params": {
+            "selector": {
+                "repositoryLocationName": repo_loc,
+                "repositoryName": repo_name,
+                "jobName": job_name,
+            },
+            "executionMetadata": {"tags": [
+                {"key": "dagster/from_ui", "value": "true"},
+                {"key": "triggered_by", "value": "report-hub"},
+            ]},
+        }},
+    }
+    req = urllib.request.Request(
+        graphql_url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Dagster-Cloud-Api-Token": token,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "ignore")[:200] if hasattr(e, "read") else ""
+        raise RuntimeError(f"Dagster respondeu HTTP {e.code}. {detail}")
+    except Exception as e:
+        raise RuntimeError(f"Falha ao contatar o Dagster: {e}")
+
+    if body.get("errors"):
+        raise RuntimeError(f"Dagster GraphQL: {body['errors'][0].get('message', 'erro desconhecido')[:200]}")
+
+    res = (body.get("data") or {}).get("launchRun") or {}
+    if res.get("__typename") != "LaunchRunSuccess":
+        msg = res.get("message") or res.get("errors") or res.get("__typename") or "recusado"
+        raise RuntimeError(f"Dagster não lançou a run: {msg}")
+
+    run_id = res["run"]["runId"]
+    base = graphql_url.replace("/graphql", "")
+    return {"run_id": run_id, "run_url": f"{base}/runs/{run_id}"}
 
 
 def query_loom(short_token: str):
@@ -5331,7 +5442,14 @@ def query_campaigns_list():
             total_days = (e - s).days + 1
             if total_days <= 0:
                 return None
-            elapsed_days = min(max(0, (today - s).days), total_days)
+            # No último dia (ou depois) a campanha já decorreu por inteiro —
+            # o esperado é 100% do negociado. Alinha com o front
+            # (computeMediaPacing: `now > end ? tDays`). Mid-flight conta só
+            # dias completos (dia corrente não entra), igual ao floor() do front.
+            if today >= e:
+                elapsed_days = total_days
+            else:
+                elapsed_days = max(0, (today - s).days)
             if elapsed_days <= 0:
                 return None
             return negotiated / total_days * elapsed_days

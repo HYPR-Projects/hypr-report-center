@@ -1281,3 +1281,20 @@ export async function getDataFreshness() {
     serverNow:  data?.server_now || null,
   };
 }
+
+/**
+ * Dispara a reconstrução manual das bases unificadas (job dbt no Dagster+).
+ * Escape pra quando o run diário falhou (fonte atrasada). Devolve
+ * { run_id, run_url } pra UI linkar a run no Dagster. Lança com mensagem
+ * amigável do backend em falha (config ausente, Dagster recusou, etc).
+ */
+export async function triggerUnifiedRebuild() {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(`${API_URL}?action=rebuild_unified`, {}, adminAuthHeaders(jwt));
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  return r.json();
+}
