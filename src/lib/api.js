@@ -40,6 +40,36 @@ import { isDemoToken, buildDemoPayload, DEMO_TOKEN } from "../shared/demoData";
 const jsonHeaders = { "Content-Type": "application/json" };
 
 /**
+ * Sufixo de credencial admin legada (`&ak=hypr2026`) lido da URL da página.
+ *
+ * Por que existe: o menu admin abre o report com `?adm=<jwt>` quando consegue
+ * mintar um JWT fresco do Google; quando o id_token do Google expirou (TTL
+ * ~1h) e o silent refresh falhou (FedCM/cookies de terceiros bloqueados), ele
+ * cai no fallback e abre com `?ak=hypr2026`. Nesse estado a UI mostra os
+ * botões de admin (App.jsx: `isAdminMode` inclui `hasLegacyAk`), mas NÃO há
+ * JWT disponível — então `adminAuthHeaders(null)` vira `{}` e toda escrita ia
+ * sem `Authorization`, levando 401 do backend e disparando o falso "sua
+ * sessão expirou" (sem nunca salvar).
+ *
+ * O backend já aceita `?ak=hypr2026` como credencial admin (authenticate_admin
+ * Mode 2 em backend/auth.py). Encaminhar o `ak` da página para a própria call
+ * de escrita restaura a capacidade de salvar mesmo com a sessão Google
+ * totalmente expirada.
+ *
+ * Admin-only por construção: só está presente quando a URL da página carrega
+ * `?ak=hypr2026` — link que vem do menu admin. Clientes recebem
+ * `/report/<token>` sem `ak`/`adm` e caem na tela de senha (nunca admin).
+ */
+function legacyAkSuffix() {
+  try {
+    const ak = new URLSearchParams(window.location.search).get("ak");
+    return ak === "hypr2026" ? "&ak=hypr2026" : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
  * POST com JSON. Quando o caller passa header `Authorization` (ou seja,
  * é uma call admin), `postJson` detecta 401/403 e tenta uma vez:
  *   1) Invalida o JWT em cache
@@ -62,7 +92,11 @@ async function postJson(url, body, extraHeaders = {}) {
     body: JSON.stringify(body),
   };
   const hasAuthHeader = !!(extraHeaders && extraHeaders.Authorization);
-  const res = await fetch(url, init);
+  // Sem JWT (prop null/expirado → adminAuthHeaders devolveu {}), mas a página
+  // foi aberta pelo link admin legado: encaminha `?ak=hypr2026` pra própria
+  // call de escrita. Se há JWT, o Bearer é a credencial e o `ak` é dispensável.
+  const effectiveUrl = hasAuthHeader ? url : url + legacyAkSuffix();
+  const res = await fetch(effectiveUrl, init);
 
   if (res.status !== 401 && res.status !== 403) {
     // Sliding window: cada call admin bem-sucedida estende a janela de
@@ -842,15 +876,27 @@ export async function saveAlcanceFrequencia({ target_type, target_id, alcance, f
 // ── Upload RMND/PDOOH (admin) ────────────────────────────────────────────────
 
 /**
- * Persiste o JSON parseado do upload no backend. Não bloqueia UI — caller
- * original usa .catch(console.warn). Mantemos esse contrato.
+ * Persiste o JSON parseado do upload no backend.
+ *
+ * Lança em resposta não-2xx (ex.: 401 quando não há credencial admin válida).
+ * Sem isso, o `postJson` devolvia a Response 401 sem erro e o RmndUploadModal
+ * caía no branch de sucesso — disparando o toast "RMND … salvo" mesmo quando
+ * nada foi salvo (enquanto o modal global de "sessão expirou" também aparecia).
+ * Agora o caller cai no `catch` e mostra erro de verdade.
  */
 export async function saveUpload({ short_token, type, data_json, adminJwt }) {
-  return postJson(
+  const res = await postJson(
     `${API_URL}?action=save_upload`,
     { short_token, type, data_json },
     adminAuthHeaders(adminJwt),
   );
+  if (!res || !res.ok) {
+    throw new Error(
+      `Falha ao salvar (HTTP ${res ? res.status : "sem resposta"}). ` +
+      `Sessão admin sem credencial válida — recarregue a página e tente de novo.`,
+    );
+  }
+  return res;
 }
 
 // ── Merge Reports (admin) ────────────────────────────────────────────────────
