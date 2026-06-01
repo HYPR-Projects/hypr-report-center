@@ -45,6 +45,7 @@ import {
   ctrColorClass,
   vtrColorClass,
   ecpmBgClass,
+  techCostToneClass,
   getCampaignStatus,
   getDateRangeParts,
   endUrgencyClass,
@@ -158,8 +159,26 @@ export function CampaignCardV2({
     // `early_end_reason` é admin-only e vira tooltip no badge "ANTES DO PREVISTO".
     early_end_date,
     early_end_reason,
+    // Tech Cost (admin-only) — % do PI cliente consumido em custo real HYPR.
+    //   numerador   = custo real DSP COM survey (admin_total_cost_full),
+    //                 fallback pro sem-survey enquanto backend não tem `_full`.
+    //   denominador = valor PI cliente (d_client_budget + v_client_budget),
+    //                 server-side = contracted × CPM/CPCV, sem bônus.
+    // Mesma conta do diagnóstico (computeFinancials) e do KPI strip, só que
+    // lifetime por campanha. Campanhas 100% bonificadas / sem CPM-CPCV vêm
+    // sem budget → tech cost null → célula "—".
+    admin_total_cost_full,
+    admin_total_cost,
+    d_client_budget,
+    v_client_budget,
   } = campaign;
   const has_abs = display_has_abs || video_has_abs;
+
+  const techCostBudget = (Number(d_client_budget) || 0) + (Number(v_client_budget) || 0);
+  const techCostCost   = Number(admin_total_cost_full ?? admin_total_cost);
+  const techCostPct = techCostBudget > 0 && Number.isFinite(techCostCost)
+    ? (techCostCost / techCostBudget) * 100
+    : null;
 
   // Pacing por frente (O2O/OOH). Lê primeiro de `campaign.display_pacing_o2o/ooh`
   // (mandado direto pelo `?list=true`, sem flicker) e cai pro detail prefetched
@@ -355,6 +374,17 @@ export function CampaignCardV2({
                 />
               </>
             )}
+            {/* Tech Cost (admin-only) ocupa a row inteira no fim do grid —
+                só aparece quando há PI/budget pra calcular. */}
+            {techCostPct != null && (
+              <div className="col-span-2">
+                <ResultRow
+                  label="TECH"
+                  value={`${techCostPct.toFixed(1)}%`}
+                  colorClass={techCostToneClass(techCostPct)}
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -431,6 +461,34 @@ export function CampaignCardV2({
               </span>
             </div>
           )}
+        </div>
+
+        {/* ── TECH COST (admin-only) ───────────────────────────────────
+            Coluna leve colada ao eCPM (sem divisor entre os dois) — ambos
+            são métricas financeiras admin e formam um grupo visual. Sem
+            pill tintada pra não criar um segundo bloco pesado ao lado do
+            eCPM: só label "TECH adm" + valor colorido pela régua de tech
+            cost (≤8% verde / ≤10% amarelo / acima vermelho). "—" quando a
+            campanha não tem PI/budget (bonificada, sem CPM-CPCV).
+            justify-center alinha o valor com o eCPM ao lado. */}
+        <div className="hidden md:flex flex-col justify-center shrink-0 w-[64px]">
+          <div className="flex items-baseline gap-1 leading-none">
+            <span className="text-[9px] uppercase tracking-[0.14em] font-bold text-fg-muted">
+              tech
+            </span>
+            <span
+              className="text-[7.5px] uppercase tracking-widest font-semibold text-fg-subtle/70"
+              title="Custo real DSP (com survey) / valor do PI cliente — não exibir para o cliente"
+            >
+              adm
+            </span>
+          </div>
+          <span className={cn(
+            "text-[14px] font-bold tabular-nums tracking-tight mt-1 block",
+            ended ? "text-fg-subtle" : (techCostPct != null ? techCostToneClass(techCostPct) : "text-fg-subtle")
+          )}>
+            {techCostPct != null ? `${techCostPct.toFixed(1)}%` : "—"}
+          </span>
         </div>
 
         <Divider />

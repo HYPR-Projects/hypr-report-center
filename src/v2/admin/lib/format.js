@@ -153,6 +153,23 @@ export function ecpmToneClass(ecpm, kind = "display") {
 }
 
 /**
+ * Tech Cost (% do PI cliente consumido em custo real HYPR) → text-color.
+ *
+ * Mesma régua operacional usada no KPI strip (MetricStrip) e no ranking
+ * de CS (TopPerformers): ≤8% saudável (verde), ≤10% atenção (amarelo),
+ * acima disso alto (vermelho). Sem distinção ABS — tech cost é razão de
+ * custo/PI, não tem threshold permissivo por inventário.
+ *
+ * null/NaN → "" (sem cor; caller mostra "—" em fg-subtle).
+ */
+export function techCostToneClass(pct) {
+  if (pct == null || isNaN(pct)) return "";
+  if (pct <= 8)  return "text-success";
+  if (pct <= 10) return "text-warning";
+  return "text-danger";
+}
+
+/**
  * Campanha recém-iniciada — true quando today − start_date ∈ [0, 2] dias.
  *
  * Usado pelo NewBadge no card admin. Some sozinho 48h depois do start_date,
