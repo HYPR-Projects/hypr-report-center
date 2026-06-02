@@ -41,10 +41,11 @@
 // Limite visual: 10 linhas (raro ter mais; Display HYPR opera com ~6
 // formatos padrão e Video com ~3 durações).
 
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { fmt, fmtR } from "../../shared/format";
 import { Card } from "../../ui/Card";
 import { cn } from "../../ui/cn";
+import { DownloadPngButtonV2 } from "./DownloadPngButtonV2";
 
 const ROW_LIMIT = 10;
 
@@ -65,7 +66,11 @@ export function FormatBreakdownTableV2({
   itemNoun = "formato", // singular — pluralização automática com "s"
   itemNounPlural = null, // override do plural quando "+s" não basta (ex: "linhas criativas")
   className,
+  // Botão de baixar PNG no header (só admin). filename = nome do arquivo.
+  downloadable = false,
+  filename,
 }) {
+  const cardRef = useRef(null);
   // Junta cost / impressions brutas / clicks por chave de agrupamento se
   // extraRows foi passado. groupBySize/groupByDuration só trazem 2 campos
   // (numeratorKey + denomKey). Aqui derivamos campos extra que precisamos
@@ -136,13 +141,18 @@ export function FormatBreakdownTableV2({
   const maxShare = enriched[0]?.share || 100;
 
   return (
-    <Card className={cn("overflow-hidden", className)}>
-      <div className="px-5 pt-4 pb-3 border-b border-border flex items-center justify-between">
+    <Card ref={cardRef} className={cn("overflow-hidden", className)}>
+      <div className="px-5 pt-4 pb-3 border-b border-border flex items-center justify-between gap-3">
         <div className="text-[11px] font-bold uppercase tracking-widest text-fg-muted">
           Distribuição por {groupLabel}
         </div>
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">
-          {enriched.length} {enriched.length === 1 ? itemNoun : (itemNounPlural || `${itemNoun}s`)}
+        <div className="flex items-center gap-2.5 shrink-0">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">
+            {enriched.length} {enriched.length === 1 ? itemNoun : (itemNounPlural || `${itemNoun}s`)}
+          </div>
+          {downloadable && (
+            <DownloadPngButtonV2 targetRef={cardRef} filename={filename} />
+          )}
         </div>
       </div>
 

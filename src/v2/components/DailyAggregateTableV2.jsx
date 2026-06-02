@@ -37,12 +37,13 @@
 // Dependência: requer `video_starts` no payload de `daily` (adicionado
 // no backend `query_daily`).
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { fmt, fmtR } from "../../shared/format";
 import { cn } from "../../ui/cn";
 import { Button } from "../../ui/Button";
 import { Card } from "../../ui/Card";
 import { SegmentedControlV2 } from "./SegmentedControlV2";
+import { DownloadPngButtonV2 } from "./DownloadPngButtonV2";
 
 const WEEKDAY_PT = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 
@@ -112,7 +113,10 @@ export function DailyAggregateTableV2({
   // resta só uma opção, o toggle é escondido (1 botão é UI ruim) e a
   // mídia única vira a selecionada.
   availableMedia = null,
+  // Botão de baixar PNG no header (só admin), ao lado do CSV.
+  downloadable = false,
 }) {
+  const cardRef = useRef(null);
   // Filtra MEDIA_OPTIONS pelo conjunto disponível (se passado). Mantém
   // ordem original (Agregado, Display, Video). Agregado só faz sentido
   // quando há ambas mídias — se a campanha tem só uma, mostra direto a
@@ -175,8 +179,8 @@ export function DailyAggregateTableV2({
   const empty = !aggregated.length;
 
   return (
-    <Card className={cn("overflow-hidden", className)}>
-      {/* Header: meta-info + toggle + CSV */}
+    <Card ref={cardRef} className={cn("overflow-hidden", className)}>
+      {/* Header: meta-info + toggle + CSV + PNG */}
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b border-border">
         <span className="text-xs font-semibold text-fg-muted">
           {empty
@@ -202,6 +206,12 @@ export function DailyAggregateTableV2({
           >
             CSV
           </Button>
+          {downloadable && !empty && (
+            <DownloadPngButtonV2
+              targetRef={cardRef}
+              filename={`${campaignName || "campanha"} agregado ${media.toLowerCase()}`}
+            />
+          )}
         </div>
       </div>
 

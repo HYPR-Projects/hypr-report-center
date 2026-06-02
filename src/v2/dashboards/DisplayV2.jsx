@@ -47,6 +47,7 @@ import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
 import { ComparisonCardV2 } from "../components/ComparisonCardV2";
 import { DailyAggregateTableV2 } from "../components/DailyAggregateTableV2";
 import { DualChartV2 } from "../components/DualChartV2";
+import { ChartCardV2 } from "../components/ChartCardV2";
 import { FormatBreakdownTableV2 } from "../components/FormatBreakdownTableV2";
 import { KpiCardV2 } from "../components/KpiCardV2";
 import { PacingBarV2 } from "../components/PacingBarV2";
@@ -73,6 +74,7 @@ export default function DisplayV2({
   aggregates,
   tactic,
   setTactic,
+  isAdmin = false,
 }) {
   const camp = data.campaign;
   // trackCta vem do contexto montado pelo ClientDashboardV2. Noop fora dele.
@@ -276,6 +278,7 @@ export default function DisplayV2({
           rentabDisplay={rentabDisplay}
           useProjection={useProjection}
           notStarted={kpis.notStarted}
+          isAdmin={isAdmin}
         />
       )}
     </div>
@@ -303,7 +306,9 @@ function DisplayContent({
   rentabDisplay,
   useProjection,
   notStarted,
+  isAdmin = false,
 }) {
+  const campName = camp.campaign_name || "campanha";
   return (
     <>
       {/* Disclaimer "Entrega não iniciada" — pra contratos vendidos sem
@@ -425,10 +430,11 @@ function DisplayContent({
       {/* ─── 6. Chart diário (full-width) ────────────────────────────── */}
       {daily.length > 0 && (
         <section>
-          <div className="rounded-xl border border-border bg-surface p-5">
-            <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
-              Entrega × CTR Diário
-            </div>
+          <ChartCardV2
+            title="Entrega × CTR Diário"
+            downloadable={isAdmin}
+            filename={`${campName} - Display ${tactic} - Entrega x CTR Diario`}
+          >
             <DualChartV2
               data={daily}
               xKey="date"
@@ -437,7 +443,7 @@ function DisplayContent({
               label1="Imp. Visíveis"
               label2="CTR %"
             />
-          </div>
+          </ChartCardV2>
         </section>
       )}
 
@@ -456,6 +462,8 @@ function DisplayContent({
           rateFormatter={fmtP2}
           extraRows={detailFiltered}
           mediaType="DISPLAY"
+          downloadable={isAdmin}
+          filename={`${campName} - Display ${tactic} - Por Tamanho`}
         />
       )}
 
@@ -477,16 +485,19 @@ function DisplayContent({
           extraRows={detailFiltered}
           getDetailGroupKey={getCreativeLineKey}
           mediaType="DISPLAY"
+          downloadable={isAdmin}
+          filename={`${campName} - Display ${tactic} - Por Linha Criativa`}
         />
       )}
 
       {/* ─── 8. Chart de Audiência (mantido como gráfico) ────────────── */}
       {byAudience.length > 0 && (
         <section>
-          <div className="rounded-xl border border-border bg-surface p-5">
-            <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
-              Entrega × CTR por Audiência
-            </div>
+          <ChartCardV2
+            title="Entrega × CTR por Audiência"
+            downloadable={isAdmin}
+            filename={`${campName} - Display ${tactic} - Entrega x CTR por Audiencia`}
+          >
             <DualChartV2
               data={byAudience}
               xKey="audience"
@@ -495,7 +506,7 @@ function DisplayContent({
               label1="Imp. Visíveis"
               label2="CTR %"
             />
-          </div>
+          </ChartCardV2>
         </section>
       )}
 
@@ -523,6 +534,8 @@ function DisplayContent({
           extraRows={detailAll}
           getDetailGroupKey={(r) => extractAudience(r.line_name)}
           mediaType="DISPLAY"
+          downloadable={isAdmin}
+          filename={`${campName} - Display ${tactic} - Por Audiencia`}
         />
       )}
 
@@ -533,6 +546,7 @@ function DisplayContent({
             daily={detailFiltered}
             campaignName={`${camp.campaign_name || "campanha"}_display_${tactic}`}
             lockedMedia="DISPLAY"
+            downloadable={isAdmin}
           />
         </CollapsibleSectionV2>
       )}
