@@ -5686,6 +5686,12 @@ def query_campaigns_list():
         client_delivered_value = d_delivered_value + v_delivered_value
         if (d_client_budget > 0 or v_client_budget > 0):
             entry["client_delivered_value"] = round(client_delivered_value, 2)
+        # Por mídia — alimenta o refaturamento do Diagnóstico (tech cost por
+        # mídia). Mesma régua, separado por frente.
+        if d_client_budget > 0:
+            entry["d_client_delivered_value"] = round(d_delivered_value, 2)
+        if v_client_budget > 0:
+            entry["v_client_delivered_value"] = round(v_delivered_value, 2)
 
         # Brand Safety pre-bid (ABS) por mídia, agregando DV360 + Xandr. Quando
         # a flag é TRUE, scoreCampaignDetailed no frontend usa thresholds mais

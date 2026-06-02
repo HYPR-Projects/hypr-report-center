@@ -16,6 +16,7 @@
 // mudança aqui. Esse fallback fica como segurança de produção.
 
 import { computeMediaPacing } from "../../../shared/aggregations";
+import { billableValue } from "./format";
 
 const TODAY = () => new Date().toISOString().slice(0, 10);
 
@@ -269,7 +270,10 @@ function aggregateMetrics(set) {
   // Mesma lógica que o tier do diagnostico — mas global em vez de por
   // campanha. Survey entra no numerador (sai da carteira HYPR) mas não
   // no denominador (PI cliente não fatura survey).
-  const clientBudget = sumField(set, "d_client_budget") + sumField(set, "v_client_budget");
+  // Faturável: refaturado pelo entregue em campanha encerrada antes do
+  // previsto (billableValue), senão PI contratado. Soma por campanha (não
+  // sumField) porque o swap é condicional por campanha.
+  const clientBudget = set.reduce((s, c) => s + billableValue(c), 0);
 
   return {
     ctr:        dImpr     > 0 ? (dClicks   / dImpr)     * 100  : meanOfField(set, "display_ctr"),
@@ -302,9 +306,8 @@ function aggregateProjectedTechCost(set) {
   let sumClientBudget = 0;
 
   for (const c of set) {
-    const dBudget = Number(c.d_client_budget) || 0;
-    const vBudget = Number(c.v_client_budget) || 0;
-    const budget  = dBudget + vBudget;
+    // Faturável (refaturado pelo entregue em encerramento antecipado).
+    const budget  = billableValue(c);
     // Custo com survey (mesma régua do tech cost agregado). Fallback pro
     // admin_total_cost sem survey enquanto backend não tem `_full`.
     const realCost = Number(c.admin_total_cost_full) || Number(c.admin_total_cost) || 0;
@@ -393,7 +396,7 @@ function aggregateMonthlyTechCost(campaigns, monthKey) {
       if (Number.isFinite(mc) && mc > 0) cost += mc;
     }
     if (c.start_date && c.start_date.slice(0, 7) === monthKey) {
-      const b = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
+      const b = billableValue(c);
       if (b > 0) budget += b;
     }
   }
@@ -433,7 +436,7 @@ function aggregateMonthlyProjectedTechCost(campaigns, monthKey) {
       if (Number.isFinite(mc) && mc > 0) mtdCost += mc;
     }
     if (c.start_date && c.start_date.slice(0, 7) === monthKey) {
-      const b = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
+      const b = billableValue(c);
       if (b > 0) budget += b;
     }
   }
@@ -961,7 +964,9 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
     // por modo (histórico = admin_total_cost_full; Agora = monthly_cost_full
     // do mês). null quando não dá pra calcular (sem PI / sem custo).
     const mkEntry = (c, value, cost) => {
-      const budget = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
+      // Faturável (refaturado pelo entregue em encerramento antecipado) =
+      // denominador do tech fee. Mesma régua do investido exibido.
+      const budget = billableValue(c);
       const cst = Number(cost);
       const techFee = budget > 0 && Number.isFinite(cst) ? (cst / budget) * 100 : null;
       return {
@@ -984,7 +989,7 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
         if (c.start_date) {
           const sd = c.start_date.slice(0, 10);
           if (sd >= periodFrom && sd <= periodTo) {
-            const b = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
+            const b = billableValue(c);
             if (b > 0) { monthBudget += b; budgetBreakdown.push(mkEntry(c, b, c.admin_total_cost_full)); }
           }
         }
@@ -1000,7 +1005,7 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
           if (Number.isFinite(mc) && mc > 0) { monthCost += mc; costBreakdown.push(mkEntry(c, mc, mc)); }
         }
         if (c.start_date && c.start_date.slice(0, 7) === mk) {
-          const b = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
+          const b = billableValue(c);
           if (b > 0) { monthBudget += b; budgetBreakdown.push(mkEntry(c, b, mc)); }
         }
       }

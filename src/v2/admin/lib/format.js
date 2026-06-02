@@ -258,6 +258,44 @@ export function isEarlyEnded(earlyEndISO) {
 }
 
 /**
+ * Valor faturável da campanha (base de "investido" e denominador do tech
+ * cost). Em encerramento antes do previsto, o faturável colapsa pro volume
+ * efetivamente entregue (refaturado pelo entregue = `client_delivered_value`);
+ * caso contrário é o PI cliente contratado (d+v_client_budget).
+ *
+ * Fonte única pra que performer, card, Diagnóstico e KPI strip mostrem o
+ * mesmo número. Fallback pro contratado quando o backend ainda não mandou
+ * `client_delivered_value` (graceful pre-deploy).
+ */
+export function billableValue(c) {
+  if (!c) return 0;
+  const contracted = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
+  if (isEarlyEnded(c.early_end_date)) {
+    const delivered = Number(c.client_delivered_value);
+    if (Number.isFinite(delivered)) return delivered;
+  }
+  return contracted;
+}
+
+/**
+ * Versão por mídia do faturável (Diagnóstico, que tem linha por mídia).
+ * `media` = "display" | "video". Refatura pelo entregue da mídia quando
+ * encerrada antes do previsto; senão o PI contratado da mídia. Mantém `null`
+ * quando não há PI da mídia (mesma semântica de `d/v_client_budget ?? null`).
+ */
+export function billableMediaValue(c, media) {
+  if (!c) return null;
+  const isDisplay = media === "display";
+  const contracted = isDisplay ? c.d_client_budget : c.v_client_budget;
+  if (isEarlyEnded(c.early_end_date)) {
+    const delivered = isDisplay ? c.d_client_delivered_value : c.v_client_delivered_value;
+    const n = Number(delivered);
+    if (Number.isFinite(n)) return n;
+  }
+  return contracted ?? null;
+}
+
+/**
  * Display de pacing curto. Acima de 999% mostra "999%+" pra evitar
  * estouro de layout (caso raro mas existe — backfill de delivery).
  */

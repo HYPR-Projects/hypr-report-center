@@ -27,6 +27,8 @@
 //   spike no dia. A projeção usa 7d com cadeia de fallback:
 //   7d → D-1 → pacing histórico.
 
+import { billableMediaValue } from "./format";
+
 const TODAY = () => new Date();
 
 // ────────────────────────────────────────────────────────────────────────
@@ -648,7 +650,10 @@ function computeFinancials(campaign, media) {
   const realTotalCost = isDisplay
     ? (campaign.d_admin_total_cost_full ?? campaign.d_admin_total_cost ?? null)
     : (campaign.v_admin_total_cost_full ?? campaign.v_admin_total_cost ?? null);
-  const clientBudget  = isDisplay ? (campaign.d_client_budget ?? null) : (campaign.v_client_budget ?? null);
+  // Faturável da mídia: refaturado pelo entregue em encerramento antes do
+  // previsto (= novo faturável), senão o PI contratado da mídia. Denominador
+  // do tech cost — alinhado com card/performer/KPI strip.
+  const clientBudget  = billableMediaValue(campaign, media);
 
   const techCostPct = (realTotalCost != null && clientBudget != null && clientBudget > 0)
     ? (realTotalCost / clientBudget) * 100

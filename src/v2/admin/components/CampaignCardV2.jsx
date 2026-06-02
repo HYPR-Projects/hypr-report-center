@@ -47,6 +47,7 @@ import {
   vtrColorClass,
   ecpmBgClass,
   techCostToneClass,
+  billableValue,
   getCampaignStatus,
   getDateRangeParts,
   endUrgencyClass,
@@ -181,8 +182,12 @@ export function CampaignCardV2({
 
   const techCostBudget = (Number(d_client_budget) || 0) + (Number(v_client_budget) || 0);
   const techCostCost   = Number(admin_total_cost_full ?? admin_total_cost);
-  const techCostPct = techCostBudget > 0 && Number.isFinite(techCostCost)
-    ? (techCostCost / techCostBudget) * 100
+  // Denominador do tech fee = faturável: refaturado pelo entregue em
+  // encerramento antecipado, senão o PI contratado. O card segue mostrando
+  // inv (contratado) e entregue separados; o % é sobre o que será faturado.
+  const techCostBillable = billableValue(campaign);
+  const techCostPct = techCostBillable > 0 && Number.isFinite(techCostCost)
+    ? (techCostCost / techCostBillable) * 100
     : null;
 
   // Investido total (PI contratado = techCostBudget) vs consumido (entregue
