@@ -96,7 +96,7 @@ export function DualChartV2({
           <CartesianGrid strokeDasharray="3 3" stroke={chartNeutral.grid} vertical={false} />
           <XAxis
             dataKey={xKey}
-            tick={{ fill: chartNeutral.axis, fontSize: 10 }}
+            tick={{ fill: chartNeutral.label, fontSize: 10 }}
             tickLine={false}
             axisLine={{ stroke: chartNeutral.grid }}
             tickFormatter={(v) => (isDate ? String(v).slice(5) : String(v))}
@@ -112,7 +112,7 @@ export function DualChartV2({
           />
           <YAxis
             yAxisId="left"
-            tick={{ fill: chartNeutral.axis, fontSize: 10 }}
+            tick={{ fill: chartNeutral.label, fontSize: 10 }}
             tickLine={false}
             axisLine={false}
             tickFormatter={fmtBig}
@@ -122,7 +122,7 @@ export function DualChartV2({
           <YAxis
             yAxisId="right"
             orientation="right"
-            tick={{ fill: chartNeutral.axis, fontSize: 10 }}
+            tick={{ fill: chartNeutral.label, fontSize: 10 }}
             tickLine={false}
             axisLine={false}
             tickFormatter={fmtPct}
