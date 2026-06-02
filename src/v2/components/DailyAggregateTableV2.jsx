@@ -210,6 +210,7 @@ export function DailyAggregateTableV2({
             <DownloadPngButtonV2
               targetRef={cardRef}
               filename={`${campaignName || "campanha"} agregado ${media.toLowerCase()}`}
+              exportFitContent
             />
           )}
         </div>

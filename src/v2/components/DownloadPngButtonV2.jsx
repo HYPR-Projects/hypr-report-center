@@ -17,7 +17,15 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "../../ui/cn";
 import { exportElementToPng } from "../lib/exportElementPng";
 
-export function DownloadPngButtonV2({ targetRef, filename, className, exportMaxWidth = null }) {
+export function DownloadPngButtonV2({
+  targetRef,
+  filename,
+  className,
+  exportMaxWidth = null,
+  // true pra tabelas: exporta no tamanho natural do conteúdo (colunas juntas)
+  // em vez de largura cheia esticada.
+  exportFitContent = false,
+}) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const wrapRef = useRef(null);
@@ -45,7 +53,12 @@ export function DownloadPngButtonV2({ targetRef, filename, className, exportMaxW
     if (!node) return;
     setBusy(true);
     try {
-      await exportElementToPng(node, { filename, background, maxWidth: exportMaxWidth });
+      await exportElementToPng(node, {
+        filename,
+        background,
+        maxWidth: exportMaxWidth,
+        fitContent: exportFitContent,
+      });
     } catch (err) {
       // Não quebra a UI — só loga. Falha típica = fonte cross-origin sem CORS.
       console.error("[export-png] falha ao gerar imagem:", err);

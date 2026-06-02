@@ -172,28 +172,59 @@ function waitForChartReflow(node, targetWidth, timeoutMs = 900) {
   });
 }
 
-// Estreita o card pra `maxWidth` (se estiver mais largo), roda `fn` com o
-// gráfico já reflutuado, e restaura os estilos originais. Mantém a tela
-// intacta fora do instante da captura. Sem maxWidth, é no-op.
-async function withConstrainedWidth(node, maxWidth, fn) {
-  if (!maxWidth || node.getBoundingClientRect().width <= maxWidth) {
+// Deixa o card compacto pra exportação e roda `fn` com o layout já
+// reflutuado, restaurando os estilos depois. A tela fica intacta fora do
+// instante da captura. Dois modos:
+//
+//   - GRÁFICO (maxWidth): estreita o card pra maxWidth (se estiver mais
+//     largo) e espera o recharts (ResponsiveContainer) redesenhar.
+//   - TABELA (fitContent): as tabelas são `w-full` e no report esticam pra
+//     largura cheia, espalhando as colunas com muito espaço em branco. Aqui
+//     tiramos o w-full (table → width:auto) e deixamos o card em max-content,
+//     então a tabela encolhe pro tamanho natural do conteúdo (colunas juntas)
+//     sem clipar nenhuma coluna. Não precisa esperar reflow assíncrono.
+//
+// Sem maxWidth nem fitContent, é no-op.
+async function withCompactWidth(node, { maxWidth = null, fitContent = false }, fn) {
+  const needFixed =
+    !fitContent && maxWidth && node.getBoundingClientRect().width > maxWidth;
+  if (!fitContent && !needFixed) {
     return fn();
   }
+
   const prev = {
     width: node.style.width,
     maxWidth: node.style.maxWidth,
     transition: node.style.transition,
   };
+  const tables = fitContent ? Array.from(node.querySelectorAll("table")) : [];
+  const prevTableWidths = tables.map((t) => t.style.width);
+
   node.style.transition = "none";
-  node.style.maxWidth = `${maxWidth}px`;
-  node.style.width = `${maxWidth}px`;
   try {
-    await waitForChartReflow(node, maxWidth);
+    if (fitContent) {
+      // table.w-full estica pra 100% do card — trocamos por width:auto pra a
+      // tabela medir o conteúdo, e o card em max-content embrulha o resultado.
+      tables.forEach((t) => {
+        t.style.width = "auto";
+      });
+      node.style.width = "max-content";
+      node.style.maxWidth = "none";
+      node.getBoundingClientRect(); // força reflow síncrono
+      await new Promise((r) => setTimeout(r, 30));
+    } else {
+      node.style.maxWidth = `${maxWidth}px`;
+      node.style.width = `${maxWidth}px`;
+      await waitForChartReflow(node, maxWidth);
+    }
     return await fn();
   } finally {
     node.style.width = prev.width;
     node.style.maxWidth = prev.maxWidth;
     node.style.transition = prev.transition;
+    tables.forEach((t, i) => {
+      t.style.width = prevTableWidths[i];
+    });
   }
 }
 
@@ -201,7 +232,13 @@ async function withConstrainedWidth(node, maxWidth, fn) {
 
 export async function exportElementToPng(
   node,
-  { filename = "grafico", background = "theme", pixelRatio, maxWidth = null } = {},
+  {
+    filename = "grafico",
+    background = "theme",
+    pixelRatio,
+    maxWidth = null,
+    fitContent = false,
+  } = {},
 ) {
   if (!node) return;
 
@@ -217,9 +254,10 @@ export async function exportElementToPng(
   // evita o fetch de folhas cross-origin que trava a exportação.
   const fontEmbedCSS = await getFontEmbedCSS();
 
-  // Estreita o card (só gráficos passam maxWidth) pra sair menos "wide" e
-  // mais amigável a slide. Tudo abaixo roda com o gráfico já reflutuado.
-  await withConstrainedWidth(node, maxWidth, async () => {
+  // Deixa o card compacto pra slide: gráficos estreitam pra maxWidth;
+  // tabelas (fitContent) encolhem pro tamanho natural do conteúdo. Tudo
+  // abaixo roda com o layout já reflutuado.
+  await withCompactWidth(node, { maxWidth, fitContent }, async () => {
     // 1) Serializa o nó num SVG (foreignObject) — passo que não depende de rAF.
     const svgUrl = await toSvg(node, { fontEmbedCSS, filter: exportFilter });
 

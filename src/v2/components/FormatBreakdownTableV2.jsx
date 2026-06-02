@@ -151,7 +151,7 @@ export function FormatBreakdownTableV2({
             {enriched.length} {enriched.length === 1 ? itemNoun : (itemNounPlural || `${itemNoun}s`)}
           </div>
           {downloadable && (
-            <DownloadPngButtonV2 targetRef={cardRef} filename={filename} />
+            <DownloadPngButtonV2 targetRef={cardRef} filename={filename} exportFitContent />
           )}
         </div>
       </div>
