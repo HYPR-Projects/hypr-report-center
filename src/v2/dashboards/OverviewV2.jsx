@@ -39,6 +39,7 @@ import { PacingOverPillV2 } from "../components/PacingOverPillV2";
 import { CumulativePacingChartV2 } from "../components/CumulativePacingChartV2";
 import { MediaSummaryV2 } from "../components/MediaSummaryV2";
 import { DualChartV2 } from "../components/DualChartV2";
+import { ChartCardV2 } from "../components/ChartCardV2";
 import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
 import { DailyAggregateTableV2 } from "../components/DailyAggregateTableV2";
 import { AlcanceFrequenciaV2 } from "../components/AlcanceFrequenciaV2";
@@ -386,6 +387,8 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
           budgetVideo={pickBudget(video[0], "video", coreFilter)}
           startDate={camp.start_date}
           endDate={camp.end_date}
+          downloadable={isAdmin}
+          filename={`${camp.campaign_name} - Curva de Pacing`}
         />
       )}
 
@@ -410,10 +413,11 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
           </h2>
           <div className={`grid grid-cols-1 gap-3 ${chartDisplay.length > 0 && chartVideo.length > 0 ? "lg:grid-cols-2" : ""}`}>
             {chartDisplay.length > 0 && (
-              <div className="rounded-xl border border-border bg-surface p-4 md:p-5">
-                <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
-                  Display — Imp. Visíveis × CTR
-                </div>
+              <ChartCardV2
+                title="Display — Imp. Visíveis × CTR"
+                downloadable={isAdmin}
+                filename={`${camp.campaign_name} - Display Imp Visiveis x CTR`}
+              >
                 <DualChartV2
                   data={chartDisplay}
                   xKey="date"
@@ -422,13 +426,14 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
                   label1="Imp. Visíveis"
                   label2="CTR %"
                 />
-              </div>
+              </ChartCardV2>
             )}
             {chartVideo.length > 0 && (
-              <div className="rounded-xl border border-border bg-surface p-4 md:p-5">
-                <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
-                  Video — Views 100% × VTR
-                </div>
+              <ChartCardV2
+                title="Video — Views 100% × VTR"
+                downloadable={isAdmin}
+                filename={`${camp.campaign_name} - Video Views 100 x VTR`}
+              >
                 <DualChartV2
                   data={chartVideo}
                   xKey="date"
@@ -437,7 +442,7 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
                   label1="Views 100%"
                   label2="VTR %"
                 />
-              </div>
+              </ChartCardV2>
             )}
           </div>
         </section>
@@ -460,6 +465,7 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
             daily={detail}
             campaignName={camp.campaign_name}
             availableMedia={availableMediaFromData(data)}
+            downloadable={isAdmin}
           />
         </CollapsibleSectionV2>
       )}

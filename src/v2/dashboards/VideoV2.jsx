@@ -46,6 +46,7 @@ import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
 import { ComparisonCardV2 } from "../components/ComparisonCardV2";
 import { DailyAggregateTableV2 } from "../components/DailyAggregateTableV2";
 import { DualChartV2 } from "../components/DualChartV2";
+import { ChartCardV2 } from "../components/ChartCardV2";
 import { FormatBreakdownTableV2 } from "../components/FormatBreakdownTableV2";
 import { KpiCardV2 } from "../components/KpiCardV2";
 import { PacingBarV2 } from "../components/PacingBarV2";
@@ -79,6 +80,7 @@ export default function VideoV2({
   aggregates,
   tactic,
   setTactic,
+  isAdmin = false,
 }) {
   const camp = data.campaign;
   const { trackCta } = useReportTrackingContext();
@@ -255,6 +257,7 @@ export default function VideoV2({
           rentabDisplay={rentabDisplay}
           useProjection={useProjection}
           notStarted={kpis.notStarted}
+          isAdmin={isAdmin}
         />
       )}
     </div>
@@ -282,7 +285,9 @@ function VideoContent({
   rentabDisplay,
   useProjection,
   notStarted,
+  isAdmin = false,
 }) {
+  const campName = camp.campaign_name || "campanha";
   return (
     <>
       {notStarted && (
@@ -398,10 +403,11 @@ function VideoContent({
       {/* ─── 6. Chart diário (full-width) ────────────────────────────── */}
       {daily.length > 0 && (
         <section>
-          <div className="rounded-xl border border-border bg-surface p-5">
-            <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
-              Views 100% × VTR Diário
-            </div>
+          <ChartCardV2
+            title="Views 100% × VTR Diário"
+            downloadable={isAdmin}
+            filename={`${campName} - Video ${tactic} - Views 100 x VTR Diario`}
+          >
             <DualChartV2
               data={daily}
               xKey="date"
@@ -410,7 +416,7 @@ function VideoContent({
               label1="Views 100%"
               label2="VTR %"
             />
-          </div>
+          </ChartCardV2>
         </section>
       )}
 
@@ -429,6 +435,8 @@ function VideoContent({
           rateFormatter={fmtP2}
           extraRows={detailNormalized}
           mediaType="VIDEO"
+          downloadable={isAdmin}
+          filename={`${campName} - Video ${tactic} - Por Tamanho`}
         />
       )}
 
@@ -450,16 +458,19 @@ function VideoContent({
           extraRows={detailFiltered}
           getDetailGroupKey={getCreativeLineKey}
           mediaType="VIDEO"
+          downloadable={isAdmin}
+          filename={`${campName} - Video ${tactic} - Por Linha Criativa`}
         />
       )}
 
       {/* ─── 8. Chart de Audiência (mantido como gráfico) ────────────── */}
       {byAudience.length > 0 && (
         <section>
-          <div className="rounded-xl border border-border bg-surface p-5">
-            <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
-              Views 100% × VTR por Audiência
-            </div>
+          <ChartCardV2
+            title="Views 100% × VTR por Audiência"
+            downloadable={isAdmin}
+            filename={`${campName} - Video ${tactic} - Views 100 x VTR por Audiencia`}
+          >
             <DualChartV2
               data={byAudience}
               xKey="audience"
@@ -468,7 +479,7 @@ function VideoContent({
               label1="Views 100%"
               label2="VTR %"
             />
-          </div>
+          </ChartCardV2>
         </section>
       )}
 
@@ -493,6 +504,8 @@ function VideoContent({
           extraRows={detailAll}
           getDetailGroupKey={(r) => extractAudience(r.line_name)}
           mediaType="VIDEO"
+          downloadable={isAdmin}
+          filename={`${campName} - Video ${tactic} - Por Audiencia`}
         />
       )}
 
@@ -503,6 +516,7 @@ function VideoContent({
             daily={detailFiltered}
             campaignName={`${camp.campaign_name || "campanha"}_video_${tactic}`}
             lockedMedia="VIDEO"
+            downloadable={isAdmin}
           />
         </CollapsibleSectionV2>
       )}

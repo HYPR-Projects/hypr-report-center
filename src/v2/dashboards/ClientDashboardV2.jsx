@@ -837,6 +837,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 aggregates={aggregates}
                 tactic={displayTactic}
                 setTactic={setDisplayTactic}
+                isAdmin={isAdmin}
               />
             </TabsContent>
 
@@ -846,6 +847,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 aggregates={aggregates}
                 tactic={videoTactic}
                 setTactic={setVideoTactic}
+                isAdmin={isAdmin}
               />
             </TabsContent>
 

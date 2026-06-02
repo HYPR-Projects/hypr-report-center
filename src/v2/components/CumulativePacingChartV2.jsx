@@ -63,9 +63,10 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { useThemeColors, useChartNeutral } from "../hooks/useThemeColors";
 import { fmt } from "../../shared/format";
+import { DownloadPngButtonV2 } from "./DownloadPngButtonV2";
 
 const ONE_DAY = 86_400_000;
 
@@ -229,9 +230,13 @@ export function CumulativePacingChartV2({
   startDate: startISO,
   endDate: endISO,
   height = 220,
+  // Botão de baixar PNG no header (só admin). filename = nome do arquivo.
+  downloadable = false,
+  filename,
 }) {
   const hypr = useThemeColors();
   const chartNeutral = useChartNeutral();
+  const cardRef = useRef(null);
 
   const startDate = parseISODate(startISO);
   const endDate = parseISODate(endISO);
@@ -257,12 +262,13 @@ export function CumulativePacingChartV2({
   const showVideo   = contractedVideo > 0;
 
   return (
-    <div className="rounded-xl border border-border bg-surface-2 px-5 py-5">
+    <div ref={cardRef} className="rounded-xl border border-border bg-surface-2 px-5 py-5">
       <div className="flex items-baseline justify-between gap-3 mb-4 flex-wrap">
         <span className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
           <span className="size-2 rounded-full bg-signature" aria-hidden />
           Curva de pacing
         </span>
+        <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-3 text-[10px] text-fg-muted uppercase tracking-wider">
           {showDisplay && (
             <span className="inline-flex items-center gap-1.5">
@@ -287,6 +293,10 @@ export function CumulativePacingChartV2({
             />
             No alvo (100%)
           </span>
+        </div>
+          {downloadable && (
+            <DownloadPngButtonV2 targetRef={cardRef} filename={filename} exportMaxWidth={820} />
+          )}
         </div>
       </div>
 
