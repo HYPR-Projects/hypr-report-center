@@ -982,6 +982,20 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
       }
     }
 
+    // Tech cost da COLUNA = MESMA régua assimétrica do KPI strip
+    // (aggregateMonthlyTechCost) e do drawer: custo realizado no período ÷
+    // budget das PIs que iniciaram no período. Reusa month_cost/month_budget
+    // já computados acima — assim coluna, drawer e Big Metric mostram SEMPRE
+    // o mesmo número (uma só fonte de verdade). Antes a coluna usava
+    // m.tech_cost (Σ admin_total_cost_full / Σ client_budget de contrato
+    // cheio), que divergia: numerador janelado no período mas denominador
+    // = contrato lifetime de TODA campanha com entrega → tech cost
+    // artificialmente baixo. Fallback pro ratio legado quando backend não
+    // tem os campos _full (mesmo padrão: techCostMonthly ?? cur.tech_cost).
+    const techCostAligned = (hasMonthlyData && monthBudget > 0)
+      ? (monthCost / monthBudget) * 100
+      : m.tech_cost;
+
     out.push({
       email,
       score: Math.round(rawScore * 10) / 10,
@@ -999,11 +1013,11 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
       vid_pacing:   m.vid_pacing,
       ctr:          m.ctr,
       vtr:          m.vtr,
-      // Tech cost médio do CS = Σ admin_total_cost_full / Σ client_budget
-      // sobre as campanhas ativas dele. Inclui survey (régua admin).
-      // Métrica cosmética — NÃO entra no cálculo do score (que é só
-      // pacing/eCPM/CTR/VTR). Aparece como coluna informativa no ranking.
-      tech_cost:    m.tech_cost,
+      // Tech cost do CS — régua assimétrica (custo no período ÷ budget das
+      // PIs iniciadas no período), alinhada ao drawer e à Big Metric. Inclui
+      // survey no numerador (régua admin). Métrica cosmética — NÃO entra no
+      // cálculo do score (que é só pacing/eCPM/CTR/VTR). Ver techCostAligned.
+      tech_cost:    techCostAligned,
       // Breakdown agregado por categoria (pts médios ponderados / max realista).
       breakdown: weightSum > 0 ? {
         pacing_pts: pacingPtsSum / weightSum,
