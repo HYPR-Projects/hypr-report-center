@@ -158,6 +158,13 @@ export function DualChartV2({
             strokeWidth={2}
             dot={showDots ? { r: 3, fill: lineColor } : false}
             activeDot={{ r: 5 }}
+            // Sem animação — igual à Bar acima. Além de consistente, isso
+            // conserta a exportação PNG: ao estreitar o card pra exportar, o
+            // recharts re-renderiza e re-animava a linha; a captura pegava o
+            // meio da animação (linha deitada, ponto já no valor final) e o
+            // dot saía "solto" fora da linha. Sem animação, o estado é
+            // estável e a captura sempre bate com a tela.
+            isAnimationActive={false}
           />
         </LineChart>
       </ResponsiveContainer>
