@@ -23,24 +23,13 @@
 //   └─────────────────────────────────────────────┘
 
 import { useState } from "react";
+import * as Popover from "@radix-ui/react-popover";
 import { Drawer, DrawerContent, DrawerHeader, DrawerBody } from "../../../ui/Drawer";
 import { cn } from "../../../ui/cn";
 import { CampaignLines } from "./CampaignLines";
-
-// BRL compacto sem centavos — usado nos big numbers do header (Investido /
-// Custo do mês). Diferente de formatBRL do format.js que mantém 2 decimais
-// pra precisão em eCPM/custo unitário. Aqui R$ 1.250.000,00 vira
-// "R$ 1.250.000" pra economizar largura no card.
-const _BRL_COMPACT = new Intl.NumberFormat("pt-BR", {
-  style: "currency",
-  currency: "BRL",
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 0,
-});
-function formatBrlCompact(value) {
-  if (value == null || !Number.isFinite(Number(value))) return "—";
-  return _BRL_COMPACT.format(Number(value));
-}
+// BRL compacto sem centavos (Investido / Custo do mês) — fonte única em
+// format.js, reusado também pela coluna Tech do CampaignCardV2.
+import { formatBrlCompact } from "../lib/format";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function localPartFromEmail(email) {
@@ -366,7 +355,17 @@ export function PerformerDrawer({ performer, displayName, onOpenReport, onClose 
   return (
     <Drawer open={open} onOpenChange={(v) => { if (!v) onClose?.(); }}>
       {open && (
-        <DrawerContent widthClass="sm:w-[560px] xl:w-[600px]">
+        <DrawerContent
+          widthClass="sm:w-[560px] xl:w-[600px]"
+          onInteractOutside={(e) => {
+            // Clique/foco dentro de um popover de breakdown não fecha o drawer
+            // (o popover é portalado pra fora, contaria como "fora" sem isso).
+            const t = e.detail?.originalEvent?.target;
+            if (t instanceof Element && t.closest("[data-breakdown-popover]")) {
+              e.preventDefault();
+            }
+          }}
+        >
           <PerformerDrawerInner
             performer={performer}
             displayName={displayName}
@@ -375,6 +374,86 @@ export function PerformerDrawer({ performer, displayName, onOpenReport, onClose 
         </DrawerContent>
       )}
     </Drawer>
+  );
+}
+
+// Popover de auditoria sobre um big number (Investido / Custo no mês).
+// Clicar abre a lista de campanhas que somam aquele valor, ordenada da maior
+// contribuição pra menor — os dados vêm de aggregation.js (mesmo loop da
+// soma), então o "Total" do rodapé sempre bate com o número clicado.
+//
+// `children` é o bloco visual do número (label + valor) e fica DENTRO do
+// trigger. Sem breakdown (fallback / sem dados) o número não vira botão.
+//
+// data-breakdown-popover marca o conteúdo pro Dialog do Drawer NÃO fechar
+// quando o user clica aqui dentro (ver onInteractOutside no DrawerContent):
+// o popover é portalado pra fora do drawer, então o clique contaria como
+// "fora" e fecharia tudo.
+function MetricBreakdown({ label, total, items, children }) {
+  const list = Array.isArray(items) ? items : [];
+  // Sem breakdown (ex.: Agora com custo 0 mas monthly_cost_full presente):
+  // número não-clicável. Embrulha num único <div> pra continuar UMA célula
+  // do grid — `children` são dois elementos irmãos (label + valor), e
+  // retorná-los crus criaria duas células e quebraria o grid-cols-2.
+  if (list.length === 0) return <div>{children}</div>;
+  return (
+    <Popover.Root>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "group/bd block w-full text-left rounded-md -mx-1 px-1 py-0.5 cursor-pointer",
+            "transition-colors hover:bg-surface",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature"
+          )}
+        >
+          {children}
+          <span className="mt-1 flex items-center gap-1 text-[9px] uppercase tracking-wider font-semibold text-fg-subtle/70 group-hover/bd:text-signature transition-colors">
+            {list.length} campanha{list.length === 1 ? "" : "s"}
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </span>
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          data-breakdown-popover
+          side="bottom"
+          align="start"
+          sideOffset={8}
+          collisionPadding={16}
+          className={cn(
+            "z-[60] w-[340px] max-w-[calc(100vw-32px)]",
+            "rounded-xl border border-border bg-canvas-elevated shadow-xl p-3 text-fg",
+            "data-[state=open]:animate-fade-in"
+          )}
+        >
+          <div className="flex items-baseline justify-between gap-3 pb-2 mb-1 border-b border-border/60">
+            <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+              {label}
+            </span>
+            <span className="text-sm font-bold tabular-nums">{formatBrlCompact(total)}</span>
+          </div>
+          <div className="flex flex-col max-h-[300px] overflow-y-auto pr-1 -mr-1">
+            {list.map((it, i) => (
+              <div
+                key={it.token || `${it.client}-${it.campaign}-${i}`}
+                className="flex items-baseline justify-between gap-3 text-[11px] leading-tight py-1 border-b border-border/30 last:border-b-0"
+              >
+                <span className="min-w-0 truncate">
+                  <span className="font-semibold text-fg">{it.client || "—"}</span>
+                  {it.campaign ? <span className="text-fg-subtle"> · {it.campaign}</span> : null}
+                </span>
+                <span className="shrink-0 font-semibold tabular-nums text-fg">
+                  {formatBrlCompact(it.value)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 
@@ -410,8 +489,12 @@ function PerformerDrawerInner({ performer, displayName, onOpenReport }) {
             só PIs com start no mês. Aparece quando backend tem
             monthly_cost_full (fallback null esconde a seção). */}
         {(performer.month_cost != null || performer.month_budget != null) && (
-          <section className="grid grid-cols-2 gap-3 -mt-2">
-            <div>
+          <section className="grid grid-cols-2 gap-3 -mt-2 items-start">
+            <MetricBreakdown
+              label="Investido no mês"
+              total={performer.month_budget}
+              items={performer.month_budget_breakdown}
+            >
               <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
                 Investido no mês
               </div>
@@ -420,8 +503,12 @@ function PerformerDrawerInner({ performer, displayName, onOpenReport }) {
                   ? formatBrlCompact(performer.month_budget)
                   : <span className="text-fg-subtle">—</span>}
               </div>
-            </div>
-            <div>
+            </MetricBreakdown>
+            <MetricBreakdown
+              label="Custo no mês"
+              total={performer.month_cost}
+              items={performer.month_cost_breakdown}
+            >
               <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
                 Custo no mês
               </div>
@@ -430,7 +517,7 @@ function PerformerDrawerInner({ performer, displayName, onOpenReport }) {
                   ? formatBrlCompact(performer.month_cost)
                   : <span className="text-fg-subtle">—</span>}
               </div>
-            </div>
+            </MetricBreakdown>
           </section>
         )}
 

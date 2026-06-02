@@ -949,6 +949,19 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
     let monthCost = 0;
     let monthBudget = 0;
     let hasMonthlyData = false;
+    // Breakdown por campanha das duas somas — alimenta o popover de auditoria
+    // no PerformerDrawer (clicar em Investido/Custo no mês mostra de onde vem
+    // cada R$). Montado AQUI, no mesmo loop da soma, pra bater EXATAMENTE com
+    // month_budget/month_cost — uma fonte só, sem recálculo no front que
+    // pudesse divergir do total exibido.
+    const budgetBreakdown = [];
+    const costBreakdown = [];
+    const mkEntry = (c, value) => ({
+      token: c.short_token,
+      client: c.client_name,
+      campaign: c.campaign_name,
+      value,
+    });
     if (hasPeriod) {
       // Modo histórico — backend já filtrou cost pelo período.
       for (const c of list) {
@@ -956,12 +969,13 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
         if (Number.isFinite(cf) && cf > 0) {
           hasMonthlyData = true;
           monthCost += cf;
+          costBreakdown.push(mkEntry(c, cf));
         }
         if (c.start_date) {
           const sd = c.start_date.slice(0, 10);
           if (sd >= periodFrom && sd <= periodTo) {
             const b = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
-            if (b > 0) monthBudget += b;
+            if (b > 0) { monthBudget += b; budgetBreakdown.push(mkEntry(c, b)); }
           }
         }
       }
@@ -973,14 +987,17 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
         if (mcMap && typeof mcMap === "object") {
           hasMonthlyData = true;
           const mc = Number(mcMap[mk]);
-          if (Number.isFinite(mc) && mc > 0) monthCost += mc;
+          if (Number.isFinite(mc) && mc > 0) { monthCost += mc; costBreakdown.push(mkEntry(c, mc)); }
         }
         if (c.start_date && c.start_date.slice(0, 7) === mk) {
           const b = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
-          if (b > 0) monthBudget += b;
+          if (b > 0) { monthBudget += b; budgetBreakdown.push(mkEntry(c, b)); }
         }
       }
     }
+    // Maior contribuição primeiro — popover lista do que mais pesa pro menos.
+    budgetBreakdown.sort((a, b) => b.value - a.value);
+    costBreakdown.sort((a, b) => b.value - a.value);
 
     // Tech cost da COLUNA = MESMA régua assimétrica do KPI strip
     // (aggregateMonthlyTechCost) e do drawer: custo realizado no período ÷
@@ -1003,6 +1020,10 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
       ideal_pacing_count: idealPacing,
       month_cost:    hasMonthlyData ? monthCost   : null,
       month_budget:  monthBudget > 0 ? monthBudget : null,
+      // Breakdown por campanha das somas acima (auditoria via popover no
+      // drawer). null quando não há dados — esconde o affordance de clique.
+      month_budget_breakdown: monthBudget > 0 ? budgetBreakdown : null,
+      month_cost_breakdown:   hasMonthlyData ? costBreakdown : null,
       month_key:     hasPeriod ? null : currentMonthKey(),
       period_from:   periodFrom,
       period_to:     periodTo,

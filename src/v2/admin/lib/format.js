@@ -403,6 +403,21 @@ export function formatBRL(value) {
   return _BRL.format(Number(value));
 }
 
+// BRL compacto SEM centavos — pra big numbers / colunas estreitas onde a
+// precisão de centavo não importa (R$ 1.250.000,00 → "R$ 1.250.000").
+// Diferente de formatBRL (mantém 2 decimais pra eCPM/custo unitário).
+const _BRL_COMPACT = new Intl.NumberFormat("pt-BR", {
+  style: "currency",
+  currency: "BRL",
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 0,
+});
+
+export function formatBrlCompact(value) {
+  if (value == null || !Number.isFinite(Number(value))) return "—";
+  return _BRL_COMPACT.format(Number(value));
+}
+
 /**
  * "kenvue" → "Kenvue", "coca-cola-brasil" → "Coca Cola Brasil"
  * Usado em fallbacks quando display_name não veio do backend.

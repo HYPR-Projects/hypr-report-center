@@ -41,6 +41,7 @@ import {
   formatPacingValue,
   formatPct,
   formatBRL,
+  formatBrlCompact,
   pacingColorClass,
   ctrColorClass,
   vtrColorClass,
@@ -471,7 +472,7 @@ export function CampaignCardV2({
             cost (≤8% verde / ≤10% amarelo / acima vermelho). "—" quando a
             campanha não tem PI/budget (bonificada, sem CPM-CPCV).
             justify-center alinha o valor com o eCPM ao lado. */}
-        <div className="hidden md:flex flex-col justify-center shrink-0 w-[64px]">
+        <div className="hidden md:flex flex-col justify-center shrink-0 w-[100px]">
           <div className="flex items-baseline gap-1 leading-none">
             <span className="text-[9px] uppercase tracking-[0.14em] font-bold text-fg-muted">
               tech
@@ -489,6 +490,30 @@ export function CampaignCardV2({
           )}>
             {techCostPct != null ? `${techCostPct.toFixed(1)}%` : "—"}
           </span>
+          {/* Investido (valor PI cliente) vs Gasto (custo real DSP com
+              survey) — os dois brutos por trás do tech cost, lifetime por
+              campanha. Discretos pra não competir com o %. Só aparece quando
+              há budget; bonificada / sem CPM-CPCV não mostra (tech = "—"). */}
+          {techCostBudget > 0 && Number.isFinite(techCostCost) && (
+            <div className="mt-1.5 flex flex-col gap-0.5">
+              <div className="flex items-baseline justify-between gap-1.5 leading-none">
+                <span className="text-[8.5px] uppercase tracking-wider font-semibold text-fg-muted">
+                  inv
+                </span>
+                <span className="text-[9px] tabular-nums text-fg-subtle">
+                  {formatBrlCompact(techCostBudget)}
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between gap-1.5 leading-none">
+                <span className="text-[8.5px] uppercase tracking-wider font-semibold text-fg-muted">
+                  gasto
+                </span>
+                <span className="text-[9px] tabular-nums text-fg-subtle">
+                  {formatBrlCompact(techCostCost)}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
 
         <Divider />
