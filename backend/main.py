@@ -5673,6 +5673,20 @@ def query_campaigns_list():
         if v_client_budget > 0:
             entry["v_client_budget"] = round(v_client_budget, 2)
 
+        # Valor entregue ao cliente (faturável consumido) — espelha o
+        # `effective_total_cost` do report: entrega valorada ao CPM/CPCV
+        # NEGOCIADO, capada no budget contratado da mídia (over-delivery não
+        # fatura além do PI). Alimenta o par "investido total vs consumido" no
+        # card do menu admin. Em campanha encerrada antes do previsto é,
+        # naturalmente, o novo faturável (entrega < contrato). Capa por mídia
+        # pra não deixar over de uma frente cobrir under da outra. Só emite
+        # quando há PI cliente (>0) — bonificada / sem CPM-CPCV fica sem campo.
+        d_delivered_value = min(d_viewable_impr * cpm_amount / 1000, d_client_budget) if d_client_budget > 0 else 0.0
+        v_delivered_value = min(v_viewable_comp * cpcv_amount,       v_client_budget) if v_client_budget > 0 else 0.0
+        client_delivered_value = d_delivered_value + v_delivered_value
+        if (d_client_budget > 0 or v_client_budget > 0):
+            entry["client_delivered_value"] = round(client_delivered_value, 2)
+
         # Brand Safety pre-bid (ABS) por mídia, agregando DV360 + Xandr. Quando
         # a flag é TRUE, scoreCampaignDetailed no frontend usa thresholds mais
         # permissivos pra eCPM e CTR daquela mídia (inventário com pre-bid é

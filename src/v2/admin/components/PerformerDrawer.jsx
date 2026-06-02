@@ -29,7 +29,7 @@ import { cn } from "../../../ui/cn";
 import { CampaignLines } from "./CampaignLines";
 // BRL compacto sem centavos (Investido / Custo do mês) — fonte única em
 // format.js, reusado também pela coluna Tech do CampaignCardV2.
-import { formatBrlCompact } from "../lib/format";
+import { formatBrlCompact, techCostToneClass } from "../lib/format";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function localPartFromEmail(email) {
@@ -389,7 +389,7 @@ export function PerformerDrawer({ performer, displayName, onOpenReport, onClose 
 // quando o user clica aqui dentro (ver onInteractOutside no DrawerContent):
 // o popover é portalado pra fora do drawer, então o clique contaria como
 // "fora" e fecharia tudo.
-function MetricBreakdown({ label, total, items, children }) {
+function MetricBreakdown({ label, total, items, children, showTechFee = false }) {
   const list = Array.isArray(items) ? items : [];
   // Sem breakdown (ex.: Agora com custo 0 mas monthly_cost_full presente):
   // número não-clicável. Embrulha num único <div> pra continuar UMA célula
@@ -435,17 +435,36 @@ function MetricBreakdown({ label, total, items, children }) {
             </span>
             <span className="text-sm font-bold tabular-nums">{formatBrlCompact(total)}</span>
           </div>
+          {/* Cabeçalho das colunas — só no breakdown com tech fee, pra deixar
+              explícito que a lista está ranqueada por tech fee (maior → menor). */}
+          {showTechFee && (
+            <div className="flex items-center gap-3 pb-1 text-[8.5px] uppercase tracking-wider font-semibold text-fg-subtle/70">
+              <span className="min-w-0 flex-1">Campanha</span>
+              <span className="shrink-0 w-12 text-right">Tech fee</span>
+              <span className="shrink-0 w-16 text-right">Investido</span>
+            </div>
+          )}
           <div className="flex flex-col max-h-[300px] overflow-y-auto pr-1 -mr-1">
             {list.map((it, i) => (
               <div
                 key={it.token || `${it.client}-${it.campaign}-${i}`}
-                className="flex items-baseline justify-between gap-3 text-[11px] leading-tight py-1 border-b border-border/30 last:border-b-0"
+                className="flex items-center justify-between gap-3 text-[11px] leading-tight py-1 border-b border-border/30 last:border-b-0"
               >
-                <span className="min-w-0 truncate">
+                <span className="min-w-0 flex-1 truncate">
                   <span className="font-semibold text-fg">{it.client || "—"}</span>
                   {it.campaign ? <span className="text-fg-subtle"> · {it.campaign}</span> : null}
                 </span>
-                <span className="shrink-0 font-semibold tabular-nums text-fg">
+                {showTechFee && (
+                  <span
+                    className={cn(
+                      "shrink-0 w-12 text-right font-bold tabular-nums",
+                      it.techFee != null ? techCostToneClass(it.techFee) : "text-fg-subtle",
+                    )}
+                  >
+                    {it.techFee != null ? `${it.techFee.toFixed(1)}%` : "—"}
+                  </span>
+                )}
+                <span className="shrink-0 w-16 text-right font-semibold tabular-nums text-fg">
                   {formatBrlCompact(it.value)}
                 </span>
               </div>
@@ -494,6 +513,7 @@ function PerformerDrawerInner({ performer, displayName, onOpenReport }) {
               label="Investido no mês"
               total={performer.month_budget}
               items={performer.month_budget_breakdown}
+              showTechFee
             >
               <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
                 Investido no mês

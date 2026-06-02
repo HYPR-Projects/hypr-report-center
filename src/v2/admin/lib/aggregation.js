@@ -956,12 +956,22 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
     // pudesse divergir do total exibido.
     const budgetBreakdown = [];
     const costBreakdown = [];
-    const mkEntry = (c, value) => ({
-      token: c.short_token,
-      client: c.client_name,
-      campaign: c.campaign_name,
-      value,
-    });
+    // Tech fee por campanha = custo real DSP ÷ PI cliente (mesma régua do
+    // card e da aba Diagnóstico). `cost` é passado explícito porque varia
+    // por modo (histórico = admin_total_cost_full; Agora = monthly_cost_full
+    // do mês). null quando não dá pra calcular (sem PI / sem custo).
+    const mkEntry = (c, value, cost) => {
+      const budget = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
+      const cst = Number(cost);
+      const techFee = budget > 0 && Number.isFinite(cst) ? (cst / budget) * 100 : null;
+      return {
+        token: c.short_token,
+        client: c.client_name,
+        campaign: c.campaign_name,
+        value,
+        techFee,
+      };
+    };
     if (hasPeriod) {
       // Modo histórico — backend já filtrou cost pelo período.
       for (const c of list) {
@@ -969,13 +979,13 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
         if (Number.isFinite(cf) && cf > 0) {
           hasMonthlyData = true;
           monthCost += cf;
-          costBreakdown.push(mkEntry(c, cf));
+          costBreakdown.push(mkEntry(c, cf, cf));
         }
         if (c.start_date) {
           const sd = c.start_date.slice(0, 10);
           if (sd >= periodFrom && sd <= periodTo) {
             const b = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
-            if (b > 0) { monthBudget += b; budgetBreakdown.push(mkEntry(c, b)); }
+            if (b > 0) { monthBudget += b; budgetBreakdown.push(mkEntry(c, b, c.admin_total_cost_full)); }
           }
         }
       }
@@ -984,19 +994,21 @@ export function computeTopPerformers(campaigns, ownerKey = "cs_email", options =
       const mk = currentMonthKey();
       for (const c of list) {
         const mcMap = c.monthly_cost_full;
+        const mc = mcMap && typeof mcMap === "object" ? Number(mcMap[mk]) : NaN;
         if (mcMap && typeof mcMap === "object") {
           hasMonthlyData = true;
-          const mc = Number(mcMap[mk]);
-          if (Number.isFinite(mc) && mc > 0) { monthCost += mc; costBreakdown.push(mkEntry(c, mc)); }
+          if (Number.isFinite(mc) && mc > 0) { monthCost += mc; costBreakdown.push(mkEntry(c, mc, mc)); }
         }
         if (c.start_date && c.start_date.slice(0, 7) === mk) {
           const b = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
-          if (b > 0) { monthBudget += b; budgetBreakdown.push(mkEntry(c, b)); }
+          if (b > 0) { monthBudget += b; budgetBreakdown.push(mkEntry(c, b, mc)); }
         }
       }
     }
-    // Maior contribuição primeiro — popover lista do que mais pesa pro menos.
-    budgetBreakdown.sort((a, b) => b.value - a.value);
+    // Investido: ordenado do maior tech fee pro menor (campanhas com fee
+    // ruim no topo, pra ação). techFee null vai pro fim. Custo: maior
+    // contribuição primeiro — popover lista do que mais pesa pro menos.
+    budgetBreakdown.sort((a, b) => (b.techFee ?? -1) - (a.techFee ?? -1));
     costBreakdown.sort((a, b) => b.value - a.value);
 
     // Tech cost da COLUNA = MESMA régua assimétrica do KPI strip

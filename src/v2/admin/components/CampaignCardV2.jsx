@@ -172,6 +172,10 @@ export function CampaignCardV2({
     admin_total_cost,
     d_client_budget,
     v_client_budget,
+    // Valor entregue ao cliente (faturável consumido) — backend espelha o
+    // Custo Efetivo do report. Ausente em payload antigo (graceful) e em
+    // bonificada/sem PI → esconde a linha "entregue" + barra.
+    client_delivered_value,
   } = campaign;
   const has_abs = display_has_abs || video_has_abs;
 
@@ -180,6 +184,13 @@ export function CampaignCardV2({
   const techCostPct = techCostBudget > 0 && Number.isFinite(techCostCost)
     ? (techCostCost / techCostBudget) * 100
     : null;
+
+  // Investido total (PI contratado = techCostBudget) vs consumido (entregue
+  // ao cliente). O ratio é o pacing em R$ — quanto do contratado já virou
+  // faturável. Só quando há PI e o backend mandou o entregue.
+  const clientDelivered = Number(client_delivered_value);
+  const hasConsumed = techCostBudget > 0 && Number.isFinite(clientDelivered);
+  const consumedPct = hasConsumed ? Math.min(100, (clientDelivered / techCostBudget) * 100) : 0;
 
   // Pacing por frente (O2O/OOH). Lê primeiro de `campaign.display_pacing_o2o/ooh`
   // (mandado direto pelo `?list=true`, sem flicker) e cai pro detail prefetched
@@ -496,6 +507,10 @@ export function CampaignCardV2({
               há budget; bonificada / sem CPM-CPCV não mostra (tech = "—"). */}
           {techCostBudget > 0 && Number.isFinite(techCostCost) && (
             <div className="mt-1.5 flex flex-col gap-0.5">
+              {/* Investido (total contratado) → entregue (consumido). A barra
+                  fina mostra quanto do PI já virou faturável; "gasto" abaixo é
+                  o custo cru do DSP (numerador do tech fee). Três valores =
+                  contratado, entregue ao cliente, custo HYPR. */}
               <div className="flex items-baseline justify-between gap-1.5 leading-none">
                 <span className="text-[8.5px] uppercase tracking-wider font-semibold text-fg-muted">
                   inv
@@ -504,6 +519,30 @@ export function CampaignCardV2({
                   {formatBrlCompact(techCostBudget)}
                 </span>
               </div>
+              {hasConsumed && (
+                <>
+                  <div className="flex items-baseline justify-between gap-1.5 leading-none">
+                    <span className="text-[8.5px] uppercase tracking-wider font-semibold text-fg-muted">
+                      entregue
+                    </span>
+                    <span className="text-[9px] tabular-nums text-fg font-semibold">
+                      {formatBrlCompact(clientDelivered)}
+                    </span>
+                  </div>
+                  <div
+                    className="mt-0.5 mb-0.5 h-1 rounded-full bg-track overflow-hidden"
+                    title={`Entregue ${consumedPct.toFixed(0)}% do investido`}
+                  >
+                    <div
+                      className={cn(
+                        "h-full rounded-full",
+                        ended ? "bg-fg-subtle/50" : "bg-signature/70",
+                      )}
+                      style={{ width: `${consumedPct}%` }}
+                    />
+                  </div>
+                </>
+              )}
               <div className="flex items-baseline justify-between gap-1.5 leading-none">
                 <span className="text-[8.5px] uppercase tracking-wider font-semibold text-fg-muted">
                   gasto
@@ -512,6 +551,11 @@ export function CampaignCardV2({
                   {formatBrlCompact(techCostCost)}
                 </span>
               </div>
+              {/* Sinal de refaturamento — campanha encerrada antes do previsto
+                  fatura pelo volume entregue, então o "inv" acima (PI cliente)
+                  deixa de ser o valor cobrado. Tag discreta marca isso no scan;
+                  o número refaturado vive no report (um clique no card). */}
+              {ended && earlyEnded && <RefatTag piOriginal={techCostBudget} />}
             </div>
           )}
         </div>
@@ -863,7 +907,50 @@ function EarlyEndedTooltipBody({ reason, date }) {
       ) : (
         <p className="text-fg-subtle italic">Sem motivo registrado.</p>
       )}
+      <p className="text-fg-muted pt-1 mt-1 border-t border-border/60">
+        <span className="text-fg-subtle">Faturamento:</span> ajustado ao volume
+        efetivamente entregue.
+      </p>
     </div>
+  );
+}
+
+/**
+ * Tag "refat." — sinaliza, no bloco financeiro do card, que a campanha
+ * encerrada antes do previsto passou a faturar pelo volume entregue. O valor
+ * "inv" logo acima (PI cliente contratado) deixa de ser o cobrado; o novo
+ * faturável (= Custo Efetivo entregue) aparece no report. Tom danger pra
+ * casar com o badge "ANTES DO PREVISTO". Tooltip carrega o PI original.
+ */
+function RefatTag({ piOriginal }) {
+  const tag = (
+    <span className="mt-1 inline-flex items-center gap-0.5 text-[8px] uppercase tracking-wider font-bold text-danger cursor-help">
+      <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 2v6h6" />
+        <path d="M3 13a9 9 0 1 0 3-7.7L3 8" />
+      </svg>
+      refat.
+    </span>
+  );
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{tag}</TooltipTrigger>
+      <TooltipContent>
+        <div className="space-y-1 leading-snug max-w-[210px]">
+          <p className="font-semibold text-danger">Faturado pelo entregue</p>
+          <p className="text-fg-muted">
+            Encerrada antes do previsto — o faturável foi ajustado ao volume
+            efetivamente entregue.
+          </p>
+          {piOriginal > 0 && (
+            <p className="text-fg-muted">
+              <span className="text-fg-subtle">PI original:</span>{" "}
+              <span className="text-fg tabular-nums">{formatBrlCompact(piOriginal)}</span>
+            </p>
+          )}
+        </div>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
