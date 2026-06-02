@@ -21,6 +21,7 @@ import { TokenChip } from "../admin/components/TokenChip";
 import { NegotiationModal } from "./NegotiationModal";
 import { ReportAnalyticsModal } from "../admin/components/ReportAnalyticsModal";
 import { getNegotiation } from "../../lib/api";
+import { fmtR } from "../../shared/format";
 
 const fmtDateShort = (ymd) => {
   if (!ymd) return null;
@@ -87,11 +88,28 @@ export function CampaignHeaderV2({
   // Admin-only — quando true, mostra atalho de Analytics no canto direito
   // do header. Sem o flag, o botão nem renderiza (cliente não vê).
   isAdmin = false,
+  // ── Encerramento antes do previsto ───────────────────────────────────
+  // Quando o cliente cancela o PI, o admin marca early_end. O report passa
+  // a faturar pelo volume entregue (ver OverviewV2). Aqui o header ganha um
+  // disclaimer e o status pill fica em danger pra deixar explícito que a
+  // campanha não rodou o período cheio. `originalEndDate` é a end_date do
+  // contrato (o `endDate` acima já vem trocado pela early_end_date);
+  // `contractedBudget` é o investimento inicial mostrado no disclaimer.
+  earlyEnded = false,
+  originalEndDate = null,
+  contractedBudget = null,
 }) {
   // State do modal de analytics. Local ao header — não precisa subir, o
   // header já é admin-aware via isAdmin e o modal é self-contained.
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
-  const status = deriveStatus(startDate, endDate);
+  const baseStatus = deriveStatus(startDate, endDate);
+  // Encerramento antecipado pinta o status de danger (vermelho) — espelha
+  // o badge "ANTES DO PREVISTO" do admin e sinaliza que não foi um término
+  // natural. Só sobrescreve quando a campanha já está encerrada.
+  const status =
+    earlyEnded && baseStatus.label === "Encerrada"
+      ? { dot: "danger", label: "Encerrada antes do previsto" }
+      : baseStatus;
   const start = fmtDateShort(startDate);
   const end = fmtDateShort(endDate);
   const days = daysBetween(startDate, endDate);
@@ -249,6 +267,17 @@ export function CampaignHeaderV2({
               </>
             )}
           </div>
+
+          {/* Disclaimer de encerramento antecipado — explica que o período
+              exibido foi cortado e que o faturamento passou a ser o volume
+              efetivamente entregue. Aparece logo abaixo da meta line pra o
+              cliente entender o "porquê" dos números antes de ler os KPIs. */}
+          {earlyEnded && (
+            <EarlyEndDisclaimer
+              originalEndDate={originalEndDate}
+              contractedBudget={contractedBudget}
+            />
+          )}
 
           {/* Filtro de visão (Merge Reports) — pills com "Visão agregada"
               + cada membro. Aparece apenas quando o report é agrupado.
@@ -436,15 +465,67 @@ function DocChipIcon({ className }) {
   );
 }
 
+// Faixa de aviso pra campanha encerrada antes do previsto. Tom danger-soft
+// (mesma família do status pill) sem gritar — informativo, não alarme. O
+// corpo explica a regra de faturamento; a linha secundária ancora os dois
+// números que o cliente vai querer conferir: até quando ia o contrato e
+// quanto era o investimento inicial.
+function EarlyEndDisclaimer({ originalEndDate, contractedBudget }) {
+  const originalEnd = fmtDateShort(originalEndDate);
+  const hasBudget = Number.isFinite(Number(contractedBudget)) && Number(contractedBudget) > 0;
+  return (
+    <div className="mt-4 flex items-start gap-2.5 rounded-lg border border-danger/30 bg-danger-soft px-3.5 py-2.5">
+      <AlertIcon className="size-4 text-danger mt-px shrink-0" />
+      <div className="text-[12px] leading-snug text-fg-muted">
+        <span className="font-semibold text-fg">Encerrada antes do previsto.</span>{" "}
+        O faturamento foi ajustado para o volume efetivamente entregue até o
+        encerramento.
+        {(originalEnd || hasBudget) && (
+          <span className="block mt-0.5 text-fg-subtle tabular-nums">
+            {originalEnd && <>Término original: {originalEnd}</>}
+            {originalEnd && hasBudget && <span className="mx-1.5">·</span>}
+            {hasBudget && <>Investimento inicial contratado: {fmtR(contractedBudget)}</>}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AlertIcon({ className }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+      <line x1="12" y1="9" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  );
+}
+
 function StatusPill({ status }) {
   const dotClass =
     status.dot === "success"
       ? "bg-success"
       : status.dot === "warning"
         ? "bg-warning"
-        : "bg-fg-subtle";
+        : status.dot === "danger"
+          ? "bg-danger"
+          : "bg-fg-subtle";
   return (
-    <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-fg-muted">
+    <span
+      className={`inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider ${
+        status.dot === "danger" ? "text-danger" : "text-fg-muted"
+      }`}
+    >
       <span className={`size-1.5 rounded-full ${dotClass}`} aria-hidden />
       {status.label}
     </span>

@@ -131,6 +131,17 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
     ? Math.round(filteredBudgetTotal * (budgetProRata / budgetTotal) * 100) / 100
     : filteredBudgetTotal;
 
+  // Encerramento antes do previsto (cliente cancelou o PI): o report passa
+  // a faturar pelo volume EFETIVAMENTE entregue. O budget faturável colapsa
+  // pro Custo Efetivo (= novo faturável), e o contratado original vira só
+  // referência ("investimento inicial"). Pacing NÃO muda — continua vs
+  // contrato original (backend Opção B) pra preservar a leitura da entrega;
+  // um aviso explica isso acima das barras. Só aplica na visão cheia: com
+  // filtro de período ativo o budget é um recorte analítico pro-rata, não a
+  // régua de faturamento da campanha.
+  const earlyEnded = !!camp.early_end_date;
+  const billedEffective = earlyEnded && !isFiltered ? totalCusto : null;
+
   // Custo formatado pra hero (separa centavos pra estilo do mockup).
   const { main: custoMain, cents: custoCents } = splitCents(totalCusto);
   // Em campanha bonificada, hero mostra o valor da cortesia (=`budgetTotal`,
@@ -187,12 +198,29 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
             seria redundância visual. */}
         {!isBonusOnly && (
           <KpiCardV2
-            label="Budget"
-            value={fmtR(isFiltered ? filteredBudgetProRata : filteredBudgetTotal)}
+            label={billedEffective != null ? "Budget · refaturado" : "Budget"}
+            value={fmtR(
+              billedEffective != null
+                ? billedEffective
+                : isFiltered ? filteredBudgetProRata : filteredBudgetTotal
+            )}
+            note={
+              billedEffective != null ? (
+                <span className="text-[11px] text-fg-subtle tabular-nums">
+                  contratado{" "}
+                  <span className="line-through decoration-fg-subtle/60">
+                    {fmtR(filteredBudgetTotal)}
+                  </span>
+                </span>
+              ) : null
+            }
+            accent={billedEffective != null}
             hint={
-              isFiltered
-                ? "Budget contratado proporcionalizado pelo período do filtro."
-                : "Budget contratado total da campanha."
+              billedEffective != null
+                ? `Campanha encerrada antes do previsto — budget ajustado ao volume efetivamente entregue (= novo faturável). Contratado original: ${fmtR(filteredBudgetTotal)}.`
+                : isFiltered
+                  ? "Budget contratado proporcionalizado pelo período do filtro."
+                  : "Budget contratado total da campanha."
             }
           />
         )}
@@ -281,6 +309,25 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
 
       {/* Pacing Geral pill abaixo do grid foi removido — agora é o 5º
           card do hero grid pra bater com o mockup. */}
+
+      {/* Aviso de pacing pós-encerramento antecipado — o pacing abaixo
+          continua medido contra o CONTRATO ORIGINAL (não contra o budget
+          refaturado), pra preservar a leitura de quanto foi entregue do
+          que foi vendido. Sem esse aviso, ler "23,8%" logo abaixo de um
+          budget já refaturado pareceria contraditório. */}
+      {earlyEnded && !isFiltered && (hasDisplay || hasVideo) && (
+        <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning-soft px-3.5 py-2.5 text-[12px] leading-snug text-fg-muted">
+          <InfoIcon className="size-4 text-warning mt-px shrink-0" />
+          <span>
+            <span className="font-semibold text-fg">
+              Pacing calculado sobre o contrato original.
+            </span>{" "}
+            A campanha foi encerrada antes do previsto — as barras abaixo
+            mostram o quanto foi entregue em relação ao volume inicialmente
+            contratado, não ao valor refaturado.
+          </span>
+        </div>
+      )}
 
       {/* ─── 2. Pacing Display + Video ───────────────────────────────── */}
       {!isFiltered && (hasDisplay || hasVideo) && (
@@ -594,6 +641,25 @@ function GiftIcon() {
       <line x1="12" y1="22" x2="12" y2="7" />
       <path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z" />
       <path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z" />
+    </svg>
+  );
+}
+
+function InfoIcon({ className }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="16" x2="12" y2="12" />
+      <line x1="12" y1="8" x2="12.01" y2="8" />
     </svg>
   );
 }

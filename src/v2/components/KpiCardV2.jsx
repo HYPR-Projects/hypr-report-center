@@ -28,6 +28,7 @@ export function KpiCardV2({
                     // não competir visualmente com Performance
   loading = false,
   sparkline = null, // ReactNode opcional (SparklineV2)
+  note = null, // ReactNode opcional — linha discreta abaixo do valor (ex.: valor anterior riscado)
   className,
 }) {
   const labelEl = (
@@ -75,6 +76,8 @@ export function KpiCardV2({
             {value}
           </span>
         )}
+
+        {note && <div className="mt-0.5 leading-none">{note}</div>}
 
         {sparkline && <div className="mt-1">{sparkline}</div>}
       </CardBody>

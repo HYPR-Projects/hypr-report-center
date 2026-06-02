@@ -665,6 +665,9 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
             logo={data.logo}
             startDate={camp.start_date}
             endDate={camp.early_end_date || camp.end_date}
+            earlyEnded={!!camp.early_end_date}
+            originalEndDate={camp.end_date}
+            contractedBudget={camp.budget_contracted}
             shortToken={camp.short_token || token}
             mergeMeta={data.merge_meta}
             currentView={view}
