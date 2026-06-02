@@ -329,7 +329,7 @@ export function CampaignCardV2({
             saúde da campanha sem precisar abrir drawer.
           • Desktop (md+): row horizontal com colunas dedicadas e dividers
             verticais (UX original — operação faz scan vertical). */}
-      <div className="flex flex-col md:flex-row md:items-stretch gap-3 md:gap-3 px-4 md:px-5 py-3.5">
+      <div className="flex flex-col md:flex-row md:items-stretch gap-3 md:gap-4 px-4 md:px-5 py-3.5">
         {/* ── Marca + campanha + datas ───────────────────────────────
             self-center vale só pra desktop (flex-row, eixo cruzado é vertical).
             No mobile (flex-col), self-center colapsava a largura horizontal e
@@ -603,7 +603,7 @@ export function CampaignCardV2({
             Cada linha some quando o formato não existe na campanha — em
             vez de "—" placeholder. Largura da coluna fica fixa pra
             alinhamento entre cards continuar consistente. */}
-        <div className="hidden md:flex flex-col justify-center gap-2 shrink-0 w-[140px]">
+        <div className="hidden md:flex flex-col justify-center gap-2 shrink-0 w-[160px]">
           {hasDisplay && <PacingRow label="DSP" pacing={display_pacing} ended={ended} subBars={displaySubBars} />}
           {hasVideo   && <PacingRow label="VID" pacing={video_pacing}   ended={ended} subBars={videoSubBars} />}
         </div>
@@ -613,7 +613,7 @@ export function CampaignCardV2({
         {/* ── RESULTADOS (CTR + VTR) ─────────────────────────────────
             CTR só existe se há display; VTR só se há vídeo. Mesma régua
             de visibilidade do bloco de pacing. */}
-        <div className="hidden md:flex flex-col justify-center gap-2 shrink-0 w-[84px]">
+        <div className="hidden md:flex flex-col justify-center gap-2 shrink-0 w-[90px]">
           {hasDisplay && (
             <ResultRow
               label="CTR"
