@@ -39,6 +39,12 @@ TABLE_DELIVERY       = "pmp_line_delivery_daily"
 TABLE_CHECKLISTS     = "checklists_mirror"
 TABLE_GROUPS         = "pmp_line_groups"
 
+# Fonte do espelho de checklists: dataset do Sales Center (us-central1).
+# `checklists_mirror` é uma cópia US-multi disso, pra a UI/sugestão do PMP
+# ler sem JOIN cross-region (ver sync_checklists_mirror).
+DATASET_SALES_CENTER = "hypr_sales_center"
+TABLE_CHECKLISTS_SRC = "checklists"
+
 # Campos que se propagam automaticamente pros demais membros do grupo
 # (PI compartilhado → faz sentido todos terem mesmo status/arquivamento/PI).
 # Notes/campaign/agency overrides ficam per-line.
@@ -233,6 +239,29 @@ def _update_enriched_rows_direct(line_ids: List[int], clean: dict) -> None:
     bq.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
 
 
+
+
+def sync_checklists_mirror() -> dict:
+    """Recopia hypr_sales_center.checklists (us-central1) → checklists_mirror (US-multi).
+
+    Cross-region copy gerenciado (mesma semântica do `bq cp -f`). A sugestão de
+    vinculação (suggest_command_links) e o JOIN do pmp_lines_enriched leem do
+    ESPELHO, não da fonte. Sem este passo no sync diário, checklists novos do
+    Command nunca chegam ao espelho e a auto-vinculação fica cega a eles.
+
+    Deve rodar ANTES de refresh_enriched_table() pra o enriched já enxergar os
+    checklists novos no mesmo sync.
+    """
+    src = f"{PROJECT_ID}.{DATASET_SALES_CENTER}.{TABLE_CHECKLISTS_SRC}"
+    dst = f"{PROJECT_ID}.{DATASET}.{TABLE_CHECKLISTS}"
+    job = bq.copy_table(
+        src, dst,
+        job_config=bigquery.CopyJobConfig(write_disposition="WRITE_TRUNCATE"),
+    )
+    job.result()
+    dst_tbl = bq.get_table(dst)
+    logger.info(f"[pmp] checklists_mirror sincronizado: {dst_tbl.num_rows} linhas")
+    return {"mirror_synced": True, "rows": dst_tbl.num_rows}
 
 
 def refresh_enriched_table() -> dict:

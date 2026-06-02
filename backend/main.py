@@ -2421,12 +2421,16 @@ def report_data(request):
             io_res     = xandr_curate.sync_insertion_orders(advertiser_id=advertiser_id)
             line_res   = xandr_curate.sync_line_items(advertiser_id=advertiser_id)
             deliv_res  = xandr_curate.sync_delivery_by_line(report_interval=interval)
+            # Recopia o espelho de checklists do Command ANTES do refresh, senão
+            # checklists novos nunca chegam ao espelho e a auto-vinculação fica cega.
+            mirror_res = pmp_lines.sync_checklists_mirror()
             pmp_lines.refresh_enriched_table()
             return (jsonify({
                 "actor": actor,
                 "insertion_orders": io_res,
                 "line_items":       line_res,
                 "delivery":         deliv_res,
+                "checklists_mirror": mirror_res,
                 "view_refreshed":   True,
             }), 200, headers)
         except xandr_curate.XandrError as xe:

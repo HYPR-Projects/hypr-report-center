@@ -213,10 +213,10 @@ joined AS (
   LEFT JOIN `site-hypr.prod_assets.pmp_insertion_orders` io
     ON io.io_id = li.io_id
   -- checklists_mirror é uma cópia US-multi do dataset hypr_sales_center
-  -- (que está em us-central1). Atualizada diariamente via `bq cp -f`
-  -- (rodada pelo Cloud Scheduler, ver fase 4 do PMP). Sem o mirror, JOIN
-  -- cross-region falha porque BQ não permite SELECT FROM datasets em
-  -- regions diferentes.
+  -- (que está em us-central1). Recopiada a cada sync diário em
+  -- pmp_lines.sync_checklists_mirror() (chamado pelo pmp_sync_v2 ANTES deste
+  -- refresh). Sem o mirror, JOIN cross-region falha porque BQ não permite
+  -- SELECT FROM datasets em regions diferentes.
   LEFT JOIN `site-hypr.prod_assets.checklists_mirror` ck
     ON UPPER(ck.short_token) = UPPER(li.short_token)
   LEFT JOIN delivery_agg d  ON d.line_id  = li.line_id
