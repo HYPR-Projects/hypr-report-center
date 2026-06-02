@@ -60,8 +60,9 @@ const TACTIC_OPTIONS = [
 // Espelha o CASE do `query_totals` no backend: `_O2O_`/`_O2O$` → "O2O",
 // `_OOH_`/`_OOH$` → "OOH", default → "O2O". Sem isso, detail filtraria
 // por `tactic_type` cru, que tem fallback diferente no `query_detail`.
-const O2O_RE = /(?:^|_)O2O(?:_|$)/i;
-const OOH_RE = /(?:^|_)OOH(?:_|$)/i;
+// Delimitador pode ser `_` ou `-` (naming mistura os dois).
+const O2O_RE = /(?:^|[_-])O2O(?:[_-]|$)/i;
+const OOH_RE = /(?:^|[_-])OOH(?:[_-]|$)/i;
 const deriveTactic = (lineName) => {
   const ln = lineName || "";
   if (O2O_RE.test(ln)) return "O2O";

@@ -288,14 +288,15 @@ DATASET_SALES_CENTER = "hypr_sales_center"
 # ─────────────────────────────────────────────────────────────────────────────
 # Expressão SQL que deriva a tática pelo line_name, ignorando tactic_type da
 # tabela (que pode estar errado por erro de CS).
-# Regra: _O2O_ no meio ou _O2O no final  →  "O2O"
-#        _OOH_ no meio ou _OOH no final  →  "OOH"
-#        fallback                         →  tactic_type original
+# Regra: _O2O_/-O2O- no meio ou _O2O/-O2O no final  →  "O2O"
+#        _OOH_/-OOH- no meio ou _OOH/-OOH no final  →  "OOH"
+#        (delimitador pode ser `_` ou `-`)
+#        fallback                                     →  tactic_type original
 # ─────────────────────────────────────────────────────────────────────────────
 TACTIC_EXPR = (
     "CASE"
-    " WHEN REGEXP_CONTAINS(line_name, r'(?i)_O2O(_|$)') THEN 'O2O'"
-    " WHEN REGEXP_CONTAINS(line_name, r'(?i)_OOH(_|$)') THEN 'OOH'"
+    " WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)') THEN 'O2O'"
+    " WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)') THEN 'OOH'"
     " ELSE tactic_type"
     " END"
 )
@@ -4493,8 +4494,8 @@ def query_totals(token, campaign_info):
         WITH base AS (
             SELECT
                 CASE
-                    WHEN REGEXP_CONTAINS(line_name, r'(?i)_O2O(_|$)') THEN 'O2O'
-                    WHEN REGEXP_CONTAINS(line_name, r'(?i)_OOH(_|$)') THEN 'OOH'
+                    WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)') THEN 'O2O'
+                    WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)') THEN 'OOH'
                     ELSE 'O2O'
                 END AS tactic_type,
                 media_type,
@@ -4780,7 +4781,7 @@ def query_daily(token):
         SELECT
             date,
             media_type,
-            CASE WHEN REGEXP_CONTAINS(line_name, r'(?i)_O2O(_|$)') THEN 'O2O' WHEN REGEXP_CONTAINS(line_name, r'(?i)_OOH(_|$)') THEN 'OOH' ELSE tactic_type END AS tactic_type,
+            CASE WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)') THEN 'O2O' WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)') THEN 'OOH' ELSE tactic_type END AS tactic_type,
             SUM(impressions)                        AS impressions,
             SUM(viewable_impressions)               AS viewable_impressions,
             SUM(clicks)                             AS clicks,
@@ -4916,7 +4917,7 @@ def query_detail(token):
             creative_name,
             creative_size,
             media_type,
-            CASE WHEN REGEXP_CONTAINS(line_name, r'(?i)_O2O(_|$)') THEN 'O2O' WHEN REGEXP_CONTAINS(line_name, r'(?i)_OOH(_|$)') THEN 'OOH' ELSE tactic_type END AS tactic_type,
+            CASE WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)') THEN 'O2O' WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)') THEN 'OOH' ELSE tactic_type END AS tactic_type,
             SUM(impressions)                        AS impressions,
             SUM(viewable_impressions)               AS viewable_impressions,
             SUM(clicks)                             AS clicks,
@@ -5069,10 +5070,10 @@ def query_campaigns_list():
                 -- da mesma mídia.
                 MIN(IF(media_type='VIDEO', date, NULL))              AS v_actual_start_date,
                 MIN(IF(media_type='DISPLAY', date, NULL))            AS d_actual_start_date,
-                MIN(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)_O2O(_|$)'), date, NULL)) AS d_o2o_actual_start_date,
-                MIN(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)_OOH(_|$)'), date, NULL)) AS d_ooh_actual_start_date,
-                MIN(IF(media_type='VIDEO'   AND REGEXP_CONTAINS(line_name, r'(?i)_O2O(_|$)'), date, NULL)) AS v_o2o_actual_start_date,
-                MIN(IF(media_type='VIDEO'   AND REGEXP_CONTAINS(line_name, r'(?i)_OOH(_|$)'), date, NULL)) AS v_ooh_actual_start_date,
+                MIN(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), date, NULL)) AS d_o2o_actual_start_date,
+                MIN(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), date, NULL)) AS d_ooh_actual_start_date,
+                MIN(IF(media_type='VIDEO'   AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), date, NULL)) AS v_o2o_actual_start_date,
+                MIN(IF(media_type='VIDEO'   AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), date, NULL)) AS v_ooh_actual_start_date,
                 COUNT(DISTINCT IF(media_type='VIDEO', date, NULL)) AS v_days_with_delivery,
                 SUM(IF(media_type='VIDEO' AND impressions > 0,
                         video_view_100_complete * (viewable_impressions / impressions),
@@ -5090,12 +5091,12 @@ def query_campaigns_list():
                 -- — só line_name. Naming malformado (sem _O2O/_OOH no nome) fica
                 -- fora da contagem per-frente, mas continua contando no agregado
                 -- (d_viewable_impressions / v_viewable_impressions acima).
-                SUM(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)_O2O(_|$)'), viewable_impressions, 0)) AS d_o2o_viewable_impressions,
-                SUM(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)_OOH(_|$)'), viewable_impressions, 0)) AS d_ooh_viewable_impressions,
-                SUM(IF(media_type='VIDEO' AND REGEXP_CONTAINS(line_name, r'(?i)_O2O(_|$)') AND impressions > 0,
+                SUM(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), viewable_impressions, 0)) AS d_o2o_viewable_impressions,
+                SUM(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), viewable_impressions, 0)) AS d_ooh_viewable_impressions,
+                SUM(IF(media_type='VIDEO' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)') AND impressions > 0,
                         video_view_100_complete * (viewable_impressions / impressions),
                         0)) AS v_o2o_viewable_completions,
-                SUM(IF(media_type='VIDEO' AND REGEXP_CONTAINS(line_name, r'(?i)_OOH(_|$)') AND impressions > 0,
+                SUM(IF(media_type='VIDEO' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)') AND impressions > 0,
                         video_view_100_complete * (viewable_impressions / impressions),
                         0)) AS v_ooh_viewable_completions,
                 -- ADMIN-ONLY: custo cru do DSP (sem margem/over) + impressions
