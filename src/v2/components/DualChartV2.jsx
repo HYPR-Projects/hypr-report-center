@@ -100,7 +100,13 @@ export function DualChartV2({
             tickLine={false}
             axisLine={{ stroke: chartNeutral.grid }}
             tickFormatter={(v) => (isDate ? String(v).slice(5) : String(v))}
-            interval="preserveStartEnd"
+            // Datas (série diária, ~31 pontos): de-clutter — mostrar todas
+            // seria ilegível. Categórico (audiência, poucas barras): mostra
+            // TODOS os labels (interval=0) no desktop — senão, ao estreitar
+            // pra exportar, o preserveStartEnd dropava nomes de audiência
+            // (ex: RESTAURANTES, TOPICS). No mobile mantém o de-clutter pra
+            // os nomes não se sobreporem.
+            interval={isDate || isMobile ? "preserveStartEnd" : 0}
             minTickGap={isMobile ? 32 : 24}
             padding={{ left: xPad, right: xPad }}
           />
@@ -158,6 +164,13 @@ export function DualChartV2({
             strokeWidth={2}
             dot={showDots ? { r: 3, fill: lineColor } : false}
             activeDot={{ r: 5 }}
+            // Sem animação — igual à Bar acima. Além de consistente, isso
+            // conserta a exportação PNG: ao estreitar o card pra exportar, o
+            // recharts re-renderiza e re-animava a linha; a captura pegava o
+            // meio da animação (linha deitada, ponto já no valor final) e o
+            // dot saía "solto" fora da linha. Sem animação, o estado é
+            // estável e a captura sempre bate com a tela.
+            isAnimationActive={false}
           />
         </LineChart>
       </ResponsiveContainer>

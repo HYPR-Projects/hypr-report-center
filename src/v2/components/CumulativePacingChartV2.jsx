@@ -346,8 +346,10 @@ export function CumulativePacingChartV2({
               dot={false}
               activeDot={{ r: 4, fill: hypr.signature, stroke: hypr.canvas, strokeWidth: 2 }}
               connectNulls={false}
-              isAnimationActive={true}
-              animationDuration={500}
+              // Sem animação — a re-renderização ao estreitar pra exportar
+              // pegava a linha no meio da animação e a curva saía deformada
+              // no PNG (mesmo motivo do DualChartV2).
+              isAnimationActive={false}
             />
           )}
           {showVideo && (
@@ -360,8 +362,8 @@ export function CumulativePacingChartV2({
               dot={false}
               activeDot={{ r: 4, fill: hypr.signatureLight, stroke: hypr.canvas, strokeWidth: 2 }}
               connectNulls={false}
-              isAnimationActive={true}
-              animationDuration={500}
+              // Sem animação — ver nota na Line de Display acima.
+              isAnimationActive={false}
             />
           )}
 
