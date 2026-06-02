@@ -329,7 +329,7 @@ export function CampaignCardV2({
             saúde da campanha sem precisar abrir drawer.
           • Desktop (md+): row horizontal com colunas dedicadas e dividers
             verticais (UX original — operação faz scan vertical). */}
-      <div className="flex flex-col md:flex-row md:items-stretch gap-3 md:gap-4 px-4 md:px-5 py-3.5">
+      <div className="flex flex-col md:flex-row md:items-stretch gap-3 md:gap-3 px-4 md:px-5 py-3.5">
         {/* ── Marca + campanha + datas ───────────────────────────────
             self-center vale só pra desktop (flex-row, eixo cruzado é vertical).
             No mobile (flex-col), self-center colapsava a largura horizontal e
@@ -420,8 +420,14 @@ export function CampaignCardV2({
             96px) lado a lado, total 148px. Mesmo recipe visual do single
             (label superior + valor centrado) — só com label do formato
             substituindo "ECPM ADM" em cada pill. */}
+        {/* Cluster financeiro: eCPM + TECH + investimento colados com gap
+            apertado (gap-2.5) pra ler como UMA seção. O gap-4 da row só
+            separa este grupo do pacing/resultados — antes os três eram
+            filhos diretos da row e herdavam o gap-4 largo entre si, o que
+            deixava o TECH "flutuando" longe da box de investimento. */}
+        <div className="hidden md:flex items-stretch gap-2.5 shrink-0">
         <div className={cn(
-          "hidden md:flex flex-col justify-center shrink-0",
+          "flex flex-col justify-center shrink-0",
           ecpmIsSplit ? "w-[148px]" : "w-[96px]"
         )}>
           {ecpmIsSplit ? (
@@ -488,7 +494,7 @@ export function CampaignCardV2({
             cost (≤8% verde / ≤10% amarelo / acima vermelho). "—" quando a
             campanha não tem PI/budget (bonificada, sem CPM-CPCV).
             justify-center alinha o valor com o eCPM ao lado. */}
-        <div className="hidden md:flex flex-col justify-center shrink-0 w-[100px]">
+        <div className="flex flex-col justify-center shrink-0 w-[64px]">
           <div className="flex items-baseline gap-1 leading-none">
             <span className="text-[9px] uppercase tracking-[0.14em] font-bold text-fg-muted">
               tech
@@ -506,63 +512,89 @@ export function CampaignCardV2({
           )}>
             {techCostPct != null ? `${techCostPct.toFixed(1)}%` : "—"}
           </span>
-          {/* Investido (valor PI cliente) vs Gasto (custo real DSP com
-              survey) — os dois brutos por trás do tech cost, lifetime por
-              campanha. Discretos pra não competir com o %. Só aparece quando
-              há budget; bonificada / sem CPM-CPCV não mostra (tech = "—"). */}
+        </div>
+
+        {/* ── INVESTIMENTO (admin-only) ────────────────────────────────
+            Box dedicada com os três brutos por trás do tech cost, lifetime
+            por campanha: Investido (PI cliente contratado) → Entregue
+            (faturável já consumido, com barra de progresso) → Gasto (custo
+            real DSP com survey, numerador do tech fee). Antes vivia
+            espremido embaixo do % de TECH; agora ganha caixa própria com
+            superfície sutil e tipografia maior pra respirar. Coluna de
+            largura fixa pra alinhamento entre cards continuar consistente —
+            quando não há budget (bonificada / sem CPM-CPCV) a box some mas
+            o slot permanece. Sem divisor antes: pertence ao grupo financeiro
+            (eCPM + TECH + investimento). */}
+        <div className="flex flex-col justify-center shrink-0 w-[172px]">
           {techCostBudget > 0 && Number.isFinite(techCostCost) && (
-            <div className="mt-1.5 flex flex-col gap-0.5">
-              {/* Investido (total contratado) → entregue (consumido). A barra
-                  fina mostra quanto do PI já virou faturável; "gasto" abaixo é
-                  o custo cru do DSP (numerador do tech fee). Três valores =
-                  contratado, entregue ao cliente, custo HYPR. */}
-              <div className="flex items-baseline justify-between gap-1.5 leading-none">
-                <span className="text-[8.5px] uppercase tracking-wider font-semibold text-fg-muted">
-                  inv
+            <div className={cn(
+              "rounded-lg border px-3 py-2.5",
+              ended ? "border-border/60 bg-surface/40" : "border-border/70 bg-surface/60"
+            )}>
+              <div className="flex items-baseline gap-1 leading-none mb-2">
+                <span className="text-[8.5px] uppercase tracking-[0.14em] font-bold text-fg-muted">
+                  investimento
                 </span>
-                <span className="text-[9px] tabular-nums text-fg-subtle">
-                  {formatBrlCompact(techCostBudget)}
+                <span
+                  className="text-[7.5px] uppercase tracking-widest font-semibold text-fg-subtle/70"
+                  title="Valores brutos por trás do tech cost — não exibir para o cliente"
+                >
+                  adm
                 </span>
               </div>
-              {hasConsumed && (
-                <>
-                  <div className="flex items-baseline justify-between gap-1.5 leading-none">
-                    <span className="text-[8.5px] uppercase tracking-wider font-semibold text-fg-muted">
-                      entregue
-                    </span>
-                    <span className="text-[9px] tabular-nums text-fg font-semibold">
-                      {formatBrlCompact(clientDelivered)}
-                    </span>
-                  </div>
-                  <div
-                    className="mt-0.5 mb-0.5 h-1 rounded-full bg-track overflow-hidden"
-                    title={`Entregue ${consumedPct.toFixed(0)}% do investido`}
-                  >
+              <div className="flex flex-col gap-1.5">
+                {/* Investido = total contratado (PI cliente) */}
+                <div className="flex items-baseline justify-between gap-2 leading-none">
+                  <span className="text-[9px] uppercase tracking-wide font-semibold text-fg-muted">
+                    Investido
+                  </span>
+                  <span className="text-[11px] tabular-nums text-fg-subtle">
+                    {formatBrlCompact(techCostBudget)}
+                  </span>
+                </div>
+                {/* Entregue = faturável já consumido; barra mostra % do PI */}
+                {hasConsumed && (
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-baseline justify-between gap-2 leading-none">
+                      <span className="text-[9px] uppercase tracking-wide font-semibold text-fg-muted">
+                        Entregue
+                      </span>
+                      <span className="text-[11px] tabular-nums text-fg font-bold">
+                        {formatBrlCompact(clientDelivered)}
+                      </span>
+                    </div>
                     <div
-                      className={cn(
-                        "h-full rounded-full",
-                        ended ? "bg-fg-subtle/50" : "bg-signature/70",
-                      )}
-                      style={{ width: `${consumedPct}%` }}
-                    />
+                      className="h-1.5 rounded-full bg-track overflow-hidden"
+                      title={`Entregue ${consumedPct.toFixed(0)}% do investido`}
+                    >
+                      <div
+                        className={cn(
+                          "h-full rounded-full transition-[width]",
+                          ended ? "bg-fg-subtle/50" : "bg-signature/70",
+                        )}
+                        style={{ width: `${consumedPct}%` }}
+                      />
+                    </div>
                   </div>
-                </>
-              )}
-              <div className="flex items-baseline justify-between gap-1.5 leading-none">
-                <span className="text-[8.5px] uppercase tracking-wider font-semibold text-fg-muted">
-                  gasto
-                </span>
-                <span className="text-[9px] tabular-nums text-fg-subtle">
-                  {formatBrlCompact(techCostCost)}
-                </span>
+                )}
+                {/* Gasto = custo real DSP (com survey) — numerador do tech fee */}
+                <div className="flex items-baseline justify-between gap-2 leading-none pt-1.5 border-t border-border/50">
+                  <span className="text-[9px] uppercase tracking-wide font-semibold text-fg-muted">
+                    Gasto
+                  </span>
+                  <span className="text-[11px] tabular-nums text-fg-subtle">
+                    {formatBrlCompact(techCostCost)}
+                  </span>
+                </div>
               </div>
-              {/* Sinal de refaturamento — campanha encerrada antes do previsto
-                  fatura pelo volume entregue, então o "inv" acima (PI cliente)
-                  deixa de ser o valor cobrado. Tag discreta marca isso no scan;
-                  o número refaturado vive no report (um clique no card). */}
+              {/* Sinal de refaturamento — encerrada antes do previsto fatura
+                  pelo volume entregue, então o "Investido" (PI cliente) deixa
+                  de ser o valor cobrado. Tag discreta marca isso no scan. */}
               {ended && earlyEnded && <RefatTag piOriginal={techCostBudget} />}
             </div>
           )}
+        </div>
+        {/* /cluster financeiro */}
         </div>
 
         <Divider />
@@ -571,7 +603,7 @@ export function CampaignCardV2({
             Cada linha some quando o formato não existe na campanha — em
             vez de "—" placeholder. Largura da coluna fica fixa pra
             alinhamento entre cards continuar consistente. */}
-        <div className="hidden md:flex flex-col justify-center gap-2 shrink-0 w-[160px]">
+        <div className="hidden md:flex flex-col justify-center gap-2 shrink-0 w-[140px]">
           {hasDisplay && <PacingRow label="DSP" pacing={display_pacing} ended={ended} subBars={displaySubBars} />}
           {hasVideo   && <PacingRow label="VID" pacing={video_pacing}   ended={ended} subBars={videoSubBars} />}
         </div>
@@ -581,7 +613,7 @@ export function CampaignCardV2({
         {/* ── RESULTADOS (CTR + VTR) ─────────────────────────────────
             CTR só existe se há display; VTR só se há vídeo. Mesma régua
             de visibilidade do bloco de pacing. */}
-        <div className="hidden md:flex flex-col justify-center gap-2 shrink-0 w-[90px]">
+        <div className="hidden md:flex flex-col justify-center gap-2 shrink-0 w-[84px]">
           {hasDisplay && (
             <ResultRow
               label="CTR"
