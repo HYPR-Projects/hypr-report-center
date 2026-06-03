@@ -4388,10 +4388,16 @@ def _stability_ok(short_token, viewable_now) -> tuple:
     return (True, "ok")
 
 
+_AUTO_FREEZE_MAX_PER_RUN = 20  # cabe no timeout (540s); backlog dreca em runs diários
+
+
 def auto_freeze_sweep(dry_run=False, min_days=_AUTO_FREEZE_MIN_DAYS,
-                      max_days=_AUTO_FREEZE_MAX_DAYS) -> dict:
+                      max_days=_AUTO_FREEZE_MAX_DAYS,
+                      max_per_run=_AUTO_FREEZE_MAX_PER_RUN) -> dict:
     """Congela campanhas maduras não-congeladas (com guardas). Idempotente.
-    Retorna sumário {checked, frozen, skipped, errors}."""
+    Limita `max_per_run` por execução (cada freeze faz fetch + check, ~15s) pra
+    fechar dentro do timeout da função; o backlog dreca nos runs diários
+    seguintes (próximo run pula as já congeladas). Retorna sumário."""
     summary = {"checked": 0, "frozen": [], "skipped": [], "errors": [], "dry_run": dry_run}
 
     # Guarda 1: dia ruim de pipeline → não congela nada.
@@ -4401,6 +4407,9 @@ def auto_freeze_sweep(dry_run=False, min_days=_AUTO_FREEZE_MIN_DAYS,
         return summary
 
     candidates = _auto_freeze_candidates(min_days, max_days)
+    summary["pending"] = len(candidates)
+    if max_per_run and len(candidates) > max_per_run:
+        candidates = candidates[:max_per_run]
     summary["checked"] = len(candidates)
     for token, end_date in candidates:
         try:
