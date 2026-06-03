@@ -105,6 +105,16 @@ _merges_cache    = {}     # "all" -> (timestamp, dict[short_token -> {merge_id, 
 _closures_cache  = {}     # "all" -> (timestamp, dict[short_token -> closed_at_iso])
 _pauses_cache    = {}     # "all" -> (timestamp, dict[short_token -> paused_at_iso])
 _early_ends_cache= {}     # "all" -> (timestamp, dict[short_token -> {early_end_date, reason, ended_by}])
+# Campanhas congeladas (snapshot servido verbatim). Guarda só o CONJUNTO de
+# tokens frozen (leve); o payload em si vive em report_snapshots (BQ) e, depois
+# do 1º load, no _report_cache. TTL = lista (frozen muda raramente, via admin).
+_frozen_cache    = {}     # "all" -> (timestamp, dict[short_token -> frozen_at_iso])
+# Janela de entrega por campanha — bound OPCIONAL e POR TOKEN do range de datas
+# contado no report (delivery fora do voo é excluída). Só tokens cadastrados
+# são afetados; todos os demais seguem all-time (comportamento atual). Usado
+# pra campanhas cujo token "herdou" delivery de outro período (ex: line do DSP
+# renomeada e reusada numa campanha nova → mês anterior vaza pro token novo).
+_windows_cache   = {}     # "all" -> (timestamp, dict[short_token -> (date_from, date_to)])
 # Cache da listagem de forms do Typeform — evita estourar rate-limit em cada
 # abertura do SurveyModal (admin abre o modal várias vezes editando blocos).
 # TTL curto (5min) porque o admin pode estar criando um form novo e querendo
@@ -165,6 +175,8 @@ def _cache_invalidate_token(short_token):
         _closures_cache.pop("all", None)
         _pauses_cache.pop("all", None)
         _early_ends_cache.pop("all", None)
+        _frozen_cache.pop("all", None)
+        _windows_cache.pop("all", None)
         # Merged report cache: drop tudo. Tabela de grupos é pequena, e
         # qualquer mutação que invalida um token pode tornar stale o
         # payload merged que o contém. Reidratação custa N fetches já
@@ -249,7 +261,17 @@ def _get_report_cached(short_token, force_refresh=False):
 
     Garante que dois requests pro mesmo token resolvem com 1 query.
     Requests pra tokens diferentes não bloqueiam entre si.
+
+    Campanha CONGELADA (freeze): serve o snapshot persistido verbatim, sem
+    tocar nas tabelas de delivery. Vence até force_refresh — o sentido do
+    freeze é justamente blindar o report de reprocessamentos do pipeline
+    (ex: rename de line no DSP re-derivando short_token e levando o
+    histórico embora). Para voltar a recalcular ao vivo: descongelar.
     """
+    frozen = _get_frozen_payload(short_token)
+    if frozen is not None:
+        return frozen, True
+
     if not force_refresh:
         cached = _cache_get(_report_cache, short_token, _REPORT_CACHE_TTL)
         if cached is not None:
@@ -990,6 +1012,112 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR save_campaign_closure] {e}")
             return (jsonify({"error": "Erro ao salvar fechamento da campanha"}), 500, headers)
+
+    # ── Endpoint: congelar report (snapshot) ────────────────────────────────
+    # Body: {short_token, note?, src?: {unified, campaign_results}}
+    # Persiste o payload computado e passa a servi-lo verbatim (imune a
+    # reprocessamento do pipeline). `src` (opcional, admin) aponta tabelas de
+    # recuperação (time-travel) quando a fonte ao vivo já está corrompida.
+    if request.method == "POST" and request.args.get("action") == "freeze_report":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            note        = (body.get("note") or "").strip() or None
+            src         = body.get("src") or None
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            payload = build_report_snapshot(
+                short_token, src=src, frozen_by=admin.get("email"), note=note
+            )
+            t = payload.get("totals") or []
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="report_frozen",
+                actor_email=admin.get("email"),
+                message="congelou o report" + (f" — {note}" if note else ""),
+                payload={"note": note, "src": src} if (note or src) else None,
+            )
+            return (jsonify({"ok": True, "frozen": True, "totals_rows": len(t)}), 200, headers)
+        except ValueError as e:
+            return (jsonify({"error": str(e)}), 404, headers)
+        except Exception as e:
+            logger.error(f"[ERROR freeze_report] {e}")
+            return (jsonify({"error": "Erro ao congelar o report"}), 500, headers)
+
+    # ── Endpoint: descongelar report ────────────────────────────────────────
+    # Remove o snapshot — volta a recalcular ao vivo.
+    if request.method == "POST" and request.args.get("action") == "unfreeze_report":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            delete_report_snapshot(short_token)
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="report_unfrozen",
+                actor_email=admin.get("email"),
+                message="descongelou o report (volta a recalcular ao vivo)",
+            )
+            return (jsonify({"ok": True, "frozen": False}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR unfreeze_report] {e}")
+            return (jsonify({"error": "Erro ao descongelar o report"}), 500, headers)
+
+    # ── Endpoint: status de freeze (admin) ──────────────────────────────────
+    if request.method == "GET" and request.args.get("action") == "freeze_status":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            frozen = query_frozen_tokens()
+            token = (request.args.get("token") or "").strip()
+            if token:
+                return (jsonify({"short_token": token, "frozen": token in frozen,
+                                 "frozen_at": frozen.get(token)}), 200, headers)
+            return (jsonify({"frozen": frozen}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR freeze_status] {e}")
+            return (jsonify({"error": "Erro ao consultar freeze"}), 500, headers)
+
+    # ── Endpoint: janela de entrega (bound de datas por token) ──────────────
+    # Body: {short_token, date_from?, date_to?, note?}  (datas ISO ou null)
+    # date_from/date_to ambos null → equivale a remover (sem bound).
+    if request.method == "POST" and request.args.get("action") == "save_delivery_window":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            date_from   = (body.get("date_from") or "").strip() or None
+            date_to     = (body.get("date_to")   or "").strip() or None
+            note        = (body.get("note") or "").strip() or None
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            if not date_from and not date_to:
+                delete_delivery_window(short_token)
+                action_done = "removida"
+            else:
+                save_delivery_window(short_token, date_from, date_to,
+                                     note=note, updated_by=admin.get("email"))
+                action_done = "salva"
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="delivery_window_set",
+                actor_email=admin.get("email"),
+                message=f"janela de entrega {action_done}: [{date_from or '-'} → {date_to or '-'}]",
+                payload={"date_from": date_from, "date_to": date_to, "note": note},
+            )
+            return (jsonify({"ok": True, "date_from": date_from, "date_to": date_to}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR save_delivery_window] {e}")
+            return (jsonify({"error": "Erro ao salvar janela de entrega"}), 500, headers)
 
     # ── Endpoint: pausar/retomar campanha ───────────────────────────────────
     # Body: {short_token, paused: bool, reason?: str}
@@ -2717,9 +2845,15 @@ def report_data(request):
         return (jsonify({"error": "Erro interno ao buscar dados"}), 500, headers)
 
 
-def fetch_campaign_data(short_token):
+def fetch_campaign_data(short_token, src=None):
     """
     Busca todos os dados de um report.
+
+    `src` (opcional): dict {"unified": "`...`", "campaign_results": "`...`"}
+    com overrides de fonte (já entre crases). Usado SÓ pelo builder de
+    snapshot pra construir o congelado a partir de tabelas de recuperação
+    (time-travel) quando as tabelas ao vivo estão corrompidas. None = fontes
+    ao vivo normais (todo o tráfego público).
 
     Estratégia:
       Apenas `query_totals` depende de `campaign_info` (precisa de start_date/end_date
@@ -2740,11 +2874,22 @@ def fetch_campaign_data(short_token):
       e retornamos None — auxiliares são fire-and-forget; o ThreadPool continua
       executando-as mas o resultado é descartado, sem custo perceptível.
     """
+    src = src or {}
+    _unified_src = src.get("unified")
+    _cr_src      = src.get("campaign_results")
+
+    # Janela de entrega (bound de datas) — só tokens cadastrados; default None.
+    try:
+        _win_from, _win_to = (query_delivery_windows().get(short_token) or (None, None))
+    except Exception as e:
+        logger.warning(f"[WARN fetch_campaign_data window {short_token}] {e}")
+        _win_from, _win_to = (None, None)
+
     # Dispara campaign_info + auxiliares simultaneamente
-    fut_campaign = _query_pool.submit(query_campaign_info, short_token)
+    fut_campaign = _query_pool.submit(query_campaign_info, short_token, _cr_src)
     aux_tasks = {
-        "daily":  _query_pool.submit(query_daily,  short_token),
-        "detail": _query_pool.submit(query_detail, short_token),
+        "daily":  _query_pool.submit(query_daily,  short_token, _cr_src, _win_from, _win_to),
+        "detail": _query_pool.submit(query_detail, short_token, _cr_src, _win_from, _win_to),
         "logo":   _query_pool.submit(query_logo,   short_token),
         "loom":   _query_pool.submit(query_loom,   short_token),
         "rmnd":   _query_pool.submit(query_upload, short_token, "RMND"),
@@ -2777,7 +2922,7 @@ def fetch_campaign_data(short_token):
         campaign_info["early_end_date"] = early_for_token["early_end_date"]
 
     # totals é o único que depende de campaign_info — dispara agora
-    fut_totals = _query_pool.submit(query_totals, short_token, campaign_info)
+    fut_totals = _query_pool.submit(query_totals, short_token, campaign_info, _unified_src, _win_from, _win_to)
 
     result = {"campaign": campaign_info}
     result["totals"] = _safe_future_result(fut_totals, "totals", default=[])
@@ -3878,6 +4023,250 @@ def query_all_closures() -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Report freeze — snapshot do payload final de uma campanha encerrada.
+#
+# Motivação (incidente Listerine N8Z4B7, jun/2026): o report recalcula sempre
+# ao vivo da unified/campaign_results, e o `short_token` é derivado por regex
+# do `line_name` do DSP. Renomear o prefixo `ID-XXXX_` de uma line (ex: pra
+# reusá-la numa campanha nova) re-deriva o token de TODO o histórico no rebuild
+# diário do dbt → o mês já entregue "vaza" pro token novo e o report encerrado
+# muda retroativamente. Freeze = blindagem: ao encerrar, persiste-se o payload
+# computado e passa-se a servi-lo verbatim, imune a qualquer reprocessamento.
+#
+# O payload é o MESMO JSON de fetch_campaign_data (todas as abas/gráficos),
+# então o front renderiza igual sem mudança. Quando a fonte ao vivo está
+# corrompida (caso N8Z4B7), o builder usa tabelas de recuperação (time-travel)
+# via `src` — ver build_report_snapshot.
+# ─────────────────────────────────────────────────────────────────────────────
+_snapshots_table_ensured = False
+_snapshots_ensure_lock = threading.Lock()
+
+
+def _snapshots_table_id() -> str:
+    return f"{PROJECT_ID}.{DATASET_ASSETS}.report_snapshots"
+
+
+def _ensure_snapshots_table() -> None:
+    """Cria a tabela `report_snapshots` se não existir. Idempotente."""
+    global _snapshots_table_ensured
+    if _snapshots_table_ensured:
+        return
+    with _snapshots_ensure_lock:
+        if _snapshots_table_ensured:
+            return
+        sql = f"""
+            CREATE TABLE IF NOT EXISTS `{_snapshots_table_id()}` (
+                short_token  STRING NOT NULL,
+                payload_json STRING NOT NULL,
+                frozen_at    TIMESTAMP NOT NULL,
+                frozen_by    STRING,
+                note         STRING
+            )
+        """
+        bq.query(sql).result()
+        _snapshots_table_ensured = True
+
+
+def query_frozen_tokens() -> dict:
+    """Retorna {short_token: frozen_at_iso} das campanhas congeladas.
+    Cacheado no TTL da lista (frozen muda raro, via admin). Tabela pequena."""
+    cached = _cache_get(_frozen_cache, "all", _LIST_CACHE_TTL)
+    if cached is not None:
+        return cached
+    _ensure_snapshots_table()
+    sql = f"SELECT short_token, frozen_at FROM `{_snapshots_table_id()}`"
+    out = {}
+    try:
+        for row in bq.query(sql).result():
+            ts = row["frozen_at"]
+            out[row["short_token"]] = ts.isoformat() if ts else None
+    except Exception as e:
+        logger.warning(f"[WARN query_frozen_tokens] {e}")
+    _cache_set(_frozen_cache, "all", out)
+    return out
+
+
+def _load_snapshot_payload(short_token):
+    """Lê e desserializa o payload congelado do token, ou None."""
+    _ensure_snapshots_table()
+    sql = f"SELECT payload_json FROM `{_snapshots_table_id()}` WHERE short_token = @token LIMIT 1"
+    jc = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("token", "STRING", short_token)
+    ])
+    try:
+        rows = list(bq.query(sql, job_config=jc).result())
+        if not rows:
+            return None
+        return json.loads(rows[0]["payload_json"])
+    except Exception as e:
+        logger.warning(f"[WARN _load_snapshot_payload {short_token}] {e}")
+        return None
+
+
+def _get_frozen_payload(short_token):
+    """Se o token está congelado, devolve o payload do snapshot; senão None.
+    O conjunto de frozen é cacheado (barato); o payload, após o 1º load, vive
+    no _report_cache (mesmo TTL dos reports ao vivo)."""
+    try:
+        frozen = query_frozen_tokens()
+    except Exception as e:
+        logger.warning(f"[WARN _get_frozen_payload set] {e}")
+        return None
+    if short_token not in frozen:
+        return None
+    cached = _cache_get(_report_cache, short_token, _REPORT_CACHE_TTL)
+    if cached is not None:
+        return cached
+    payload = _load_snapshot_payload(short_token)
+    if payload is not None:
+        _cache_set(_report_cache, short_token, payload)
+    return payload
+
+
+def save_report_snapshot(short_token: str, payload: dict, frozen_by: str | None = None, note: str | None = None):
+    """UPSERT do snapshot. Invalida caches pra que o freeze valha de imediato."""
+    _ensure_snapshots_table()
+    sql = f"""
+        MERGE `{_snapshots_table_id()}` T
+        USING (SELECT @token AS short_token) S
+        ON T.short_token = S.short_token
+        WHEN MATCHED THEN
+            UPDATE SET payload_json = @payload, frozen_at = CURRENT_TIMESTAMP(),
+                       frozen_by = @by, note = @note
+        WHEN NOT MATCHED THEN
+            INSERT (short_token, payload_json, frozen_at, frozen_by, note)
+            VALUES (@token, @payload, CURRENT_TIMESTAMP(), @by, @note)
+    """
+    jc = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("token",   "STRING", short_token),
+        # default=str espelha a serialização do serve ao vivo (linha ~459):
+        # objetos `date` (ex: campaign._start_date_raw) viram string, então o
+        # snapshot armazenado é idêntico ao JSON que o cliente recebe.
+        bigquery.ScalarQueryParameter("payload", "STRING", json.dumps(payload, ensure_ascii=False, default=str)),
+        bigquery.ScalarQueryParameter("by",      "STRING", frozen_by),
+        bigquery.ScalarQueryParameter("note",    "STRING", note),
+    ])
+    bq.query(sql, job_config=jc).result()
+    _cache_invalidate_token(short_token)
+
+
+def delete_report_snapshot(short_token: str):
+    """Descongela: remove o snapshot e invalida caches (volta a recalcular ao vivo)."""
+    _ensure_snapshots_table()
+    sql = f"DELETE FROM `{_snapshots_table_id()}` WHERE short_token = @token"
+    jc = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("token", "STRING", short_token)
+    ])
+    bq.query(sql, job_config=jc).result()
+    _cache_invalidate_token(short_token)
+
+
+def build_report_snapshot(short_token: str, src: dict | None = None,
+                          frozen_by: str | None = None, note: str | None = None) -> dict:
+    """Computa o payload do report (opcionalmente a partir de fontes de
+    recuperação via `src`) e persiste como snapshot congelado. Retorna o
+    payload salvo. Levanta ValueError se a campanha não existe."""
+    data = fetch_campaign_data(short_token, src=src)
+    if data is None:
+        raise ValueError(f"campanha {short_token} não encontrada")
+    data["frozen"] = True
+    save_report_snapshot(short_token, data, frozen_by=frozen_by, note=note)
+    return data
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Report delivery window — bound OPCIONAL e POR TOKEN do range de datas contado
+# no report. Default (token ausente da tabela) = all-time, comportamento atual.
+# Cirúrgico de propósito: NÃO é um bound global (que mudaria centenas de
+# campanhas com delivery fora do voo legítima); só os tokens cadastrados são
+# afetados. Caso de uso: token que herdou delivery de outro período via rename
+# de line no DSP (ex: QG2MRY herdou maio do N8Z4B7).
+# ─────────────────────────────────────────────────────────────────────────────
+_windows_table_ensured = False
+_windows_ensure_lock = threading.Lock()
+
+
+def _windows_table_id() -> str:
+    return f"{PROJECT_ID}.{DATASET_ASSETS}.report_delivery_window"
+
+
+def _ensure_windows_table() -> None:
+    """Cria a tabela `report_delivery_window` se não existir. Idempotente."""
+    global _windows_table_ensured
+    if _windows_table_ensured:
+        return
+    with _windows_ensure_lock:
+        if _windows_table_ensured:
+            return
+        sql = f"""
+            CREATE TABLE IF NOT EXISTS `{_windows_table_id()}` (
+                short_token STRING NOT NULL,
+                date_from   DATE,
+                date_to     DATE,
+                note        STRING,
+                updated_by  STRING,
+                updated_at  TIMESTAMP
+            )
+        """
+        bq.query(sql).result()
+        _windows_table_ensured = True
+
+
+def query_delivery_windows() -> dict:
+    """Retorna {short_token: (date_from, date_to)} das janelas cadastradas.
+    Cacheado no TTL da lista. Tabela pequena (só exceções)."""
+    cached = _cache_get(_windows_cache, "all", _LIST_CACHE_TTL)
+    if cached is not None:
+        return cached
+    _ensure_windows_table()
+    out = {}
+    try:
+        for row in bq.query(f"SELECT short_token, date_from, date_to FROM `{_windows_table_id()}`").result():
+            out[row["short_token"]] = (row["date_from"], row["date_to"])
+    except Exception as e:
+        logger.warning(f"[WARN query_delivery_windows] {e}")
+    _cache_set(_windows_cache, "all", out)
+    return out
+
+
+def save_delivery_window(short_token: str, date_from, date_to,
+                         note: str | None = None, updated_by: str | None = None):
+    """UPSERT da janela de entrega. date_from/date_to são strings ISO (YYYY-MM-DD)
+    ou None (sem limite daquele lado)."""
+    _ensure_windows_table()
+    sql = f"""
+        MERGE `{_windows_table_id()}` T
+        USING (SELECT @token AS short_token) S
+        ON T.short_token = S.short_token
+        WHEN MATCHED THEN
+            UPDATE SET date_from = @df, date_to = @dt, note = @note,
+                       updated_by = @by, updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+            INSERT (short_token, date_from, date_to, note, updated_by, updated_at)
+            VALUES (@token, @df, @dt, @note, @by, CURRENT_TIMESTAMP())
+    """
+    jc = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("token", "STRING", short_token),
+        bigquery.ScalarQueryParameter("df",    "DATE",   date_from),
+        bigquery.ScalarQueryParameter("dt",    "DATE",   date_to),
+        bigquery.ScalarQueryParameter("note",  "STRING", note),
+        bigquery.ScalarQueryParameter("by",    "STRING", updated_by),
+    ])
+    bq.query(sql, job_config=jc).result()
+    _cache_invalidate_token(short_token)
+
+
+def delete_delivery_window(short_token: str):
+    """Remove a janela — token volta a contar all-time."""
+    _ensure_windows_table()
+    jc = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("token", "STRING", short_token)
+    ])
+    bq.query(f"DELETE FROM `{_windows_table_id()}` WHERE short_token = @token", job_config=jc).result()
+    _cache_invalidate_token(short_token)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Campaign pause — admin pausa temporariamente uma campanha em vôo (campanha
 # travou no DSP, cliente pediu pra parar X dias, etc). Diferente de closure:
 # pausa é reversível (toggle) e só faz sentido enquanto end_date >= hoje.
@@ -4444,7 +4833,7 @@ def calc_pacing(cost: float, budget: float, start_date, end_date) -> float:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-def query_campaign_info(token):
+def query_campaign_info(token, cr_src=None):
     sql = f"""
         SELECT
             short_token,
@@ -4456,7 +4845,7 @@ def query_campaign_info(token):
             AVG(deal_cpm_amount)  AS cpm_negociado,
             AVG(deal_cpcv_amount) AS cpcv_negociado,
             MAX(updated_at)       AS updated_at
-        FROM {table_ref()}
+        FROM {cr_src or table_ref()}
         WHERE short_token = @token
         GROUP BY short_token, client_name, campaign_name
         LIMIT 1
@@ -4481,13 +4870,20 @@ def query_campaign_info(token):
     }
 
 
-def query_totals(token, campaign_info):
+def query_totals(token, campaign_info, unified_src=None, win_from=None, win_to=None):
     """
     Fonte de métricas: unified_daily_performance_metrics (incremental, região US)
     Fonte de contratos: checklist_info (prod_assets, região US)
     Todos os cálculos de CPM/CPCV efetivo, rentabilidade e pacing feitos em Python.
+
+    `unified_src` (opcional): override da tabela de delivery (já entre crases),
+    usado pelo builder de snapshot pra construir o congelado a partir de uma
+    tabela de recuperação (time-travel) quando a unified ao vivo está corrompida.
+    `win_from`/`win_to` (opcional): janela de entrega — exclui delivery fora do
+    range (token que herdou delivery de outro período via rename de line).
     """
-    UNIFIED = "`site-hypr.prod_assets.unified_daily_performance_metrics`"
+    UNIFIED = unified_src or "`site-hypr.prod_assets.unified_daily_performance_metrics`"
+    win_sql = _win_clause(win_from, win_to)
     CHECKLIST = "`site-hypr.prod_assets.checklist_info`"
 
     sql_perf = f"""
@@ -4514,7 +4910,7 @@ def query_totals(token, campaign_info):
             FROM {UNIFIED}
             WHERE short_token = @token
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
-              AND UPPER(creative_name) NOT LIKE '%SURVEY%'
+              AND UPPER(creative_name) NOT LIKE '%SURVEY%'{win_sql}
         )
         SELECT
             tactic_type,
@@ -4550,7 +4946,14 @@ def query_totals(token, campaign_info):
     # As 2 queries (perf + checklist) são independentes e tocam tabelas diferentes —
     # rodar em paralelo via _query_pool corta a latência pela metade no caminho
     # crítico do report (essa função é a query mais pesada de fetch_campaign_data).
-    job_config = bigquery.QueryJobConfig(query_parameters=[
+    _perf_params = [bigquery.ScalarQueryParameter("token", "STRING", token)]
+    if win_from is not None:
+        _perf_params.append(bigquery.ScalarQueryParameter("win_from", "DATE", win_from))
+    if win_to is not None:
+        _perf_params.append(bigquery.ScalarQueryParameter("win_to", "DATE", win_to))
+    job_config = bigquery.QueryJobConfig(query_parameters=_perf_params)
+    # checklist (contrato) não tem janela — usa só @token
+    check_config = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("token", "STRING", token)
     ])
 
@@ -4558,7 +4961,7 @@ def query_totals(token, campaign_info):
         lambda: list(bq.query(sql_perf, job_config=job_config, location="US").result())
     )
     fut_check = _query_pool.submit(
-        lambda: list(bq.query(sql_checklist, job_config=job_config, location="US").result())
+        lambda: list(bq.query(sql_checklist, job_config=check_config, location="US").result())
     )
     perf_rows  = fut_perf.result()
     check_rows = fut_check.result()
@@ -4775,8 +5178,13 @@ def query_totals(token, campaign_info):
         })
     return result
 
-def query_daily(token):
-    """Daily aggregated by date + media_type + tactic_type for charts."""
+def query_daily(token, cr_src=None, win_from=None, win_to=None):
+    """Daily aggregated by date + media_type + tactic_type for charts.
+
+    `cr_src` (opcional): override da tabela campaign_results (já entre crases),
+    usado pelo builder de snapshot (fonte de recuperação).
+    `win_from`/`win_to` (opcional): janela de entrega — bound de datas."""
+    win_sql = _win_clause(win_from, win_to)
     sql = f"""
         SELECT
             date,
@@ -4790,14 +5198,14 @@ def query_daily(token):
             -- effective_total_cost é acumulado: usar MAX por (date, line) para evitar inflação
             -- Aqui já agrupamos por date+line_name, então MAX = valor daquele dia para aquela linha
             MAX(effective_total_cost)               AS effective_total_cost
-        FROM {table_ref()}
+        FROM {cr_src or table_ref()}
         WHERE short_token = @token
           AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
-          AND UPPER(creative_name) NOT LIKE '%SURVEY%'
+          AND UPPER(creative_name) NOT LIKE '%SURVEY%'{win_sql}
         GROUP BY date, media_type, 3
         ORDER BY date ASC
     """
-    rows = run_query(sql, token)
+    rows = run_query(sql, token, win_from, win_to)
     result = []
     for r in rows:
         viewable       = float(r["viewable_impressions"] or 0)
@@ -4908,7 +5316,8 @@ def query_campaign_lines(token):
     return result
 
 
-def query_detail(token):
+def query_detail(token, cr_src=None, win_from=None, win_to=None):
+    win_sql = _win_clause(win_from, win_to)
     sql = f"""
         SELECT
             date,
@@ -4929,16 +5338,16 @@ def query_detail(token):
             AVG(effective_cpm_amount)               AS effective_cpm_amount,
             -- effective_total_cost é acumulado: MAX por (date, line, creative) = custo real do dia
             MAX(effective_total_cost)               AS effective_total_cost
-        FROM {table_ref()}
+        FROM {cr_src or table_ref()}
         WHERE short_token = @token
           AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
-          AND UPPER(creative_name) NOT LIKE '%SURVEY%'
+          AND UPPER(creative_name) NOT LIKE '%SURVEY%'{win_sql}
         GROUP BY
             date, campaign_name, line_name,
             creative_name, creative_size, media_type, 7
         ORDER BY date ASC, media_type, creative_name
     """
-    rows = run_query(sql, token)
+    rows = run_query(sql, token, win_from, win_to)
     result = []
     for r in rows:
         vi    = float(r["viewable_impressions"] or 0)
@@ -4967,15 +5376,27 @@ def query_detail(token):
     return result
 
 
-def run_query(sql, token):
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("token", "STRING", token)
-        ]
-    )
+def run_query(sql, token, win_from=None, win_to=None):
+    params = [bigquery.ScalarQueryParameter("token", "STRING", token)]
+    if win_from is not None:
+        params.append(bigquery.ScalarQueryParameter("win_from", "DATE", win_from))
+    if win_to is not None:
+        params.append(bigquery.ScalarQueryParameter("win_to", "DATE", win_to))
+    job_config = bigquery.QueryJobConfig(query_parameters=params)
     job  = bq.query(sql, job_config=job_config)
     rows = list(job.result())
     return [dict(r) for r in rows]
+
+
+def _win_clause(win_from, win_to) -> str:
+    """Predicado SQL de janela de entrega (vazio se sem limites). Usa os
+    params @win_from/@win_to que run_query/query_totals adicionam."""
+    c = ""
+    if win_from is not None:
+        c += " AND date >= @win_from"
+    if win_to is not None:
+        c += " AND date <= @win_to"
+    return c
 
 
 def query_campaigns_list():
