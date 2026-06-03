@@ -67,7 +67,10 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
 
   const hasDisplay = display.length > 0;
   const hasVideo = video.length > 0;
-  const totalViews100 = totals.reduce((s, t) => s + (t.completions || 0), 0);
+  // Views 100% da MESMA fonte CR que a aba Video (via `video`, já
+  // sobrescrito com detail em computeAggregates). Antes somava de `totals`
+  // (UNIFIED), que divergia da aba.
+  const totalViews100 = video.reduce((s, t) => s + (t.completions || 0), 0);
 
   // Sparklines: pegamos os últimos N pontos da série diária.
   const impSparklineValues = chartDisplay

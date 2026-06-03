@@ -736,10 +736,46 @@ export function computeAggregates(data, mainRange, mainTactic = "ALL", creativeF
     completions: r.viewable_video_view_100_complete ?? r.completions ?? r.video_view_100,
   }));
 
-  const display = enrich(totals.filter(t=>t.media_type==="DISPLAY"));
-  const video   = enrich(totals.filter(t=>t.media_type==="VIDEO"));
+  // ─── Métricas de ENTREGA da Visão Geral: fonte CR (detail), não UNIFIED ──
+  // `totals` vem de unified_daily_performance_metrics, onde o
+  // viewable_impressions de DISPLAY pode vir ≈ impressões (viewability não
+  // medida → ~100%). As abas Display/Video usam `detail`
+  // (campaign_results), com o viewable REAL. Pra Visão Geral bater 1:1 com
+  // as abas, sobrescrevemos os contadores de entrega (viewable_impressions,
+  // clicks, completions) das rows com a soma do detail por (media, tactic).
+  // Isso alinha de uma vez: CTR/VTR/CPC (MediaSummaryV2), imp. visíveis /
+  // views 100% (KPIs de topo) e o pacing (computeMediaPacing usa
+  // viewable_impressions/completions da row como "entregue").
+  // Custo, contratuais, budget e deal_cpm continuam vindo de `totals`
+  // (intencional — UNIFIED + alinhamento contratual). Fallback: se uma
+  // (media, tactic) existe em totals mas não no detail, mantém o valor
+  // original em vez de zerar.
+  const crDelivery = {};
+  for (const r of detail) {
+    const k = `${r.media_type}|${r.tactic_type}`;
+    const e = crDelivery[k] || { vi: 0, clks: 0, v100: 0 };
+    e.vi   += Number(r.viewable_impressions || 0);
+    e.clks += Number(r.clicks || 0);
+    e.v100 += Number(r.video_view_100 || 0);
+    crDelivery[k] = e;
+  }
+  const applyCrDelivery = (r) => {
+    const cr = crDelivery[`${r.media_type}|${r.tactic_type}`];
+    if (!cr) return r;
+    return {
+      ...r,
+      viewable_impressions: cr.vi,
+      clicks: cr.clks,
+      completions: cr.v100,
+      viewable_video_view_100_complete: cr.v100,
+    };
+  };
 
-  const totalImpressions=totals.reduce((s,t)=>s+(t.viewable_impressions||0),0);
+  const display = enrich(totals.filter(t=>t.media_type==="DISPLAY")).map(applyCrDelivery);
+  const video   = enrich(totals.filter(t=>t.media_type==="VIDEO")).map(applyCrDelivery);
+
+  // Total de imp. visíveis (KPI de topo) derivado da MESMA fonte CR.
+  const totalImpressions=[...display, ...video].reduce((s,t)=>s+(t.viewable_impressions||0),0);
   // `totals.effective_total_cost` já passou pelo alinhamento contratual
   // acima quando aplicável, então Σ aqui == budget_contracted exato em
   // campanhas encerradas com over. Demais casos: Σ raw dos totals.

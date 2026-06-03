@@ -113,9 +113,27 @@ export function MediaSummaryV2({ type, rows, compact = false }) {
   const dealCpm  = rows[0].deal_cpm_amount  || 0;
   const dealCpcv = rows[0].deal_cpcv_amount || 0;
 
-  // Efetivo agregado: recalcula a partir das somas (não dá pra "somar" CPMs).
-  const effCpm  = totals.vi   > 0 ? (totals.cost / totals.vi)   * 1000 : 0;
-  const effCpcv = totals.v100 > 0 ?  totals.cost / totals.v100         : 0;
+  // CPM/CPCV efetivo: usa o valor que o BACKEND já calculou por frente
+  // (effective_cpm_amount / effective_cpcv_amount), agregado por entrega
+  // (média ponderada por visíveis/completions). Esses campos já embutem a
+  // over-detection — quando a campanha está sub-pacing, ficam travados no
+  // negociado (→ rentabilidade 0), igual à aba Display/Video.
+  //
+  // NÃO recalcular como custo/visíveis: o `effective_total_cost` é derivado
+  // no backend a partir dos visíveis do UNIFIED, enquanto a Visão Geral
+  // agora exibe visíveis do CR (menores). custo_UNIFIED / visíveis_CR
+  // inflava o CPM efetivo (ex.: 14,40 → 17,20) e gerava rentabilidade
+  // negativa falsa. Fallback p/ payloads antigos sem o campo: custo/visíveis.
+  const hasEffCpm  = rows.some((r) => r.effective_cpm_amount  != null);
+  const hasEffCpcv = rows.some((r) => r.effective_cpcv_amount != null);
+  const wCpm  = rows.reduce((s, r) => s + (r.effective_cpm_amount  || 0) * (r.viewable_impressions || 0), 0);
+  const wCpcv = rows.reduce((s, r) => s + (r.effective_cpcv_amount || 0) * (r.completions          || 0), 0);
+  const effCpm  = hasEffCpm
+    ? (totals.vi   > 0 ? wCpm  / totals.vi   : 0)
+    : (totals.vi   > 0 ? (totals.cost / totals.vi)   * 1000 : 0);
+  const effCpcv = hasEffCpcv
+    ? (totals.v100 > 0 ? wCpcv / totals.v100 : 0)
+    : (totals.v100 > 0 ?  totals.cost / totals.v100         : 0);
 
   // Rentabilidade agregada.
   let rentab = null;
