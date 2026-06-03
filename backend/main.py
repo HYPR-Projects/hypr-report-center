@@ -4135,8 +4135,12 @@ def _get_frozen_payload(short_token):
         return None
     if short_token not in frozen:
         return None
+    # IMPORTANTE: só confiar no _report_cache se a entrada for DE FATO congelada.
+    # O mesmo keyspace guarda payloads ao vivo — uma entrada ao vivo cacheada
+    # ANTES do freeze (frozen ausente) faria o report servir o número velho até
+    # o TTL expirar. Exige frozen=True; senão, lê o snapshot do BQ.
     cached = _cache_get(_report_cache, short_token, _REPORT_CACHE_TTL)
-    if cached is not None:
+    if cached is not None and cached.get("frozen"):
         return cached
     payload = _load_snapshot_payload(short_token)
     if payload is not None:
