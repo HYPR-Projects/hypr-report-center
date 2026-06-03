@@ -829,6 +829,27 @@ def report_data(request):
             logger.error(f"[ERROR sheets_alert_stale] {e}")
             return (jsonify({"error": "Erro no alerta diário"}), 500, headers)
 
+    # ── Endpoint: auto-freeze de campanhas maduras (cron OU admin) ──────────
+    # Cron (Scheduler diário): auth via X-Cron-Secret. Admin: auth via JWT —
+    # útil pra rodar dry-run e ver o que congelaria (`?dry_run=1`).
+    # Congela campanhas encerradas há 8–45 dias, não-congeladas, que passam
+    # nas guardas de sanidade. Idempotente e reversível (unfreeze).
+    if request.args.get("action") == "auto_freeze_sweep":
+        provided = request.headers.get("X-Cron-Secret", "")
+        expected = os.environ.get("CRON_SECRET", "")
+        is_cron  = bool(expected) and hmac.compare_digest(provided, expected)
+        if not (is_cron or authenticate_admin(request)):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            # dry_run default TRUE para admin (preview seguro); cron passa explícito.
+            dry_q = (request.args.get("dry_run") or "").strip().lower()
+            dry_run = (dry_q in ("1", "true", "yes")) or (not is_cron and dry_q == "")
+            summary = auto_freeze_sweep(dry_run=dry_run)
+            return (jsonify(summary), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR auto_freeze_sweep] {e}")
+            return (jsonify({"error": "Erro no auto-freeze"}), 500, headers)
+
     # ── Endpoint: deletar integração (admin) ────────────────────────────────
     # Remove o registro do BQ. NÃO deleta a sheet do Drive — fica como
     # registro permanente do que foi entregue ao cliente. Se quiser
@@ -4114,8 +4135,12 @@ def _get_frozen_payload(short_token):
         return None
     if short_token not in frozen:
         return None
+    # IMPORTANTE: só confiar no _report_cache se a entrada for DE FATO congelada.
+    # O mesmo keyspace guarda payloads ao vivo — uma entrada ao vivo cacheada
+    # ANTES do freeze (frozen ausente) faria o report servir o número velho até
+    # o TTL expirar. Exige frozen=True; senão, lê o snapshot do BQ.
     cached = _cache_get(_report_cache, short_token, _REPORT_CACHE_TTL)
-    if cached is not None:
+    if cached is not None and cached.get("frozen"):
         return cached
     payload = _load_snapshot_payload(short_token)
     if payload is not None:
@@ -4264,6 +4289,165 @@ def delete_delivery_window(short_token: str):
     ])
     bq.query(f"DELETE FROM `{_windows_table_id()}` WHERE short_token = @token", job_config=jc).result()
     _cache_invalidate_token(short_token)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Auto-freeze — congela automaticamente campanhas já maduras (entrega final).
+#
+# Roda diário (Cloud Scheduler). Pra cada campanha que terminou na JANELA DE
+# MATURIDADE [hoje-MAX_DAYS, hoje-MIN_DAYS] e ainda não está congelada, tira o
+# snapshot. MIN_DAYS=8 cobre o lag D+7 de ingestão dos connectors (congelar
+# antes travaria entrega incompleta). MAX_DAYS limita o backlog: a feature NÃO
+# congela em massa todo o histórico (campanhas muito antigas podem já estar
+# corrompidas — essas ficam pra freeze manual com revisão). Em regime, cada
+# campanha é pega 1x ao cruzar a janela.
+#
+# 3 guardas de sanidade — NÃO congelar número suspeito de corrupção:
+#   1. Frescor: se alguma fonte estiver desatualizada (pipeline quebrado hoje),
+#      aborta o sweep inteiro — não congela nada num dia ruim.
+#   2. Não-vazio: pula campanha sem entrega (viewable=0).
+#   3. Estabilidade: compara com time-travel de 3d atrás; queda >10% = algo
+#      sumiu da base (rename/delete) → pula e registra pra revisão manual.
+#      (Campanha madura não cresce mais, então queda só pode ser perda.)
+# Tudo reversível (unfreeze) e auditado.
+# ─────────────────────────────────────────────────────────────────────────────
+_AUTO_FREEZE_MIN_DAYS = 8     # cobre o lag D+7 dos connectors
+_AUTO_FREEZE_MAX_DAYS = 45    # backlog máximo (campanha recente, provavelmente íntegra)
+_AUTO_FREEZE_DROP_TOL = 0.10  # queda tolerada vs 3d atrás antes de bloquear
+
+
+def _freshness_is_healthy() -> bool:
+    """True se o rebuild diário rodou — a fonte MAIS FRESCA está a ≤2 dias.
+    Confirma só que o pipeline rodou hoje (não exige toda fonte secundária em
+    dia; StackAdapt/Amazon têm cadência própria). A guarda real contra perda
+    de dados é a estabilidade por campanha (_stability_ok). Campanha madura
+    (>8d) tem entrega toda no passado já ingerida, então o lag da borda
+    recente não afeta o número congelado."""
+    try:
+        fresh = query_data_freshness()
+        if not fresh:
+            return False
+        ref = (date.today() - timedelta(days=2)).isoformat()
+        return any((f.get("max_date") or "") >= ref for f in fresh)
+    except Exception as e:
+        logger.warning(f"[WARN _freshness_is_healthy] {e}")
+        return False
+
+
+def _auto_freeze_candidates(min_days=_AUTO_FREEZE_MIN_DAYS, max_days=_AUTO_FREEZE_MAX_DAYS):
+    """Tokens cuja campanha terminou na janela de maturidade e ainda não
+    estão congelados. end_date vem de campaign_results (bounded no voo)."""
+    sql = f"""
+        SELECT short_token, MAX(end_date) AS end_dt
+        FROM `{PROJECT_ID}.{DATASET_HUB}.{TABLE}`
+        GROUP BY short_token
+        HAVING end_dt BETWEEN
+                 DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL @max_days DAY)
+             AND DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL @min_days DAY)
+    """
+    jc = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("min_days", "INT64", min_days),
+        bigquery.ScalarQueryParameter("max_days", "INT64", max_days),
+    ])
+    frozen = query_frozen_tokens()
+    out = []
+    for r in bq.query(sql, job_config=jc).result():
+        tok = r["short_token"]
+        if tok and tok not in frozen:
+            out.append((tok, r["end_dt"]))
+    return out
+
+
+def _stability_ok(short_token, viewable_now) -> tuple:
+    """Compara viewable atual com o de 3 dias atrás (time-travel). Campanha
+    madura não cresce — queda > tolerância = corrupção provável. Retorna
+    (ok, reason). Tolera falha do time-travel (não bloqueia por isso)."""
+    if viewable_now <= 0:
+        return (False, "sem entrega (viewable=0)")
+    # Tokens com janela de entrega são curados manualmente — bound != all-time,
+    # então a comparação com a unified crua não se aplica. Libera.
+    try:
+        if short_token in query_delivery_windows():
+            return (True, "janela curada")
+    except Exception:
+        pass
+    try:
+        sql = f"""
+            SELECT SUM(viewable_impressions) v
+            FROM `{PROJECT_ID}.{DATASET_ASSETS}.unified_daily_performance_metrics`
+              FOR SYSTEM_TIME AS OF TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 3 DAY)
+            WHERE short_token = @token
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND UPPER(creative_name) NOT LIKE '%SURVEY%'
+        """
+        jc = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("token", "STRING", short_token)])
+        rows = list(bq.query(sql, job_config=jc, location="US").result())
+        v_old = float(rows[0]["v"] or 0) if rows else 0.0
+        if v_old > 0 and (viewable_now - v_old) / v_old < -_AUTO_FREEZE_DROP_TOL:
+            pct = (1 - viewable_now / v_old) * 100
+            return (False, f"queda de {pct:.0f}% vs 3d atrás — possível corrupção")
+    except Exception as e:
+        logger.warning(f"[WARN _stability_ok timetravel {short_token}] {e}")
+    return (True, "ok")
+
+
+_AUTO_FREEZE_MAX_PER_RUN = 20  # cabe no timeout (540s); backlog dreca em runs diários
+
+
+def auto_freeze_sweep(dry_run=False, min_days=_AUTO_FREEZE_MIN_DAYS,
+                      max_days=_AUTO_FREEZE_MAX_DAYS,
+                      max_per_run=_AUTO_FREEZE_MAX_PER_RUN) -> dict:
+    """Congela campanhas maduras não-congeladas (com guardas). Idempotente.
+    Limita `max_per_run` por execução (cada freeze faz fetch + check, ~15s) pra
+    fechar dentro do timeout da função; o backlog dreca nos runs diários
+    seguintes (próximo run pula as já congeladas). Retorna sumário."""
+    summary = {"checked": 0, "frozen": [], "skipped": [], "errors": [], "dry_run": dry_run}
+
+    # Guarda 1: dia ruim de pipeline → não congela nada.
+    if not _freshness_is_healthy():
+        summary["aborted"] = "bases desatualizadas hoje — sweep adiado"
+        logger.warning("[auto_freeze] abortado: freshness não-saudável")
+        return summary
+
+    candidates = _auto_freeze_candidates(min_days, max_days)
+    summary["pending"] = len(candidates)
+    if max_per_run and len(candidates) > max_per_run:
+        candidates = candidates[:max_per_run]
+    summary["checked"] = len(candidates)
+    for token, end_date in candidates:
+        try:
+            data = fetch_campaign_data(token)
+            if not data:
+                summary["skipped"].append({"token": token, "reason": "report vazio"})
+                continue
+            viewable = sum(float(r.get("viewable_impressions") or 0) for r in (data.get("totals") or []))
+            ok, reason = _stability_ok(token, viewable)
+            if not ok:
+                summary["skipped"].append({"token": token, "reason": reason})
+                logger.warning(f"[auto_freeze] pulou {token}: {reason}")
+                continue
+            if dry_run:
+                summary["frozen"].append({"token": token, "viewable": viewable, "would_freeze": True})
+                continue
+            data["frozen"] = True
+            save_report_snapshot(token, data, frozen_by="auto-freeze",
+                                 note=f"Auto-freeze: encerrada em {end_date} (madura, guardas OK).")
+            summary["frozen"].append({"token": token, "viewable": viewable})
+            try:
+                audit_log.safe_write_event(
+                    short_token=token, event_type="report_frozen_auto",
+                    actor_email="auto-freeze",
+                    message=f"congelou automaticamente (encerrada {end_date}, viewable {viewable:,.0f})")
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"[auto_freeze] erro em {token}: {e}")
+            summary["errors"].append({"token": token, "error": str(e)})
+    logger.info(f"[auto_freeze] checked={summary['checked']} "
+                f"frozen={len(summary['frozen'])} skipped={len(summary['skipped'])} "
+                f"errors={len(summary['errors'])} dry_run={dry_run}")
+    return summary
 
 
 # ─────────────────────────────────────────────────────────────────────────────

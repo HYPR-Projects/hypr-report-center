@@ -291,6 +291,41 @@ if [ -n "$PMP_SCHEDULER_SECRET" ] && [ -n "$XANDR_CURATE_USER" ]; then
   echo "  ✓ Job recriado ($SCHEDULER_SCHEDULE $SCHEDULER_TZ → $SCHEDULER_URI)"
 fi
 
+# ── 5b. Cloud Scheduler: auto-freeze-daily ───────────────────────────────────
+# Cron diário 09:30 BRT (depois do rebuild das 06h, do sync das 08h e dos
+# alertas das 09h) que congela campanhas maduras (encerradas há 8–45 dias,
+# não-congeladas) que passam nas guardas de sanidade. Blinda reports
+# finalizados contra mudança retroativa (rename/delete de line, restate,
+# falha de pipeline). Idempotente e reversível (unfreeze). Auth via
+# X-Cron-Secret = CRON_SECRET.
+if [ -n "$CRON_SECRET" ]; then
+  echo ""
+  echo "▸ Garantindo Cloud Scheduler auto-freeze-daily..."
+
+  AF_JOB="auto-freeze-daily"
+  AF_URI="https://${REGION}-site-hypr.cloudfunctions.net/${FUNCTION_NAME}?action=auto_freeze_sweep&dry_run=false"
+
+  if gcloud scheduler jobs describe "$AF_JOB" \
+        --location="$REGION" --project=site-hypr >/dev/null 2>&1; then
+    gcloud scheduler jobs delete "$AF_JOB" \
+      --location="$REGION" --project=site-hypr --quiet >/dev/null
+  fi
+
+  gcloud scheduler jobs create http "$AF_JOB" \
+    --location="$REGION" \
+    --project=site-hypr \
+    --schedule="30 9 * * *" \
+    --time-zone="America/Sao_Paulo" \
+    --uri="$AF_URI" \
+    --http-method=POST \
+    --headers="Content-Type=application/json,X-Cron-Secret=${CRON_SECRET}" \
+    --message-body='{}' \
+    --attempt-deadline=600s \
+    --description="Auto-freeze diario de campanhas encerradas (maduras, com guardas)" \
+    >/dev/null
+  echo "  ✓ Job recriado (30 9 * * * America/Sao_Paulo → auto_freeze_sweep)"
+fi
+
 # ── 6. Output final ──────────────────────────────────────────────────────────
 echo ""
 echo "✓ Deploy concluído. URL pública:"
