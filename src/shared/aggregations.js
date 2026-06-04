@@ -372,13 +372,26 @@ export function computeMediaPacing(rows, camp, mediaType, tactic = "ALL") {
   const end   = new Date(ey, em - 1, ed);
   const now   = new Date();
 
+  // Início contratual — piso do runway de pacing.
+  const [csy, csm, csd] = camp.start_date.split("-").map(Number);
+  const campStart = new Date(csy, csm - 1, csd);
+
   // Parse ISO yyyy-mm-dd → Date (midnight local). Fallback pra
   // camp.start_date quando a frente não tem actual_start_date (frente
   // ainda não entregou nada).
+  //
+  // CLAMP ao início contratual: o runway nunca começa antes de
+  // camp.start_date. Uma frente que entregou ANTES do voo (tráfego de
+  // teste, ou contaminação por rename de line re-derivando short_token —
+  // ex: XV2FZA com imps fantasma em 29-31/mai num voo de junho) não pode
+  // esticar o runway pra trás e deflacionar o pacing. A intenção do
+  // actual_start (não punir frente que começa DEPOIS) é preservada: se
+  // actual_start > camp.start, devolve actual_start.
   const parseStart = (iso) => {
     const src = iso || camp.start_date;
     const [y, m, d] = src.split("-").map(Number);
-    return new Date(y, m - 1, d);
+    const dt = new Date(y, m - 1, d);
+    return dt < campStart ? campStart : dt;
   };
 
   // Negociado (contratado + bônus) — denormalizado em rows[0].

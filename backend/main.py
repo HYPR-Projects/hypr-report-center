@@ -5265,8 +5265,14 @@ def query_totals(token, campaign_info, unified_src=None, win_from=None, win_to=N
             elif isinstance(actual_start, str):      # string "YYYY-MM-DD" → date
                 from datetime import date as _date
                 actual_start = _date.fromisoformat(actual_start)
-            # agora é datetime.date — usar como row_start
-            row_start = actual_start
+            # CLAMP ao início contratual: o runway nunca começa antes de
+            # `start`. Entrega pré-voo (tráfego de teste OU contaminação por
+            # rename de line re-derivando short_token — ex: XV2FZA com imps
+            # fantasma em 29-31/mai num voo de junho) puxava actual_start pra
+            # trás, inflava o esperado e deflacionava o pacing (84,6% vs 153,9%
+            # da curva, que usa start_date). max() preserva a intenção original
+            # (frente que começa DEPOIS não é punida → usa actual_start).
+            row_start = max(actual_start, start) if start else actual_start
         else:
             row_start = start
         row_total_days   = (end - row_start).days + 1 if row_start and end else total_days
@@ -6242,7 +6248,10 @@ def query_campaigns_list():
                 return None
             s_camp = sd.date() if hasattr(sd, "date") else sd
             e = ed.date() if hasattr(ed, "date") else ed
-            s = actual_start or s_camp
+            # CLAMP ao início contratual (ver query_totals/aggregations.js):
+            # entrega pré-voo não estica o runway pra trás. max() preserva o
+            # caso de frente que começa DEPOIS (actual_start > s_camp).
+            s = max(actual_start, s_camp) if actual_start else s_camp
             today = date.today()
             total_days = (e - s).days + 1
             if total_days <= 0:
