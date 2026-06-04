@@ -58,7 +58,59 @@ import xandr_curate
 
 logger = logging.getLogger(__name__)
 
-bq = bigquery.Client()
+# ── BQ client com timeout obrigatório ────────────────────────────────────────
+# Incidente 04/06: um job BQ pendurou sem timeout, travou um worker do
+# ThreadPool e — com minScale=1 mantendo a instância quente — envenenou a
+# instância inteira: TODA request (até a leve `data_freshness`) passou a dar
+# 504 após os 540s de timeout da função. Causa: nenhum dos ~71 `.result()`
+# tinha timeout, então um upstream pendurado bloqueava o worker pra sempre.
+#
+# Em vez de editar 71 call sites, envolvemos o client num proxy que injeta:
+#   - job_timeout_ms no QueryJobConfig → BQ cancela o job server-side
+#   - timeout no .result()            → o cliente para de esperar e levanta
+# Assim um job pendurado falha rápido (vira erro tratável pelo call site /
+# handler) em vez de deadlockar a instância indefinidamente.
+_BQ_JOB_TIMEOUT_MS   = 120_000   # BQ aborta a query após 120s
+_BQ_RESULT_TIMEOUT_S = 130       # cliente desiste de esperar após 130s
+
+
+class _TimeoutQueryJob:
+    """Proxy de QueryJob que aplica um timeout padrão no .result()."""
+    __slots__ = ("_job",)
+
+    def __init__(self, job):
+        self._job = job
+
+    def result(self, *args, **kwargs):
+        kwargs.setdefault("timeout", _BQ_RESULT_TIMEOUT_S)
+        return self._job.result(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._job, name)
+
+
+class _TimeoutBQClient:
+    """Proxy de bigquery.Client que força timeout em toda query.
+
+    Só intercepta .query() (único uso de `bq` no report path); todo o
+    resto (get_table, insert_rows_json, etc.) passa direto pro client real
+    via __getattr__.
+    """
+    def __init__(self, client):
+        self._client = client
+
+    def query(self, sql, *args, **kwargs):
+        job_config = kwargs.get("job_config") or bigquery.QueryJobConfig()
+        if getattr(job_config, "job_timeout_ms", None) is None:
+            job_config.job_timeout_ms = _BQ_JOB_TIMEOUT_MS
+        kwargs["job_config"] = job_config
+        return _TimeoutQueryJob(self._client.query(sql, *args, **kwargs))
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+
+bq = _TimeoutBQClient(bigquery.Client())
 # Injeta o client BQ no módulo clients (evita import circular — clients
 # precisa do bq pra query_client_timeseries mas não pode importar main).
 clients.set_bq_client(bq)
@@ -5583,6 +5635,109 @@ def _win_clause(win_from, win_to) -> str:
     return c
 
 
+def _window_sql_predicate(windows: dict) -> str:
+    """Constrói um predicado SQL (CASE) que limita as linhas dos tokens COM
+    delivery window cadastrada ao range [date_from, date_to]; os demais tokens
+    passam sem filtro (ELSE TRUE). Devolve "" se não houver window.
+
+    Por quê: o card do menu (query_campaigns_list) agrega delivery ao vivo por
+    token e, sem isso, NÃO honra a window que o report individual já honra —
+    então um token que herdou delivery de outro período via rename de line
+    (ex: QG2MRY herdou maio do N8Z4B7) aparece over no card mesmo com o report
+    correto. Injetado nas CTEs que varrem tabelas com coluna `date`.
+
+    Seguro contra injection: só tokens [A-Za-z0-9_-]+ entram; datas via
+    .isoformat() de objetos DATE do BQ.
+    """
+    clauses = []
+    for tok, bounds in (windows or {}).items():
+        if not tok or not re.fullmatch(r"[A-Za-z0-9_-]+", str(tok)):
+            continue
+        wf, wt = (bounds or (None, None))
+        conds = []
+        if wf is not None:
+            conds.append(f"date >= DATE '{wf.isoformat() if hasattr(wf, 'isoformat') else wf}'")
+        if wt is not None:
+            conds.append(f"date <= DATE '{wt.isoformat() if hasattr(wt, 'isoformat') else wt}'")
+        if not conds:
+            continue
+        clauses.append(f"WHEN '{tok}' THEN {' AND '.join(conds)}")
+    if not clauses:
+        return ""
+    body = "\n".join("                    " + c for c in clauses)
+    return f"AND (CASE short_token\n{body}\n                    ELSE TRUE END)"
+
+
+def _apply_frozen_delivery_override(r: dict, payload: dict) -> None:
+    """Sobrescreve IN PLACE os campos de ENTREGA da row da lista com os do
+    snapshot congelado. Só entrega é tocada — contratado, budget, datas e cpm
+    vêm de tabelas não-delivery (corretas ao vivo, imunes ao rename de line).
+
+    Por quê: sem isso o card do menu de um token congelado mostra a entrega ao
+    vivo (vazada via rename → re-derivação do short_token no rebuild dbt),
+    divergindo do report que serve o snapshot. Ver incidente Listerine N8Z4B7.
+
+    LIMITAÇÃO: custo CRU admin (admin_total_cost*, monthly_cost_full) NÃO está
+    no snapshot (payload do cliente não carrega) → permanece ao vivo
+    (best-effort). Afeta só ECPM ADM / Tech do card encerrado, não o pacing.
+    """
+    totals = payload.get("totals") or []
+    if not totals:
+        return
+    D = [t for t in totals if t.get("media_type") == "DISPLAY"]
+    V = [t for t in totals if t.get("media_type") == "VIDEO"]
+
+    def _sum(rows, key):
+        return sum(float(t.get(key) or 0) for t in rows)
+
+    def _sum_tac(rows, tac, key):
+        return sum(float(t.get(key) or 0) for t in rows if t.get("tactic_type") == tac)
+
+    def _pdate(s):
+        if not s:
+            return None
+        if hasattr(s, "year"):
+            return s
+        try:
+            return date.fromisoformat(str(s)[:10])
+        except Exception:
+            return None
+
+    def _astart(rows, tac=None):
+        ds = [t.get("actual_start_date") for t in rows
+              if t.get("actual_start_date") and (tac is None or t.get("tactic_type") == tac)]
+        return _pdate(min(ds)) if ds else None
+
+    # ── Display ──
+    d_view = _sum(D, "viewable_impressions")
+    r["d_vi"]                       = d_view   # denominador do display_ctr (= viewable)
+    r["d_viewable_impressions"]     = d_view   # numerador do display_pacing
+    r["d_clicks"]                   = _sum(D, "clicks")
+    r["d_cost"]                     = _sum(D, "effective_total_cost")
+    r["d_o2o_viewable_impressions"] = _sum_tac(D, "O2O", "viewable_impressions")
+    r["d_ooh_viewable_impressions"] = _sum_tac(D, "OOH", "viewable_impressions")
+    r["d_days_with_delivery"]       = max((int(t.get("days_with_delivery") or 0) for t in D), default=0)
+    r["d_actual_start_date"]        = _astart(D)
+    r["d_o2o_actual_start_date"]    = _astart(D, "O2O")
+    r["d_ooh_actual_start_date"]    = _astart(D, "OOH")
+
+    # ── Video (numerador de VTR/pacing = viewable completions) ──
+    v_view_imp  = _sum(V, "viewable_impressions")
+    v_view_comp = _sum(V, "viewable_video_view_100_complete")
+    r["v_vi"]                       = v_view_imp
+    r["v_viewable_impressions"]     = v_view_imp
+    r["v_completions"]              = _sum(V, "completions")
+    r["v_viewable_completions"]     = v_view_comp
+    r["v_clicks"]                   = _sum(V, "clicks")
+    r["v_cost"]                     = _sum(V, "effective_cost_with_over")
+    r["v_o2o_viewable_completions"] = _sum_tac(V, "O2O", "viewable_video_view_100_complete")
+    r["v_ooh_viewable_completions"] = _sum_tac(V, "OOH", "viewable_video_view_100_complete")
+    r["v_days_with_delivery"]       = max((int(t.get("days_with_delivery") or 0) for t in V), default=0)
+    r["v_actual_start_date"]        = _astart(V)
+    r["v_o2o_actual_start_date"]    = _astart(V, "O2O")
+    r["v_ooh_actual_start_date"]    = _astart(V, "OOH")
+
+
 def query_campaigns_list():
     # Query principal: agregações de delivery por short_token. Owners NÃO
     # participam dessa query — o enrichment é feito em Python depois,
@@ -5602,6 +5757,12 @@ def query_campaigns_list():
     # Total: 5 full scans → 3. Sem mudança semântica (testado por equivalência
     # algébrica: SUM/COUNT DISTINCT/MIN ignoram NULLs, então
     # `SUM(IF(t='X', v, 0))` ≡ `SUM(v) WHERE t='X'`).
+    #
+    # `win` = predicado de delivery window (vazio quando não há nenhuma). É
+    # injetado nas CTEs que varrem tabelas com coluna `date` (dedup, unified,
+    # monthly_cost_full, unified_cost_full) pra que o card honre a mesma janela
+    # do report. Tokens sem window não são afetados (ELSE TRUE).
+    win = _window_sql_predicate(query_delivery_windows())
     sql = f"""
         WITH checklist AS (
             SELECT
@@ -5646,6 +5807,7 @@ def query_campaigns_list():
             WHERE media_type IN ('DISPLAY', 'VIDEO')
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
+              {win}
             GROUP BY short_token, media_type, date, line_name, creative_name
         ),
         agg AS (
@@ -5721,6 +5883,7 @@ def query_campaigns_list():
             WHERE media_type IN ('DISPLAY', 'VIDEO')
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
+              {win}
             GROUP BY short_token
         ),
         -- Entrega de ontem (D-1) por mídia. Alimenta a coluna "Viewable
@@ -5882,6 +6045,7 @@ def query_campaigns_list():
                 WHERE media_type IN ('DISPLAY', 'VIDEO')
                   -- INTENCIONAL: sem filtro de survey (mesmo motivo do
                   -- unified_cost_full — tech cost considera custo real).
+                  {win}
                 GROUP BY short_token, month_key
             )
             GROUP BY short_token
@@ -5912,6 +6076,7 @@ def query_campaigns_list():
             WHERE media_type IN ('DISPLAY', 'VIDEO')
               -- INTENCIONAL: sem filtro de SURVEY/CONTROLE/EXPOSTO aqui.
               -- Survey faz parte do custo real DSP — admin precisa ver.
+              {win}
             GROUP BY short_token
         )
         SELECT
@@ -5969,6 +6134,7 @@ def query_campaigns_list():
     fut_closures = _query_pool.submit(_safe_get_closures)
     fut_pauses   = _query_pool.submit(_safe_get_pauses)
     fut_early    = _query_pool.submit(_safe_get_early_ends)
+    fut_frozen   = _query_pool.submit(query_frozen_tokens)
 
     rows           = fut_query.result()
     lookup_owners  = fut_owners.result()
@@ -5979,9 +6145,28 @@ def query_campaigns_list():
     closures_map   = fut_closures.result()
     pauses_map     = fut_pauses.result()
     early_map      = fut_early.result()
+    frozen_map     = fut_frozen.result()
+
+    # Tokens congelados presentes na lista: carrega o snapshot pra sobrescrever
+    # a ENTREGA do card (delivery ao vivo vaza via rename → diverge do report).
+    # Raro (0-2 tokens normalmente); load em paralelo. Ver
+    # _apply_frozen_delivery_override.
+    snap_payloads = {}
+    _frozen_here = [r["short_token"] for r in rows if r["short_token"] in frozen_map]
+    if _frozen_here:
+        _snap_futs = {t: _query_pool.submit(_load_snapshot_payload, t) for t in _frozen_here}
+        snap_payloads = {t: f.result() for t, f in _snap_futs.items()}
 
     result = []
     for r in rows:
+        # Cópia mutável da Row do BQ: pra tokens congelados sobrescrevemos os
+        # campos de entrega in-place (contratado/budget/datas/cpm ficam ao vivo,
+        # corretos). O resto do loop computa pacing/ctr/vtr a partir daqui.
+        r = dict(r)
+        _tok = r["short_token"]
+        if snap_payloads.get(_tok):
+            _apply_frozen_delivery_override(r, snap_payloads[_tok])
+
         start_date = r["start_date"]
         end_date   = r["end_date"]
 
