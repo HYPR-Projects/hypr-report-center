@@ -229,16 +229,16 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp, chec
     : (tactic === "O2O" ? (src.o2o_display_budget || 0) : (src.ooh_display_budget || 0));
   const cpmNeg = src.deal_cpm_amount || 0;
 
-  // Start da frente: prioriza actual_start_date do row (primeiro dia que
-  // a frente realmente entregou). Fallback pra camp.start_date quando a
-  // frente ainda não entregou nada — nesse caso o pacing vai ser 0%
-  // porque viAll=0, então a escolha do start não afeta o resultado.
-  const startISO = rows[0]?.actual_start_date || camp.start_date;
-  const [sy, sm, sd] = startISO.split("-").map(Number);
-  const [ey, em, ed] = camp.end_date.split("-").map(Number);
-  const start = new Date(sy, sm - 1, sd);
-  const end   = new Date(ey, em - 1, ed);
+  // Runway da frente via pacingRunway (FONTE ÚNICA, com clamp ao início
+  // contratual). Prioriza actual_start_date do row; fallback pra
+  // camp.start_date quando a frente ainda não entregou (pacing=0% porque
+  // viAll=0, então o start não afeta). CRÍTICO: o clamp impede que entrega
+  // pré-voo (imps fantasma por rename de line re-derivando short_token)
+  // estique o runway pra trás — sem ele, esta aba mostrava pacing
+  // deflacionado (ex: NO2015 22,5%) enquanto a Visão Geral mostrava o
+  // correto (92,3%), pois só computeMediaPacing tinha o clamp.
   const today = new Date();
+  const { end, tDays, eDays } = pacingRunway(rows[0]?.actual_start_date, camp.start_date, camp.end_date, today);
 
   const contracted = tactic === "O2O" ? (src.contracted_o2o_display_impressions || 0) : (src.contracted_ooh_display_impressions || 0);
   const bonus      = tactic === "O2O" ? (src.bonus_o2o_display_impressions || 0)      : (src.bonus_ooh_display_impressions || 0);
@@ -249,8 +249,6 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp, chec
   // do empty state genérico.
   const notStarted = rows.length === 0 && detailAll.length === 0 && cpmNeg > 0 && totalNeg > 0;
 
-  const tDays         = (end - start) / 864e5 + 1;
-  const eDays         = today < start ? 0 : today > end ? tDays : Math.floor((today - start) / 864e5);
   const budgetProp    = today > end ? budget : budget / tDays * eDays;
 
   // CPM Efetivo / Rentabilidade — espelha backend (main.py:4582-4590).
@@ -327,6 +325,51 @@ export const computeVideoKpis = ({ rows, detail, tactic, checklist }) => {
 
 /**
  * ─────────────────────────────────────────────────────────────────────
+ * pacingRunway — janela de tempo do pacing de UMA frente (FONTE ÚNICA)
+ * ─────────────────────────────────────────────────────────────────────
+ *
+ * Calcula o "runway" (janela de entrega) usado como denominador de TODO
+ * pacing no front: dias totais e dias decorridos da frente. Antes esta
+ * lógica vivia duplicada em `computeMediaPacing` (com clamp) e em
+ * `computeDisplayKpis` (SEM clamp) — a divergência fez a aba Display
+ * mostrar pacing deflacionado enquanto a Visão Geral mostrava o correto.
+ * Unificar aqui torna impossível as duas telas divergirem de novo.
+ *
+ * CLAMP ao início contratual: o runway nunca começa antes de campStart.
+ * Entrega ANTES do voo (tráfego de teste, ou contaminação por rename de
+ * line re-derivando short_token — ex: XV2FZA/NO2015 com imps fantasma em
+ * maio num voo de junho) puxava `actual_start` pra trás via MIN(date),
+ * inflava o esperado e deflacionava o pacing. `max(actual, campStart)`
+ * preserva a intenção original: frente que começa DEPOIS não é punida.
+ * Espelha o backend (main.py query_totals / pacing_expected_to_date) e a
+ * Curva de Pacing (CumulativePacingChartV2, que usa camp.start_date).
+ * Ver [[project_freeze_e_rename]].
+ *
+ * @param {string|null} actualStartISO  actual_start_date da frente (yyyy-mm-dd) ou null
+ * @param {string} campStartISO         camp.start_date contratual (yyyy-mm-dd)
+ * @param {string} campEndISO           camp.end_date (yyyy-mm-dd)
+ * @param {Date}   [now]                "hoje" (default new Date())
+ * @returns {{start: Date, end: Date, tDays: number, eDays: number}}
+ *   tDays = dias totais do runway; eDays = dias decorridos, capado em [0, tDays].
+ */
+export function pacingRunway(actualStartISO, campStartISO, campEndISO, now = new Date()) {
+  const [csy, csm, csd] = campStartISO.split("-").map(Number);
+  const campStart = new Date(csy, csm - 1, csd);
+  const [ey, em, ed] = campEndISO.split("-").map(Number);
+  const end = new Date(ey, em - 1, ed);
+
+  const srcISO = actualStartISO || campStartISO;
+  const [y, m, d] = srcISO.split("-").map(Number);
+  let start = new Date(y, m - 1, d);
+  if (start < campStart) start = campStart; // clamp ao início contratual
+
+  const tDays = (end - start) / 864e5 + 1;
+  const eDays = now < start ? 0 : now > end ? tDays : Math.floor((now - start) / 864e5);
+  return { start, end, tDays, eDays };
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────────────
  * computeMediaPacing — pacing por mídia da Visão Geral
  * ─────────────────────────────────────────────────────────────────────
  *
@@ -368,31 +411,6 @@ export function computeMediaPacing(rows, camp, mediaType, tactic = "ALL") {
   rows = rows || [];
 
   const isVideo = mediaType === "VIDEO";
-  const [ey, em, ed] = camp.end_date.split("-").map(Number);
-  const end   = new Date(ey, em - 1, ed);
-  const now   = new Date();
-
-  // Início contratual — piso do runway de pacing.
-  const [csy, csm, csd] = camp.start_date.split("-").map(Number);
-  const campStart = new Date(csy, csm - 1, csd);
-
-  // Parse ISO yyyy-mm-dd → Date (midnight local). Fallback pra
-  // camp.start_date quando a frente não tem actual_start_date (frente
-  // ainda não entregou nada).
-  //
-  // CLAMP ao início contratual: o runway nunca começa antes de
-  // camp.start_date. Uma frente que entregou ANTES do voo (tráfego de
-  // teste, ou contaminação por rename de line re-derivando short_token —
-  // ex: XV2FZA com imps fantasma em 29-31/mai num voo de junho) não pode
-  // esticar o runway pra trás e deflacionar o pacing. A intenção do
-  // actual_start (não punir frente que começa DEPOIS) é preservada: se
-  // actual_start > camp.start, devolve actual_start.
-  const parseStart = (iso) => {
-    const src = iso || camp.start_date;
-    const [y, m, d] = src.split("-").map(Number);
-    const dt = new Date(y, m - 1, d);
-    return dt < campStart ? campStart : dt;
-  };
 
   // Negociado (contratado + bônus) — denormalizado em rows[0].
   const r0 = rows[0] || {};
@@ -403,14 +421,13 @@ export function computeMediaPacing(rows, camp, mediaType, tactic = "ALL") {
     ? (r0.contracted_ooh_video_completions   || 0) + (r0.bonus_ooh_video_completions   || 0)
     : (r0.contracted_ooh_display_impressions || 0) + (r0.bonus_ooh_display_impressions || 0);
 
-  // Calcula expected pra UMA frente usando o actual_start dela.
+  // Calcula expected pra UMA frente usando o runway clampado (pacingRunway).
   // Quando a frente atrasa, runway = (end - actual_start), refletindo o
-  // ritmo real esperado da frente (não punindo dias em que ela não rodou).
+  // ritmo real esperado da frente (não punindo dias em que ela não rodou);
+  // o clamp impede que entrega pré-voo estique o runway pra trás.
   const expectedForFrente = (frenteRow, neg) => {
     if (neg <= 0) return 0;
-    const start = parseStart(frenteRow?.actual_start_date);
-    const tDays = (end - start) / 864e5 + 1;
-    const eDays = now < start ? 0 : now > end ? tDays : Math.floor((now - start) / 864e5);
+    const { tDays, eDays } = pacingRunway(frenteRow?.actual_start_date, camp.start_date, camp.end_date);
     if (tDays <= 0 || eDays <= 0) return 0;
     return neg * eDays / tDays;
   };
