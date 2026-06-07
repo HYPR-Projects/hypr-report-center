@@ -5797,17 +5797,21 @@ def query_campaigns_list():
             FROM {table_ref()}
             GROUP BY short_token, client_name, campaign_name
         ),
-        -- Dedup por (date, line_name, creative_name) preservando media_type.
-        -- effective_total_cost / effective_cost_with_over são acumulados no
-        -- campaign_results; MAX pega o último valor por linha (last-write-wins).
+        -- Agrega por (date, line_name, creative_name) preservando media_type.
+        -- viewable_impressions / clicks / completions são ADITIVOS → SUM, igual
+        -- query_detail (fonte da Visão Geral e das abas). Antes usava MAX aqui,
+        -- o que inflava o CTR do card do admin vs o report — ex: Listerine
+        -- 1,48% (admin) vs 1,32% (report). Já effective_total_cost /
+        -- effective_cost_with_over são ACUMULADOS (cumulative) no
+        -- campaign_results → MAX pega o último valor por linha (last-write-wins).
         dedup AS (
             SELECT
                 short_token, media_type,
                 date, line_name, creative_name,
-                MAX(viewable_impressions)             AS vi,
-                MAX(clicks)                           AS clicks,
+                SUM(viewable_impressions)             AS vi,
+                SUM(clicks)                           AS clicks,
                 MAX(effective_total_cost)             AS effective_total_cost,
-                MAX(viewable_video_view_100_complete) AS v100_complete,
+                SUM(viewable_video_view_100_complete) AS v100_complete,
                 MAX(effective_cost_with_over)         AS effective_cost_with_over
             FROM {table_ref()}
             WHERE media_type IN ('DISPLAY', 'VIDEO')
@@ -5825,7 +5829,16 @@ def query_campaigns_list():
                 SUM(IF(media_type='VIDEO',   vi,                       0)) AS v_vi,
                 SUM(IF(media_type='VIDEO',   clicks,                   0)) AS v_clicks,
                 SUM(IF(media_type='VIDEO',   v100_complete,            0)) AS v_completions,
-                SUM(IF(media_type='VIDEO',   effective_cost_with_over, 0)) AS v_cost
+                SUM(IF(media_type='VIDEO',   effective_cost_with_over, 0)) AS v_cost,
+                -- Splits CR por frente (entrega) pra pacing/VTR baterem 1:1 com
+                -- o report (query_detail também é CR). O numerador de entrega
+                -- vem daqui — NÃO da CTE `unified` (que usa fórmula aproximada
+                -- de viewable p/ vídeo e viewable ≈ impressões p/ display quando
+                -- a viewability não é medida). Mesmo regex de tactic do app.
+                SUM(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), vi,            0)) AS d_o2o_vi,
+                SUM(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), vi,            0)) AS d_ooh_vi,
+                SUM(IF(media_type='VIDEO'   AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), v100_complete, 0)) AS v_o2o_comp,
+                SUM(IF(media_type='VIDEO'   AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), v100_complete, 0)) AS v_ooh_comp
             FROM dedup
             GROUP BY short_token
         ),
@@ -5854,24 +5867,13 @@ def query_campaigns_list():
                 SUM(IF(media_type='VIDEO', viewable_impressions, 0)) AS v_viewable_impressions,
                 COUNT(DISTINCT IF(media_type='DISPLAY', date, NULL)) AS d_days_with_delivery,
                 SUM(IF(media_type='DISPLAY', viewable_impressions, 0)) AS d_viewable_impressions,
-                -- Splits por tactic (O2O/OOH) pra pacing per-frente direto na
-                -- lista — sem isso o front precisava do detail prefetched, o
-                -- que gerava flicker (verde no primeiro paint, amarelo depois).
-                -- Usa TACTIC_EXPR (line_name override) pra alinhar com o resto
-                -- do app. Zero custo extra de BQ — mesma varredura.
-                -- Regex inline (sem ELSE tactic_type) porque
-                -- unified_daily_performance_metrics não tem a coluna tactic_type
-                -- — só line_name. Naming malformado (sem _O2O/_OOH no nome) fica
-                -- fora da contagem per-frente, mas continua contando no agregado
-                -- (d_viewable_impressions / v_viewable_impressions acima).
-                SUM(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), viewable_impressions, 0)) AS d_o2o_viewable_impressions,
-                SUM(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), viewable_impressions, 0)) AS d_ooh_viewable_impressions,
-                SUM(IF(media_type='VIDEO' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)') AND impressions > 0,
-                        video_view_100_complete * (viewable_impressions / impressions),
-                        0)) AS v_o2o_viewable_completions,
-                SUM(IF(media_type='VIDEO' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)') AND impressions > 0,
-                        video_view_100_complete * (viewable_impressions / impressions),
-                        0)) AS v_ooh_viewable_completions,
+                -- NOTA: a entrega por frente (d_o2o_viewable_impressions etc.)
+                -- saiu daqui e passou a vir do CR (CTE `agg`), pra o pacing
+                -- per-frente do card bater 1:1 com o report (query_detail). O
+                -- unified só fica com os TOTAIS (d_viewable_impressions /
+                -- v_viewable_completions) que alimentam o FATURÁVEL
+                -- (client_delivered_value), que espelha o effective_total_cost
+                -- do report — esse, sim, é unified.
                 -- ADMIN-ONLY: custo cru do DSP (sem margem/over) + impressions
                 -- gross. Usados pra calcular eCPM real (= cost/impressions*1000)
                 -- na view "Por cliente". NÃO BUBBLE para client-facing endpoints.
@@ -6090,6 +6092,13 @@ def query_campaigns_list():
             b.start_date, b.end_date, b.updated_at,
             a.d_vi, a.d_clicks, a.d_cost,
             a.v_vi, a.v_clicks, a.v_completions, a.v_cost,
+            -- Entrega por frente vem do CR (agg), não do unified — pacing
+            -- per-frente bate com o report. Aliasada pros nomes canônicos pra
+            -- não mexer no Python nem no override de freeze.
+            a.d_o2o_vi   AS d_o2o_viewable_impressions,
+            a.d_ooh_vi   AS d_ooh_viewable_impressions,
+            a.v_o2o_comp AS v_o2o_viewable_completions,
+            a.v_ooh_comp AS v_ooh_viewable_completions,
             c.cpm_amount, c.cpcv_amount,
             c.contracted_o2o_display, c.contracted_ooh_display,
             c.contracted_o2o_video,   c.contracted_ooh_video,
@@ -6101,8 +6110,6 @@ def query_campaigns_list():
             u.d_o2o_actual_start_date, u.d_ooh_actual_start_date,
             u.v_o2o_actual_start_date, u.v_ooh_actual_start_date,
             u.d_days_with_delivery,   u.d_viewable_impressions,
-            u.d_o2o_viewable_impressions, u.d_ooh_viewable_impressions,
-            u.v_o2o_viewable_completions, u.v_ooh_viewable_completions,
             u.admin_total_cost,       u.admin_impressions,
             u.d_admin_total_cost,     u.d_admin_impressions,
             u.v_admin_total_cost,     u.v_admin_impressions,
@@ -6203,19 +6210,6 @@ def query_campaigns_list():
         cpm_amount  = float(r["cpm_amount"]  or 0)
         cpcv_amount = float(r["cpcv_amount"] or 0)
 
-        d_neg = (
-            float(r["contracted_o2o_display"] or 0) +
-            float(r["contracted_ooh_display"] or 0) +
-            float(r["bonus_o2o_display"]      or 0) +
-            float(r["bonus_ooh_display"]      or 0)
-        )
-        v_neg = (
-            float(r["contracted_o2o_video"] or 0) +
-            float(r["contracted_ooh_video"] or 0) +
-            float(r["bonus_o2o_video"]      or 0) +
-            float(r["bonus_ooh_video"]      or 0)
-        )
-
         # Pacing canônico HYPR: "baseado na média diária de entrega,
         # qual % do contrato a campanha vai entregar até o final".
         # Equivale a: delivered / (negotiated × elapsed_calendar / total_days)
@@ -6270,8 +6264,6 @@ def query_campaigns_list():
 
         d_clicks = float(r["d_clicks"] or 0)
         v_clicks = float(r["v_clicks"] or 0)
-        d_expected = pacing_expected_to_date(d_neg, start_date, end_date, d_actual_start)
-        v_expected = pacing_expected_to_date(v_neg, start_date, end_date, v_actual_start)
 
         # Negociado por tactic (contrato + bonus) — denominador do pacing per-frente.
         d_o2o_neg = float(r["contracted_o2o_display"] or 0) + float(r["bonus_o2o_display"] or 0)
@@ -6298,18 +6290,35 @@ def query_campaigns_list():
         video_pacing_o2o   = round(v_o2o_viewable / v_o2o_expected * 100, 1) if v_o2o_expected and v_o2o_expected > 0 else None
         video_pacing_ooh   = round(v_ooh_viewable / v_ooh_expected * 100, 1) if v_ooh_expected and v_ooh_expected > 0 else None
 
-        display_pacing = round(d_viewable_impr / d_expected     * 100, 1) if d_expected and d_expected > 0 else None
-        video_pacing   = round(v_viewable_comp  / v_expected    * 100, 1) if v_expected and v_expected > 0 else None
+        # Esperado AGREGADO = Σ esperado por frente (cada uma com seu próprio
+        # actual_start/runway), NÃO o negociado combinado contra um único
+        # actual_start. Espelha computeMediaPacing (tactic="ALL"): Σentregue /
+        # Σesperado. Antes usava v_neg/d_neg total + o actual_start mais cedo
+        # (MIN das frentes), o que inflava o esperado da frente que começou mais
+        # tarde → o pacing agregado do card podia ficar ABAIXO de ambas as
+        # frentes (ex.: Diageo vídeo 90% no card vs O2O 138% / OOH 117% no
+        # report; display 59% vs 92% — OOH entrou ~15 dias depois do O2O).
+        # Também corrige os campos *_expected_* expostos pro rollup por owner.
+        d_expected = ((d_o2o_expected or 0) + (d_ooh_expected or 0)) or None
+        v_expected = ((v_o2o_expected or 0) + (v_ooh_expected or 0)) or None
+
+        # Entrega (numerador do pacing) vem do CR: d_vi / v_comp = mesma fonte
+        # do report (query_detail). ANTES usava d_viewable_impr / v_viewable_comp
+        # (unified), onde o viewable de DISPLAY pode vir ≈ impressões e o de
+        # VÍDEO usa fórmula aproximada — divergia do report. Faturável
+        # (client_delivered_value) continua no unified (espelha effective_total_cost).
+        display_pacing = round(d_vi   / d_expected * 100, 1) if d_expected and d_expected > 0 else None
+        video_pacing   = round(v_comp / v_expected * 100, 1) if v_expected and v_expected > 0 else None
         display_ctr    = round(d_clicks         / d_vi          * 100, 2) if d_vi             > 0       else None
         # video_ctr: cliques de vídeo são raros (geralmente skip-button ou
         # clickthrough do creative). Quando existem, o threshold do score
         # é mais brando que Display (>0,3% vs >0,6%) — formatos diferentes.
         video_ctr      = round(v_clicks         / v_vi          * 100, 2) if v_vi             > 0       else None
-        # VTR: viewable_completions / viewable_impressions (mesma fonte —
-        # CTE `unified`). ANTES o denominador era v_vi (total impressions
-        # vindo da CTE `agg`/dedup), o que descasava com o numerador e dava
-        # VTR > 100% pra campanhas com alta diferença entre as duas fontes.
-        video_vtr      = round(v_viewable_comp  / v_viewable_impr * 100, 2) if v_viewable_impr > 0       else None
+        # VTR: viewable_completions / viewable_impressions — ambos do CR (agg):
+        # v_comp / v_vi. Mesma fonte → consistente (não dá VTR > 100% por
+        # descasamento) e bate com o report (query_detail também é CR). ANTES
+        # vinha do unified (v_viewable_comp / v_viewable_impr), que divergia.
+        video_vtr      = round(v_comp / v_vi * 100, 2) if v_vi > 0 else None
 
         entry = {
             "short_token":   r["short_token"],
@@ -6348,16 +6357,19 @@ def query_campaigns_list():
         # > 100% e distorce KPIs com campanhas pequenas. Frontend deve
         # sempre fazer Σ numerador / Σ denominador. Esses campos são
         # admin-gated junto com o resto do payload.
+        # Entrega bruta = CR (d_vi / v_comp / v_vi), mesma fonte do pacing/VTR
+        # acima, pra o rollup por owner (Σnum/Σdenom) bater com os cards e com
+        # o report. NÃO usar os campos unified (d_viewable_impr etc.) aqui —
+        # esses ficam só no faturável.
         if d_vi              > 0: entry["display_impressions"]            = int(d_vi)
         if d_clicks          > 0: entry["display_clicks"]                 = int(d_clicks)
-        if d_viewable_impr   > 0: entry["display_viewable_impressions"]   = int(d_viewable_impr)
+        if d_vi              > 0: entry["display_viewable_impressions"]   = int(d_vi)
         if d_expected and d_expected > 0: entry["display_expected_impressions"] = int(d_expected)
-        # Pra VTR usamos viewable/viewable (não total). v_viewable_impr é o
-        # denominador correto vindo da mesma fonte do numerador (v_viewable_comp).
+        # VTR usa viewable/viewable (não total), ambos CR: v_comp / v_vi.
         if v_vi              > 0: entry["video_impressions"]               = int(v_vi)
         if v_clicks          > 0: entry["video_clicks"]                    = int(v_clicks)
-        if v_viewable_impr   > 0: entry["video_viewable_impressions"]     = int(v_viewable_impr)
-        if v_viewable_comp   > 0: entry["video_viewable_completions"]     = int(v_viewable_comp)
+        if v_vi              > 0: entry["video_viewable_impressions"]     = int(v_vi)
+        if v_comp            > 0: entry["video_viewable_completions"]     = int(v_comp)
         if v_expected and v_expected > 0: entry["video_expected_completions"]  = int(v_expected)
 
         # Entrega de ontem (D-1, BRT) por mídia — alimenta a aba Diagnóstico
@@ -6641,13 +6653,16 @@ def query_performers_for_period(window_from: date, window_to: date):
             FROM {table_ref()}
             GROUP BY short_token, client_name, campaign_name
         ),
-        -- Dedup por (date, line_name, creative_name) preservando media_type.
-        -- Filtra date dentro da janela — clicks acumulam só do período.
+        -- Agrega por (date, line_name, creative_name) preservando media_type,
+        -- dentro da janela. viewable/clicks são ADITIVOS → SUM, igual
+        -- query_detail (fonte do report). Antes usava MAX, inflando o CTR do
+        -- admin vs o report.
         dedup AS (
             SELECT
                 short_token, media_type, date, line_name, creative_name,
-                MAX(viewable_impressions) AS vi,
-                MAX(clicks)               AS clicks
+                SUM(viewable_impressions)             AS vi,
+                SUM(clicks)                           AS clicks,
+                SUM(viewable_video_view_100_complete) AS v100_complete
             FROM {table_ref()}
             WHERE date BETWEEN @from_date AND @to_date
               AND media_type IN ('DISPLAY', 'VIDEO')
@@ -6658,10 +6673,15 @@ def query_performers_for_period(window_from: date, window_to: date):
         agg AS (
             SELECT
                 short_token,
-                SUM(IF(media_type='DISPLAY', vi,     0)) AS d_vi,
-                SUM(IF(media_type='DISPLAY', clicks, 0)) AS d_clicks,
-                SUM(IF(media_type='VIDEO',   vi,     0)) AS v_vi,
-                SUM(IF(media_type='VIDEO',   clicks, 0)) AS v_clicks
+                SUM(IF(media_type='DISPLAY', vi,            0)) AS d_vi,
+                SUM(IF(media_type='DISPLAY', clicks,        0)) AS d_clicks,
+                SUM(IF(media_type='VIDEO',   vi,            0)) AS v_vi,
+                SUM(IF(media_type='VIDEO',   clicks,        0)) AS v_clicks,
+                -- Completions de vídeo do CR (viewable v100) — numerador de
+                -- pacing/VTR, igual ao report e à lista ao vivo. Antes a
+                -- windowed usava o v_viewable_completions do `unified` (fórmula
+                -- aproximada), divergindo do score da aba "Agora".
+                SUM(IF(media_type='VIDEO',   v100_complete, 0)) AS v_completions
             FROM dedup
             GROUP BY short_token
         ),
@@ -6670,11 +6690,9 @@ def query_performers_for_period(window_from: date, window_to: date):
         unified AS (
             SELECT
                 short_token,
-                SUM(IF(media_type='VIDEO' AND impressions > 0,
-                        video_view_100_complete * (viewable_impressions / impressions),
-                        0))                                       AS v_viewable_completions,
-                SUM(IF(media_type='VIDEO', viewable_impressions, 0)) AS v_viewable_impressions,
-                SUM(IF(media_type='DISPLAY', viewable_impressions, 0)) AS d_viewable_impressions,
+                -- Driver da inclusão no ranking (campanha com delivery na
+                -- janela) + custo cru DSP pro eCPM. A ENTREGA (viewable/
+                -- completions) agora vem do CR (CTE `agg`) — ver pacing/VTR.
                 SUM(total_cost)  AS admin_total_cost,
                 SUM(impressions) AS admin_impressions,
                 SUM(IF(media_type='DISPLAY', total_cost,  0)) AS d_admin_total_cost,
@@ -6751,8 +6769,7 @@ def query_performers_for_period(window_from: date, window_to: date):
         SELECT
             u.short_token,
             b.client_name, b.campaign_name, b.start_date, b.end_date,
-            a.d_vi, a.d_clicks, a.v_vi, a.v_clicks,
-            u.v_viewable_completions, u.v_viewable_impressions, u.d_viewable_impressions,
+            a.d_vi, a.d_clicks, a.v_vi, a.v_clicks, a.v_completions,
             u.admin_total_cost, u.admin_impressions,
             u.d_admin_total_cost, u.d_admin_impressions,
             u.v_admin_total_cost, u.v_admin_impressions,
@@ -6826,9 +6843,7 @@ def query_performers_for_period(window_from: date, window_to: date):
         d_clicks          = float(r["d_clicks"]               or 0)
         v_vi              = float(r["v_vi"]                   or 0)
         v_clicks          = float(r["v_clicks"]               or 0)
-        v_viewable_comp   = float(r["v_viewable_completions"] or 0)
-        v_viewable_impr   = float(r["v_viewable_impressions"] or 0)
-        d_viewable_impr   = float(r["d_viewable_impressions"] or 0)
+        v_comp            = float(r["v_completions"]          or 0)
 
         d_neg = (
             float(r["contracted_o2o_display"] or 0) +
@@ -6846,10 +6861,14 @@ def query_performers_for_period(window_from: date, window_to: date):
         d_expected = expected_in_window(d_neg, start_date, end_date)
         v_expected = expected_in_window(v_neg, start_date, end_date)
 
-        display_pacing = round(d_viewable_impr / d_expected     * 100, 1) if d_expected and d_expected > 0 else None
-        video_pacing   = round(v_viewable_comp  / v_expected    * 100, 1) if v_expected and v_expected > 0 else None
-        display_ctr    = round(d_clicks         / d_vi          * 100, 2) if d_vi             > 0       else None
-        video_vtr      = round(v_viewable_comp  / v_viewable_impr * 100, 2) if v_viewable_impr > 0       else None
+        # Entrega (numerador de pacing/VTR) vem do CR — igual ao report e à
+        # lista ao vivo. Denominador do pacing continua window-based
+        # (expected_in_window): "quanto pacearia DENTRO da janela" é a pergunta
+        # certa pro Top Performers histórico — intencionalmente ≠ do lifetime.
+        display_pacing = round(d_vi   / d_expected * 100, 1) if d_expected and d_expected > 0 else None
+        video_pacing   = round(v_comp / v_expected * 100, 1) if v_expected and v_expected > 0 else None
+        display_ctr    = round(d_clicks / d_vi     * 100, 2) if d_vi > 0 else None
+        video_vtr      = round(v_comp   / v_vi     * 100, 2) if v_vi > 0 else None
 
         entry = {
             "short_token":   r["short_token"],
@@ -6864,16 +6883,17 @@ def query_performers_for_period(window_from: date, window_to: date):
         if video_vtr      is not None: entry["video_vtr"]      = video_vtr
 
         # Brutos pra computeTopPerformers refazer agregação correta no front
-        # (Σ numerador / Σ denominador por owner). Os mesmos campos que o
-        # endpoint atual já emite, agora com escopo da janela.
+        # (Σ numerador / Σ denominador por owner). Entrega = CR (d_vi/v_comp/
+        # v_vi), mesma fonte do pacing/VTR acima, pra o rollup por owner bater
+        # com os cards. Escopo da janela.
         if d_vi            > 0: entry["display_impressions"]          = int(d_vi)
         if d_clicks        > 0: entry["display_clicks"]               = int(d_clicks)
-        if d_viewable_impr > 0: entry["display_viewable_impressions"] = int(d_viewable_impr)
+        if d_vi            > 0: entry["display_viewable_impressions"] = int(d_vi)
         if d_expected and d_expected > 0: entry["display_expected_impressions"] = int(d_expected)
         if v_vi            > 0: entry["video_impressions"]            = int(v_vi)
         if v_clicks        > 0: entry["video_clicks"]                 = int(v_clicks)
-        if v_viewable_impr > 0: entry["video_viewable_impressions"]   = int(v_viewable_impr)
-        if v_viewable_comp > 0: entry["video_viewable_completions"]   = int(v_viewable_comp)
+        if v_vi            > 0: entry["video_viewable_impressions"]   = int(v_vi)
+        if v_comp          > 0: entry["video_viewable_completions"]   = int(v_comp)
         if v_expected and v_expected > 0: entry["video_expected_completions"] = int(v_expected)
 
         # ADMIN-ONLY: custo cru DSP pra eCPM. Mesmo gating dos outros admin_*.
