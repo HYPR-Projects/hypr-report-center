@@ -186,6 +186,7 @@ _performers_period_cache = {} # "from|to" -> (timestamp, list[campaign])
 # manual: dado é cosmético, não bloqueante.
 _DATA_FRESHNESS_CACHE_TTL = 300
 _data_freshness_cache = {}  # "all" -> (timestamp, list[{source, max_date, ...}])
+_source_landings_cache = {}  # "all" -> (timestamp, list[{source, max_date}])
 _cache_lock      = threading.Lock()
 
 
@@ -2223,10 +2224,21 @@ def report_data(request):
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
-            sources = query_data_freshness()
+            # `sources` = aterrissagem REAL por fonte (tabelas tratadas) — verdade
+            # por-DSP, não contamina nem esconde. `unified_max` = frescor do OUTPUT
+            # consolidado que os reports consomem (headline "reports atualizados?").
+            # Comparar os dois distingue "fonte não entregou" de "só o unified
+            # atrasou" — o front usa isso pra gatear o botão Reconstruir.
+            landings = query_source_landings()
+            unified_rows = query_data_freshness()
+            unified_max = max(
+                (r["max_date"] for r in unified_rows if r.get("max_date")),
+                default=None,
+            )
             return (jsonify({
-                "sources":    sources,
-                "server_now": datetime.now(timezone.utc).isoformat(),
+                "sources":     landings,
+                "unified_max": unified_max,
+                "server_now":  datetime.now(timezone.utc).isoformat(),
             }), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR data_freshness] {e}")
@@ -3832,6 +3844,53 @@ def query_data_freshness():
             "days_in_window": int(r["days_in_window"] or 0),
         })
     _cache_set(_data_freshness_cache, "all", out)
+    return out
+
+
+# Fontes → tabela TRATADA por-fonte (prod_assets.<t>_daily_performance_metrics)
+# + coluna de data e se ela é STRING (precisa SAFE_CAST). Diferente de
+# query_data_freshness (que lê o OUTPUT consolidado `unified`), aqui medimos a
+# aterrissagem REAL de cada fonte no seu próprio modelo dbt — verdade por-fonte,
+# independente do unified. Crucial porque: (a) uma fonte travada (ex: DV360 sem
+# export) skipa o unified e, lendo só o unified, TODAS as fontes parecem velhas;
+# (b) uma fonte parada há +Nd some da janela do unified e deixa de alarmar. Ler
+# a tratada distingue "fonte não entregou" (reconstruir é inútil) de "fontes
+# prontas, só o unified atrasou" (reconstruir resolve).
+_SOURCE_LANDING_TABLES = [
+    ("DV360",      "dv360_daily_performance_metrics",      "date", False),
+    ("Amazon",     "amazon_daily_performance_metrics",     "date", False),
+    ("XANDR",      "xandr_daily_performance_metrics",      "date", True),
+    ("StackAdapt", "stackadapt_daily_performance_metrics", "date", False),
+]
+
+
+def query_source_landings():
+    """MAX(date) por fonte nas tabelas TRATADAS — aterrissagem real por DSP.
+
+    Cada fonte é medida na sua própria `prod_assets.<t>_daily_performance_metrics`
+    (não no `unified`), então uma fonte que atrasa não contamina o frescor das
+    outras nem some por estar fora de janela. Devolve [{source, max_date}].
+    Região US (mesma constraint das demais). Cacheado com o mesmo TTL.
+    """
+    cached = _cache_get(_source_landings_cache, "all", _DATA_FRESHNESS_CACHE_TTL)
+    if cached is not None:
+        return cached
+    selects = []
+    for label, table, col, is_str in _SOURCE_LANDING_TABLES:
+        expr = f"SAFE_CAST({col} AS DATE)" if is_str else col
+        selects.append(
+            f'SELECT "{label}" AS source, MAX({expr}) AS max_date '
+            f"FROM `{PROJECT_ID}.{DATASET_ASSETS}.{table}`"
+        )
+    sql = "\nUNION ALL\n".join(selects)
+    rows = bq.query(sql, job_config=bigquery.QueryJobConfig(), location="US").result()
+    out = [
+        {"source": r["source"],
+         "max_date": r["max_date"].isoformat() if r["max_date"] else None}
+        for r in rows
+    ]
+    out.sort(key=lambda r: r["source"])
+    _cache_set(_source_landings_cache, "all", out)
     return out
 
 

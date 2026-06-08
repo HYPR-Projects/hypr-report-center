@@ -1324,6 +1324,7 @@ export async function getDataFreshness() {
   const data = await r.json();
   return {
     sources:    Array.isArray(data?.sources) ? data.sources : [],
+    unifiedMax: data?.unified_max || null,
     serverNow:  data?.server_now || null,
   };
 }

@@ -11,14 +11,16 @@
 //     positivos seriam comuns se julgasse aqui: dependendo do horário,
 //     o batch ainda está rodando, e a base de ontem (esperada) só vira
 //     `MAX(date)` quando termina.
-//   Depois das 07h BR:
-//     0 fontes com `max_date < ontem`  → verde (ok)
-//     1 fonte stale                    → amarelo (warn — uma falhou)
-//     ≥2 fontes stale                  → vermelho (multi-falha)
+//   Depois das 07h BR, cruzando aterrissagem por-fonte × consolidado:
+//     fonte parada (landing > 1d)            → upstream; reconstruir NÃO ajuda
+//     unified atrasado, fontes prontas       → consolidação pendente; reconstruir AJUDA
+//     tudo a ≤1d                             → verde (ok)
 //
-// "Stale" = `dias_atrás(max_date) > 1`. O esperado depois do rollup é
-// `max_date = ontem` (dia D-1), nunca hoje — o pipeline agrega o dia
-// fechado.
+// CRÍTICO: as fontes são medidas na sua própria tabela TRATADA
+// (`query_source_landings` no backend), não no `unified`. Ler o `unified`
+// (output) fazia uma fonte travada pintar TODAS de vermelho e escondia fonte
+// parada há +7d (fora da janela). O `unifiedMax` separado é o headline real de
+// "report atualizado?". "Stale" = `dias_atrás(max_date) > 1` (D-1 é o esperado).
 //
 // Refresh
 // -------
@@ -89,26 +91,53 @@ function daysBehindBr(maxDateIso, serverNowIso) {
   return Math.round((b - a) / 86_400_000);
 }
 
-// Tone do indicador a partir das fontes + relógio do servidor.
-function deriveStatus(sources, serverNowIso) {
+// Tone do indicador a partir das fontes + do consolidado + relógio do servidor.
+//
+// `sources` = aterrissagem REAL por fonte (tabelas tratadas). `unifiedMax` =
+// frescor do output consolidado que os reports consomem. Cruzar os dois é o que
+// permite contar a história certa e gatear o botão Reconstruir:
+//   - fonte parada (landing > 1d)  → upstream; reconstruir NÃO resolve.
+//   - unified atrasado mas fontes prontas → consolidação pendente; reconstruir RESOLVE.
+function deriveStatus(sources, unifiedMax, serverNowIso) {
   if (!Array.isArray(sources) || sources.length === 0) {
-    return { tone: "neutral", summary: "Sem dados de frescor" };
+    return { tone: "neutral", summary: "Sem dados de frescor", blockers: [], rebuildHelps: false };
   }
   const hour = brHour(serverNowIso);
   if (hour < CUTOFF_HOUR_BR) {
-    return { tone: "neutral", summary: "Aguardando rollup 06h" };
+    return { tone: "neutral", summary: "Aguardando rollup 06h", blockers: [], rebuildHelps: false };
   }
-  const stale = sources.filter((s) => {
+  // Fontes que não entregaram D-1 na sua própria tratada (verdade por-fonte —
+  // não some por janela, não contamina as outras).
+  const blockers = sources.filter((s) => {
     const d = daysBehindBr(s.max_date, serverNowIso);
     return d != null && d > 1;
   });
-  if (stale.length === 0) {
-    return { tone: "ok", summary: "Bases atualizadas" };
+  // O consolidado é o que os reports servem — headline real de "atualizado?".
+  const uDays = daysBehindBr(unifiedMax, serverNowIso);
+  const unifiedStale = uDays != null && uDays > 1;
+
+  if (blockers.length > 0) {
+    // Tem fonte sem entregar → a montante (connector/export da DSP).
+    // Reconstruir não materializa dado que a fonte não mandou.
+    const names = blockers.map((b) => humanizeSource(b.source)).join(", ");
+    const plural = blockers.length > 1;
+    return {
+      tone: (blockers.length >= 2 || unifiedStale) ? "error" : "warn",
+      summary: `${names} não ${plural ? "entregaram" : "entregou"} D-1`,
+      blockers,
+      rebuildHelps: false,
+    };
   }
-  if (stale.length === 1) {
-    return { tone: "warn", summary: `${humanizeSource(stale[0].source)} desatualizada` };
+  if (unifiedStale) {
+    // Fontes prontas, só o consolidado não rodou → reconstruir resolve.
+    return {
+      tone: "warn",
+      summary: "Consolidação atrasada — fontes prontas",
+      blockers: [],
+      rebuildHelps: true,
+    };
   }
-  return { tone: "error", summary: `${stale.length} fontes desatualizadas` };
+  return { tone: "ok", summary: "Bases atualizadas", blockers: [], rebuildHelps: false };
 }
 
 const TONE_CLASSES = {
@@ -123,6 +152,7 @@ export function DataFreshnessIndicator({ className }) {
     loading:    true,
     error:      null,
     sources:    [],
+    unifiedMax: null,
     serverNow:  null,
     lastFetch:  null,
   });
@@ -139,11 +169,12 @@ export function DataFreshnessIndicator({ className }) {
       const data = await getDataFreshness();
       if (cancelRef.current.cancelled) return;
       setState({
-        loading:   false,
-        error:     null,
-        sources:   data.sources || [],
-        serverNow: data.serverNow,
-        lastFetch: Date.now(),
+        loading:    false,
+        error:      null,
+        sources:    data.sources || [],
+        unifiedMax: data.unifiedMax || null,
+        serverNow:  data.serverNow,
+        lastFetch:  Date.now(),
       });
     } catch (e) {
       if (cancelRef.current.cancelled) return;
@@ -188,10 +219,20 @@ export function DataFreshnessIndicator({ className }) {
   }, []);
 
   const status = useMemo(
-    () => deriveStatus(state.sources, state.serverNow),
-    [state.sources, state.serverNow],
+    () => deriveStatus(state.sources, state.unifiedMax, state.serverNow),
+    [state.sources, state.unifiedMax, state.serverNow],
   );
   const tone = TONE_CLASSES[status.tone] || TONE_CLASSES.neutral;
+
+  // Tom da linha "Consolidado" (o que os reports servem de fato).
+  const unifiedDays = daysBehindBr(state.unifiedMax, state.serverNow);
+  const preCutoff = brHour(state.serverNow) < CUTOFF_HOUR_BR;
+  const unifiedTone = TONE_CLASSES[
+    preCutoff || unifiedDays == null ? "neutral"
+    : unifiedDays <= 1 ? "ok"
+    : unifiedDays === 2 ? "warn"
+    : "error"
+  ];
 
   return (
     <Popover.Root>
@@ -298,19 +339,47 @@ export function DataFreshnessIndicator({ className }) {
             )}
           </div>
 
-          {/* Reconstrução manual — escape pra quando o run diário falhou
-              (fonte atrasada). Dispara o job no Dagster+. */}
+          {/* Consolidado — o que os reports realmente servem. Separado das
+              fontes: uma fonte pode estar fresca e o consolidado atrasado (e
+              vice-versa). É a fonte da verdade do "report atualizado?". */}
+          {state.unifiedMax && (
+            <div className="flex items-center gap-3 px-4 py-2 text-[12px] border-t border-border bg-surface-strong/40">
+              <span className={cn("size-1.5 rounded-full shrink-0", unifiedTone.dot)} />
+              <span className="font-medium text-fg-muted flex-1">Consolidado (reports)</span>
+              <span className={cn("font-mono tabular-nums", unifiedTone.text)}>
+                {fmtBrDate(state.unifiedMax)}
+              </span>
+            </div>
+          )}
+
+          {/* Reconstrução manual — escape pra quando a consolidação atrasou com
+              as fontes prontas. NÃO resolve fonte que não entregou (upstream):
+              o hint abaixo deixa isso explícito pra não dar falsa esperança. */}
           <div className="px-4 pt-2 pb-3 border-t border-border">
+            {!rebuild.msg && status.blockers.length > 0 && (
+              <p className="mb-2 text-[11px] leading-snug text-danger">
+                {status.blockers.map((b) => humanizeSource(b.source)).join(", ")}{" "}
+                não entregou a montante (export/connector da DSP). Reconstruir não
+                traz dado que a fonte não mandou — corrija na origem.
+              </p>
+            )}
+            {!rebuild.msg && status.rebuildHelps && (
+              <p className="mb-2 text-[11px] leading-snug text-warning">
+                Fontes prontas, consolidação atrasada — reconstruir monta o
+                unified agora.
+              </p>
+            )}
             <button
               type="button"
               onClick={onRebuild}
               disabled={rebuild.busy}
               className={cn(
-                "w-full h-8 rounded-md text-[12px] font-medium",
-                "border border-border bg-surface text-fg",
-                "hover:bg-surface-strong hover:border-border-strong transition-colors",
+                "w-full h-8 rounded-md text-[12px] font-medium transition-colors",
                 "disabled:opacity-60 disabled:cursor-not-allowed",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
+                status.rebuildHelps
+                  ? "border border-signature/40 bg-signature/10 text-signature hover:bg-signature/20"
+                  : "border border-border bg-surface text-fg hover:bg-surface-strong hover:border-border-strong",
               )}
             >
               {rebuild.busy ? "Disparando…" : "Reconstruir agora"}
