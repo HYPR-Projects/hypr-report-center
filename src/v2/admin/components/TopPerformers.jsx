@@ -772,20 +772,22 @@ function PerformerSkeleton() {
           key={i}
           className="flex items-center gap-4 px-4 py-4 border-t border-border/40 first:border-t-0 animate-pulse"
         >
-          <div className="w-5 h-3 bg-surface-strong rounded" />
-          <div className="flex items-center gap-3 w-[220px]">
-            <div className="w-9 h-9 rounded-full bg-surface-strong" />
-            <div className="flex flex-col gap-1.5 flex-1">
-              <div className="h-3 w-24 bg-surface-strong rounded" />
-              <div className="h-2 w-16 bg-surface-strong rounded" />
+          <div className="w-5 h-3 bg-surface-strong rounded shrink-0" />
+          {/* Espelha as larguras fixas só no desktop (lg) — no mobile vira
+              flex-1/min-w-0 pra não estourar o card durante o load. */}
+          <div className="flex items-center gap-3 min-w-0 flex-1 lg:flex-none lg:w-[220px]">
+            <div className="w-9 h-9 rounded-full bg-surface-strong shrink-0" />
+            <div className="flex flex-col gap-1.5 flex-1 min-w-0">
+              <div className="h-3 w-24 max-w-full bg-surface-strong rounded" />
+              <div className="h-2 w-16 max-w-full bg-surface-strong rounded" />
             </div>
           </div>
-          <div className="flex-1 grid grid-cols-6 gap-3">
+          <div className="flex-1 grid grid-cols-3 lg:grid-cols-6 gap-3 min-w-0">
             {[...Array(6)].map((__, j) => (
-              <div key={j} className="h-4 bg-surface-strong rounded" />
+              <div key={j} className={cn("h-4 bg-surface-strong rounded", j >= 3 && "hidden lg:block")} />
             ))}
           </div>
-          <div className="w-[200px] flex items-center gap-3">
+          <div className="hidden lg:flex w-[200px] items-center gap-3">
             <div className="flex-1 h-1.5 bg-surface-strong rounded-full" />
             <div className="w-12 h-4 bg-surface-strong rounded" />
           </div>
