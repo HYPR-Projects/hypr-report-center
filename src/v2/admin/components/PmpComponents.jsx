@@ -99,13 +99,17 @@ export function PmpLineGroupCard({ lines, onLineClick, onLinkClick, variant = "d
         </div>
       </header>
 
-      {/* Lines individuais — sem coluna PI (já está no header) */}
-      <div className="divide-y divide-border/30">
-        {lines.map((l) => (
-          <PmpLineRow key={l.line_id} line={l}
-                      onClick={onLineClick} onLinkClick={onLinkClick}
-                      compact hidePi />
-        ))}
+      {/* Lines individuais — sem coluna PI (já está no header).
+          Scroll horizontal em mobile: o grid hidePi tem ~920px e estoura o
+          viewport <768px. min-w mantém colunas legíveis; inert no desktop. */}
+      <div className="overflow-x-auto scrollbar-hidden">
+        <div className="min-w-[920px] divide-y divide-border/30">
+          {lines.map((l) => (
+            <PmpLineRow key={l.line_id} line={l}
+                        onClick={onLineClick} onLinkClick={onLinkClick}
+                        compact hidePi />
+          ))}
+        </div>
       </div>
     </section>
   );
@@ -643,15 +647,18 @@ export function PmpCustomerAccordion({ customer, lines, onLineClick, onLinkClick
                               onLineClick={onLineClick} onLinkClick={onLinkClick}
                               variant="nested" />
           ))}
-          {/* Lines soltas — tabela minimalista sem header */}
+          {/* Lines soltas — tabela minimalista sem header.
+              Scroll horizontal em mobile (grid completo ~1160px). */}
           {singles.length > 0 && (
             <div className="rounded-lg border border-border/60 bg-canvas-elevated overflow-hidden">
-              <div className="divide-y divide-border/30">
-                {singles.map(l => (
-                  <PmpLineRow key={l.line_id} line={l}
-                              onClick={() => onLineClick?.(l)} onLinkClick={onLinkClick}
-                              compact />
-                ))}
+              <div className="overflow-x-auto scrollbar-hidden">
+                <div className="min-w-[1160px] divide-y divide-border/30">
+                  {singles.map(l => (
+                    <PmpLineRow key={l.line_id} line={l}
+                                onClick={() => onLineClick?.(l)} onLinkClick={onLinkClick}
+                                compact />
+                  ))}
+                </div>
               </div>
             </div>
           )}

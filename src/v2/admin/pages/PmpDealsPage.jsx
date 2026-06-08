@@ -833,8 +833,15 @@ function ListView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLinkCl
 
   return (
     <div className="rounded-xl border border-border bg-canvas-elevated overflow-hidden">
-      <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
-      <div className="divide-y divide-border/60">
+      {/* Scroll horizontal em mobile: o grid das rows tem ~1160px e estoura o
+          viewport <768px. Mesmo padrão do CampaignListV2 — wrapper externo
+          preserva o border-radius, min-w mantém as colunas legíveis e o swipe
+          horizontal é UX padrão pra tabelas densas (Linear/Notion/Stripe).
+          Inert no desktop (o conteúdo cabe e a barra não aparece). */}
+      <div className="overflow-x-auto scrollbar-hidden">
+        <div className="min-w-[1160px]">
+          <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
+          <div className="divide-y divide-border/60">
         {items.map((it) => {
           if (it.kind === "single") {
             return <PmpLineRow key={it.line.line_id} line={it.line}
@@ -861,6 +868,8 @@ function ListView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLinkCl
             </div>
           );
         })}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -979,8 +988,13 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
 
   return (
     <div className="rounded-xl border border-border bg-canvas-elevated overflow-hidden">
-      <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
-      <div className="divide-y divide-border/60 max-h-[calc(100vh-380px)] overflow-y-auto">
+      {/* Scroll horizontal em mobile (vide ListView). O overflow-y do corpo
+          fica aninhado dentro do min-w pra preservar o cabeçalho fixo + a
+          altura máxima da lista no desktop. */}
+      <div className="overflow-x-auto scrollbar-hidden">
+        <div className="min-w-[1160px]">
+          <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
+          <div className="divide-y divide-border/60 max-h-[calc(100vh-380px)] overflow-y-auto">
         {sorted.map((it) => {
           if (it.kind === "single") {
             return <PmpLineRow key={it.line.line_id} line={it.line} onClick={onLineClick} onLinkClick={onLinkClick} />;
@@ -1008,6 +1022,8 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
             </div>
           );
         })}
+          </div>
+        </div>
       </div>
     </div>
   );
