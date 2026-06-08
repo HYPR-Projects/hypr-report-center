@@ -114,25 +114,41 @@ export const groupBySize = (rows, numeratorKey, denomKey, rateKey) =>
 
 /**
  * Deriva o identificador da "linha criativa" a partir de `creative_name`,
- * removendo o token de `creative_size` da própria row. A intenção é que
- * variantes do mesmo criativo em formatos diferentes (ex: BLACK-320X50,
- * BLACK-300X600) colapsem em uma única linha criativa ("BLACK"), em vez
- * de espelhar a quebra "Por Formato". Usa lookarounds de dígito pra
- * evitar match dentro de números maiores (ex: "300x250" dentro de
- * "1300x250"). Se size não estiver presente no nome, devolve o nome cru
- * — comportamento idêntico ao agrupamento original, sem regressão.
+ * removendo o token de dimensão do nome. A intenção é que variantes do
+ * mesmo criativo em formatos diferentes (ex: BLACK-320X50, BLACK-300X600)
+ * colapsem em uma única linha criativa ("BLACK"), em vez de espelhar a
+ * quebra "Por Formato".
+ *
+ * Dois passos:
+ *  1) Remove o `creative_size` explícito da própria row (sinal mais
+ *     confiável quando o DSP entrega o campo certo).
+ *  2) Fallback: remove QUALQUER token NxM remanescente no nome. Cobre o
+ *     caso em que `creative_size` veio null/vazio ou divergente do nome
+ *     (ex: DSP reportou "728x90" mas o nome é "..._728x250"), que antes
+ *     fazia a variante virar uma linha criativa própria.
+ *
+ * Lookarounds de dígito/x evitam match dentro de números maiores (ex:
+ * "300x250" dentro de "1300x250"). Se nada casar, devolve o nome cru.
  */
 export const getCreativeLineKey = (row) => {
-  const name = row.creative_name || "N/A";
+  const raw = row.creative_name || "N/A";
+  if (raw === "N/A") return raw;
+  let name = raw;
+
+  // 1) sinal primário: size explícito da row
   const size = row.creative_size;
-  if (!size || name === "N/A") return name;
-  const escaped = String(size).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`(?<!\\d)${escaped}(?!\\d)`, "gi");
+  if (size) {
+    const escaped = String(size).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    name = name.replace(new RegExp(`(?<!\\d)${escaped}(?!\\d)`, "gi"), "");
+  }
+
+  // 2) fallback: qualquer dimensão NxM que tenha sobrado
+  name = name.replace(/(?<![\dx])\d{2,4}\s*[x×]\s*\d{2,4}(?![\dx])/gi, "");
+
   const cleaned = name
-    .replace(re, "")
     .replace(/[-_| ]{2,}/g, "_")
     .replace(/^[-_| ]+|[-_| ]+$/g, "");
-  return cleaned || name;
+  return cleaned || raw;
 };
 
 /**
