@@ -129,6 +129,12 @@ export const groupBySize = (rows, numeratorKey, denomKey, rateKey) =>
  *
  * Lookarounds de dígito/x evitam match dentro de números maiores (ex:
  * "300x250" dentro de "1300x250"). Se nada casar, devolve o nome cru.
+ *
+ * A chave é normalizada pra UPPERCASE no final — assim a mesma linha
+ * entregue com caixa diferente entre rows (ex: DSP manda "HYPR_..." num
+ * lote e "hypr_..." noutro) colapsa num grupo só. Todos os consumidores
+ * (agrupamento, match de custo, opções e check do filtro) derivam a chave
+ * desta função, então a normalização mantém os dois lados sempre alinhados.
  */
 export const getCreativeLineKey = (row) => {
   const raw = row.creative_name || "N/A";
@@ -148,7 +154,7 @@ export const getCreativeLineKey = (row) => {
   const cleaned = name
     .replace(/[-_| ]{2,}/g, "_")
     .replace(/^[-_| ]+|[-_| ]+$/g, "");
-  return cleaned || raw;
+  return (cleaned || raw).toUpperCase();
 };
 
 /**
