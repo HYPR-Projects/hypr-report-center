@@ -916,8 +916,10 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
             (é um leaderboard auto-contido com filtro próprio). */}
         <div className="space-y-3 mb-5">
           <div className="flex items-center gap-3">
-            <LayoutToggle value={layout} onChange={setLayout} />
-            <div className="flex-1" />
+            {/* Mobile: toggle ocupa a largura toda (alinha com busca/cards e
+                respeita as margens da página); desktop volta a hug-content. */}
+            <LayoutToggle value={layout} onChange={setLayout} className="w-full md:w-auto" />
+            <div className="hidden md:block flex-1" />
           </div>
           {layout !== "performers" && (
             <ToolbarV2

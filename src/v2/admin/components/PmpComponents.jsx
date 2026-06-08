@@ -145,7 +145,7 @@ export function PmpLayoutToggle({ value, onChange, counts = {} }) {
   const { containerRef, setItemRef, thumbStyle } = useSlidingThumb(activeIndex, LAYOUT_OPTIONS.length);
   return (
     <div ref={containerRef} role="tablist" aria-label="Layout"
-         className="relative inline-flex gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border max-w-full min-w-0 overflow-x-auto scrollbar-hidden motion-reduce:[&_[data-thumb]]:!transition-none">
+         className="relative inline-flex w-full md:w-auto gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border max-w-full min-w-0 overflow-x-auto scrollbar-hidden motion-reduce:[&_[data-thumb]]:!transition-none">
       <div data-thumb className="absolute top-0.5 bottom-0.5 left-0 rounded-md bg-canvas-elevated shadow-sm transition-all duration-200 ease-out [transform-origin:0_0] [will-change:transform,width]" style={thumbStyle} />
       {LAYOUT_OPTIONS.map((opt, i) => {
         const active = value === opt.value;

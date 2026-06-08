@@ -309,7 +309,7 @@ export function DiagnosticoTable({
               consistente — sem table-fixed o browser distribui excesso de
               forma desigual e a grade fica visualmente "respirando" demais
               entre as colunas numéricas. */}
-          <table className="w-full text-left table-fixed">
+          <table className="w-full text-left table-fixed min-w-[1180px]">
             <thead>
               <tr>
                 {/* Larguras balanceadas: colunas com texto (Cliente, Campanha)

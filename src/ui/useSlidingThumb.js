@@ -54,7 +54,12 @@ export function useSlidingThumb(activeIndex, count) {
       const cRect = container.getBoundingClientRect();
       const iRect = item.getBoundingClientRect();
       // Subpixel é bom — evita jitter em zoom 90%/110%.
-      const x = iRect.left - cRect.left;
+      // + scrollLeft: o thumb é absolute DENTRO do container e rola junto com
+      // o conteúdo. getBoundingClientRect dá a posição relativa à área VISÍVEL;
+      // quando o container está rolado horizontalmente (overflow-x-auto, ex:
+      // aba ativa fora da viewport inicial), sem somar o scroll o thumb cai no
+      // lugar errado. Somar scrollLeft converte pra coordenada do conteúdo.
+      const x = iRect.left - cRect.left + container.scrollLeft;
       const w = iRect.width;
       setThumbStyle({
         transform: `translate3d(${x}px, 0, 0)`,
@@ -116,7 +121,10 @@ export function useSlidingThumbForActive(activeSelector = '[data-state="active"]
       if (!active) return;
       const cRect = container.getBoundingClientRect();
       const aRect = active.getBoundingClientRect();
-      const x = aRect.left - cRect.left;
+      // + scrollLeft: mesma correção do useSlidingThumb — o thumb rola junto
+      // com o conteúdo num container overflow-x-auto, então a posição precisa
+      // ser relativa ao conteúdo, não à área visível.
+      const x = aRect.left - cRect.left + container.scrollLeft;
       const w = aRect.width;
       setThumbStyle({
         transform: `translate3d(${x}px, 0, 0)`,
