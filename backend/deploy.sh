@@ -240,7 +240,11 @@ gcloud functions deploy "$FUNCTION_NAME" \
   --min-instances=1 \
   --max-instances=20 \
   --concurrency=10 \
-  --env-vars-file="$ENV_FILE"
+  --env-vars-file="$ENV_FILE" \
+  --format="none"   # NÃO remover: sem isso o gcloud despeja o spec do serviço
+                    # (incl. TODOS os env vars) no stdout — vaza secrets em log/
+                    # terminal. Erros vão pro stderr e seguem visíveis; o
+                    # progresso idem. A URL pública é buscada à parte no passo 6.
 
 # ── 4. Rotear 100% do tráfego para a revisão recém-deployada ─────────────────
 echo ""
