@@ -253,7 +253,7 @@ function PerformerRow({ rank, performer, displayName, scorePrev, onClick }) {
       {/* Métricas agregadas. Mobile: grid 3 cols (com 7 métricas a última
           fica solo na 3ª linha). Desktop: 7 cols inline com divisor
           vertical (border-l no MicroMetric). */}
-      <div className="grid grid-cols-3 lg:flex-1 lg:grid-cols-7 gap-x-3 gap-y-2 min-w-0 pl-8 lg:pl-0">
+      <div className="grid grid-cols-3 lg:flex-1 lg:grid-cols-7 gap-x-3 gap-y-3 min-w-0 lg:pl-0 pt-1 lg:pt-0">
         <MicroMetric label="Pacing DSP" value={formatPctInt(dsp_pacing)} tone={tonePacing(dsp_pacing)} />
         <MicroMetric label="Pacing VID" value={formatPctInt(vid_pacing)} tone={tonePacing(vid_pacing)} />
         <MicroMetric label="CTR"        value={formatPctTwo(ctr)}        tone={toneCtr(ctr)} />

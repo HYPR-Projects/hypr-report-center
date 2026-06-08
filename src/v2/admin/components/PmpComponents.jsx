@@ -103,7 +103,7 @@ export function PmpLineGroupCard({ lines, onLineClick, onLinkClick, variant = "d
           Scroll horizontal em mobile: o grid hidePi tem ~920px e estoura o
           viewport <768px. min-w mantém colunas legíveis; inert no desktop. */}
       <div className="overflow-x-auto scrollbar-hidden">
-        <div className="min-w-[920px] divide-y divide-border/30">
+        <div className="md:min-w-[920px] divide-y divide-border/30">
           {lines.map((l) => (
             <PmpLineRow key={l.line_id} line={l}
                         onClick={onLineClick} onLinkClick={onLinkClick}
@@ -145,7 +145,7 @@ export function PmpLayoutToggle({ value, onChange, counts = {} }) {
   const { containerRef, setItemRef, thumbStyle } = useSlidingThumb(activeIndex, LAYOUT_OPTIONS.length);
   return (
     <div ref={containerRef} role="tablist" aria-label="Layout"
-         className="relative inline-flex gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border overflow-hidden motion-reduce:[&_[data-thumb]]:!transition-none">
+         className="relative inline-flex gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border max-w-full min-w-0 overflow-x-auto scrollbar-hidden motion-reduce:[&_[data-thumb]]:!transition-none">
       <div data-thumb className="absolute top-0.5 bottom-0.5 left-0 rounded-md bg-canvas-elevated shadow-sm transition-all duration-200 ease-out [transform-origin:0_0] [will-change:transform,width]" style={thumbStyle} />
       {LAYOUT_OPTIONS.map((opt, i) => {
         const active = value === opt.value;
@@ -154,7 +154,7 @@ export function PmpLayoutToggle({ value, onChange, counts = {} }) {
           <button key={opt.value} ref={setItemRef(i)} role="tab" aria-selected={active}
                   onClick={() => onChange(opt.value)}
                   className={cn(
-                    "relative z-10 inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium transition-colors",
+                    "relative z-10 inline-flex shrink-0 whitespace-nowrap items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium transition-colors",
                     active ? "text-fg" : "text-fg-muted hover:text-fg",
                   )}>
             {opt.icon}
@@ -652,7 +652,7 @@ export function PmpCustomerAccordion({ customer, lines, onLineClick, onLinkClick
           {singles.length > 0 && (
             <div className="rounded-lg border border-border/60 bg-canvas-elevated overflow-hidden">
               <div className="overflow-x-auto scrollbar-hidden">
-                <div className="min-w-[1160px] divide-y divide-border/30">
+                <div className="md:min-w-[1160px] divide-y divide-border/30">
                   {singles.map(l => (
                     <PmpLineRow key={l.line_id} line={l}
                                 onClick={() => onLineClick?.(l)} onLinkClick={onLinkClick}
@@ -753,7 +753,7 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
   };
 
   return (
-    <div className={cn(grid, "px-5 py-3 bg-surface/60 border-b border-border/60 text-[10px] uppercase tracking-widest font-semibold text-fg-subtle")}>
+    <div className={cn(grid, "hidden md:grid px-5 py-3 bg-surface/60 border-b border-border/60 text-[10px] uppercase tracking-widest font-semibold text-fg-subtle")}>
       <div />
       <Th field="customer" align="left">Cliente / Campanha</Th>
       <Th>Status</Th>
@@ -801,9 +801,11 @@ export function PmpLineRow({
 
   return (
     <div onClick={() => onClick?.(line)}
-         className={cn(grid, "px-5 cursor-pointer transition-colors hover:bg-surface/40 group items-center",
-           compact ? "py-4" : "py-5",
+         className={cn("cursor-pointer transition-colors hover:bg-surface/40 group",
            line.is_archived && "opacity-50")}>
+      {/* ── Desktop (md+): grid denso de 11 colunas ──────────────────────── */}
+      <div className={cn(grid, "hidden md:grid px-5 items-center",
+           compact ? "py-4" : "py-5")}>
       <div className="flex justify-center" title={dm.label}>
         <span className={cn("w-2 h-2 rounded-full", dm.dot)} />
       </div>
@@ -985,6 +987,86 @@ export function PmpLineRow({
           );
         })()}
       </div>
+      </div>
+
+      {/* ── Mobile (<md): card empilhado ─────────────────────────────────────
+          Substitui o grid de 11 colunas (que exigia scroll horizontal e
+          escondia as métricas financeiras) por um card que mostra TUDO
+          verticalmente, legível em 375px. Mesmo dado, mesma formatação. */}
+      <div className="md:hidden px-4 py-3.5">
+        <div className="flex items-start gap-2.5">
+          <span className={cn("mt-1 w-2 h-2 rounded-full shrink-0", dm.dot)} title={dm.label} />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={cn("text-[13px] font-medium leading-snug", isCancelado ? "text-fg-subtle" : "text-fg")}>
+                {!hidePi && (line.customer || "sem cliente")}
+                {!hidePi && <span className="text-fg-subtle mx-1.5">·</span>}
+                <span className={isCancelado ? "italic text-fg-subtle" : ""}>{line.campaign_name || "—"}</span>
+              </span>
+              {line.short_token && (
+                <span className={cn("font-mono text-[10px] px-1.5 py-0.5 rounded shrink-0",
+                  isCancelado ? "text-fg-subtle bg-surface border border-border" : "text-signature bg-signature/10")}>
+                  {line.short_token}
+                </span>
+              )}
+            </div>
+            <div className="text-[11px] text-fg-subtle mt-0.5">
+              {line.agency || "—"} <span className="mx-1">·</span> Line {line.line_id}
+              {groupBadge && <span className="text-signature"> · Grupo · 1 PI</span>}
+            </div>
+          </div>
+          <span className={cn("inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border shrink-0", statusPillClass(effStatus))}>
+            {effStatus}
+          </span>
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2.5">
+          {!hidePi && (
+            <PmpMobileStat label="PI">
+              {hasPi ? (
+                <span className={isCancelado ? "text-fg-subtle/70" : "text-fg"}>{formatBRL(piToShow)}</span>
+              ) : isCancelado ? (
+                <span className="text-fg-subtle/60">—</span>
+              ) : onLinkClick ? (
+                <button onClick={(e) => { e.stopPropagation(); onLinkClick(line); }}
+                        className="text-[13px] text-amber-300 hover:text-amber-200 underline-offset-2 hover:underline">
+                  🔗 vincular
+                </button>
+              ) : <span className="text-amber-300/60">sem PI</span>}
+            </PmpMobileStat>
+          )}
+          <PmpMobileStat label="Cost"><span className="text-fg-muted">{formatBRL(line.curator_total_cost)}</span></PmpMobileStat>
+          <PmpMobileStat label="Revenue"><span className="text-fg-muted">{formatBRL(line.curator_revenue)}</span></PmpMobileStat>
+          <PmpMobileStat label="Margem HYPR">
+            <span className={cn("font-semibold", isCancelado ? "text-fg-subtle" : "text-emerald-600 dark:text-emerald-400")}>
+              {formatBRL(line.curator_margin)}
+            </span>
+          </PmpMobileStat>
+          <PmpMobileStat label="Mgm %"><span className="text-fg-muted">{formatRatioPct(line.effective_margin_pct, 0)}</span></PmpMobileStat>
+          {!hidePi && (
+            <PmpMobileStat label="% Entrega">
+              <span className={cn("inline-block px-1.5 py-0.5 rounded", !isCancelado && pctDeliveryClass(pctToShow))}>
+                {formatRatioPct(pctToShow, 0)}
+              </span>
+            </PmpMobileStat>
+          )}
+        </div>
+
+        <div className="mt-2.5 pt-2 border-t border-border/50 flex items-center justify-between text-[11px]">
+          <span className="text-fg-subtle tabular-nums">{formatLineStartPeriod(line) || "—"}</span>
+          <span className={cn("tabular-nums", dm.text)}>{lastDeliv || dm.label}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Stat empilhado do card mobile da PmpLineRow — label minúsculo + valor.
+function PmpMobileStat({ label, children }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-semibold mb-0.5">{label}</div>
+      <div className="text-[13px] tabular-nums">{children}</div>
     </div>
   );
 }

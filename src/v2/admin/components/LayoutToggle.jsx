@@ -84,6 +84,12 @@ export function LayoutToggle({ value, onChange, className }) {
         // light fica #F1F3F6 (perceptível contra a página #F8F9FA);
         // em dark fica #0F1419 (mais escuro que canvas, dá contraste).
         "relative inline-flex gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border",
+        // Mobile: 5 botões com label estouram 375px. Sem scroll, o flex pai
+        // espremia e quebrava os labels em 2 linhas ("Por\nmês"). max-w-full +
+        // min-w-0 deixa o controle encolher até a largura real, overflow-x-auto
+        // libera o swipe horizontal (igual ui/Tabs), e o thumb absolute segue
+        // medindo o botão ativo via offsetLeft (correto mesmo com scroll).
+        "max-w-full min-w-0 overflow-x-auto scrollbar-hidden",
         "motion-reduce:[&_[data-thumb]]:!transition-none",
         className
       )}
@@ -107,7 +113,7 @@ export function LayoutToggle({ value, onChange, className }) {
             aria-selected={active}
             onClick={() => onChange(opt.value)}
             className={cn(
-              "relative z-10 inline-flex items-center gap-1.5 px-3 h-7 rounded-md cursor-pointer",
+              "relative z-10 inline-flex shrink-0 whitespace-nowrap items-center gap-1.5 px-3 h-7 rounded-md cursor-pointer",
               "text-xs font-medium",
               "transition-colors duration-150",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
