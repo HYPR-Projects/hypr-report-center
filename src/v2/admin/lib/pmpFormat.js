@@ -4,25 +4,18 @@
 // Centraliza decisões visuais pra que componentes (LiveCard, ClientAccordion,
 // ListRow, Worklist) compartilhem o mesmo vocabulário.
 
+import { FEATURE_ADMINS, isFeatureAdmin } from "../../../shared/auth";
+
 // ─── Permissões de edição ───────────────────────────────────────────────────
-// Lista curada de operadores que podem mutar campos do PMP (status, PI,
-// command, overrides, notas, agrupamento). Demais usuários @hypr.mobi
-// continuam acessando a aba em modo somente-leitura.
+// Quem acessa e edita o PMP é a mesma lista canônica de features restritas
+// (ver `FEATURE_ADMINS` em shared/auth) — os 4 operadores que também veem o
+// "Reconstruir agora". Mantemos os nomes `PMP_EDITORS`/`isPmpEditor` como
+// aliases pra não tocar nos call-sites existentes.
 //
 // Gate é puramente frontend — guard rail UX, não barreira de segurança. Pra
 // reforço real precisaria validar o `updated_by` no backend (`pmp_save_*`).
-export const PMP_EDITORS = new Set([
-  "joao.buzolin@hypr.mobi",
-  "matheus.machado@hypr.mobi",
-  "mateus.lambranho@hypr.mobi",
-  "gian.nardo@hypr.mobi",
-]);
-
-export function isPmpEditor(user) {
-  const email = user?.email;
-  if (!email || typeof email !== "string") return false;
-  return PMP_EDITORS.has(email.toLowerCase());
-}
+export const PMP_EDITORS = FEATURE_ADMINS;
+export const isPmpEditor = isFeatureAdmin;
 
 // ─── Status workflow ─────────────────────────────────────────────────────────
 export const PMP_STATUSES = [

@@ -17,6 +17,7 @@ import {
   getResolvedShortToken,
   updateSessionIdToken,
   decodeJwtPayload,
+  isFeatureAdmin,
 } from "./shared/auth";
 import { initGoogleAuth, requestSilentSignIn } from "./shared/googleAuth";
 import { lookupShare } from "./lib/api";
@@ -408,13 +409,19 @@ function AppRoutes() {
   };
 
   // Rota /admin/pmp — análise de deals PMP. Mesma topbar do menu,
-  // botão "Voltar" leva pro CampaignMenu (goHome).
-  if (isAdminPmp) {
+  // botão "Voltar" leva pro CampaignMenu (goHome). Restrito à lista
+  // FEATURE_ADMINS: o botão de acesso fica escondido pros demais, e o
+  // acesso por URL direta é barrado aqui — corrige a URL (replaceState
+  // não dispara popstate, então sem setState em render) e cai no menu.
+  if (isAdminPmp && isFeatureAdmin(user)) {
     return (
       <Suspense fallback={<RouteSuspense />}>
         <PmpDealsPage user={user} onLogout={onLogout} onBackToMenu={goHome} />
       </Suspense>
     );
+  }
+  if (isAdminPmp) {
+    window.history.replaceState({}, "", "/");
   }
 
   // Drilldown do cliente. `key={slug}` força remount quando o slug muda

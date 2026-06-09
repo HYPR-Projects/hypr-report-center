@@ -32,6 +32,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { cn } from "../../../ui/cn";
 import { getDataFreshness, triggerUnifiedRebuild } from "../../../lib/api";
+import { isFeatureAdmin } from "../../../shared/auth";
 
 const REFETCH_MS       = 5 * 60 * 1000;
 const CUTOFF_HOUR_BR   = 7;
@@ -147,7 +148,10 @@ const TONE_CLASSES = {
   neutral: { dot: "bg-fg-subtle", text: "text-fg-subtle", ring: "ring-border" },
 };
 
-export function DataFreshnessIndicator({ className }) {
+export function DataFreshnessIndicator({ className, user }) {
+  // Reconstrução manual é restrita à lista FEATURE_ADMINS. Demais admins
+  // veem o status das bases mas não o botão "Reconstruir agora".
+  const canRebuild = isFeatureAdmin(user);
   const [state, setState] = useState({
     loading:    true,
     error:      null,
@@ -354,7 +358,9 @@ export function DataFreshnessIndicator({ className }) {
 
           {/* Reconstrução manual — escape pra quando a consolidação atrasou com
               as fontes prontas. NÃO resolve fonte que não entregou (upstream):
-              o hint abaixo deixa isso explícito pra não dar falsa esperança. */}
+              o hint abaixo deixa isso explícito pra não dar falsa esperança.
+              Restrito à lista FEATURE_ADMINS (mesmos 4 do PMP Deals). */}
+          {canRebuild && (
           <div className="px-4 pt-2 pb-3 border-t border-border">
             {!rebuild.msg && status.blockers.length > 0 && (
               <p className="mb-2 text-[11px] leading-snug text-danger">
@@ -406,6 +412,7 @@ export function DataFreshnessIndicator({ className }) {
               </p>
             )}
           </div>
+          )}
 
           <div className="px-4 py-2 border-t border-border text-[10.5px] text-fg-subtle leading-snug">
             Rollup diário às 06h · referência <span className="font-medium">ontem</span>.
