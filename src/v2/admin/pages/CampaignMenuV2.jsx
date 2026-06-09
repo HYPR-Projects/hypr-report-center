@@ -51,7 +51,7 @@ import MergeModal from "../../../components/modals/MergeModal";
 import RmndUploadModal from "../../../components/modals/RmndUploadModal";
 import PdoohUploadModal from "../../../components/modals/PdoohUploadModal";
 import { NegotiationModal } from "../../components/NegotiationModal";
-import { getOrIssueAdminJwt } from "../../../shared/auth";
+import { getOrIssueAdminJwt, isFeatureAdmin } from "../../../shared/auth";
 
 import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
@@ -812,7 +812,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
             {/* Status do rollup diário das bases. Admin-only — o
                 CampaignMenuV2 inteiro já é renderizado dentro do
                 isAdminMode em App.jsx, então o gate é implícito. */}
-            <DataFreshnessIndicator />
+            <DataFreshnessIndicator user={user} />
             {/* Sino de alertas — engine prioriza riscos por severidade ×
                 impacto BRL, mostra críticos primeiro. Admin-only por estar
                 aqui dentro (mesmo gate do DataFreshnessIndicator). */}
@@ -859,20 +859,22 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {/* Atalho pro report demo (`/report/DEMO`) — payload mockado em
-                shared/demoData.js, sem custo de backend. Vendedor abre,
-                apresenta, fecha. */}
-            <Button
-              variant="ghost"
-              size="md"
-              onClick={() => {
-                window.history.pushState({}, "", "/admin/pmp");
-                window.dispatchEvent(new PopStateEvent("popstate"));
-              }}
-              title="Análise dos deals de pagamento HYPR (Xandr Curate)"
-            >
-              PMP Deals
-            </Button>
+            {/* PMP Deals — restrito à lista FEATURE_ADMINS (mesmos 4
+                operadores do "Reconstruir agora"). Demais admins não veem
+                o atalho; a rota /admin/pmp também redireciona pra cá. */}
+            {isFeatureAdmin(user) && (
+              <Button
+                variant="ghost"
+                size="md"
+                onClick={() => {
+                  window.history.pushState({}, "", "/admin/pmp");
+                  window.dispatchEvent(new PopStateEvent("popstate"));
+                }}
+                title="Análise dos deals de pagamento HYPR (Xandr Curate)"
+              >
+                PMP Deals
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="md"

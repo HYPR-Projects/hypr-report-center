@@ -34,6 +34,26 @@ const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const LS_SESSION_KEY = "hypr.session";
 const LS_CLIENT_UNLOCK_PREFIX = "hypr.clientUnlock.";
 
+// ─── Acesso a features restritas ─────────────────────────────────────────────
+// Lista curada de operadores que enxergam features sensíveis: reconstrução
+// manual das bases ("Reconstruir agora") e a aba PMP Deals. Demais usuários
+// @hypr.mobi continuam no menu admin normal, sem esses controles.
+//
+// Gate é puramente frontend — guard rail de UX, não barreira de segurança. O
+// reforço real vem do admin JWT validado no backend.
+export const FEATURE_ADMINS = new Set([
+  "joao.buzolin@hypr.mobi",
+  "matheus.machado@hypr.mobi",
+  "gianlucca.nardo@hypr.mobi",
+  "mateus.duarte@hypr.mobi",
+]);
+
+export function isFeatureAdmin(user) {
+  const email = user?.email;
+  if (!email || typeof email !== "string") return false;
+  return FEATURE_ADMINS.has(email.toLowerCase());
+}
+
 // ─── Admin session persistence (localStorage, 8h TTL) ────────────────────────
 /**
  * Persiste user + Google id_token com TTL de 8h. Substitui o antigo
