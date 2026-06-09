@@ -1,14 +1,19 @@
 import { useState, useEffect, useMemo } from "react";
 import { C } from "../shared/theme";
-import { fetchTypeformViaProxy } from "../lib/api";
 import Spinner from "../components/Spinner";
 import TabChat from "../components/TabChat";
 import SurveyChart from "./SurveyChart";
 import DateRangeFilter from "../components/DateRangeFilter";
 import { ymd } from "../shared/dateFilter";
-import { parseSurveyConfig, fmtClientRange, sumCounts, getSideSource, hasSideData } from "../shared/surveyConfig";
+import { parseSurveyConfig, fmtClientRange } from "../shared/surveyConfig";
+import { loadSurveyQuestions, combineSurveyQuestions } from "../shared/surveyCombine";
 
-const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
+// Quando `combinedItems` é passado (array de {short_token, label, survey}),
+// o SurveyTab opera em modo AGREGADO: busca cada mês, soma as contagens
+// brutas via combineSurveyQuestions e renderiza um único conjunto de
+// perguntas. Sem `combinedItems`, comportamento normal (1 token via
+// `surveyJson`).
+const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
   const [questions,setQuestions]=useState(null);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState(null);
@@ -23,102 +28,42 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
   const config = useMemo(()=>parseSurveyConfig(surveyJson),[surveyJson]);
   const clientRange = config?.clientRange || null;
 
+  const isCombined = Array.isArray(combinedItems) && combinedItems.length > 0;
+
   // Range efetivo: admin com filtro próprio ganha; admin sem filtro vê tudo;
-  // cliente respeita o clientRange salvo.
-  const rangeParam = isAdmin
-    ? (adminRange?.from && adminRange?.to
-        ? { from: ymd(adminRange.from), to: ymd(adminRange.to) }
-        : null)
-    : clientRange;
+  // cliente respeita o clientRange salvo. No modo combinado o admin aplica
+  // o MESMO range a todos os meses; cada mês usa seu clientRange pro cliente.
+  const adminRangeParam = adminRange?.from && adminRange?.to
+    ? { from: ymd(adminRange.from), to: ymd(adminRange.to) }
+    : null;
+  const rangeParam = isAdmin ? adminRangeParam : clientRange;
   // useMemo na chave do JSON pra estabilidade do effect — sem isso o objeto
   // novo a cada render dispararia o efeito repetidamente.
   const rangeKey = rangeParam ? `${rangeParam.from}|${rangeParam.to}` : "";
-  const fetchTypeformData = (url) => fetchTypeformViaProxy(url, rangeParam);
+  // Chave de deps do modo combinado: tokens dos meses agregados.
+  const combinedKey = isCombined ? combinedItems.map((it)=>it.short_token).join(",") : "";
 
   useEffect(()=>{
     let cancelled=false;
     const load=async()=>{
       setLoading(true);setError(null);
       try{
-        if(!config){throw new Error("Configuração de survey inválida.");}
-        // Modelo moderno: array de questions com lados independentes.
-        // Cada lado (ctrl/exp) pode ser Typeform (fetch via proxy) ou
-        // VideoAsk (counts embutidos), independentemente. Pode também
-        // ter só um lado preenchido — render mostra a distribuição
-        // sem cálculo de lift nesse caso.
-        const hasModernQuestion = !config.isLegacyCsv
-          && Array.isArray(config.questions)
-          && config.questions.some(q => q && (hasSideData(q, "ctrl") || hasSideData(q, "exp")));
-        if(hasModernQuestion){
-          // Helper: fetcha um lado individual (typeform → API, videoask → counts embutidos).
-          // Retorna { type: "choice"|"matrix"|null, counts, total, rows? } ou null se lado ausente.
-          const fetchSide = async (q, side) => {
-            if (!hasSideData(q, side)) return null;
-            const source = getSideSource(q, side);
-            if (source === "videoask") {
-              const counts = side === "ctrl" ? (q.ctrlCounts || {}) : (q.expCounts || {});
-              return { type: "choice", counts, total: sumCounts(counts) };
-            }
-            const url = side === "ctrl" ? q.ctrlUrl : q.expUrl;
-            const data = await fetchTypeformData(url);
-            return data;
-          };
-
-          const results = await Promise.all(config.questions.map(async (q) => {
-            const [ctrlData, expData] = await Promise.all([
-              fetchSide(q, "ctrl"),
-              fetchSide(q, "exp"),
-            ]);
-            const ctrlSource = getSideSource(q, "ctrl");
-            const expSource  = getSideSource(q, "exp");
-            // Mixed-source labels pro badge — só ambos os lados preenchidos
-            // têm os dois rótulos; lado faltante fica null.
-            const sources = {
-              ctrl: ctrlData ? ctrlSource : null,
-              exp:  expData  ? expSource  : null,
-            };
-            // Matrix só quando AMBOS lados vieram matrix (lift por linha).
-            // Misturado matrix+choice não faz sentido — cai pra choice.
-            const isMatrix = ctrlData?.type === "matrix" && expData?.type === "matrix";
-            if (isMatrix) {
-              return {
-                nome: q.nome,
-                type: "matrix",
-                sources,
-                focusRow: q.focusRow || null,
-                control_total: ctrlData.total,
-                exposed_total: expData.total,
-                ctrlRows: ctrlData.rows || {},
-                expRows: expData.rows || {},
-              };
-            }
-            return {
-              nome: q.nome,
-              type: "choice",
-              sources,
-              focusRow: q.focusRow || null,
-              control_total: ctrlData?.total ?? null,
-              exposed_total: expData?.total  ?? null,
-              ctrl: ctrlData?.counts || null,
-              exp:  expData?.counts  || null,
-            };
+        if(isCombined){
+          // Agregado: busca cada mês (filtrado pelo seu próprio range) e
+          // soma as contagens brutas. Admin sem filtro vê tudo; admin com
+          // filtro aplica o mesmo período a todos; cliente usa o clientRange
+          // salvo de cada mês.
+          const perMonth = await Promise.all(combinedItems.map(async(it)=>{
+            const cfg = parseSurveyConfig(it.survey);
+            const itemRange = isAdmin ? adminRangeParam : (cfg?.clientRange || null);
+            return loadSurveyQuestions(it.survey, itemRange);
           }));
-          if (!cancelled) setQuestions(results);
-        } else if(config.isLegacyCsv){
-          // Modelo antigo (CSV pré-Typeform) — retrocompatibilidade
-          const s=config.legacyObject;
-          const results=[{
-            nome:s.nome||"Survey",
-            type:"legacy",
-            control_total:s.control_total,
-            exposed_total:s.exposed_total,
-            legacy:true,
-            questions:s.questions,
-          }];
-          if(!cancelled)setQuestions(results);
-        } else {
-          if(!cancelled)setQuestions([]);
+          if(!cancelled) setQuestions(combineSurveyQuestions(perMonth));
+          return;
         }
+        // Single token — normalização delegada ao módulo compartilhado.
+        const results = await loadSurveyQuestions(surveyJson, rangeParam);
+        if(!cancelled) setQuestions(results);
       }catch(e){
         if(!cancelled){
           const msg = e?.message ? `Erro ao carregar survey: ${e.message}` : "Erro ao carregar dados do survey.";
@@ -129,9 +74,9 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme})=>{
     };
     load();
     return()=>{cancelled=true;};
-  // rangeKey absorve adminRange (admin) e clientRange (cliente) — quando
-  // qualquer um muda, refetcha. surveyJson cobre mudança de configuração.
-  },[surveyJson,isAdmin,rangeKey]);
+  // rangeKey absorve adminRange (admin) e clientRange (cliente). combinedKey
+  // cobre mudança dos meses agregados; surveyJson cobre config single.
+  },[surveyJson,isAdmin,rangeKey,isCombined,combinedKey]);
 
   const bgCard=theme?.bg2||C.dark2;
   const bgInner=theme?.bg||C.dark;

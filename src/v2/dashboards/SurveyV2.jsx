@@ -17,6 +17,7 @@
 // header do mês entre eles. Cada SurveyTab busca seu próprio Typeform
 // (filtrado pela URL daquele token) — dados NÃO se misturam entre meses.
 
+import { useState } from "react";
 import SurveyTab from "../../dashboards/SurveyTab";
 import { useTheme } from "../hooks/useTheme";
 import { legacyThemeObj } from "../legacyThemeBridge";
@@ -44,6 +45,10 @@ function isRenderableSurvey(json) {
 export default function SurveyV2({ token, data, isAdmin, adminJwt }) {
   const [theme] = useTheme();
   const legacyTheme = legacyThemeObj(theme);
+  // Modo de exibição quando há múltiplos meses agrupados:
+  //   "perMonth"  → uma seção por mês (default, comportamento histórico)
+  //   "combined"  → todos os meses somados num resultado só
+  const [mode, setMode] = useState("perMonth");
 
   const sv = data?.survey;
 
@@ -86,24 +91,62 @@ export default function SurveyV2({ token, data, isAdmin, adminJwt }) {
   const singleTokenCfg = items.length === 1 ? parseSurveyConfig(items[0].survey) : null;
   const singleTokenRange = singleTokenCfg?.clientRange || null;
 
+  // Toggle por-mês × agregado só faz sentido com 2+ meses.
+  const canCombine = isMerged && items.length > 1;
+  const isCombined = canCombine && mode === "combined";
+
   return (
     <div className="space-y-6">
       <header className="space-y-1">
         <h2 className="text-lg font-bold text-fg">Brand Lift Survey</h2>
         <p className="text-sm text-fg-muted">
           Resultado das perguntas aplicadas ao público impactado pela campanha.
-          {isMerged && items.length > 1
-            ? " Esta campanha tem múltiplos meses agrupados — cada seção abaixo mostra o survey daquele período."
+          {canCombine
+            ? (isCombined
+                ? " Esta campanha tem múltiplos meses agrupados — esta visão soma todos os períodos num resultado único."
+                : " Esta campanha tem múltiplos meses agrupados — cada seção abaixo mostra o survey daquele período.")
             : isAdmin ? " Você pode editar perguntas e respostas." : ""}
         </p>
-        {!isAdmin && singleTokenRange && (
+        {!isAdmin && !isCombined && singleTokenRange && (
           <p className="text-xs text-fg-muted pt-1">
             Período exibido: <span className="font-semibold text-fg">{fmtClientRange(singleTokenRange)}</span>
           </p>
         )}
       </header>
 
-      {items.map((it, idx) => (
+      {canCombine && (
+        <div className="flex items-center gap-1 p-1 rounded-lg bg-bg-subtle border border-border w-fit">
+          {[
+            { id: "perMonth", label: "Por mês" },
+            { id: "combined", label: "Agregado — todos os meses" },
+          ].map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => setMode(opt.id)}
+              className={
+                "px-3 py-1.5 rounded-md text-xs font-semibold transition-colors " +
+                (mode === opt.id
+                  ? "bg-signature text-white shadow-sm"
+                  : "text-fg-muted hover:text-fg")
+              }
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {isCombined ? (
+        <SurveyTab
+          token={token}
+          combinedItems={items}
+          isAdmin={isAdmin}
+          adminJwt={adminJwt}
+          theme={legacyTheme}
+        />
+      ) : (
+      items.map((it, idx) => (
         <section
           key={`${it.short_token}-${idx}`}
           className={isMerged && items.length > 1 ? "space-y-3" : ""}
@@ -142,7 +185,8 @@ export default function SurveyV2({ token, data, isAdmin, adminJwt }) {
             theme={legacyTheme}
           />
         </section>
-      ))}
+      ))
+      )}
     </div>
   );
 }
