@@ -7,7 +7,7 @@
 // Atomicidade: tudo em 1 arquivo pra reduzir churn de imports na refactor.
 // Se algum desses crescer, separar em arquivo próprio depois.
 
-import { useState, useMemo } from "react";
+import { memo, useState, useMemo } from "react";
 import { cn } from "../../../ui/cn";
 import { useSlidingThumb } from "../../../ui/useSlidingThumb";
 import {
@@ -269,15 +269,20 @@ export function PmpAlertsBar({ alerts, onClickAlert }) {
 // ═══════════════════════════════════════════════════════════════════════════
 // PmpLiveCard — Card rico pra view "Ao vivo"
 // ═══════════════════════════════════════════════════════════════════════════
-export function PmpLiveCard({ line, onClick, onLinkClick }) {
+function PmpLiveCardInner({ line, onClick, onLinkClick }) {
   const dm = effectiveDeliveryMeta(line);
   const lastDeliv = formatLastDelivery(line.hours_since_last_delivery);
   const pct = pctEntrega(line);
   const hasPi = line.pi_brl != null && line.pi_brl > 0;
 
+  // content-visibility:auto — browser pula render/paint dos cards fora do
+  // viewport (centenas de lines = scroll pesado sem isso). intrinsic-size
+  // `auto 230px` é só a estimativa pré-primeiro-paint pro scrollbar não
+  // pular; depois o browser memoriza a altura real. Browsers sem suporte
+  // ignoram a propriedade (degradação = comportamento de hoje).
   return (
     <button onClick={() => onClick?.(line)}
-            className="group relative w-full text-left rounded-xl border border-border bg-canvas-elevated hover:bg-surface/50 transition-all p-5 overflow-hidden">
+            className="group relative w-full text-left rounded-xl border border-border bg-canvas-elevated hover:bg-surface/50 transition-all p-5 overflow-hidden [content-visibility:auto] [contain-intrinsic-size:auto_230px]">
       {/* Stripe lateral por status */}
       <div className={cn("absolute left-0 top-0 bottom-0 w-1", dm.dot)} />
 
@@ -378,6 +383,12 @@ export function PmpLiveCard({ line, onClick, onLinkClick }) {
     </button>
   );
 }
+
+// memo com comparação rasa padrão — `line` vem de setLines imutável
+// (spread + map no PmpDealsPage), onClick/onLinkClick são setters/refs
+// estáveis. Evita re-render de centenas de cards quando estado não
+// relacionado muda (drawer, KPIs, saving indicator).
+export const PmpLiveCard = memo(PmpLiveCardInner);
 
 function Metric({ label, value }) {
   return (
@@ -769,7 +780,7 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
   );
 }
 
-export function PmpLineRow({
+function PmpLineRowInner({
   line, onClick, onLinkClick,
   compact = false, hidePi = false,
   groupBadge = null,
@@ -799,9 +810,15 @@ export function PmpLineRow({
     ? "grid grid-cols-[12px_minmax(0,1.55fr)_minmax(110px,0.4fr)_88px_140px_140px_150px_60px_minmax(82px,0.55fr)] gap-x-4"
     : ROW_GRID;
 
+  // content-visibility:auto — browser pula render/paint das rows fora do
+  // viewport (1000+ lines na Lista/Histórico = scroll e filtro pesados).
+  // intrinsic-size `auto 72px` é a estimativa pré-primeiro-paint (altura
+  // da row desktop) pro scrollbar não pular; o browser memoriza a altura
+  // real depois. Browsers sem suporte ignoram (degradação = hoje).
   return (
     <div onClick={() => onClick?.(line)}
          className={cn("cursor-pointer transition-colors hover:bg-surface/40 group",
+           "[content-visibility:auto] [contain-intrinsic-size:auto_72px]",
            line.is_archived && "opacity-50")}>
       {/* ── Desktop (md+): grid denso de 11 colunas ──────────────────────── */}
       <div className={cn(grid, "hidden md:grid px-5 items-center",
@@ -1060,6 +1077,13 @@ export function PmpLineRow({
     </div>
   );
 }
+
+// memo com comparação rasa padrão — `line` vem de setLines imutável
+// (spread + map), onClick/onLinkClick são setters/refs estáveis, e as
+// props de grupo (groupPi, groupPctReceber, groupBadge, flags) são
+// primitivas. Em listas de 1000+ lines, evita re-renderizar tudo a cada
+// tecla na busca / abrir-fechar drawer / tick do saving indicator.
+export const PmpLineRow = memo(PmpLineRowInner);
 
 // Stat empilhado do card mobile da PmpLineRow — label minúsculo + valor.
 function PmpMobileStat({ label, children }) {
