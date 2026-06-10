@@ -47,8 +47,13 @@ const TTL_MS = 30 * 60 * 1000;
  * Lê um item do cache. Retorna `{ data, ts }` ou `null` se ausente,
  * inválido (JSON quebrado), de versão antiga, de outro bundle, ou
  * mais velho que TTL.
+ *
+ * `ttlMs` opcional sobrepõe o TTL default de 30 min — o payload do report
+ * (stale-while-revalidate no ClientDashboardV2) usa 24h: a base só muda
+ * 1x/dia (~06h) e o dado stale é pintado na hora ENQUANTO o refetch roda,
+ * nunca no lugar dele.
  */
-export function readCache(key) {
+export function readCache(key, ttlMs = TTL_MS) {
   try {
     const raw = localStorage.getItem(PREFIX + key);
     if (!raw) return null;
@@ -56,7 +61,7 @@ export function readCache(key) {
     if (obj?.v !== VERSION) return null;
     if (obj?.bid !== BUILD_ID) return null;
     if (typeof obj.ts !== "number") return null;
-    if (Date.now() - obj.ts > TTL_MS) return null;
+    if (Date.now() - obj.ts > ttlMs) return null;
     return { data: obj.data, ts: obj.ts };
   } catch {
     return null;

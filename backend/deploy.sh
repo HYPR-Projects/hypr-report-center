@@ -330,6 +330,41 @@ if [ -n "$CRON_SECRET" ]; then
   echo "  ✓ Job recriado (30 9 * * * America/Sao_Paulo → auto_freeze_sweep)"
 fi
 
+# ── 5c. Cloud Scheduler: report-hub-cache-warmup ─────────────────────────────
+# A cada 3h em horário comercial (06:30, 09:30, 12:30, 15:30, 18:30 BRT),
+# aquece os caches in-memory: lista admin, view "Por cliente" e reports
+# ativos (+ merged). A run das 06:30 é a crítica — roda logo após a
+# consolidação diária do pipeline (~06h) e elimina o "primeiro acesso do
+# dia" frio (3-6s+ por report). As demais re-aquecem o que o TTL de 3h
+# deixou expirar. Auth via X-Cron-Secret = CRON_SECRET (igual auto-freeze).
+if [ -n "$CRON_SECRET" ]; then
+  echo ""
+  echo "▸ Garantindo Cloud Scheduler report-hub-cache-warmup..."
+
+  WU_JOB="report-hub-cache-warmup"
+  WU_URI="https://${REGION}-site-hypr.cloudfunctions.net/${FUNCTION_NAME}?action=warmup&refresh=true"
+
+  if gcloud scheduler jobs describe "$WU_JOB" \
+        --location="$REGION" --project=site-hypr >/dev/null 2>&1; then
+    gcloud scheduler jobs delete "$WU_JOB" \
+      --location="$REGION" --project=site-hypr --quiet >/dev/null
+  fi
+
+  gcloud scheduler jobs create http "$WU_JOB" \
+    --location="$REGION" \
+    --project=site-hypr \
+    --schedule="30 6-18/3 * * *" \
+    --time-zone="America/Sao_Paulo" \
+    --uri="$WU_URI" \
+    --http-method=POST \
+    --headers="Content-Type=application/json,X-Cron-Secret=${CRON_SECRET}" \
+    --message-body='{}' \
+    --attempt-deadline=600s \
+    --description="Warmup dos caches do Report Hub (lista + reports ativos) pos-pipeline" \
+    >/dev/null
+  echo "  ✓ Job recriado (30 6-18/3 * * * America/Sao_Paulo → action=warmup)"
+fi
+
 # ── 6. Output final ──────────────────────────────────────────────────────────
 echo ""
 echo "✓ Deploy concluído. URL pública:"
