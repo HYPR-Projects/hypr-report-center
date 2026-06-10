@@ -355,10 +355,20 @@ export function CampaignDrawer({
 
   // "Marcar como encerrada" agora abre o popup de fechamento — o save
   // acontece lá dentro (closure + pós-venda + checkups numa request só).
-  const handleCloseCampaign = () => {
-    if (!short_token || closureBusy === "saving") return;
+  // Pré-carrega detalhes existentes ANTES de abrir: campanha que foi
+  // encerrada → reaberta → encerrada de novo tem pós-venda salvo, e abrir
+  // o popup vazio sobrescreveria tudo com branco no save. Best-effort:
+  // se o fetch falhar (raro), abre vazio em vez de travar o fechamento.
+  const handleCloseCampaign = async () => {
+    if (!short_token || closureBusy === "loading" || closureBusy === "done") return;
+    setClosureBusy("loading");
+    let details = null;
+    try {
+      details = await getClosureDetails({ short_token });
+    } catch { /* abre vazio */ }
+    setClosureBusy("idle");
+    setClosureInitialDetails(details);
     setClosureModalMode("close");
-    setClosureInitialDetails(null);
     setClosureModalOpen(true);
   };
 
@@ -670,15 +680,17 @@ export function CampaignDrawer({
               {awaiting && (
                 <ActionButton
                   icon={
-                    closureBusy === "done" ? <ClosureSuccessIcon />
+                    closureBusy === "loading" ? <Spinner />
+                    : closureBusy === "done" ? <ClosureSuccessIcon />
                     : ICON.closure
                   }
                   label={
-                    closureBusy === "done" ? "Encerrada!"
+                    closureBusy === "loading" ? "Abrindo fechamento..."
+                    : closureBusy === "done" ? "Encerrada!"
                     : "Marcar como encerrada"
                   }
                   variant={closureBusy === "done" ? "success" : "warning"}
-                  disabled={closureBusy === "done"}
+                  disabled={closureBusy === "loading" || closureBusy === "done"}
                   onClick={handleCloseCampaign}
                 />
               )}

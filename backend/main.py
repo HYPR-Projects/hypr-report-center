@@ -3087,6 +3087,16 @@ def report_data(request):
             data, hit = _get_merged_report_cached(merge_id, force_refresh=force_refresh)
             if data is None:
                 return (jsonify({"error": "Grupo merged sem dados"}), 404, headers)
+            # Pós-venda na visão agregada: usa o do active_token (mês mais
+            # recente) — é o fechamento mais atual do grupo. Drill-down por
+            # mês mostra o pós-venda daquele mês via caminho single-token.
+            try:
+                active_tok = (data.get("merge_meta") or {}).get("active_token")
+                pv = _pos_venda_public(active_tok) if active_tok else None
+                if pv:
+                    data = {**data, "pos_venda": pv}
+            except Exception as e:
+                logger.warning(f"[WARN attach pos_venda to merged view] {e}")
             total_ms = int((time.time() - t0) * 1000)
             resp_headers = {
                 **headers,
@@ -3147,16 +3157,10 @@ def report_data(request):
         # Pós-venda (chip no header do report) — anexado AQUI, na camada de
         # serving, e não dentro de fetch_campaign_data: reports encerrados
         # costumam estar congelados (snapshot verbatim) e o pós-venda é salvo
-        # justamente DEPOIS do freeze, no fechamento. weekly_checkups fica de
-        # fora de propósito (métrica interna, admin-only).
-        cd = _get_closure_details_cached(target_token)
-        if cd and (cd.get("pos_venda_url") or cd.get("extra_url")):
-            data = {**data, "pos_venda": {
-                "url":        cd.get("pos_venda_url"),
-                "mode":       cd.get("pos_venda_mode"),
-                "extra_url":  cd.get("extra_url"),
-                "extra_mode": cd.get("extra_mode"),
-            }}
+        # justamente DEPOIS do freeze, no fechamento.
+        pv = _pos_venda_public(target_token)
+        if pv:
+            data = {**data, "pos_venda": pv}
 
         total_ms = int((time.time() - t0) * 1000)
         resp_headers = {
@@ -4539,6 +4543,21 @@ def query_closure_details(short_token: str) -> dict | None:
         "weekly_checkups": r["weekly_checkups"],
         "updated_at":      r["updated_at"].isoformat() if r["updated_at"] else None,
         "updated_by":      r["updated_by"],
+    }
+
+
+def _pos_venda_public(short_token: str) -> dict | None:
+    """View PÚBLICA do pós-venda pro payload do report (chip no header).
+    weekly_checkups fica de fora de propósito (métrica interna, admin-only).
+    Retorna None quando não há nenhum link salvo."""
+    cd = _get_closure_details_cached(short_token)
+    if not cd or not (cd.get("pos_venda_url") or cd.get("extra_url")):
+        return None
+    return {
+        "url":        cd.get("pos_venda_url"),
+        "mode":       cd.get("pos_venda_mode"),
+        "extra_url":  cd.get("extra_url"),
+        "extra_mode": cd.get("extra_mode"),
     }
 
 

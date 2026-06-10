@@ -178,7 +178,9 @@ function ModeBadge({ mode }) {
   const label = MODE_LABEL[mode];
   if (!label) return null;
   return (
-    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-signature-soft border border-signature/40 text-signature text-[10px] font-bold uppercase tracking-wider whitespace-nowrap">
+    // hidden em mobile — no header estreito o badge competiria com o título
+    // e o botão de fechar; é metadado secundário, não vale o overflow.
+    <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-signature-soft border border-signature/40 text-signature text-[10px] font-bold uppercase tracking-wider whitespace-nowrap">
       {mode === "apresentado" ? <PresentIcon className="size-3" /> : <SendIcon className="size-3" />}
       {label}
     </span>

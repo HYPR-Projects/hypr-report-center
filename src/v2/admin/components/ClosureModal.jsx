@@ -20,6 +20,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { cn } from "../../../ui/cn";
 import { saveCampaignClosure, saveClosureDetails } from "../../../lib/api";
 import { isGoogleSlidesUrl } from "../../../lib/slides";
+import { toast } from "../../../lib/toast";
 
 export function ClosureModal({
   open,
@@ -90,6 +91,7 @@ export function ClosureModal({
         });
       } else {
         await saveClosureDetails({ short_token: campaign.short_token, details });
+        toast.success("Dados do fechamento atualizados");
       }
       onSaved?.(campaign.short_token, details);
       onOpenChange?.(false);
@@ -197,9 +199,18 @@ export function ClosureModal({
                 </FieldNote>
               )}
               {posVendaIsSlides && (
-                <FieldNote tone="success">
-                  O cliente verá o deck com preview embutido no report.
-                </FieldNote>
+                <>
+                  <FieldNote tone="success">
+                    O cliente verá o deck com preview embutido no report.
+                  </FieldNote>
+                  <p className="mt-1 text-[10.5px] text-fg-subtle leading-snug">
+                    Confirme que o deck está compartilhado como{" "}
+                    <span className="font-semibold text-fg-muted">
+                      “qualquer pessoa com o link”
+                    </span>{" "}
+                    — senão o preview mostra a tela de login do Google.
+                  </p>
+                </>
               )}
               {posVendaFilled && (
                 <DeliveryModeSegment
@@ -241,17 +252,38 @@ export function ClosureModal({
                 title="Checkups semanais"
                 hint="E-mails de fup/resumo enviados ao cliente · obrigatório"
               />
-              <input
-                type="number"
-                inputMode="numeric"
-                min={0}
-                step={1}
-                value={checkups}
-                onChange={(e) => setCheckups(e.target.value)}
-                disabled={busy}
-                placeholder="Ex: 4"
-                className={cn(fieldClass(checkups.trim() !== "" && checkupsNum == null), "max-w-[140px] tabular-nums")}
-              />
+              <div className="flex items-center gap-1.5">
+                <StepperButton
+                  label="Diminuir"
+                  disabled={busy || (checkupsNum ?? 0) <= 0}
+                  onClick={() => setCheckups(String(Math.max(0, (checkupsNum ?? 0) - 1)))}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M5 12h14" /></svg>
+                </StepperButton>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  step={1}
+                  value={checkups}
+                  onChange={(e) => setCheckups(e.target.value)}
+                  disabled={busy}
+                  placeholder="Ex: 4"
+                  className={cn(
+                    fieldClass(checkups.trim() !== "" && checkupsNum == null),
+                    "w-20 text-center tabular-nums",
+                    // Esconde os spinners nativos — o stepper custom já cobre
+                    "[appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none",
+                  )}
+                />
+                <StepperButton
+                  label="Aumentar"
+                  disabled={busy}
+                  onClick={() => setCheckups(String((checkupsNum ?? 0) + 1))}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+                </StepperButton>
+              </div>
               {checkups.trim() !== "" && checkupsNum == null && (
                 <FieldNote tone="danger">Use um número inteiro (0 ou mais).</FieldNote>
               )}
@@ -384,6 +416,26 @@ function DeliveryModeSegment({ value, onChange, disabled }) {
         })}
       </div>
     </div>
+  );
+}
+
+function StepperButton({ label, disabled, onClick, children }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center justify-center w-9 h-[38px] rounded-md shrink-0",
+        "border border-border bg-surface text-fg-muted",
+        "hover:text-fg hover:bg-surface-strong transition-colors cursor-pointer",
+        "disabled:opacity-40 disabled:cursor-not-allowed",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature/50",
+      )}
+    >
+      {children}
+    </button>
   );
 }
 
