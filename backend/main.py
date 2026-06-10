@@ -167,6 +167,10 @@ _early_ends_cache= {}     # "all" -> (timestamp, dict[short_token -> {early_end_
 # Enriquecido na camada de SERVING do report (não dentro de fetch_campaign_data)
 # pra valer também em reports congelados, que servem snapshot verbatim.
 _closure_details_cache = {} # short_token -> (timestamp, dict|None)
+# Elementos presentes por campanha (nego/logo/loom/survey/rmnd/pdooh/pos_venda)
+# — alimenta os mini-dots do card admin. Uma query UNION sobre as tabelas de
+# assets (todas pequenas); TTL da lista.
+_elements_cache = {}        # "all" -> (timestamp, dict[short_token -> [element]])
 # Campanhas congeladas (snapshot servido verbatim). Guarda só o CONJUNTO de
 # tokens frozen (leve); o payload em si vive em report_snapshots (BQ) e, depois
 # do 1º load, no _report_cache. TTL = lista (frozen muda raramente, via admin).
@@ -239,6 +243,7 @@ def _cache_invalidate_token(short_token):
         _pauses_cache.pop("all", None)
         _early_ends_cache.pop("all", None)
         _closure_details_cache.pop(short_token, None)
+        _elements_cache.pop("all", None)
         _frozen_cache.pop("all", None)
         _windows_cache.pop("all", None)
         # Merged report cache: drop tudo. Tabela de grupos é pequena, e
@@ -4442,11 +4447,21 @@ def _ensure_closure_details_table() -> None:
                 extra_url       STRING,
                 extra_mode      STRING,
                 weekly_checkups INT64,
+                pos_venda_date  DATE,
+                extra_date      DATE,
                 updated_at      TIMESTAMP,
                 updated_by      STRING
             )
         """
         bq.query(sql).result()
+        # Migração leve: as colunas de data ("apresentado em") entraram depois
+        # do launch — tabelas criadas pela versão anterior não as têm. ADD
+        # COLUMN IF NOT EXISTS é idempotente e no-op quando já existem.
+        bq.query(f"""
+            ALTER TABLE `{_closure_details_table_id()}`
+            ADD COLUMN IF NOT EXISTS pos_venda_date DATE,
+            ADD COLUMN IF NOT EXISTS extra_date DATE
+        """).result()
         _closure_details_table_ensured = True
 
 
@@ -4465,19 +4480,35 @@ def _sanitize_closure_details(body: dict) -> dict:
         v = (v or "").strip().lower()
         return v if v in _CLOSURE_DELIVERY_MODES else None
 
+    def _date(v):
+        v = (v or "").strip()[:10]
+        if not v:
+            return None
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+            return v
+        except ValueError:
+            return None
+
     checkups = body.get("weekly_checkups")
     try:
         checkups = max(0, int(checkups)) if checkups is not None else None
     except (TypeError, ValueError):
         checkups = None
 
-    pos_url = _url(body.get("pos_venda_url"))
+    pos_url   = _url(body.get("pos_venda_url"))
     extra_url = _url(body.get("extra_url"))
+    pos_mode   = _mode(body.get("pos_venda_mode")) if pos_url else None
+    extra_mode = _mode(body.get("extra_mode")) if extra_url else None
     return {
         "pos_venda_url":   pos_url,
-        "pos_venda_mode":  _mode(body.get("pos_venda_mode")) if pos_url else None,
+        "pos_venda_mode":  pos_mode,
         "extra_url":       extra_url,
-        "extra_mode":      _mode(body.get("extra_mode")) if extra_url else None,
+        "extra_mode":      extra_mode,
+        # Data só faz sentido quando o material foi APRESENTADO (a pergunta
+        # do popup é "quando foi apresentado?"). Enviado não carrega data.
+        "pos_venda_date":  _date(body.get("pos_venda_date")) if pos_mode == "apresentado" else None,
+        "extra_date":      _date(body.get("extra_date")) if extra_mode == "apresentado" else None,
         "weekly_checkups": checkups,
     }
 
@@ -4496,13 +4527,17 @@ def save_closure_details(short_token: str, details: dict, updated_by: str | None
                 extra_url       = @extra_url,
                 extra_mode      = @extra_mode,
                 weekly_checkups = @weekly_checkups,
+                pos_venda_date  = @pos_venda_date,
+                extra_date      = @extra_date,
                 updated_at      = CURRENT_TIMESTAMP(),
                 updated_by      = @updated_by
         WHEN NOT MATCHED THEN
             INSERT (short_token, pos_venda_url, pos_venda_mode, extra_url,
-                    extra_mode, weekly_checkups, updated_at, updated_by)
+                    extra_mode, weekly_checkups, pos_venda_date, extra_date,
+                    updated_at, updated_by)
             VALUES (@token, @pos_venda_url, @pos_venda_mode, @extra_url,
-                    @extra_mode, @weekly_checkups, CURRENT_TIMESTAMP(), @updated_by)
+                    @extra_mode, @weekly_checkups, @pos_venda_date, @extra_date,
+                    CURRENT_TIMESTAMP(), @updated_by)
     """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
@@ -4512,6 +4547,8 @@ def save_closure_details(short_token: str, details: dict, updated_by: str | None
             bigquery.ScalarQueryParameter("extra_url",       "STRING", details.get("extra_url")),
             bigquery.ScalarQueryParameter("extra_mode",      "STRING", details.get("extra_mode")),
             bigquery.ScalarQueryParameter("weekly_checkups", "INT64",  details.get("weekly_checkups")),
+            bigquery.ScalarQueryParameter("pos_venda_date",  "DATE",   details.get("pos_venda_date")),
+            bigquery.ScalarQueryParameter("extra_date",      "DATE",   details.get("extra_date")),
             bigquery.ScalarQueryParameter("updated_by",      "STRING", updated_by),
         ]
     )
@@ -4523,7 +4560,7 @@ def query_closure_details(short_token: str) -> dict | None:
     _ensure_closure_details_table()
     sql = f"""
         SELECT pos_venda_url, pos_venda_mode, extra_url, extra_mode,
-               weekly_checkups, updated_at, updated_by
+               weekly_checkups, pos_venda_date, extra_date, updated_at, updated_by
         FROM `{_closure_details_table_id()}`
         WHERE short_token = @token
         LIMIT 1
@@ -4541,9 +4578,65 @@ def query_closure_details(short_token: str) -> dict | None:
         "extra_url":       r["extra_url"],
         "extra_mode":      r["extra_mode"],
         "weekly_checkups": r["weekly_checkups"],
+        "pos_venda_date":  r["pos_venda_date"].isoformat() if r["pos_venda_date"] else None,
+        "extra_date":      r["extra_date"].isoformat() if r["extra_date"] else None,
         "updated_at":      r["updated_at"].isoformat() if r["updated_at"] else None,
         "updated_by":      r["updated_by"],
     }
+
+
+def query_all_campaign_elements() -> dict:
+    """{short_token: [element, ...]} — presença de conteúdo/asset por campanha.
+
+    Alimenta os mini-dots do card admin (negociado, logo, loom, survey, RMND,
+    PDOOH, pós-venda). UNION sobre as tabelas de assets — todas pequenas
+    (1 row/campanha cadastrada), e o BQ só lê a coluna short_token + a do
+    filtro (colunar), então logo_base64/survey_data não pesam no scan.
+    """
+    _ensure_closure_details_table()
+    sql = f"""
+        SELECT DISTINCT short_token, 'nego' AS element
+        FROM `{PROJECT_ID}.{DATASET_SALES_CENTER}.checklists`
+        WHERE short_token IS NOT NULL AND short_token != ''
+        UNION ALL
+        SELECT short_token, 'logo' FROM `{PROJECT_ID}.{DATASET_ASSETS}.client_logos`
+        WHERE logo_base64 IS NOT NULL
+        UNION ALL
+        SELECT short_token, 'loom' FROM `{PROJECT_ID}.{DATASET_ASSETS}.campaign_looms`
+        WHERE loom_url IS NOT NULL
+        UNION ALL
+        SELECT short_token, 'survey' FROM `{PROJECT_ID}.{DATASET_ASSETS}.campaign_surveys`
+        WHERE survey_data IS NOT NULL
+        UNION ALL
+        SELECT short_token, 'rmnd' FROM `site-hypr.dev_assets.rmnd_data`
+        WHERE data_json IS NOT NULL
+        UNION ALL
+        SELECT short_token, 'pdooh' FROM `site-hypr.dev_assets.pdooh_data`
+        WHERE data_json IS NOT NULL
+        UNION ALL
+        SELECT short_token, 'pos_venda' FROM `{_closure_details_table_id()}`
+        WHERE pos_venda_url IS NOT NULL OR extra_url IS NOT NULL
+    """
+    out = {}
+    for row in bq.query(sql).result():
+        out.setdefault(row["short_token"], []).append(row["element"])
+    return out
+
+
+def _safe_get_elements() -> dict:
+    """query_all_campaign_elements com cache (TTL da lista) e fallback {}.
+    Best-effort: o card vive sem os dots (campo `elements` ausente no
+    payload) — uma tabela faltando não pode derrubar a lista inteira."""
+    cached = _cache_get(_elements_cache, "all", _LIST_CACHE_TTL)
+    if cached is not None:
+        return cached
+    try:
+        m = query_all_campaign_elements()
+    except Exception as e:
+        logger.warning(f"[WARN query_all_campaign_elements] {e}")
+        return {}
+    _cache_set(_elements_cache, "all", m)
+    return m
 
 
 def _pos_venda_public(short_token: str) -> dict | None:
@@ -4556,8 +4649,10 @@ def _pos_venda_public(short_token: str) -> dict | None:
     return {
         "url":        cd.get("pos_venda_url"),
         "mode":       cd.get("pos_venda_mode"),
+        "date":       cd.get("pos_venda_date"),
         "extra_url":  cd.get("extra_url"),
         "extra_mode": cd.get("extra_mode"),
+        "extra_date": cd.get("extra_date"),
     }
 
 
@@ -6614,6 +6709,7 @@ def query_campaigns_list():
     fut_pauses   = _query_pool.submit(_safe_get_pauses)
     fut_early    = _query_pool.submit(_safe_get_early_ends)
     fut_frozen   = _query_pool.submit(query_frozen_tokens)
+    fut_elements = _query_pool.submit(_safe_get_elements)
 
     rows           = fut_query.result()
     lookup_owners  = fut_owners.result()
@@ -6625,6 +6721,7 @@ def query_campaigns_list():
     pauses_map     = fut_pauses.result()
     early_map      = fut_early.result()
     frozen_map     = fut_frozen.result()
+    elements_map   = fut_elements.result()
 
     # Tokens congelados presentes na lista: carrega o snapshot pra sobrescrever
     # a ENTREGA do card (delivery ao vivo vaza via rename → diverge do report).
@@ -7042,6 +7139,13 @@ def query_campaigns_list():
             entry["early_end_date"]   = early["early_end_date"]
             if early.get("reason"):
                 entry["early_end_reason"] = early["reason"]
+
+        # Elementos presentes (nego/logo/loom/survey/rmnd/pdooh/pos_venda) —
+        # mini-dots do card. Só emite quando há pelo menos um; card sem o
+        # campo esconde a fileira (graceful pra payload antigo também).
+        els = elements_map.get(r["short_token"])
+        if els:
+            entry["elements"] = els
 
         result.append(entry)
 

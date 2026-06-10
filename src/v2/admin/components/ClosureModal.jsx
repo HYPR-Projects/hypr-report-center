@@ -25,15 +25,17 @@ import { toast } from "../../../lib/toast";
 export function ClosureModal({
   open,
   onOpenChange,
-  campaign,            // {short_token, client_name, campaign_name}
+  campaign,            // {short_token, client_name, campaign_name, start_date, end_date, early_end_date}
   mode = "close",      // "close" → encerra + salva detalhes | "edit" → só detalhes
   initialDetails = null,
   onSaved,             // chamado após save OK — (short_token, details)
 }) {
   const [posVendaUrl, setPosVendaUrl]   = useState("");
   const [posVendaMode, setPosVendaMode] = useState(null); // "apresentado" | "enviado"
+  const [posVendaDate, setPosVendaDate] = useState("");
   const [extraUrl, setExtraUrl]         = useState("");
   const [extraMode, setExtraMode]       = useState(null);
+  const [extraDate, setExtraDate]       = useState("");
   const [checkups, setCheckups]         = useState("");
   const [busy, setBusy]                 = useState(false);
   const [error, setError]               = useState(null);
@@ -44,8 +46,10 @@ export function ClosureModal({
     if (!open) return;
     setPosVendaUrl(initialDetails?.pos_venda_url || "");
     setPosVendaMode(initialDetails?.pos_venda_mode || null);
+    setPosVendaDate(initialDetails?.pos_venda_date || "");
     setExtraUrl(initialDetails?.extra_url || "");
     setExtraMode(initialDetails?.extra_mode || null);
+    setExtraDate(initialDetails?.extra_date || "");
     setCheckups(
       initialDetails?.weekly_checkups != null
         ? String(initialDetails.weekly_checkups)
@@ -65,9 +69,31 @@ export function ClosureModal({
     return Number.isInteger(n) && n >= 0 ? n : null;
   }, [checkups]);
 
+  // Teto de checkups derivado do período REAL da campanha (early_end_date
+  // vence o end_date contratual): 1 checkup por semana + onboarding +
+  // fechamento. 4 semanas → 6; 2 semanas → 4. Sem datas (payload velho /
+  // edge), o teto desliga e vale só o ≥ 0.
+  const weeks = useMemo(() => {
+    const s = campaign?.start_date;
+    const e = campaign?.early_end_date || campaign?.end_date;
+    if (!s || !e) return null;
+    const [sy, sm, sd] = s.split("-").map(Number);
+    const [ey, em, ed] = e.split("-").map(Number);
+    const days = Math.round((new Date(ey, em - 1, ed) - new Date(sy, sm - 1, sd)) / 86400000) + 1;
+    if (!Number.isFinite(days) || days <= 0) return null;
+    return Math.ceil(days / 7);
+  }, [campaign]);
+  const maxCheckups = weeks != null ? weeks + 2 : null;
+  const checkupsOverMax =
+    checkupsNum != null && maxCheckups != null && checkupsNum > maxCheckups;
+
+  // Data da apresentação: não faz sentido antes do início da campanha nem
+  // no futuro ("foi apresentado" é passado).
+  const todayISO = new Date().toISOString().slice(0, 10);
+
   const canSave =
     !busy &&
-    checkupsNum != null &&                       // obrigatório
+    checkupsNum != null && !checkupsOverMax &&   // obrigatório, dentro do teto
     (!posVendaFilled || (posVendaIsSlides && posVendaMode)) &&
     (!extraFilled || extraMode);
 
@@ -78,8 +104,16 @@ export function ClosureModal({
     const details = {
       pos_venda_url:   posVendaFilled ? posVendaUrl.trim() : null,
       pos_venda_mode:  posVendaFilled ? posVendaMode : null,
+      pos_venda_date:
+        posVendaFilled && posVendaMode === "apresentado" && posVendaDate
+          ? posVendaDate
+          : null,
       extra_url:       extraFilled ? extraUrl.trim() : null,
       extra_mode:      extraFilled ? extraMode : null,
+      extra_date:
+        extraFilled && extraMode === "apresentado" && extraDate
+          ? extraDate
+          : null,
       weekly_checkups: checkupsNum,
     };
     try {
@@ -219,6 +253,15 @@ export function ClosureModal({
                   disabled={busy}
                 />
               )}
+              {posVendaFilled && posVendaMode === "apresentado" && (
+                <PresentedDateField
+                  value={posVendaDate}
+                  onChange={setPosVendaDate}
+                  min={campaign?.start_date}
+                  max={todayISO}
+                  disabled={busy}
+                />
+              )}
             </section>
 
             {/* Material adicional */}
@@ -240,6 +283,15 @@ export function ClosureModal({
                 <DeliveryModeSegment
                   value={extraMode}
                   onChange={setExtraMode}
+                  disabled={busy}
+                />
+              )}
+              {extraFilled && extraMode === "apresentado" && (
+                <PresentedDateField
+                  value={extraDate}
+                  onChange={setExtraDate}
+                  min={campaign?.start_date}
+                  max={todayISO}
                   disabled={busy}
                 />
               )}
@@ -270,7 +322,7 @@ export function ClosureModal({
                   disabled={busy}
                   placeholder="Ex: 4"
                   className={cn(
-                    fieldClass(checkups.trim() !== "" && checkupsNum == null),
+                    fieldClass((checkups.trim() !== "" && checkupsNum == null) || checkupsOverMax),
                     "w-20 text-center tabular-nums",
                     // Esconde os spinners nativos — o stepper custom já cobre
                     "[appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none",
@@ -278,7 +330,7 @@ export function ClosureModal({
                 />
                 <StepperButton
                   label="Aumentar"
-                  disabled={busy}
+                  disabled={busy || (maxCheckups != null && (checkupsNum ?? 0) >= maxCheckups)}
                   onClick={() => setCheckups(String((checkupsNum ?? 0) + 1))}
                 >
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
@@ -286,6 +338,18 @@ export function ClosureModal({
               </div>
               {checkups.trim() !== "" && checkupsNum == null && (
                 <FieldNote tone="danger">Use um número inteiro (0 ou mais).</FieldNote>
+              )}
+              {checkupsOverMax && (
+                <FieldNote tone="danger">
+                  Máximo pra esta campanha: {maxCheckups} checkups.
+                </FieldNote>
+              )}
+              {maxCheckups != null && (
+                <p className="mt-1.5 text-[10.5px] text-fg-subtle leading-snug">
+                  Campanha de {weeks} semana{weeks === 1 ? "" : "s"} → até{" "}
+                  <span className="font-semibold text-fg-muted">{maxCheckups} checkups</span>{" "}
+                  (onboarding + 1 por semana + fechamento).
+                </p>
               )}
               <p className="mt-1.5 text-[10.5px] text-fg-subtle italic">
                 Métrica interna — não aparece no report do cliente.
@@ -416,6 +480,34 @@ function DeliveryModeSegment({ value, onChange, disabled }) {
         })}
       </div>
     </div>
+  );
+}
+
+/**
+ * Campo "Data da apresentação" — abre quando o material foi APRESENTADO
+ * (a pergunta é "quando?"). Opcional; range start_date → hoje.
+ */
+function PresentedDateField({ value, onChange, min, max, disabled }) {
+  return (
+    <label className="block mt-2.5">
+      <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+        Data da apresentação{" "}
+        <span className="text-fg-subtle font-normal normal-case tracking-normal">(opcional)</span>
+      </span>
+      <input
+        type="date"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        min={min || undefined}
+        max={max || undefined}
+        disabled={disabled}
+        className={cn(
+          "mt-1 block w-44 rounded-md border border-border bg-surface px-2.5 py-1.5",
+          "text-sm font-mono tabular-nums text-fg transition-shadow duration-150",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature/50",
+        )}
+      />
+    </label>
   );
 }
 

@@ -216,6 +216,20 @@ export function CampaignDrawer({
     setClosureInitialDetails(null);
     setEditClosureBusy("idle");
   }, [drawerToken, open]);
+  // Resumo do fechamento (pós-venda + checkups) — exibido no topo do drawer
+  // de campanha encerrada. Fetch lazy quando o drawer abre; depois de um
+  // save no popup, atualiza direto do payload salvo (sem refetch).
+  const drawerClosedAt = campaign?.closed_at;
+  const [closureSummary, setClosureSummary] = useState(null);
+  useEffect(() => {
+    setClosureSummary(null);
+    if (!open || !drawerToken || !drawerClosedAt) return;
+    let cancelled = false;
+    getClosureDetails({ short_token: drawerToken })
+      .then((d) => { if (!cancelled) setClosureSummary(d); })
+      .catch(() => { /* sem resumo — drawer segue normal */ });
+    return () => { cancelled = true; };
+  }, [open, drawerToken, drawerClosedAt]);
   // Mesmo padrão pro toggle de pausa — resetado quando o drawer abre/troca.
   const [pauseBusy, setPauseBusy] = useState("idle");
   useEffect(() => { setPauseBusy("idle"); }, [drawerToken, open]);
@@ -375,8 +389,10 @@ export function CampaignDrawer({
   // Save OK no popup. No fluxo close, dispara a animação de sucesso do
   // botão e propaga pro pai (mesmo contrato de antes: o handler atualiza
   // só o array `campaigns`; o drawerCampaign não é tocado, então o botão
-  // fica montado e a animação roda completa).
-  const handleClosureSaved = () => {
+  // fica montado e a animação roda completa). O resumo no topo atualiza
+  // direto do payload salvo — sem esperar refetch.
+  const handleClosureSaved = (_token, details) => {
+    setClosureSummary(details || null);
     if (closureModalMode === "close") {
       setClosureBusy("done");
       onClosureChange?.(short_token);
@@ -623,6 +639,15 @@ export function CampaignDrawer({
             </div>
           )}
 
+          {/* Resumo do fechamento — o que foi registrado no popup ao
+              encerrar (pós-venda, material extra, checkups). Só pra
+              campanha encerrada e quando os detalhes já chegaram. */}
+          {!!closed_at && closureSummary && (
+            <div className="drawer-section-rise drawer-stagger-3">
+              <ClosureSummaryNote details={closureSummary} />
+            </div>
+          )}
+
           {/* Owners — agora em duas colunas side-by-side. Email completo
               fica no tooltip (title) pra não comer largura, e cada pill
               cai pra ~40px de altura (vs ~50px do card antigo). Total da
@@ -855,7 +880,7 @@ export function CampaignDrawer({
       <ClosureModal
         open={closureModalOpen}
         onOpenChange={setClosureModalOpen}
-        campaign={{ short_token, client_name, campaign_name }}
+        campaign={{ short_token, client_name, campaign_name, start_date, end_date, early_end_date }}
         mode={closureModalMode}
         initialDetails={closureInitialDetails}
         onSaved={handleClosureSaved}
@@ -1111,6 +1136,93 @@ function EarlyEndedNote({ date, reason, originalEnd }) {
       <p className="text-[10px] text-fg-subtle italic mt-2">
         Observação admin — não aparece no report do cliente.
       </p>
+    </div>
+  );
+}
+
+/**
+ * Resumo do fechamento — o que foi registrado no popup ao encerrar:
+ * pós-venda (com modo + data), material adicional e checkups semanais.
+ * Tom success soft (fechamento completo é estado "bom"). Links clicáveis
+ * abrem em nova aba; itens não registrados aparecem esmaecidos pra o
+ * admin ver de relance o que falta preencher.
+ */
+function ClosureSummaryNote({ details }) {
+  const fmtDate = (iso) => {
+    if (!iso) return null;
+    const [y, m, d] = iso.split("-").map(Number);
+    if (!y || !m || !d) return null;
+    return `${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}/${y}`;
+  };
+  const modeLabel = (mode, date) => {
+    if (!mode) return null;
+    const base = mode === "apresentado" ? "apresentado" : "enviado";
+    const dt = fmtDate(date);
+    return dt ? `${base} em ${dt}` : base;
+  };
+  return (
+    <div className="mb-5 rounded-lg border border-success/30 bg-success-soft px-3 py-3">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-success">{ICON.posvenda}</span>
+        <span className="text-[11px] uppercase tracking-widest font-bold text-success">
+          Fechamento
+        </span>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <ClosureSummaryRow
+          label="Pós-venda"
+          ok={!!details.pos_venda_url}
+          detail={modeLabel(details.pos_venda_mode, details.pos_venda_date)}
+          href={details.pos_venda_url}
+        />
+        <ClosureSummaryRow
+          label="Material adicional"
+          ok={!!details.extra_url}
+          detail={modeLabel(details.extra_mode, details.extra_date)}
+          href={details.extra_url}
+        />
+        <ClosureSummaryRow
+          label="Checkups semanais"
+          ok={details.weekly_checkups != null}
+          detail={
+            details.weekly_checkups != null
+              ? `${details.weekly_checkups} checkup${details.weekly_checkups === 1 ? "" : "s"}`
+              : null
+          }
+        />
+      </div>
+    </div>
+  );
+}
+
+/** Linha do resumo de fechamento — dot de presença + label + detalhe/link. */
+function ClosureSummaryRow({ label, ok, detail, href }) {
+  return (
+    <div className="flex items-baseline gap-2 leading-snug">
+      <span
+        aria-hidden
+        className={cn(
+          "size-1.5 rounded-full shrink-0 self-center",
+          ok ? "bg-success" : "bg-fg-subtle/30",
+        )}
+      />
+      <span className="text-[11.5px] font-semibold text-fg w-[8.5rem] shrink-0">{label}</span>
+      {ok ? (
+        href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[11.5px] text-signature hover:underline truncate min-w-0"
+          >
+            {detail || "abrir"}
+          </a>
+        ) : (
+          <span className="text-[11.5px] text-fg-muted truncate min-w-0">{detail}</span>
+        )
+      ) : (
+        <span className="text-[11.5px] text-fg-subtle italic">não registrado</span>
+      )}
     </div>
   );
 }
