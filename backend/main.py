@@ -4601,9 +4601,14 @@ def query_all_campaign_elements() -> dict:
 
     Alimenta o chip "setup N/M" (negociado ∧ não-ativo + Loom sempre
     esperado) e os dots de fechamento do card admin.
+
+    DUAS queries de propósito: assets/closure vivem em prod_assets +
+    dev_assets (região US), e checklists vive em hypr_sales_center (outra
+    região) — UNION não cruza regiões no BQ (job falha com "dataset not
+    found in location US"). Cada query roda na região dos próprios datasets.
     """
     _ensure_closure_details_table()
-    sql = f"""
+    sql_assets = f"""
         SELECT short_token, 'asset' AS kind, 'loom' AS item
         FROM `{PROJECT_ID}.{DATASET_ASSETS}.campaign_looms`
         WHERE loom_url IS NOT NULL
@@ -4622,8 +4627,9 @@ def query_all_campaign_elements() -> dict:
         UNION ALL
         SELECT short_token, 'closure', 'checkups' FROM `{_closure_details_table_id()}`
         WHERE weekly_checkups IS NOT NULL
-        UNION ALL
-        SELECT DISTINCT short_token, 'negotiated', 'survey'
+    """
+    sql_negotiated = f"""
+        SELECT DISTINCT short_token, 'negotiated' AS kind, 'survey' AS item
         FROM `{PROJECT_ID}.{DATASET_SALES_CENTER}.checklists`
         WHERE short_token IS NOT NULL AND short_token != ''
           AND REGEXP_CONTAINS(LOWER(TO_JSON_STRING(extras)), r'survey')
@@ -4642,18 +4648,21 @@ def query_all_campaign_elements() -> dict:
           )
     """
     out = {}
-    for row in bq.query(sql).result():
-        bucket = out.setdefault(row["short_token"], {"assets": [], "negotiated": [], "closure": []})
-        key = {"asset": "assets", "negotiated": "negotiated", "closure": "closure"}[row["kind"]]
-        if row["item"] not in bucket[key]:
-            bucket[key].append(row["item"])
+    for sql in (sql_assets, sql_negotiated):
+        for row in bq.query(sql).result():
+            bucket = out.setdefault(row["short_token"], {"assets": [], "negotiated": [], "closure": []})
+            key = {"asset": "assets", "negotiated": "negotiated", "closure": "closure"}[row["kind"]]
+            if row["item"] not in bucket[key]:
+                bucket[key].append(row["item"])
     return out
 
 
-def _safe_get_elements() -> dict:
-    """query_all_campaign_elements com cache (TTL da lista) e fallback {}.
-    Best-effort: o card vive sem os dots (campo `elements` ausente no
-    payload) — uma tabela faltando não pode derrubar a lista inteira."""
+def _safe_get_elements():
+    """query_all_campaign_elements com cache (TTL da lista). Em falha
+    retorna None — e o caller PULA o enrichment de setup/fechamento.
+    O fallback NÃO pode ser {} : com mapa vazio, toda campanha pareceria
+    "sem Loom" e o chip âmbar de setup pintaria nos 300+ cards de uma vez
+    (aconteceu no primeiro deploy, quando o UNION cross-região falhava)."""
     cached = _cache_get(_elements_cache, "all", _LIST_CACHE_TTL)
     if cached is not None:
         return cached
@@ -4661,7 +4670,7 @@ def _safe_get_elements() -> dict:
         m = query_all_campaign_elements()
     except Exception as e:
         logger.warning(f"[WARN query_all_campaign_elements] {e}")
-        return {}
+        return None
     _cache_set(_elements_cache, "all", m)
     return m
 
@@ -7175,18 +7184,22 @@ def query_campaigns_list():
         #     na NEGOCIAÇÃO (survey/pdooh/rmnd). Só emite quando falta algo —
         #     campanha completa não carrega o campo (chip âmbar só aparece
         #     quando há pendência; zero ruído no scan).
-        info = elements_map.get(r["short_token"]) or {}
-        closure_items = info.get("closure") or []
-        if closure_items:
-            entry["fechamento"] = closure_items
-        expected = {"loom"} | (set(info.get("negotiated") or []) & {"survey", "pdooh", "rmnd"})
-        missing = sorted(expected - set(info.get("assets") or []))
-        if missing:
-            entry["setup"] = {
-                "done":    len(expected) - len(missing),
-                "total":   len(expected),
-                "missing": missing,
-            }
+        # elements_map None = fetch de elementos falhou → pula o enrichment
+        # inteiro (sem chip/dots nesse refresh) em vez de cobrar Loom de
+        # todo mundo com base em dado ausente.
+        if elements_map is not None:
+            info = elements_map.get(r["short_token"]) or {}
+            closure_items = info.get("closure") or []
+            if closure_items:
+                entry["fechamento"] = closure_items
+            expected = {"loom"} | (set(info.get("negotiated") or []) & {"survey", "pdooh", "rmnd"})
+            missing = sorted(expected - set(info.get("assets") or []))
+            if missing:
+                entry["setup"] = {
+                    "done":    len(expected) - len(missing),
+                    "total":   len(expected),
+                    "missing": missing,
+                }
 
         result.append(entry)
 
