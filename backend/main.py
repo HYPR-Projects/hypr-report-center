@@ -57,6 +57,19 @@ import pmp_groups
 import xandr_curate
 
 logger = logging.getLogger(__name__)
+# Cloud Functions não instala nenhuma config de logging — sem isto o nível
+# efetivo deste logger herda o default WARNING do root, e TODO logger.info()
+# é descartado silenciosamente antes de chegar ao Cloud Logging. Foi por isso
+# que a linha "[rebuild_unified] ... disparada por <email>" (e qualquer outro
+# INFO de auditoria leve) nunca apareceu nos logs. Anexamos um handler próprio
+# em INFO e desligamos a propagação pro root: assim INFO+ deste módulo passa a
+# ser emitido, sem ligar INFO de libs barulhentas (urllib3/google) e sem
+# duplicar via lastResort do root (que continua tratando os outros módulos).
+logger.setLevel(logging.INFO)
+_app_log_handler = logging.StreamHandler()
+_app_log_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+logger.addHandler(_app_log_handler)
+logger.propagate = False
 
 # ── BQ client com timeout obrigatório ────────────────────────────────────────
 # Incidente 04/06: um job BQ pendurou sem timeout, travou um worker do
@@ -2255,7 +2268,10 @@ def report_data(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
             res = trigger_dagster_rebuild()
-            logger.info(f"[rebuild_unified] run {res['run_id']} disparada por {admin.get('email','?')}")
+            logger.info(
+                f"[rebuild_unified] disparada por={admin.get('email','?')} "
+                f"run_id={res['run_id']} run_url={res.get('run_url','?')}"
+            )
             return (jsonify({"ok": True, **res}), 200, headers)
         except RuntimeError as e:
             # Falha esperada (config ausente / Dagster recusou) — mensagem amigável.
