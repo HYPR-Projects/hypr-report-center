@@ -19,6 +19,7 @@ import { useLogoAnalysis } from "../hooks/useLogoAnalysis";
 import { useTheme } from "../hooks/useTheme";
 import { TokenChip } from "../admin/components/TokenChip";
 import { NegotiationModal } from "./NegotiationModal";
+import { PosVendaModal } from "./PosVendaModal";
 import { ReportAnalyticsModal } from "../admin/components/ReportAnalyticsModal";
 import { getNegotiation } from "../../lib/api";
 import { fmtR } from "../../shared/format";
@@ -98,10 +99,17 @@ export function CampaignHeaderV2({
   earlyEnded = false,
   originalEndDate = null,
   contractedBudget = null,
+  // ── Pós-venda ────────────────────────────────────────────────────────
+  // Salvo pelo admin no fechamento da campanha: {url, mode, extra_url,
+  // extra_mode}. Quando presente, o chip "Pós-venda" entra na meta line
+  // (ao lado de Negociado) e abre modal com o Google Slides embutido.
+  posVenda = null,
 }) {
   // State do modal de analytics. Local ao header — não precisa subir, o
   // header já é admin-aware via isAdmin e o modal é self-contained.
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [posVendaOpen, setPosVendaOpen] = useState(false);
+  const hasPosVenda = !!(posVenda && (posVenda.url || posVenda.extra_url));
   const baseStatus = deriveStatus(startDate, endDate);
   // Encerramento antecipado pinta o status de danger (vermelho) — espelha
   // o badge "ANTES DO PREVISTO" do admin e sinaliza que não foi um término
@@ -266,6 +274,12 @@ export function CampaignHeaderV2({
                 <NegotiationButton onClick={() => setNegoOpen(true)} />
               </>
             )}
+            {hasPosVenda && (
+              <>
+                <span className="text-fg-subtle">·</span>
+                <PosVendaButton onClick={() => setPosVendaOpen(true)} />
+              </>
+            )}
           </div>
 
           {/* Disclaimer de encerramento antecipado — explica que o período
@@ -362,6 +376,14 @@ export function CampaignHeaderV2({
         legacyTotals={legacyTotals}
         reportData={reportData}
       />
+      {hasPosVenda && (
+        <PosVendaModal
+          open={posVendaOpen}
+          onOpenChange={setPosVendaOpen}
+          posVenda={posVenda}
+          clientName={clientName}
+        />
+      )}
       {isAdmin && (
         <ReportAnalyticsModal
           open={analyticsOpen}
@@ -374,6 +396,47 @@ export function CampaignHeaderV2({
         />
       )}
     </section>
+  );
+}
+
+// Chip "Pós-venda" — mesma família visual do NegotiationButton (signature
+// soft, mesma altura na meta line), com ícone de apresentação. Abre o modal
+// com o Google Slides embutido — o cliente vê o deck sem sair do report.
+function PosVendaButton({ onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md cursor-pointer",
+        "bg-signature-soft border border-signature/40 text-signature",
+        "text-[11px] font-bold uppercase tracking-wider",
+        "hover:bg-signature/15 hover:border-signature/60 transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-surface-2",
+      ].join(" ")}
+      aria-label="Ver apresentação de pós-venda"
+    >
+      <SlidesChipIcon className="size-3" />
+      Pós-venda
+    </button>
+  );
+}
+
+function SlidesChipIcon({ className }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="2" y="3" width="20" height="14" rx="2" />
+      <path d="M8 21h8M12 17v4" />
+    </svg>
   );
 }
 

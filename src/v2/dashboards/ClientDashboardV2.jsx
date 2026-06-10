@@ -708,6 +708,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
             legacyTotals={(data.totals || [])[0]}
             reportData={data}
             isAdmin={isAdmin}
+            posVenda={data.pos_venda}
           />
 
           {/* Tabs com filtro de período alinhado à direita.

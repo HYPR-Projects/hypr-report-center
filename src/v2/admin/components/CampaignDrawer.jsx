@@ -21,10 +21,11 @@ import { cn } from "../../../ui/cn";
 import { Avatar } from "../../../ui/Avatar";
 import { AbsToggle } from "./AbsToggle";
 import { TokenChip } from "./TokenChip";
+import { ClosureModal } from "./ClosureModal";
 import {
   getNegotiation,
   getCampaign,
-  saveCampaignClosure,
+  getClosureDetails,
   saveCampaignPause,
   saveCampaignEarlyEnd,
   clearCampaignEarlyEnd,
@@ -121,6 +122,12 @@ const ICON = {
       <path d="m9 12 2 2 4-4" />
     </svg>
   ),
+  posvenda: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="20" height="14" rx="2" />
+      <path d="M8 21h8M12 17v4" />
+    </svg>
+  ),
   pause: (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="6"  y="4" width="4" height="16" rx="1" />
@@ -194,6 +201,21 @@ export function CampaignDrawer({
   // Reseta toda vez que o drawer abre/troca de campanha.
   const [closureBusy, setClosureBusy] = useState("idle");
   useEffect(() => { setClosureBusy("idle"); }, [drawerToken, open]);
+  // Popup de fechamento (pós-venda + checkups). closureModalMode distingue
+  // o fluxo "encerrar agora" (close) do "editar dados de campanha já
+  // encerrada" (edit, pré-populado via getClosureDetails).
+  const [closureModalOpen, setClosureModalOpen] = useState(false);
+  const [closureModalMode, setClosureModalMode] = useState("close");
+  const [closureInitialDetails, setClosureInitialDetails] = useState(null);
+  // idle | loading | error — estado do botão "Pós-venda & fechamento"
+  // enquanto o prefill do edit mode está em voo.
+  const [editClosureBusy, setEditClosureBusy] = useState("idle");
+  useEffect(() => {
+    setClosureModalOpen(false);
+    setClosureModalMode("close");
+    setClosureInitialDetails(null);
+    setEditClosureBusy("idle");
+  }, [drawerToken, open]);
   // Mesmo padrão pro toggle de pausa — resetado quando o drawer abre/troca.
   const [pauseBusy, setPauseBusy] = useState("idle");
   useEffect(() => { setPauseBusy("idle"); }, [drawerToken, open]);
@@ -331,20 +353,39 @@ export function CampaignDrawer({
     ? (end_date < todayISO ? end_date : todayISO)
     : todayISO;
 
-  const handleCloseCampaign = async () => {
+  // "Marcar como encerrada" agora abre o popup de fechamento — o save
+  // acontece lá dentro (closure + pós-venda + checkups numa request só).
+  const handleCloseCampaign = () => {
     if (!short_token || closureBusy === "saving") return;
-    setClosureBusy("saving");
-    try {
-      await saveCampaignClosure({ short_token, closed: true });
+    setClosureModalMode("close");
+    setClosureInitialDetails(null);
+    setClosureModalOpen(true);
+  };
+
+  // Save OK no popup. No fluxo close, dispara a animação de sucesso do
+  // botão e propaga pro pai (mesmo contrato de antes: o handler atualiza
+  // só o array `campaigns`; o drawerCampaign não é tocado, então o botão
+  // fica montado e a animação roda completa).
+  const handleClosureSaved = () => {
+    if (closureModalMode === "close") {
       setClosureBusy("done");
-      // Propaga na hora — o handler do pai atualiza só o array `campaigns`
-      // (card atrás reflete imediatamente). O drawerCampaign NÃO é tocado,
-      // então `awaiting` continua true, o botão fica montado e a animação
-      // de sucesso roda completa em paralelo. Quando o user fechar o drawer
-      // e reabrir, o campaign vem da lista atualizada com closed_at.
       onClosureChange?.(short_token);
+    }
+  };
+
+  // "Pós-venda & fechamento" em campanha já encerrada — pré-carrega os
+  // detalhes salvos e abre o popup em modo edição.
+  const handleEditClosure = async () => {
+    if (!short_token || editClosureBusy === "loading") return;
+    setEditClosureBusy("loading");
+    try {
+      const details = await getClosureDetails({ short_token });
+      setClosureInitialDetails(details);
+      setClosureModalMode("edit");
+      setClosureModalOpen(true);
+      setEditClosureBusy("idle");
     } catch {
-      setClosureBusy("error");
+      setEditClosureBusy("error");
     }
   };
 
@@ -620,31 +661,40 @@ export function CampaignDrawer({
               Renderiza só quando há alguma ação de ciclo disponível, pra
               não sobrar um header "Status" vazio em campanhas onde tudo já
               tá resolvido (encerrada e não pausável). */}
-          {(awaiting || canEarlyEnd || earlyEnded || canPause) && (
+          {(awaiting || canEarlyEnd || earlyEnded || canPause || closed_at) && (
             <ActionGroup label="Status" className="drawer-section-rise drawer-stagger-5">
               {/* "Marcar como encerrada" — só aparece em campanhas aguardando
                   fechamento. CTA âmbar pra puxar atenção (foi por isso que
-                  o admin abriu o drawer dessa campanha). */}
+                  o admin abriu o drawer dessa campanha). Abre o popup de
+                  fechamento (pós-venda + checkups); o save acontece lá. */}
               {awaiting && (
                 <ActionButton
                   icon={
-                    closureBusy === "saving" ? <Spinner />
-                    : closureBusy === "done" ? <ClosureSuccessIcon />
+                    closureBusy === "done" ? <ClosureSuccessIcon />
                     : ICON.closure
                   }
                   label={
-                    closureBusy === "saving" ? "Marcando como encerrada..."
-                    : closureBusy === "done"  ? "Encerrada!"
-                    : closureBusy === "error" ? "Erro — tentar de novo"
+                    closureBusy === "done" ? "Encerrada!"
                     : "Marcar como encerrada"
                   }
-                  variant={
-                    closureBusy === "done"  ? "success"
-                    : closureBusy === "error" ? "danger"
-                    : "warning"
-                  }
-                  disabled={closureBusy === "saving" || closureBusy === "done"}
+                  variant={closureBusy === "done" ? "success" : "warning"}
+                  disabled={closureBusy === "done"}
                   onClick={handleCloseCampaign}
+                />
+              )}
+              {/* Campanha já encerrada — admin pode revisar/corrigir os
+                  dados do fechamento (pós-venda, material, checkups). */}
+              {!!closed_at && (
+                <ActionButton
+                  icon={editClosureBusy === "loading" ? <Spinner /> : ICON.posvenda}
+                  label={
+                    editClosureBusy === "loading" ? "Carregando fechamento..."
+                    : editClosureBusy === "error" ? "Erro — tentar de novo"
+                    : "Pós-venda & fechamento"
+                  }
+                  variant={editClosureBusy === "error" ? "danger" : "default"}
+                  disabled={editClosureBusy === "loading"}
+                  onClick={handleEditClosure}
                 />
               )}
               {canEarlyEnd && !showEarlyEndForm && (
@@ -787,6 +837,17 @@ export function CampaignDrawer({
           </Button>
         </DrawerFooter>
       </DrawerContent>
+
+      {/* Popup de fechamento — nested dialog sobre o drawer (Radix empilha
+          as camadas; interagir aqui não fecha o drawer por baixo). */}
+      <ClosureModal
+        open={closureModalOpen}
+        onOpenChange={setClosureModalOpen}
+        campaign={{ short_token, client_name, campaign_name }}
+        mode={closureModalMode}
+        initialDetails={closureInitialDetails}
+        onSaved={handleClosureSaved}
+      />
     </Drawer>
   );
 }
