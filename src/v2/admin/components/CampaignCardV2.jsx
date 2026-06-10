@@ -177,6 +177,10 @@ function CampaignCardV2Inner({
     // Custo Efetivo do report. Ausente em payload antigo (graceful) e em
     // bonificada/sem PI → esconde a linha "entregue" + barra.
     client_delivered_value,
+    // Elementos presentes na campanha (nego/logo/loom/survey/rmnd/pdooh/
+    // pos_venda) — mini-dots abaixo das datas. Ausente em payload antigo
+    // → fileira some (graceful).
+    elements,
   } = campaign;
   const has_abs = display_has_abs || video_has_abs;
 
@@ -362,6 +366,7 @@ function CampaignCardV2Inner({
             {campaign_name}
           </p>
           <DateRangeLine startISO={start_date} endISO={effectiveEndDate} />
+          <ElementDots elements={elements} />
         </div>
 
         {/* ── KPIs mobile (visível só <md) ──────────────────────────────
@@ -814,6 +819,73 @@ function DateRangeLine({ startISO, endISO }) {
     <p className="text-[10.5px] text-fg-subtle mt-0.5 tabular-nums">
       {parts.startStr} → <span className={cls}>{parts.endStr}</span>
     </p>
+  );
+}
+
+// Elementos possíveis de uma campanha, na ordem de exibição dos dots.
+// Mesmas keys emitidas pelo backend em `entry["elements"]`.
+const ELEMENT_DEFS = [
+  ["nego",      "Negociado"],
+  ["logo",      "Logo"],
+  ["loom",      "Loom"],
+  ["survey",    "Survey"],
+  ["rmnd",      "RMND"],
+  ["pdooh",     "PDOOH"],
+  ["pos_venda", "Pós-venda"],
+];
+
+/**
+ * Fileira de mini-dots — quantos elementos a campanha tem do total possível,
+ * de forma puramente visual (verde = tem, cinza = não tem). Tooltip lista o
+ * checklist completo. Renderiza só quando o backend mandou o campo
+ * `elements` (payload antigo → some, sem placeholder).
+ */
+function ElementDots({ elements }) {
+  if (!elements) return null;
+  const set = new Set(elements);
+  const have = ELEMENT_DEFS.filter(([k]) => set.has(k)).length;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div
+          className="flex items-center gap-1 mt-1.5 w-fit cursor-default"
+          aria-label={`${have} de ${ELEMENT_DEFS.length} elementos cadastrados`}
+        >
+          {ELEMENT_DEFS.map(([key]) => (
+            <span
+              key={key}
+              aria-hidden
+              className={cn(
+                "size-1.5 rounded-full",
+                set.has(key) ? "bg-success" : "bg-fg-subtle/25",
+              )}
+            />
+          ))}
+          <span className="text-[9px] tabular-nums text-fg-subtle ml-0.5 leading-none">
+            {have}/{ELEMENT_DEFS.length}
+          </span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" align="start">
+        <div className="space-y-1 leading-snug">
+          <p className="text-[10px] uppercase tracking-[0.14em] font-semibold text-fg-subtle mb-1.5">
+            Elementos da campanha
+          </p>
+          {ELEMENT_DEFS.map(([key, label]) => (
+            <div key={key} className="flex items-center gap-1.5 text-[11px]">
+              <span
+                aria-hidden
+                className={cn(
+                  "size-1.5 rounded-full shrink-0",
+                  set.has(key) ? "bg-success" : "bg-fg-subtle/30",
+                )}
+              />
+              <span className={set.has(key) ? "text-fg" : "text-fg-subtle"}>{label}</span>
+            </div>
+          ))}
+        </div>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

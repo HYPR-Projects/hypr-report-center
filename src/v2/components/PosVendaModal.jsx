@@ -19,6 +19,17 @@ const MODE_LABEL = {
   enviado: "Enviado ao cliente",
 };
 
+// "2026-06-10" → "10 de jun." — data da apresentação no badge/card.
+function fmtDateShort(ymd) {
+  if (!ymd) return null;
+  const [y, m, d] = ymd.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d).toLocaleDateString("pt-BR", {
+    day: "numeric",
+    month: "short",
+  });
+}
+
 export function PosVendaModal({ open, onOpenChange, posVenda, clientName }) {
   if (!posVenda) return null;
   const embedUrl = slidesEmbedUrl(posVenda.url);
@@ -75,7 +86,7 @@ export function PosVendaModal({ open, onOpenChange, posVenda, clientName }) {
                 </Dialog.Description>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                {posVenda.mode && <ModeBadge mode={posVenda.mode} />}
+                {posVenda.mode && <ModeBadge mode={posVenda.mode} date={posVenda.date} />}
                 <Dialog.Close
                   aria-label="Fechar"
                   className={cn(
@@ -102,6 +113,7 @@ export function PosVendaModal({ open, onOpenChange, posVenda, clientName }) {
                 url={posVenda.url}
                 title="Apresentação de pós-venda"
                 mode={posVenda.mode}
+                date={posVenda.date}
                 icon={<SlidesIcon className="size-4" />}
               />
             )}
@@ -111,6 +123,7 @@ export function PosVendaModal({ open, onOpenChange, posVenda, clientName }) {
                 url={posVenda.extra_url}
                 title="Material adicional"
                 mode={posVenda.extra_mode}
+                date={posVenda.extra_date}
                 icon={<PaperclipIcon className="size-4" />}
               />
             )}
@@ -174,15 +187,17 @@ function SlidesFrame({ embedUrl }) {
   );
 }
 
-function ModeBadge({ mode }) {
+function ModeBadge({ mode, date }) {
   const label = MODE_LABEL[mode];
   if (!label) return null;
+  const dateStr = fmtDateShort(date);
   return (
     // hidden em mobile — no header estreito o badge competiria com o título
     // e o botão de fechar; é metadado secundário, não vale o overflow.
     <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-signature-soft border border-signature/40 text-signature text-[10px] font-bold uppercase tracking-wider whitespace-nowrap">
       {mode === "apresentado" ? <PresentIcon className="size-3" /> : <SendIcon className="size-3" />}
       {label}
+      {dateStr && <span className="text-signature/70 normal-case font-semibold">· {dateStr}</span>}
     </span>
   );
 }
@@ -191,13 +206,14 @@ function ModeBadge({ mode }) {
  * Card de link externo — usado pro material adicional e como fallback
  * quando o link de pós-venda não é um Slides embedável.
  */
-function LinkCard({ url, title, mode, icon }) {
+function LinkCard({ url, title, mode, date, icon }) {
   let host = "";
   try {
     host = new URL(url).hostname.replace(/^www\./, "");
   } catch {
     host = url;
   }
+  const dateStr = fmtDateShort(date);
   return (
     <a
       href={url}
@@ -222,6 +238,7 @@ function LinkCard({ url, title, mode, icon }) {
       {MODE_LABEL[mode] && (
         <span className="hidden sm:inline text-[10px] font-bold uppercase tracking-wider text-fg-subtle shrink-0">
           {MODE_LABEL[mode]}
+          {dateStr && <span className="normal-case font-semibold"> · {dateStr}</span>}
         </span>
       )}
       <ExternalIcon className="size-3.5 text-fg-subtle group-hover:text-signature transition-colors shrink-0" />
