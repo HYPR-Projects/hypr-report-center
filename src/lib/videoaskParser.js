@@ -16,7 +16,9 @@
 // r="G2" t="inlineStr"></c>` em colunas opcionais como Tags) e quebra na
 // hora de parsear o arquivo real.
 
-import { read, utils } from "xlsx";
+// xlsx é importado dinamicamente dentro de parseVideoaskFile — a lib tem
+// ~430 kB e só é necessária no momento do upload. Import estático aqui
+// arrastava o chunk inteiro pro boot do menu admin (via SurveyModal).
 
 const QUESTION_HEADER_RE = /^Q\d+\./;
 
@@ -31,6 +33,7 @@ export async function parseVideoaskFile(file) {
   if (!file) throw new Error("Nenhum arquivo selecionado");
   let rows;
   try {
+    const { read, utils } = await import("xlsx");
     const buffer = await file.arrayBuffer();
     const wb = read(buffer, { type: "array", cellDates: true });
     const sheet = wb.Sheets[wb.SheetNames[0]];

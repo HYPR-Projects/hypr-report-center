@@ -5114,36 +5114,6 @@ def query_negotiation(short_token: str):
     return None
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pacing — mesma fórmula da planilha:
-#   Se end_date < hoje  → custo_entregue / impressoes_negociadas
-#   Se ainda em curso   → custo_entregue / (impressoes_negociadas / total_dias * dias_passados)
-# Adaptado para o dashboard: usa effective_total_cost vs total_invested
-# ─────────────────────────────────────────────────────────────────────────────
-def calc_pacing(cost: float, budget: float, start_date, end_date) -> float:
-    if budget <= 0:
-        return 0.0
-    today = date.today()
-    # garante objetos date
-    if hasattr(start_date, "date"):
-        start_date = start_date.date()
-    if hasattr(end_date, "date"):
-        end_date = end_date.date()
-
-    if end_date < today:
-        # campanha já encerrada
-        pacing = cost / budget
-    else:
-        total_days   = (end_date - start_date).days + 1
-        elapsed_days = (today - start_date).days
-        if elapsed_days <= 0 or total_days <= 0:
-            return 0.0
-        expected_cost = budget / total_days * elapsed_days
-        pacing = cost / expected_cost if expected_cost > 0 else 0.0
-
-    return round(pacing * 100, 4)   # retorna em %
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 def query_campaign_info(token, cr_src=None):
     sql = f"""
         SELECT
@@ -6245,6 +6215,70 @@ def query_campaigns_list():
         _snap_futs = {t: _query_pool.submit(_load_snapshot_payload, t) for t in _frozen_here}
         snap_payloads = {t: f.result() for t, f in _snap_futs.items()}
 
+    # Helpers do loop abaixo — definidos UMA vez fora do loop (antes eram
+    # redefinidos a cada iteração, ~270×/request). Funções puras: todo input
+    # chega por argumento, nada captura variáveis da iteração.
+
+    # Parse actual_start_date helper — BQ pode devolver datetime ou date.
+    # Fallback null preservado (None significa "frente nunca entregou").
+    def _coerce_date(val):
+        if val is None:
+            return None
+        return val.date() if hasattr(val, "date") else val
+
+    # Pacing canônico HYPR: "baseado na média diária de entrega,
+    # qual % do contrato a campanha vai entregar até o final".
+    # Equivale a: delivered / (negotiated × elapsed_calendar / total_days)
+    #
+    # Espelhado no front em `shared/aggregations.js#computeMediaPacing`.
+    # List view e report mostram exatamente o mesmo número.
+    #
+    # ANTES: usávamos `days_with_delivery` no denominador, o que
+    # inflava artificialmente o pacing de campanhas que entregaram
+    # tudo concentradamente em poucos dias (ex.: Diageo entregou
+    # tudo em 1 dia de 9 → expected minúsculo → pacing 230%).
+    #
+    # O per-row pacing (campo `pacing` em totals, consumido pelo Resumo
+    # por mídia + Detalhamento + barra da aba Video) já foi alinhado em
+    # query_totals (~4671): calendar-elapsed com cap em row_total_days e a
+    # regra `today >= end → esperado = negociado cheio`, igual a esta.
+    #
+    # Retorna o "esperado até hoje" pra base do pacing.
+    # delivered/expected × 100 dá a % de pacing — exposta como métrica
+    # calculada no payload. expected também vai cru pro front pra permitir
+    # agregação correta (Σdelivered / Σexpected) por owner/cliente em vez
+    # de média de razões (que distorce por amostra pequena).
+    #
+    # `actual_start` opcional: quando a frente atrasou pra começar, usar
+    # o primeiro dia de entrega real evita penalizar a frente pelos dias
+    # em que não rodou. Fallback pra `sd` (start contratual) quando a
+    # frente ainda não entregou nada — nesse caso delivered=0 e o pacing
+    # será 0% independente do start usado.
+    def pacing_expected_to_date(negotiated, sd, ed, actual_start=None):
+        if negotiated <= 0 or not sd or not ed:
+            return None
+        s_camp = sd.date() if hasattr(sd, "date") else sd
+        e = ed.date() if hasattr(ed, "date") else ed
+        # CLAMP ao início contratual (ver query_totals/aggregations.js):
+        # entrega pré-voo não estica o runway pra trás. max() preserva o
+        # caso de frente que começa DEPOIS (actual_start > s_camp).
+        s = max(actual_start, s_camp) if actual_start else s_camp
+        today = date.today()
+        total_days = (e - s).days + 1
+        if total_days <= 0:
+            return None
+        # No último dia (ou depois) a campanha já decorreu por inteiro —
+        # o esperado é 100% do negociado. Alinha com o front
+        # (computeMediaPacing: `now > end ? tDays`). Mid-flight conta só
+        # dias completos (dia corrente não entra), igual ao floor() do front.
+        if today >= e:
+            elapsed_days = total_days
+        else:
+            elapsed_days = max(0, (today - s).days)
+        if elapsed_days <= 0:
+            return None
+        return negotiated / total_days * elapsed_days
+
     result = []
     for r in rows:
         # Cópia mutável da Row do BQ: pra tokens congelados sobrescrevemos os
@@ -6266,13 +6300,6 @@ def query_campaigns_list():
         v_days_delivery   = int(r["v_days_with_delivery"]     or 0)
         v_viewable_comp   = float(r["v_viewable_completions"] or 0)
         v_viewable_impr   = float(r["v_viewable_impressions"] or 0)
-        # Parse actual_start_date helper — BQ pode devolver datetime ou date.
-        # Fallback null preservado (None significa "frente nunca entregou").
-        def _coerce_date(val):
-            if val is None:
-                return None
-            return val.date() if hasattr(val, "date") else val
-
         v_actual_start    = _coerce_date(r["v_actual_start_date"])
         d_actual_start    = _coerce_date(r["d_actual_start_date"])
         d_o2o_actual_start = _coerce_date(r["d_o2o_actual_start_date"])
@@ -6284,58 +6311,6 @@ def query_campaigns_list():
 
         cpm_amount  = float(r["cpm_amount"]  or 0)
         cpcv_amount = float(r["cpcv_amount"] or 0)
-
-        # Pacing canônico HYPR: "baseado na média diária de entrega,
-        # qual % do contrato a campanha vai entregar até o final".
-        # Equivale a: delivered / (negotiated × elapsed_calendar / total_days)
-        #
-        # Espelhado no front em `shared/aggregations.js#computeMediaPacing`.
-        # List view e report mostram exatamente o mesmo número.
-        #
-        # ANTES: usávamos `days_with_delivery` no denominador, o que
-        # inflava artificialmente o pacing de campanhas que entregaram
-        # tudo concentradamente em poucos dias (ex.: Diageo entregou
-        # tudo em 1 dia de 9 → expected minúsculo → pacing 230%).
-        #
-        # O per-row pacing (campo `pacing` em totals, consumido pelo Resumo
-        # por mídia + Detalhamento + barra da aba Video) já foi alinhado em
-        # query_totals (~4671): calendar-elapsed com cap em row_total_days e a
-        # regra `today >= end → esperado = negociado cheio`, igual a esta.
-        # Retorna o "esperado até hoje" pra base do pacing.
-        # delivered/expected × 100 dá a % de pacing — exposta como métrica
-        # calculada no payload. expected também vai cru pro front pra permitir
-        # agregação correta (Σdelivered / Σexpected) por owner/cliente em vez
-        # de média de razões (que distorce por amostra pequena).
-        #
-        # `actual_start` opcional: quando a frente atrasou pra começar, usar
-        # o primeiro dia de entrega real evita penalizar a frente pelos dias
-        # em que não rodou. Fallback pra `sd` (start contratual) quando a
-        # frente ainda não entregou nada — nesse caso delivered=0 e o pacing
-        # será 0% independente do start usado.
-        def pacing_expected_to_date(negotiated, sd, ed, actual_start=None):
-            if negotiated <= 0 or not sd or not ed:
-                return None
-            s_camp = sd.date() if hasattr(sd, "date") else sd
-            e = ed.date() if hasattr(ed, "date") else ed
-            # CLAMP ao início contratual (ver query_totals/aggregations.js):
-            # entrega pré-voo não estica o runway pra trás. max() preserva o
-            # caso de frente que começa DEPOIS (actual_start > s_camp).
-            s = max(actual_start, s_camp) if actual_start else s_camp
-            today = date.today()
-            total_days = (e - s).days + 1
-            if total_days <= 0:
-                return None
-            # No último dia (ou depois) a campanha já decorreu por inteiro —
-            # o esperado é 100% do negociado. Alinha com o front
-            # (computeMediaPacing: `now > end ? tDays`). Mid-flight conta só
-            # dias completos (dia corrente não entra), igual ao floor() do front.
-            if today >= e:
-                elapsed_days = total_days
-            else:
-                elapsed_days = max(0, (today - s).days)
-            if elapsed_days <= 0:
-                return None
-            return negotiated / total_days * elapsed_days
 
         d_clicks = float(r["d_clicks"] or 0)
         v_clicks = float(r["v_clicks"] or 0)
