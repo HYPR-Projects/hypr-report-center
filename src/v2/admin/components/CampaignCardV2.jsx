@@ -177,10 +177,12 @@ function CampaignCardV2Inner({
     // Custo Efetivo do report. Ausente em payload antigo (graceful) e em
     // bonificada/sem PI → esconde a linha "entregue" + barra.
     client_delivered_value,
-    // Elementos presentes na campanha (nego/logo/loom/survey/rmnd/pdooh/
-    // pos_venda) — mini-dots abaixo das datas. Ausente em payload antigo
-    // → fileira some (graceful).
-    elements,
+    // Fechamento registrado (subset de [pos_venda, checkups]) — dots
+    // verde/cinza abaixo das datas, só em campanha encerrada/aguardando.
+    fechamento,
+    // Setup pendente ({done, total, missing}) — o backend só emite quando
+    // falta ativar algo do esperado (Loom + condicionais negociados).
+    setup,
   } = campaign;
   const has_abs = display_has_abs || video_has_abs;
 
@@ -351,6 +353,9 @@ function CampaignCardV2Inner({
             {has_abs && <AbsBadge />}
             {paused && <PausedBadge reason={paused_reason} />}
             {awaiting && <AwaitingClosureBadge />}
+            {/* Setup pendente — só em campanha viva/aguardando (encerrada
+                não vai mais ativar nada; cobrar ali é ruído). */}
+            {!ended && setup && <SetupChip setup={setup} />}
             {/* Badge "antes do previsto" só aparece quando a campanha já está
                 de fato encerrada (status="ended"). Setar early_end_date no
                 futuro ou em hoje (efetivo só amanhã) NÃO dispara o badge —
@@ -366,7 +371,7 @@ function CampaignCardV2Inner({
             {campaign_name}
           </p>
           <DateRangeLine startISO={start_date} endISO={effectiveEndDate} />
-          <ElementDots elements={elements} />
+          {(ended || awaiting) && <FechamentoDots fechamento={fechamento} />}
         </div>
 
         {/* ── KPIs mobile (visível só <md) ──────────────────────────────
@@ -822,36 +827,40 @@ function DateRangeLine({ startISO, endISO }) {
   );
 }
 
-// Elementos possíveis de uma campanha, na ordem de exibição dos dots.
-// Mesmas keys emitidas pelo backend em `entry["elements"]`.
-const ELEMENT_DEFS = [
-  ["nego",      "Negociado"],
-  ["logo",      "Logo"],
-  ["loom",      "Loom"],
-  ["survey",    "Survey"],
-  ["rmnd",      "RMND"],
-  ["pdooh",     "PDOOH"],
+// Itens do fechamento, na ordem de exibição dos dots. Mesmas keys
+// emitidas pelo backend em `entry["fechamento"]`.
+const FECHAMENTO_DEFS = [
   ["pos_venda", "Pós-venda"],
+  ["checkups",  "Checkups semanais"],
 ];
 
+// Labels dos itens de setup pendente (`entry["setup"].missing`). Os
+// condicionais carregam "(negociado)" pra deixar claro de onde veio a
+// cobrança — constam no checklist do Sales Center daquela campanha.
+const SETUP_LABEL = {
+  loom:   "Loom",
+  survey: "Survey (negociado)",
+  pdooh:  "PDOOH (negociado)",
+  rmnd:   "RMND (negociado)",
+};
+
 /**
- * Fileira de mini-dots — quantos elementos a campanha tem do total possível,
- * de forma puramente visual (verde = tem, cinza = não tem). Tooltip lista o
- * checklist completo. Renderiza só quando o backend mandou o campo
- * `elements` (payload antigo → some, sem placeholder).
+ * Dots do fechamento — pós-venda e checkups registrados no popup de
+ * encerramento (verde = registrado, cinza = falta). Só renderiza em
+ * campanha encerrada/aguardando fechamento (o caller gateia); antes
+ * disso não existe fechamento pra cobrar.
  */
-function ElementDots({ elements }) {
-  if (!elements) return null;
-  const set = new Set(elements);
-  const have = ELEMENT_DEFS.filter(([k]) => set.has(k)).length;
+function FechamentoDots({ fechamento }) {
+  const set = new Set(fechamento || []);
+  const have = FECHAMENTO_DEFS.filter(([k]) => set.has(k)).length;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <div
           className="flex items-center gap-1 mt-1.5 w-fit cursor-default"
-          aria-label={`${have} de ${ELEMENT_DEFS.length} elementos cadastrados`}
+          aria-label={`Fechamento: ${have} de ${FECHAMENTO_DEFS.length} itens registrados`}
         >
-          {ELEMENT_DEFS.map(([key]) => (
+          {FECHAMENTO_DEFS.map(([key]) => (
             <span
               key={key}
               aria-hidden
@@ -861,17 +870,17 @@ function ElementDots({ elements }) {
               )}
             />
           ))}
-          <span className="text-[9px] tabular-nums text-fg-subtle ml-0.5 leading-none">
-            {have}/{ELEMENT_DEFS.length}
+          <span className="text-[9px] uppercase tracking-wider text-fg-subtle ml-0.5 leading-none">
+            fechamento {have}/{FECHAMENTO_DEFS.length}
           </span>
         </div>
       </TooltipTrigger>
       <TooltipContent side="bottom" align="start">
         <div className="space-y-1 leading-snug">
           <p className="text-[10px] uppercase tracking-[0.14em] font-semibold text-fg-subtle mb-1.5">
-            Elementos da campanha
+            Fechamento
           </p>
-          {ELEMENT_DEFS.map(([key, label]) => (
+          {FECHAMENTO_DEFS.map(([key, label]) => (
             <div key={key} className="flex items-center gap-1.5 text-[11px]">
               <span
                 aria-hidden
@@ -881,6 +890,40 @@ function ElementDots({ elements }) {
                 )}
               />
               <span className={set.has(key) ? "text-fg" : "text-fg-subtle"}>{label}</span>
+            </div>
+          ))}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * Chip "setup N/M" — aparece SÓ quando falta ativar algo do esperado
+ * (Loom + condicionais negociados no Sales Center). Âmbar pra cobrar
+ * atenção sem alarmar; tooltip nomeia o que falta. Campanha completa
+ * não recebe o campo do backend → chip nem monta (zero ruído).
+ */
+function SetupChip({ setup }) {
+  const chip = (
+    <span className="badge-pop-in inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-warning px-1.5 py-0.5 rounded bg-warning-soft border border-warning/40 cursor-help">
+      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="10" />
+        <path d="M12 8v4M12 16h.01" />
+      </svg>
+      setup {setup.done}/{setup.total}
+    </span>
+  );
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{chip}</TooltipTrigger>
+      <TooltipContent side="bottom" align="start">
+        <div className="space-y-1 leading-snug">
+          <p className="font-semibold text-warning">Falta ativar</p>
+          {(setup.missing || []).map((key) => (
+            <div key={key} className="flex items-center gap-1.5 text-[11px]">
+              <span aria-hidden className="size-1.5 rounded-full shrink-0 bg-warning/70" />
+              <span className="text-fg-muted">{SETUP_LABEL[key] || key}</span>
             </div>
           ))}
         </div>

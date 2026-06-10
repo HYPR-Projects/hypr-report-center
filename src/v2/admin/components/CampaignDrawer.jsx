@@ -336,6 +336,7 @@ export function CampaignDrawer({
     paused_reason,
     early_end_date,
     early_end_reason,
+    setup,
   } = campaign;
 
   const status   = getCampaignStatus(end_date, closed_at, paused_at, early_end_date);
@@ -645,6 +646,15 @@ export function CampaignDrawer({
           {!!closed_at && closureSummary && (
             <div className="drawer-section-rise drawer-stagger-3">
               <ClosureSummaryNote details={closureSummary} />
+            </div>
+          )}
+
+          {/* Setup pendente — itens esperados (Loom + negociados no Sales
+              Center) ainda não ativados. Espelha o chip âmbar do card; some
+              em campanha encerrada (não vai mais ativar nada). */}
+          {!closed_at && setup && (
+            <div className="drawer-section-rise drawer-stagger-3">
+              <SetupPendingNote setup={setup} />
             </div>
           )}
 
@@ -1191,6 +1201,50 @@ function ClosureSummaryNote({ details }) {
           }
         />
       </div>
+    </div>
+  );
+}
+
+// Labels dos itens de setup pendente — mesma régua do SetupChip do card.
+const SETUP_PENDING_LABEL = {
+  loom:   "Loom",
+  survey: "Survey (negociado)",
+  pdooh:  "PDOOH (negociado)",
+  rmnd:   "RMND (negociado)",
+};
+
+/**
+ * Bloco "Setup pendente" — itens esperados da campanha ainda não ativados
+ * no hub. Âmbar (cobrança operacional, não erro). Os botões de ativação
+ * (Loom/Survey/RMND/PDOOH) estão logo abaixo nas seções de ação do drawer.
+ */
+function SetupPendingNote({ setup }) {
+  return (
+    <div className="mb-5 rounded-lg border border-warning/40 bg-warning-soft px-3 py-3">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-warning">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 8v4M12 16h.01" />
+          </svg>
+        </span>
+        <span className="text-[11px] uppercase tracking-widest font-bold text-warning">
+          Setup pendente · {setup.done}/{setup.total}
+        </span>
+      </div>
+      <div className="flex flex-col gap-1">
+        {(setup.missing || []).map((key) => (
+          <div key={key} className="flex items-center gap-2 leading-snug">
+            <span aria-hidden className="size-1.5 rounded-full shrink-0 bg-warning/70" />
+            <span className="text-[11.5px] text-fg-muted">
+              {SETUP_PENDING_LABEL[key] || key}
+            </span>
+          </div>
+        ))}
+      </div>
+      <p className="text-[10px] text-fg-subtle italic mt-2">
+        Ative pelos botões abaixo — itens negociados constam no Sales Center.
+      </p>
     </div>
   );
 }
