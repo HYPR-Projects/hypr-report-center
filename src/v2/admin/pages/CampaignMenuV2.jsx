@@ -51,7 +51,7 @@ import MergeModal from "../../../components/modals/MergeModal";
 import RmndUploadModal from "../../../components/modals/RmndUploadModal";
 import PdoohUploadModal from "../../../components/modals/PdoohUploadModal";
 import { NegotiationModal } from "../../components/NegotiationModal";
-import { getOrIssueAdminJwt, isFeatureAdmin } from "../../../shared/auth";
+import { getOrIssueAdminJwt } from "../../../shared/auth";
 
 import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
@@ -859,22 +859,21 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {/* PMP Deals — restrito à lista FEATURE_ADMINS (mesmos 4
-                operadores do "Reconstruir agora"). Demais admins não veem
-                o atalho; a rota /admin/pmp também redireciona pra cá. */}
-            {isFeatureAdmin(user) && (
-              <Button
-                variant="ghost"
-                size="md"
-                onClick={() => {
-                  window.history.pushState({}, "", "/admin/pmp");
-                  window.dispatchEvent(new PopStateEvent("popstate"));
-                }}
-                title="Análise dos deals de pagamento HYPR (Xandr Curate)"
-              >
-                PMP Deals
-              </Button>
-            )}
+            {/* PMP Deals — visível pra todos os admins (somente-leitura por
+                padrão; edição gateada por PMP_EDITORS, e o "Sincronizar
+                agora" lá dentro por FEATURE_ADMINS — mesma regra do
+                "Reconstruir agora" daqui). */}
+            <Button
+              variant="ghost"
+              size="md"
+              onClick={() => {
+                window.history.pushState({}, "", "/admin/pmp");
+                window.dispatchEvent(new PopStateEvent("popstate"));
+              }}
+              title="Análise dos deals de pagamento HYPR (Xandr Curate)"
+            >
+              PMP Deals
+            </Button>
             <Button
               variant="ghost"
               size="md"

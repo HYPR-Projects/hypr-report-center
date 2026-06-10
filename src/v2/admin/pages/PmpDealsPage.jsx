@@ -50,6 +50,7 @@ import {
 } from "../components/PmpComponents";
 import { GroupLinesModal } from "../components/GroupLinesModal";
 import { PmpFreshnessIndicator } from "../components/PmpFreshnessIndicator";
+import { isFeatureAdmin } from "../../../shared/auth";
 
 const ALL = "__ALL__";
 
@@ -58,6 +59,10 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   // status/PI/command/overrides/notas/grupo. Demais usuários veem tudo
   // em modo somente-leitura. Gate é frontend-only (guard rail UX).
   const canEdit = isPmpEditor(user);
+  // "Sincronizar agora" (rebuild do Xandr Curate) — restrito à mesma
+  // lista FEATURE_ADMINS do "Reconstruir agora" do menu. Sem onSync, o
+  // PmpFreshnessIndicator esconde o botão e mantém só o status.
+  const canSync = isFeatureAdmin(user);
 
   const [lines, setLines] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -579,7 +584,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
               lastSyncedAt={lastSyncedAt}
               latestDeliveryDay={latestDeliveryDay}
               linesCount={lines.length || null}
-              onSync={onSync}
+              onSync={canSync ? onSync : undefined}
               syncing={syncing}
             />
             <ThemeToggleV2 />
