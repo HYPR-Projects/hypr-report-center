@@ -4586,40 +4586,67 @@ def query_closure_details(short_token: str) -> dict | None:
 
 
 def query_all_campaign_elements() -> dict:
-    """{short_token: [element, ...]} — presença de conteúdo/asset por campanha.
+    """{short_token: {"assets": [...], "negotiated": [...], "closure": [...]}}
 
-    Alimenta os mini-dots do card admin (negociado, logo, loom, survey, RMND,
-    PDOOH, pós-venda). UNION sobre as tabelas de assets — todas pequenas
-    (1 row/campanha cadastrada), e o BQ só lê a coluna short_token + a do
-    filtro (colunar), então logo_base64/survey_data não pesam no scan.
+    Três categorias por campanha, numa única query UNION (tabelas pequenas;
+    BQ colunar só lê short_token + coluna do filtro):
+      • assets     — o que já está ATIVO no hub (loom/survey/rmnd/pdooh)
+      • negotiated — o que foi NEGOCIADO no Sales Center (survey/pdooh/rmnd),
+        detectado por regex no extras JSON do checklist (os campos diretos
+        `features`/`studies_used` estão vazios na prática; o que foi vendido
+        vive em extras.cl_features / ftext_Survey / fv_P-DOOH_* etc — mesma
+        fonte que o NegotiationModal parseia). Pragmático por substring;
+        falso-positivo só faria o chip de setup cobrar um item a mais.
+      • closure    — fechamento registrado (pos_venda / checkups)
+
+    Alimenta o chip "setup N/M" (negociado ∧ não-ativo + Loom sempre
+    esperado) e os dots de fechamento do card admin.
     """
     _ensure_closure_details_table()
     sql = f"""
-        SELECT DISTINCT short_token, 'nego' AS element
-        FROM `{PROJECT_ID}.{DATASET_SALES_CENTER}.checklists`
-        WHERE short_token IS NOT NULL AND short_token != ''
-        UNION ALL
-        SELECT short_token, 'logo' FROM `{PROJECT_ID}.{DATASET_ASSETS}.client_logos`
-        WHERE logo_base64 IS NOT NULL
-        UNION ALL
-        SELECT short_token, 'loom' FROM `{PROJECT_ID}.{DATASET_ASSETS}.campaign_looms`
+        SELECT short_token, 'asset' AS kind, 'loom' AS item
+        FROM `{PROJECT_ID}.{DATASET_ASSETS}.campaign_looms`
         WHERE loom_url IS NOT NULL
         UNION ALL
-        SELECT short_token, 'survey' FROM `{PROJECT_ID}.{DATASET_ASSETS}.campaign_surveys`
+        SELECT short_token, 'asset', 'survey' FROM `{PROJECT_ID}.{DATASET_ASSETS}.campaign_surveys`
         WHERE survey_data IS NOT NULL
         UNION ALL
-        SELECT short_token, 'rmnd' FROM `site-hypr.dev_assets.rmnd_data`
+        SELECT short_token, 'asset', 'rmnd' FROM `site-hypr.dev_assets.rmnd_data`
         WHERE data_json IS NOT NULL
         UNION ALL
-        SELECT short_token, 'pdooh' FROM `site-hypr.dev_assets.pdooh_data`
+        SELECT short_token, 'asset', 'pdooh' FROM `site-hypr.dev_assets.pdooh_data`
         WHERE data_json IS NOT NULL
         UNION ALL
-        SELECT short_token, 'pos_venda' FROM `{_closure_details_table_id()}`
+        SELECT short_token, 'closure', 'pos_venda' FROM `{_closure_details_table_id()}`
         WHERE pos_venda_url IS NOT NULL OR extra_url IS NOT NULL
+        UNION ALL
+        SELECT short_token, 'closure', 'checkups' FROM `{_closure_details_table_id()}`
+        WHERE weekly_checkups IS NOT NULL
+        UNION ALL
+        SELECT DISTINCT short_token, 'negotiated', 'survey'
+        FROM `{PROJECT_ID}.{DATASET_SALES_CENTER}.checklists`
+        WHERE short_token IS NOT NULL AND short_token != ''
+          AND REGEXP_CONTAINS(LOWER(TO_JSON_STRING(extras)), r'survey')
+        UNION ALL
+        SELECT DISTINCT short_token, 'negotiated', 'pdooh'
+        FROM `{PROJECT_ID}.{DATASET_SALES_CENTER}.checklists`
+        WHERE short_token IS NOT NULL AND short_token != ''
+          AND REGEXP_CONTAINS(LOWER(TO_JSON_STRING(extras)), r'p-?dooh')
+        UNION ALL
+        SELECT DISTINCT short_token, 'negotiated', 'rmnd'
+        FROM `{PROJECT_ID}.{DATASET_SALES_CENTER}.checklists`
+        WHERE short_token IS NOT NULL AND short_token != ''
+          AND (
+            REGEXP_CONTAINS(LOWER(TO_JSON_STRING(extras)), r'rmnd')
+            OR REGEXP_CONTAINS(LOWER(ARRAY_TO_STRING(products, ',')), r'rmn')
+          )
     """
     out = {}
     for row in bq.query(sql).result():
-        out.setdefault(row["short_token"], []).append(row["element"])
+        bucket = out.setdefault(row["short_token"], {"assets": [], "negotiated": [], "closure": []})
+        key = {"asset": "assets", "negotiated": "negotiated", "closure": "closure"}[row["kind"]]
+        if row["item"] not in bucket[key]:
+            bucket[key].append(row["item"])
     return out
 
 
@@ -7140,12 +7167,26 @@ def query_campaigns_list():
             if early.get("reason"):
                 entry["early_end_reason"] = early["reason"]
 
-        # Elementos presentes (nego/logo/loom/survey/rmnd/pdooh/pos_venda) —
-        # mini-dots do card. Só emite quando há pelo menos um; card sem o
-        # campo esconde a fileira (graceful pra payload antigo também).
-        els = elements_map.get(r["short_token"])
-        if els:
-            entry["elements"] = els
+        # Fechamento + Setup do card.
+        #   • `fechamento`: subset de [pos_venda, checkups] já registrado —
+        #     dots verde/cinza em campanha encerrada/aguardando fechamento.
+        #   • `setup`: itens esperados ainda não ativados. Esperado = Loom
+        #     (entregável padrão de toda campanha) + condicionais que constam
+        #     na NEGOCIAÇÃO (survey/pdooh/rmnd). Só emite quando falta algo —
+        #     campanha completa não carrega o campo (chip âmbar só aparece
+        #     quando há pendência; zero ruído no scan).
+        info = elements_map.get(r["short_token"]) or {}
+        closure_items = info.get("closure") or []
+        if closure_items:
+            entry["fechamento"] = closure_items
+        expected = {"loom"} | (set(info.get("negotiated") or []) & {"survey", "pdooh", "rmnd"})
+        missing = sorted(expected - set(info.get("assets") or []))
+        if missing:
+            entry["setup"] = {
+                "done":    len(expected) - len(missing),
+                "total":   len(expected),
+                "missing": missing,
+            }
 
         result.append(entry)
 
