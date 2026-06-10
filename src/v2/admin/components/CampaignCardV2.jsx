@@ -31,7 +31,7 @@
 // Click no card → drawer (`onOpen`). Click "Ver Report" → report
 // (`onOpenReport`). Stop propagation no botão pra não abrir o drawer.
 
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { cn } from "../../../ui/cn";
 import { Card } from "../../../ui/Card";
 import { Avatar } from "../../../ui/Avatar";
@@ -110,7 +110,7 @@ function classifyHealth(displayPacing, videoPacing, displaySubBars, videoSubBars
   return "healthy";
 }
 
-export function CampaignCardV2({
+function CampaignCardV2Inner({
   campaign,
   onOpen,
   onOpenReport,
@@ -683,6 +683,15 @@ export function CampaignCardV2({
     </Card>
   );
 }
+
+// memo com comparação rasa padrão (sem comparador custom de propósito —
+// comparador manual é onde nascem bugs de card desatualizado). Por que é
+// seguro: todo setCampaigns no menu/detail cria objetos novos via spread
+// (referência muda ⇔ dado mudou), teamMap é useMemo, onOpen é useCallback,
+// e o breakdown de frentes chega via useSyncExternalStore (o card se
+// re-renderiza sozinho quando o prefetch resolve, sem depender do pai).
+// Ganho: digitar na busca do menu não re-renderiza os 200+ cards.
+export const CampaignCardV2 = memo(CampaignCardV2Inner);
 
 /** Divisor vertical entre colunas. Some no mobile (md:block). */
 function Divider() {
