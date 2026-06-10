@@ -630,14 +630,44 @@ async function throwIfNotOk(r) {
   throw new Error(msg);
 }
 
-export async function saveCampaignClosure({ short_token, closed }) {
+export async function saveCampaignClosure({ short_token, closed, details }) {
   const jwt = await getOrIssueAdminJwt();
   const r = await postJson(
     `${API_URL}?action=save_campaign_closure`,
-    { short_token, closed: !!closed },
+    { short_token, closed: !!closed, ...(details ? { details } : {}) },
     adminAuthHeaders(jwt),
   );
   return throwIfNotOk(r);
+}
+
+/**
+ * Atualiza só os detalhes do fechamento (pós-venda, material extra,
+ * checkups semanais) sem mexer no estado closed. Usado pelo admin pra
+ * corrigir/completar os dados depois que a campanha já foi encerrada.
+ */
+export async function saveClosureDetails({ short_token, details }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=save_closure_details`,
+    { short_token, details },
+    adminAuthHeaders(jwt),
+  );
+  return throwIfNotOk(r);
+}
+
+/**
+ * Lê os detalhes do fechamento (pré-popula o popup de edição).
+ * Retorna null quando nunca foram salvos.
+ */
+export async function getClosureDetails({ short_token }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=get_closure_details&short_token=${encodeURIComponent(short_token)}`,
+    { headers: adminAuthHeaders(jwt) },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json().catch(() => ({}));
+  return d?.details ?? null;
 }
 
 /**

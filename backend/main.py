@@ -163,6 +163,10 @@ _merges_cache    = {}     # "all" -> (timestamp, dict[short_token -> {merge_id, 
 _closures_cache  = {}     # "all" -> (timestamp, dict[short_token -> closed_at_iso])
 _pauses_cache    = {}     # "all" -> (timestamp, dict[short_token -> paused_at_iso])
 _early_ends_cache= {}     # "all" -> (timestamp, dict[short_token -> {early_end_date, reason, ended_by}])
+# Detalhes do fechamento (pós-venda, material extra, checkups) — por token.
+# Enriquecido na camada de SERVING do report (não dentro de fetch_campaign_data)
+# pra valer também em reports congelados, que servem snapshot verbatim.
+_closure_details_cache = {} # short_token -> (timestamp, dict|None)
 # Campanhas congeladas (snapshot servido verbatim). Guarda só o CONJUNTO de
 # tokens frozen (leve); o payload em si vive em report_snapshots (BQ) e, depois
 # do 1º load, no _report_cache. TTL = lista (frozen muda raramente, via admin).
@@ -234,6 +238,7 @@ def _cache_invalidate_token(short_token):
         _closures_cache.pop("all", None)
         _pauses_cache.pop("all", None)
         _early_ends_cache.pop("all", None)
+        _closure_details_cache.pop(short_token, None)
         _frozen_cache.pop("all", None)
         _windows_cache.pop("all", None)
         # Merged report cache: drop tudo. Tabela de grupos é pequena, e
@@ -1247,9 +1252,13 @@ def report_data(request):
             return (jsonify({"error": "Erro ao salvar override de ABS"}), 500, headers)
 
     # ── Endpoint: marcar campanha como encerrada (ou reverter) ──────────────
-    # Body: {short_token, closed: bool}
-    # closed=true  → registra closed_at=NOW na tabela campaign_closures
-    # closed=false → remove o registro (volta ao estado derivado por end_date)
+    # Body: {short_token, closed: bool, details?: {pos_venda_url, pos_venda_mode,
+    #        extra_url, extra_mode, weekly_checkups}}
+    # closed=true  → registra closed_at=NOW na tabela campaign_closures e,
+    #                quando `details` vem no body, persiste os dados do
+    #                fechamento (pós-venda etc) em campaign_closure_details
+    # closed=false → remove o registro (volta ao estado derivado por end_date).
+    #                Details são preservados (histórico do fechamento).
     if request.method == "POST" and request.args.get("action") == "save_campaign_closure":
         admin = authenticate_admin(request)
         if not admin:
@@ -1261,17 +1270,65 @@ def report_data(request):
             if not short_token:
                 return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
             save_campaign_closure(short_token, closed, closed_by=admin.get("email"))
+            details = None
+            if closed and isinstance(body.get("details"), dict):
+                details = _sanitize_closure_details(body["details"])
+                save_closure_details(short_token, details, updated_by=admin.get("email"))
             _cache_invalidate_token(short_token)
             audit_log.safe_write_event(
                 short_token=short_token,
                 event_type="campaign_closed" if closed else "campaign_reopened",
                 actor_email=admin.get("email"),
                 message="marcou a campanha como encerrada" if closed else "reabriu a campanha",
+                payload=details,
             )
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR save_campaign_closure] {e}")
             return (jsonify({"error": "Erro ao salvar fechamento da campanha"}), 500, headers)
+
+    # ── Endpoint: editar detalhes do fechamento (pós-venda etc) ─────────────
+    # Body: {short_token, details: {...}} — mesmo shape do save_campaign_closure,
+    # mas sem tocar no estado closed. Usado pelo admin pra corrigir/completar
+    # os dados depois que a campanha já foi encerrada.
+    if request.method == "POST" and request.args.get("action") == "save_closure_details":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            details = _sanitize_closure_details(body.get("details") or {})
+            save_closure_details(short_token, details, updated_by=admin.get("email"))
+            _cache_invalidate_token(short_token)
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="closure_details_updated",
+                actor_email=admin.get("email"),
+                message="atualizou os dados do fechamento (pós-venda)",
+                payload=details,
+            )
+            return (jsonify({"ok": True}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR save_closure_details] {e}")
+            return (jsonify({"error": "Erro ao salvar dados do fechamento"}), 500, headers)
+
+    # ── Endpoint: ler detalhes do fechamento (admin) ────────────────────────
+    # Pré-popula o popup de edição. Inclui weekly_checkups (admin-only).
+    if request.method == "GET" and request.args.get("action") == "get_closure_details":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            short_token = (request.args.get("short_token") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            return (jsonify({"details": _get_closure_details_cached(short_token)}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR get_closure_details] {e}")
+            return (jsonify({"error": "Erro ao buscar dados do fechamento"}), 500, headers)
 
     # ── Endpoint: congelar report (snapshot) ────────────────────────────────
     # Body: {short_token, note?, src?: {unified, campaign_results}}
@@ -3030,6 +3087,16 @@ def report_data(request):
             data, hit = _get_merged_report_cached(merge_id, force_refresh=force_refresh)
             if data is None:
                 return (jsonify({"error": "Grupo merged sem dados"}), 404, headers)
+            # Pós-venda na visão agregada: usa o do active_token (mês mais
+            # recente) — é o fechamento mais atual do grupo. Drill-down por
+            # mês mostra o pós-venda daquele mês via caminho single-token.
+            try:
+                active_tok = (data.get("merge_meta") or {}).get("active_token")
+                pv = _pos_venda_public(active_tok) if active_tok else None
+                if pv:
+                    data = {**data, "pos_venda": pv}
+            except Exception as e:
+                logger.warning(f"[WARN attach pos_venda to merged view] {e}")
             total_ms = int((time.time() - t0) * 1000)
             resp_headers = {
                 **headers,
@@ -3086,6 +3153,14 @@ def report_data(request):
                     data = {**data, "merge_meta": meta}
             except Exception as e:
                 logger.warning(f"[WARN attach merge_meta to single-token view] {e}")
+
+        # Pós-venda (chip no header do report) — anexado AQUI, na camada de
+        # serving, e não dentro de fetch_campaign_data: reports encerrados
+        # costumam estar congelados (snapshot verbatim) e o pós-venda é salvo
+        # justamente DEPOIS do freeze, no fechamento.
+        pv = _pos_venda_public(target_token)
+        if pv:
+            data = {**data, "pos_venda": pv}
 
         total_ms = int((time.time() - t0) * 1000)
         resp_headers = {
@@ -4329,6 +4404,178 @@ def query_all_closures() -> dict:
     except Exception as e:
         logger.warning(f"[WARN query_all_closures] {e}")
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Closure details — dados do fechamento coletados no popup "Marcar como
+# encerrada": link do pós-venda (Google Slides) + se foi apresentado/enviado,
+# link de material adicional (mesma pergunta) e nº de checkups semanais com o
+# cliente (e-mails de fup/resumo).
+#
+# pos_venda_url/extra_url + modes vão pro payload PÚBLICO do report (chip
+# "Pós-venda" no header). weekly_checkups é métrica interna — admin-only,
+# nunca entra no payload do cliente.
+# ─────────────────────────────────────────────────────────────────────────────
+_closure_details_table_ensured = False
+_closure_details_ensure_lock = threading.Lock()
+
+_CLOSURE_DELIVERY_MODES = ("apresentado", "enviado")
+
+
+def _closure_details_table_id() -> str:
+    return f"{PROJECT_ID}.{DATASET_ASSETS}.campaign_closure_details"
+
+
+def _ensure_closure_details_table() -> None:
+    """Cria a tabela `campaign_closure_details` se não existir. Idempotente."""
+    global _closure_details_table_ensured
+    if _closure_details_table_ensured:
+        return
+    with _closure_details_ensure_lock:
+        if _closure_details_table_ensured:
+            return
+        sql = f"""
+            CREATE TABLE IF NOT EXISTS `{_closure_details_table_id()}` (
+                short_token     STRING NOT NULL,
+                pos_venda_url   STRING,
+                pos_venda_mode  STRING,
+                extra_url       STRING,
+                extra_mode      STRING,
+                weekly_checkups INT64,
+                updated_at      TIMESTAMP,
+                updated_by      STRING
+            )
+        """
+        bq.query(sql).result()
+        _closure_details_table_ensured = True
+
+
+def _sanitize_closure_details(body: dict) -> dict:
+    """Normaliza o objeto `details` vindo do frontend. URLs vazias viram None,
+    modes fora do enum viram None, checkups vira int >= 0 (ou None)."""
+    def _url(v):
+        v = (v or "").strip()
+        if not v:
+            return None
+        if not v.lower().startswith(("http://", "https://")):
+            v = f"https://{v}"
+        return v[:2000]
+
+    def _mode(v):
+        v = (v or "").strip().lower()
+        return v if v in _CLOSURE_DELIVERY_MODES else None
+
+    checkups = body.get("weekly_checkups")
+    try:
+        checkups = max(0, int(checkups)) if checkups is not None else None
+    except (TypeError, ValueError):
+        checkups = None
+
+    pos_url = _url(body.get("pos_venda_url"))
+    extra_url = _url(body.get("extra_url"))
+    return {
+        "pos_venda_url":   pos_url,
+        "pos_venda_mode":  _mode(body.get("pos_venda_mode")) if pos_url else None,
+        "extra_url":       extra_url,
+        "extra_mode":      _mode(body.get("extra_mode")) if extra_url else None,
+        "weekly_checkups": checkups,
+    }
+
+
+def save_closure_details(short_token: str, details: dict, updated_by: str | None = None):
+    """UPSERT dos detalhes do fechamento (atômico via MERGE)."""
+    _ensure_closure_details_table()
+    sql = f"""
+        MERGE `{_closure_details_table_id()}` T
+        USING (SELECT @token AS short_token) S
+        ON T.short_token = S.short_token
+        WHEN MATCHED THEN
+            UPDATE SET
+                pos_venda_url   = @pos_venda_url,
+                pos_venda_mode  = @pos_venda_mode,
+                extra_url       = @extra_url,
+                extra_mode      = @extra_mode,
+                weekly_checkups = @weekly_checkups,
+                updated_at      = CURRENT_TIMESTAMP(),
+                updated_by      = @updated_by
+        WHEN NOT MATCHED THEN
+            INSERT (short_token, pos_venda_url, pos_venda_mode, extra_url,
+                    extra_mode, weekly_checkups, updated_at, updated_by)
+            VALUES (@token, @pos_venda_url, @pos_venda_mode, @extra_url,
+                    @extra_mode, @weekly_checkups, CURRENT_TIMESTAMP(), @updated_by)
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("token",           "STRING", short_token),
+            bigquery.ScalarQueryParameter("pos_venda_url",   "STRING", details.get("pos_venda_url")),
+            bigquery.ScalarQueryParameter("pos_venda_mode",  "STRING", details.get("pos_venda_mode")),
+            bigquery.ScalarQueryParameter("extra_url",       "STRING", details.get("extra_url")),
+            bigquery.ScalarQueryParameter("extra_mode",      "STRING", details.get("extra_mode")),
+            bigquery.ScalarQueryParameter("weekly_checkups", "INT64",  details.get("weekly_checkups")),
+            bigquery.ScalarQueryParameter("updated_by",      "STRING", updated_by),
+        ]
+    )
+    bq.query(sql, job_config=job_config).result()
+
+
+def query_closure_details(short_token: str) -> dict | None:
+    """Retorna os detalhes do fechamento do token, ou None se nunca salvos."""
+    _ensure_closure_details_table()
+    sql = f"""
+        SELECT pos_venda_url, pos_venda_mode, extra_url, extra_mode,
+               weekly_checkups, updated_at, updated_by
+        FROM `{_closure_details_table_id()}`
+        WHERE short_token = @token
+        LIMIT 1
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("token", "STRING", short_token)]
+    )
+    rows = list(bq.query(sql, job_config=job_config).result())
+    if not rows:
+        return None
+    r = rows[0]
+    return {
+        "pos_venda_url":   r["pos_venda_url"],
+        "pos_venda_mode":  r["pos_venda_mode"],
+        "extra_url":       r["extra_url"],
+        "extra_mode":      r["extra_mode"],
+        "weekly_checkups": r["weekly_checkups"],
+        "updated_at":      r["updated_at"].isoformat() if r["updated_at"] else None,
+        "updated_by":      r["updated_by"],
+    }
+
+
+def _pos_venda_public(short_token: str) -> dict | None:
+    """View PÚBLICA do pós-venda pro payload do report (chip no header).
+    weekly_checkups fica de fora de propósito (métrica interna, admin-only).
+    Retorna None quando não há nenhum link salvo."""
+    cd = _get_closure_details_cached(short_token)
+    if not cd or not (cd.get("pos_venda_url") or cd.get("extra_url")):
+        return None
+    return {
+        "url":        cd.get("pos_venda_url"),
+        "mode":       cd.get("pos_venda_mode"),
+        "extra_url":  cd.get("extra_url"),
+        "extra_mode": cd.get("extra_mode"),
+    }
+
+
+def _get_closure_details_cached(short_token: str) -> dict | None:
+    """query_closure_details com cache por token (TTL do report). Cacheia
+    também o None (sentinela) — a maioria dos reports não tem pós-venda e
+    não vale uma query BQ por acesso. Best-effort: erro vira None sem
+    derrubar o report."""
+    cached = _cache_get(_closure_details_cache, short_token, _REPORT_CACHE_TTL)
+    if cached is not None:
+        return cached.get("details")
+    try:
+        details = query_closure_details(short_token)
+    except Exception as e:
+        logger.warning(f"[WARN closure_details {short_token}] {e}")
+        return None
+    _cache_set(_closure_details_cache, short_token, {"details": details})
+    return details
 
 
 # ─────────────────────────────────────────────────────────────────────────────
