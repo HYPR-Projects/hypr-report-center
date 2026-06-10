@@ -28,6 +28,7 @@ import "../v2.css";
 import "../../ui/typography";
 
 import { getCampaign, getShareId, getCachedShareId } from "../../lib/api";
+import { readCache, writeCache } from "../../lib/persistedCache";
 import { gaPageView } from "../../shared/analytics";
 import { computeAggregates, extractAudience, getCreativeLineKey } from "../../shared/aggregations";
 import { useLoadingTask } from "../../shared/loading";
@@ -219,6 +220,12 @@ function computeTacticAvailability(data) {
   };
 }
 
+// TTL do payload persistido (localStorage, stale-while-revalidate) — 24h.
+// A base consolidada só muda 1x/dia (~06h); o stale é sempre REVALIDADO em
+// background, nunca servido como final. BUILD_ID + schema version do
+// persistedCache já invalidam cross-deploy.
+const REPORT_PERSIST_TTL_MS = 24 * 60 * 60 * 1000;
+
 // ─── Componente principal ──────────────────────────────────────────────
 
 export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
@@ -344,6 +351,19 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
       return;
     }
 
+    // Stale-while-revalidate: payload persistido de uma visita anterior
+    // (localStorage, TTL 24h) pinta o report na hora — mata o skeleton de
+    // 3-6s do primeiro acesso do dia — enquanto o refetch abaixo SEMPRE
+    // roda e substitui pelos números frescos quando resolver.
+    const persisted = readCache(`report.${cacheKey}`, REPORT_PERSIST_TTL_MS);
+    const hasStale = persisted != null;
+    if (hasStale) {
+      setData(persisted.data);
+      loadedViewRef.current = view;
+      loadedTokenRef.current = token;
+      setError(null);
+    }
+
     // Não chamamos setData(null) aqui — manter o payload anterior durante
     // o refetch é melhor que flash de skeleton. Em troca de view, o dim
     // overlay + spinner na pill cobrem a comunicação "carregando novo
@@ -354,7 +374,10 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     // requests rápidas (cache hit no backend, conexão boa), evita flicker
     // visual a cada troca. Pra fetches lentos (1s+, caso típico hoje),
     // sinaliza claramente "tô carregando" sem deixar dado antigo visível.
+    // Com stale persistido já pintado, o dim não se aplica — o conteúdo
+    // exibido já é o da view destino.
     const isViewSwitch =
+      !hasStale &&
       loadedTokenRef.current === token && loadedViewRef.current !== view;
     let dimTimer = null;
     if (isViewSwitch) {
@@ -367,6 +390,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
       .then((d) => {
         if (cancelled) return;
         viewCacheRef.current.set(cacheKey, d);
+        writeCache(`report.${cacheKey}`, d);
         setData(d);
         loadedViewRef.current = view;
         loadedTokenRef.current = token;
@@ -374,7 +398,14 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
       })
       .catch((e) => {
         if (cancelled) return;
-        setError(e?.message || "Erro ao carregar dados");
+        // Com stale na tela, falha de revalidação não vira erro de página —
+        // dado de ontem é melhor que um report em branco. Sem stale, o
+        // comportamento original (error state) permanece.
+        if (!hasStale) {
+          setError(e?.message || "Erro ao carregar dados");
+        } else {
+          console.warn("[report] revalidação falhou; mantendo payload em cache", e);
+        }
       })
       .finally(() => {
         if (cancelled) return;

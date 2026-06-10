@@ -34,7 +34,7 @@ import threading
 import urllib.request
 import urllib.parse
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 
 from auth import (
@@ -122,26 +122,32 @@ clients.set_bq_client(bq)
 # o que é aceitável: a próxima request reidrata e as subsequentes pegam o hit.
 #
 # TTLs:
-#   - report (token):      120s — payload pesado, refresca rápido após upload
-#   - campaigns list:       60s — admin abre/fecha o tempo todo
+#   - report (token):    3h    — payload pesado; a base consolidada só muda
+#                                1x/dia (~06h via pipeline)
+#   - campaigns list:    15min — admin abre/fecha o tempo todo
 #
 # Invalidação manual:
 #   - mutações (save_logo, save_loom, save_survey, save_upload,
 #     save_report_owner) limpam o cache do token afetado
 #   - ?refresh=true força bypass de cache na request atual
 # ─────────────────────────────────────────────────────────────────────────────
-_REPORT_CACHE_TTL  = 600
-# Lista admin: era 60s e estava queimando o usuário em todo cache miss. O menu
-# é aberto, fechado e reaberto várias vezes ao longo do dia — um TTL de 5 min
-# mantém a UX instantânea sem comprometer frescor (mutações de admin já
-# invalidam o cache via _cache_invalidate_token; logo, dado "stale" só ocorre
-# se a tabela campaign_results muda externamente, o que acontece a cada
-# poucas horas via pipeline).
-_LIST_CACHE_TTL    = 300
+# Report: era 600s, conservador demais pra um dado que só muda 1x/dia. 3h
+# alinha com o cron de warmup (deploy.sh: a cada 3h, 06h30–18h30 BRT), que
+# re-aquece as entradas expiradas — na prática o report fica warm o dia
+# inteiro. Mutações continuam invalidando por token via
+# _cache_invalidate_token, então o teto de 3h só vale pra mudança EXTERNA
+# da base (rebuild manual do Dagster fora de hora) — nesse caso,
+# ?refresh=true bypassa.
+_REPORT_CACHE_TTL  = 3 * 3600
+# Lista admin: era 60s e estava queimando o usuário em todo cache miss; foi a
+# 300s e agora 900s — a query consolidada é cara e o dado de delivery que a
+# alimenta só muda 1x/dia (~06h). Mutações de admin já invalidam via
+# _cache_invalidate_token, então "stale" real só ocorre em mudança externa
+# da base, coberta pelo warmup das 06h30 e pelo refresh manual do menu.
+_LIST_CACHE_TTL    = 900
 # View "Por cliente" do menu admin — agregação derivada de query_campaigns_list
-# + 1 query temporal pra sparklines. TTL maior porque (a) não muda dramatica-
-# mente entre minutos, e (b) a sparkline é informação visual, não operacional.
-_CLIENTS_CACHE_TTL = 300
+# + 1 query temporal pra sparklines. Mesmo raciocínio (e TTL) da lista.
+_CLIENTS_CACHE_TTL = 900
 
 _report_cache    = {}     # short_token -> (timestamp, payload)
 _merged_report_cache = {} # merge_id -> (timestamp, payload merged)
@@ -349,6 +355,165 @@ def _get_report_cached(short_token, force_refresh=False):
 # até 10 requests simultâneos podem competir pelo pool. 16 workers cobre o pico
 # sem fazer fila significativa: queries BigQuery são I/O-bound (GIL liberado).
 _query_pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="bq-fetch")
+
+
+def _build_clients_payload(campaigns):
+    """Monta o payload da view "Por cliente" a partir da lista de campanhas.
+
+    Compartilhado entre o endpoint ?action=list_clients e o warmup — antes
+    o corpo vivia inline no handler, e o warmup precisaria duplicá-lo (com
+    risco de drift: payload aquecido sem sparkline/trend renderizaria a
+    view incompleta por até 1 TTL).
+    """
+    agg = clients.aggregate_clients_from_campaigns(campaigns)
+    worklist = clients.compute_worklist(campaigns)
+
+    # Sparklines + trend (única query BQ extra do endpoint).
+    timeseries = clients.query_client_timeseries(weeks=12)
+    for c in agg:
+        series = timeseries.get(c["slug"], [])
+        if series:
+            c["sparkline"] = series
+            trend = clients.compute_trend(series, half=4)
+            if trend:
+                c["trend"] = trend
+
+    return {"clients": agg, "worklist": worklist}
+
+
+def warmup_caches(force_refresh=True, max_reports=150, deadline_s=480):
+    """Pré-aquece os caches in-memory (lista, clientes, reports ativos).
+
+    Invocado pelo Cloud Scheduler (deploy.sh) a cada 3h entre 06h30 e 18h30
+    BRT, com refresh=true. A run das 06h30 é a que importa de verdade: a
+    consolidação diária do BQ termina ~06h e, sem warmup, o primeiro acesso
+    da manhã a cada report paga query fria (3-6s+). As runs seguintes
+    re-aquecem o que o _REPORT_CACHE_TTL (3h) deixou expirar, mantendo o
+    cache warm em horário comercial.
+
+    Escopo:
+      - lista de campanhas + view "Por cliente" (menu admin);
+      - reports cujo fim (early_end_date ou end_date) está a <= 14 dias no
+        passado ou no futuro — encerrados há mais tempo raramente são
+        abertos e tendem a estar congelados;
+      - tokens congelados são pulados (servem snapshot verbatim, barato);
+      - visão agregada dos grupos merged que contêm tokens aquecidos
+        (membros já quentes → compose barato, sem re-query).
+
+    Concorrência: executor DEDICADO, não o _query_pool — fetch_campaign_data
+    submete as sub-queries no _query_pool; rodar o nível externo no mesmo
+    pool poderia deadlockar (outers ocupando todos os workers, esperando
+    inners que nunca entram). 4 workers limita a pressão sobre o BQ e sobre
+    os 16 workers internos compartilhados com tráfego real.
+
+    Best-effort em tudo: erro em um report não derruba os demais; estourar
+    o deadline (default 480s < timeout 540s da função) cancela o restante e
+    reporta `timed_out` no summary.
+    """
+    t0 = time.time()
+    summary = {"forced": bool(force_refresh)}
+
+    # Espelha o ?refresh=true dos handlers da lista: sem isso, a lista
+    # rebuildada às 06h30 reusaria o sheet_cache de owners de ontem.
+    if force_refresh:
+        owners.invalidate_cache()
+
+    campaigns, _ = _get_campaigns_list_cached(force_refresh=force_refresh)
+    summary["list_total"] = len(campaigns)
+
+    try:
+        _cache_set(_clients_cache, "all", _build_clients_payload(campaigns))
+        summary["clients_warmed"] = True
+    except Exception as e:
+        logger.warning(f"[WARN warmup clients] {e}")
+        summary["clients_warmed"] = False
+
+    try:
+        frozen_map = query_frozen_tokens()
+    except Exception as e:
+        logger.warning(f"[WARN warmup frozen lookup] {e}")
+        frozen_map = {}
+
+    today = date.today()
+    candidates = []
+    for c in campaigns:
+        st = c.get("short_token")
+        if not st or st in frozen_map:
+            continue
+        end_d = _parse_iso_date_safe(c.get("early_end_date") or c.get("end_date"))
+        if end_d is not None and (today - end_d).days > 14:
+            continue
+        candidates.append((st, end_d or date.max))
+
+    # Cap de segurança — prioriza fins mais recentes/futuros (em vôo primeiro).
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    summary["reports_dropped"] = max(0, len(candidates) - max_reports)
+    candidates = candidates[:max_reports]
+    summary["reports_selected"] = len(candidates)
+
+    ok = errors = 0
+    timed_out = False
+    pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="warmup")
+    futures = {
+        pool.submit(_get_report_cached, st, force_refresh): st
+        for st, _ in candidates
+    }
+    try:
+        budget = max(1.0, deadline_s - (time.time() - t0))
+        for fut in as_completed(futures, timeout=budget):
+            st = futures[fut]
+            try:
+                data, _hit = fut.result()
+                if data is not None:
+                    ok += 1
+                else:
+                    errors += 1
+                    logger.warning(f"[WARN warmup report {st}] payload vazio")
+            except Exception as e:
+                errors += 1
+                logger.warning(f"[WARN warmup report {st}] {e}")
+    except TimeoutError:
+        timed_out = True
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    summary["reports_warmed"] = ok
+    summary["reports_errors"] = errors
+
+    # Grupos merged: re-compõe a visão agregada a partir dos membros recém-
+    # aquecidos. NÃO propagar force_refresh — compose_merged_report repassaria
+    # pra cada membro e re-pagaria as queries que acabamos de fazer; em vez
+    # disso derruba a entrada composta e deixa recompor do cache warm.
+    merged_ok = merged_errors = 0
+    if not timed_out:
+        try:
+            merges_lookup = _safe_get_merges()
+            warm_tokens = {st for st, _ in candidates}
+            merge_ids = sorted({
+                info["merge_id"]
+                for tok, info in merges_lookup.items()
+                if tok in warm_tokens and info.get("merge_id")
+            })
+            for mid in merge_ids:
+                if time.time() - t0 > deadline_s:
+                    timed_out = True
+                    break
+                try:
+                    if force_refresh:
+                        with _cache_lock:
+                            _merged_report_cache.pop(mid, None)
+                    data, _hit = _get_merged_report_cached(mid, force_refresh=False)
+                    if data is not None:
+                        merged_ok += 1
+                except Exception as e:
+                    merged_errors += 1
+                    logger.warning(f"[WARN warmup merged {mid}] {e}")
+        except Exception as e:
+            logger.warning(f"[WARN warmup merges lookup] {e}")
+    summary["merged_warmed"] = merged_ok
+    summary["merged_errors"] = merged_errors
+    summary["timed_out"] = timed_out
+    summary["duration_s"] = round(time.time() - t0, 1)
+    return summary
 
 PROJECT_ID      = os.environ.get("GCP_PROJECT",        "site-hypr")
 DATASET_HUB     = os.environ.get("BQ_DATASET_HUB",     "prod_prod_hypr_reporthub")
@@ -902,6 +1067,27 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR auto_freeze_sweep] {e}")
             return (jsonify({"error": "Erro no auto-freeze"}), 500, headers)
+
+    # ── Endpoint: warmup de caches (cron OU admin) ──────────────────────────
+    # Cron (Scheduler, deploy.sh: a cada 3h, 06h30–18h30 BRT): auth via
+    # X-Cron-Secret. Admin: auth via JWT — útil pra aquecer manualmente após
+    # um rebuild fora de hora ("Reconstruir agora" + warmup = reports frescos
+    # sem esperar TTL). `?refresh=false` só re-aquece o que expirou.
+    if request.args.get("action") == "warmup":
+        provided = request.headers.get("X-Cron-Secret", "")
+        expected = os.environ.get("CRON_SECRET", "")
+        is_cron  = bool(expected) and hmac.compare_digest(provided, expected)
+        if not (is_cron or authenticate_admin(request)):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            refresh_q = (request.args.get("refresh") or "").strip().lower()
+            force = refresh_q not in ("0", "false", "no")  # default: true
+            summary = warmup_caches(force_refresh=force)
+            logger.warning(f"[warmup] {json.dumps(summary)}")
+            return (jsonify(summary), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR warmup] {e}")
+            return (jsonify({"error": "Erro no warmup"}), 500, headers)
 
     # ── Endpoint: deletar integração (admin) ────────────────────────────────
     # Remove o registro do BQ. NÃO deleta a sheet do Drive — fica como
@@ -2755,24 +2941,12 @@ def report_data(request):
             campaigns, list_hit = _get_campaigns_list_cached(force_refresh=force_refresh)
             list_ms = int((time.time() - t_list) * 1000)
 
-            t_agg = time.time()
-            agg = clients.aggregate_clients_from_campaigns(campaigns)
-            worklist = clients.compute_worklist(campaigns)
-            agg_ms = int((time.time() - t_agg) * 1000)
+            # Agregação + worklist + sparklines/trend — corpo compartilhado
+            # com o warmup (ver _build_clients_payload).
+            t_build = time.time()
+            payload = _build_clients_payload(campaigns)
+            build_ms = int((time.time() - t_build) * 1000)
 
-            # Sparklines + trend (única query BQ extra do endpoint).
-            t_ts = time.time()
-            timeseries = clients.query_client_timeseries(weeks=12)
-            for c in agg:
-                series = timeseries.get(c["slug"], [])
-                if series:
-                    c["sparkline"] = series
-                    trend = clients.compute_trend(series, half=4)
-                    if trend:
-                        c["trend"] = trend
-            ts_ms = int((time.time() - t_ts) * 1000)
-
-            payload = {"clients": agg, "worklist": worklist}
             _cache_set(_clients_cache, "all", payload)
             total_ms = int((time.time() - t0) * 1000)
             resp_headers = {
@@ -2780,7 +2954,7 @@ def report_data(request):
                 "Cache-Control": "private, max-age=30",
                 "Server-Timing": (
                     f"list;dur={list_ms};desc=\"{'hit' if list_hit else 'miss'}\","
-                    f"agg;dur={agg_ms},timeseries;dur={ts_ms},total;dur={total_ms}"
+                    f"build;dur={build_ms},total;dur={total_ms}"
                 ),
             }
             return _etag_response({**payload, "_cache": "miss"}, request, resp_headers)
