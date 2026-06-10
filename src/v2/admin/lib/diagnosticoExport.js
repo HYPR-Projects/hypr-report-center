@@ -17,7 +17,9 @@
 //   decimais. XLSX nativo elimina o problema porque cada célula é cada
 //   célula, sem separador.
 
-import { utils, writeFile } from "xlsx";
+// xlsx é importado dinamicamente dentro de downloadDiagnosticoXlsx — a lib
+// tem ~430 kB e só é necessária no clique de "Exportar XLSX". Import
+// estático aqui arrastava o chunk inteiro pro boot do menu admin.
 import { localPartFromEmail } from "./format";
 
 const STATUS_LABELS = {
@@ -156,7 +158,7 @@ function rowAoA(r, teamMap) {
 // ────────────────────────────────────────────────────────────────────────
 // Sheet builder
 // ────────────────────────────────────────────────────────────────────────
-function buildSheet(headers, dataAoa, colWidths) {
+function buildSheet(utils, headers, dataAoa, colWidths) {
   const sheet = utils.aoa_to_sheet([headers, ...dataAoa]);
   if (colWidths) sheet["!cols"] = colWidths.map((w) => ({ wch: w }));
   // Freeze do header.
@@ -173,7 +175,8 @@ function buildSheet(headers, dataAoa, colWidths) {
 // ────────────────────────────────────────────────────────────────────────
 // API principal
 // ────────────────────────────────────────────────────────────────────────
-export function downloadDiagnosticoXlsx({ displayRows, videoRows, teamMap }) {
+export async function downloadDiagnosticoXlsx({ displayRows, videoRows, teamMap }) {
+  const { utils, writeFile } = await import("xlsx");
   const wb = utils.book_new();
 
   // Display primeiro (operação mais comum), Video em sequência. A coluna
@@ -183,7 +186,7 @@ export function downloadDiagnosticoXlsx({ displayRows, videoRows, teamMap }) {
     ...videoRows.map((r) => rowAoA(r, teamMap)),
   ];
 
-  const sheet = buildSheet(HEADERS, aoa, COL_WIDTHS);
+  const sheet = buildSheet(utils, HEADERS, aoa, COL_WIDTHS);
   utils.book_append_sheet(wb, sheet, "Diagnóstico");
 
   const now = new Date();

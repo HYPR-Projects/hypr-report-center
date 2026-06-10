@@ -40,7 +40,9 @@
 //   Qualquer elemento com `data-export-ignore` (ex.: o próprio botão de
 //   baixar) é removido do clone antes de rasterizar.
 
-import { toSvg } from "html-to-image";
+// html-to-image é importado dinamicamente no momento do export — só é
+// necessário quando o usuário clica em "baixar PNG", então não precisa
+// entrar no chunk do dashboard que todo cliente baixa no boot.
 
 // Resolve a cor de fundo da página no tema atual (dark/light). Lê do
 // <html> via getComputedStyle — mesma fonte que o useThemeColors usa.
@@ -253,6 +255,8 @@ export async function exportElementToPng(
   // fontEmbedCSS faz o html-to-image NÃO varrer os stylesheets sozinho —
   // evita o fetch de folhas cross-origin que trava a exportação.
   const fontEmbedCSS = await getFontEmbedCSS();
+
+  const { toSvg } = await import("html-to-image");
 
   // Deixa o card compacto pra slide: gráficos estreitam pra maxWidth;
   // tabelas (fitContent) encolhem pro tamanho natural do conteúdo. Tudo

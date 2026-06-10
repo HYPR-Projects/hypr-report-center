@@ -54,6 +54,13 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes('node_modules')) return;
+          // clsx PRECISA ser roteado antes do recharts: o recharts depende
+          // de clsx e, sem esta linha, o Rollup colocava o clsx DENTRO do
+          // chunk recharts. Como o cn() (usado em todo componente de UI)
+          // importa clsx, TODA página admin baixava os 382 kB do recharts
+          // só pra pegar os ~500 bytes do clsx. No chunk react (fundação,
+          // sempre carregado) ele não arrasta nada.
+          if (id.match(/[/\\]clsx[/\\]/)) return 'react';
           if (id.includes('react-dom') || id.match(/[/\\]react[/\\]/) || id.includes('scheduler')) return 'react';
           if (id.includes('recharts') || id.includes('d3-')) return 'recharts';
           if (id.includes('@radix-ui')) return 'radix';
