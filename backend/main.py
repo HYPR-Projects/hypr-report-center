@@ -2503,7 +2503,10 @@ def report_data(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
             res = trigger_dagster_rebuild()
-            logger.info(f"[rebuild_unified] run {res['run_id']} disparada por {admin.get('email','?')}")
+            if res.get("already_running"):
+                logger.info(f"[rebuild_unified] clique deduplicado — run {res['run_id']} já em andamento (solicitante: {admin.get('email','?')})")
+            else:
+                logger.info(f"[rebuild_unified] run {res['run_id']} disparada por {admin.get('email','?')}")
             return (jsonify({"ok": True, **res}), 200, headers)
         except RuntimeError as e:
             # Falha esperada (config ausente / Dagster recusou) — mensagem amigável.
@@ -4180,41 +4183,30 @@ mutation($params: ExecutionParams!) {
 }
 """
 
+# Runs do job ainda não terminadas (fila ou executando). Usada pra deduplicar
+# o "Reconstruir agora": clique repetido (mesmo admin impaciente ou dois admins
+# em máquinas diferentes) NÃO dispara run nova — devolve a que já roda. Em
+# 09/06 quatro cliques em 73min custaram ~US$ 187 à toa; o job leva ~15min.
+_DAGSTER_ACTIVE_RUNS_QUERY = """
+query($job: String!) {
+  runsOrError(
+    filter: {pipelineName: $job, statuses: [QUEUED, NOT_STARTED, STARTING, STARTED]}
+    limit: 1
+  ) {
+    __typename
+    ... on Runs { results { runId } }
+  }
+}
+"""
 
-def trigger_dagster_rebuild():
-    """Dispara uma run do job de bases unificadas no Dagster+.
 
-    Devolve {"run_id", "run_url"}. Lança RuntimeError com mensagem amigável em
-    qualquer falha (config ausente, HTTP, GraphQL, ou recusa do launchRun).
-    """
+def _dagster_graphql(graphql_url, token, query, variables):
+    """POST GraphQL no Dagster+; devolve `data` ou lança RuntimeError amigável."""
     import urllib.error
 
-    token = os.environ.get("DAGSTER_API_TOKEN", "").strip()
-    if not token:
-        raise RuntimeError("Reconstrução não configurada (DAGSTER_API_TOKEN ausente no ambiente).")
-
-    graphql_url = os.environ.get("DAGSTER_GRAPHQL_URL", "https://hypr.dagster.cloud/prod/graphql")
-    job_name    = os.environ.get("DAGSTER_JOB_NAME", "dbt_assets_freshness_06am_job")
-    repo_loc    = os.environ.get("DAGSTER_REPO_LOCATION", "hyprster")
-    repo_name   = os.environ.get("DAGSTER_REPO_NAME", "__repository__")
-
-    payload = {
-        "query": _DAGSTER_LAUNCH_MUTATION,
-        "variables": {"params": {
-            "selector": {
-                "repositoryLocationName": repo_loc,
-                "repositoryName": repo_name,
-                "jobName": job_name,
-            },
-            "executionMetadata": {"tags": [
-                {"key": "dagster/from_ui", "value": "true"},
-                {"key": "triggered_by", "value": "report-hub"},
-            ]},
-        }},
-    }
     req = urllib.request.Request(
         graphql_url,
-        data=json.dumps(payload).encode("utf-8"),
+        data=json.dumps({"query": query, "variables": variables}).encode("utf-8"),
         method="POST",
         headers={
             "Content-Type": "application/json",
@@ -4232,15 +4224,59 @@ def trigger_dagster_rebuild():
 
     if body.get("errors"):
         raise RuntimeError(f"Dagster GraphQL: {body['errors'][0].get('message', 'erro desconhecido')[:200]}")
+    return body.get("data") or {}
 
-    res = (body.get("data") or {}).get("launchRun") or {}
+
+def trigger_dagster_rebuild():
+    """Dispara uma run do job de bases unificadas no Dagster+.
+
+    Antes de lançar, checa se já existe run do job em andamento (fila ou
+    executando) — se sim, devolve essa run com already_running=True em vez de
+    empilhar outra. Cada run completa do job custa caro em BigQuery; cliques
+    repetidos eram cobrados integralmente.
+
+    Devolve {"run_id", "run_url", "already_running"}. Lança RuntimeError com
+    mensagem amigável em qualquer falha (config ausente, HTTP, GraphQL, ou
+    recusa do launchRun).
+    """
+    token = os.environ.get("DAGSTER_API_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("Reconstrução não configurada (DAGSTER_API_TOKEN ausente no ambiente).")
+
+    graphql_url = os.environ.get("DAGSTER_GRAPHQL_URL", "https://hypr.dagster.cloud/prod/graphql")
+    job_name    = os.environ.get("DAGSTER_JOB_NAME", "dbt_assets_freshness_06am_job")
+    repo_loc    = os.environ.get("DAGSTER_REPO_LOCATION", "hyprster")
+    repo_name   = os.environ.get("DAGSTER_REPO_NAME", "__repository__")
+    base        = graphql_url.replace("/graphql", "")
+
+    # Dedupe: run em andamento → devolve ela, não dispara outra. Se a checagem
+    # falhar (ex.: indisponibilidade momentânea do Dagster), o launchRun logo
+    # abaixo falharia igual — então deixamos o erro subir daqui mesmo.
+    active = _dagster_graphql(graphql_url, token, _DAGSTER_ACTIVE_RUNS_QUERY, {"job": job_name})
+    runs = ((active.get("runsOrError") or {}).get("results")) or []
+    if runs:
+        run_id = runs[0]["runId"]
+        return {"run_id": run_id, "run_url": f"{base}/runs/{run_id}", "already_running": True}
+
+    data = _dagster_graphql(graphql_url, token, _DAGSTER_LAUNCH_MUTATION, {"params": {
+        "selector": {
+            "repositoryLocationName": repo_loc,
+            "repositoryName": repo_name,
+            "jobName": job_name,
+        },
+        "executionMetadata": {"tags": [
+            {"key": "dagster/from_ui", "value": "true"},
+            {"key": "triggered_by", "value": "report-hub"},
+        ]},
+    }})
+
+    res = data.get("launchRun") or {}
     if res.get("__typename") != "LaunchRunSuccess":
         msg = res.get("message") or res.get("errors") or res.get("__typename") or "recusado"
         raise RuntimeError(f"Dagster não lançou a run: {msg}")
 
     run_id = res["run"]["runId"]
-    base = graphql_url.replace("/graphql", "")
-    return {"run_id": run_id, "run_url": f"{base}/runs/{run_id}"}
+    return {"run_id": run_id, "run_url": f"{base}/runs/{run_id}", "already_running": False}
 
 
 def query_loom(short_token: str):
