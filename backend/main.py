@@ -4846,7 +4846,23 @@ def _get_frozen_payload(short_token):
         return cached
     payload = _load_snapshot_payload(short_token)
     if payload is not None:
+        payload = _overlay_frozen_live_fields(short_token, payload)
         _cache_set(_report_cache, short_token, payload)
+    return payload
+
+
+def _overlay_frozen_live_fields(short_token, payload):
+    """Sobrepõe ao snapshot os campos que continuam editáveis pós-freeze.
+    O freeze protege MÉTRICAS de entrega (totals/daily/detail); anexos de
+    conteúdo que o admin edita depois do encerramento — survey, loom — devem
+    seguir o banco, senão um survey salvo após o freeze fica invisível pra
+    sempre (snapshot guarda survey=null). Roda só no cache miss do snapshot;
+    os saves desses campos já invalidam o _report_cache do token."""
+    for key, fn in (("survey", query_survey), ("loom", query_loom)):
+        try:
+            payload[key] = fn(short_token)
+        except Exception as e:
+            logger.warning(f"[WARN frozen overlay {key} {short_token}] {e}")
     return payload
 
 
