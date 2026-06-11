@@ -192,9 +192,13 @@ export function DataFreshnessIndicator({ className, user }) {
     setRebuild({ busy: true, ok: null, msg: "", runUrl: null });
     try {
       const res = await triggerUnifiedRebuild();
+      // O backend deduplica: se já há run em fila/execução, devolve a run
+      // existente com already_running=true em vez de disparar (e cobrar) outra.
       setRebuild({
         busy: false, ok: true,
-        msg: "Reconstrução disparada — leva alguns minutos.",
+        msg: res?.already_running
+          ? "Já existe uma reconstrução em andamento — acompanhando essa run."
+          : "Reconstrução disparada — leva alguns minutos.",
         runUrl: res?.run_url || null,
       });
       // Re-checa o frescor conforme o job vai terminando.
@@ -375,10 +379,13 @@ export function DataFreshnessIndicator({ className, user }) {
                 unified agora.
               </p>
             )}
+            {/* Desabilitado também após disparo OK: a run leva minutos e
+                clique repetido custava uma run inteira de BQ. O backend ainda
+                deduplica server-side (dois admins, máquinas diferentes). */}
             <button
               type="button"
               onClick={onRebuild}
-              disabled={rebuild.busy}
+              disabled={rebuild.busy || rebuild.ok === true}
               className={cn(
                 "w-full h-8 rounded-md text-[12px] font-medium transition-colors",
                 "disabled:opacity-60 disabled:cursor-not-allowed",
@@ -388,7 +395,11 @@ export function DataFreshnessIndicator({ className, user }) {
                   : "border border-border bg-surface text-fg hover:bg-surface-strong hover:border-border-strong",
               )}
             >
-              {rebuild.busy ? "Disparando…" : "Reconstruir agora"}
+              {rebuild.busy
+                ? "Disparando…"
+                : rebuild.ok === true
+                  ? "Reconstrução em andamento…"
+                  : "Reconstruir agora"}
             </button>
             {rebuild.msg && (
               <p className={cn(
