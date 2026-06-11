@@ -121,6 +121,12 @@ fi
 DAGSTER_API_TOKEN=$(extract_env "DAGSTER_API_TOKEN")
 DAGSTER_API_TOKEN=$(read_secret_if_missing "DAGSTER_API_TOKEN" "$DAGSTER_API_TOKEN")
 
+# DAGSTER_JOB_NAME — job que o botão dispara. Em produção aponta pro
+# report_hub_rebuild_job (só a cadeia que o report consome, ~US$0,12/run);
+# o default no código é o job das 06h inteiro (~US$5+/run), então perder
+# esta env num deploy significa voltar a pagar caro por clique.
+DAGSTER_JOB_NAME=$(extract_env "DAGSTER_JOB_NAME")
+
 if [ -z "$JWT_SECRET" ]; then
   echo "✗ JWT_SECRET não encontrado na revisão $ACTIVE_REV. Abortando."
   echo "  (sem ele o login admin quebra em loop)"
@@ -220,6 +226,9 @@ if [ -n "$PMP_SCHEDULER_SECRET" ]; then
 fi
 if [ -n "$DAGSTER_API_TOKEN" ]; then
   echo "DAGSTER_API_TOKEN: '${DAGSTER_API_TOKEN}'" >> "$ENV_FILE"
+fi
+if [ -n "$DAGSTER_JOB_NAME" ]; then
+  echo "DAGSTER_JOB_NAME: '${DAGSTER_JOB_NAME}'" >> "$ENV_FILE"
 fi
 
 # ── 3. Deploy ────────────────────────────────────────────────────────────────
