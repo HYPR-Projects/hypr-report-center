@@ -69,7 +69,7 @@ import SurveyV2 from "./SurveyV2";
 // ─── Helpers de URL ────────────────────────────────────────────────────
 
 const VALID_TABS = ["overview", "display", "video", "base", "rmnd", "pdooh", "loom", "survey"];
-const VALID_TACTICS = ["O2O", "OOH"];
+const VALID_TACTICS = ["O2O", "OOH", "GROUNDFLOW"];
 
 function readTabFromUrl() {
   if (typeof window === "undefined") return "overview";
@@ -117,9 +117,9 @@ function writeTacticToUrl(paramKey, tactic) {
   }
 }
 
-// Core Product (Visão Geral) — filtro O2O/OOH/Todos exclusivo da aba
-// Visão Geral. Default "ALL" não vai pra URL (limpa). URL: ?core=o2o|ooh.
-const VALID_CORES = ["ALL", "O2O", "OOH"];
+// Core Product (Visão Geral) — filtro O2O/OOH/Groundflow/Todos exclusivo da
+// aba Visão Geral. Default "ALL" não vai pra URL (limpa). URL: ?core=o2o|ooh|groundflow.
+const VALID_CORES = ["ALL", "O2O", "OOH", "GROUNDFLOW"];
 function readCoreFromUrl() {
   if (typeof window === "undefined") return "ALL";
   try {
@@ -186,37 +186,39 @@ function computeIsBonusOnly(data) {
   const contractedSum =
     (t0.contracted_o2o_display_impressions || 0) +
     (t0.contracted_ooh_display_impressions || 0) +
+    (t0.contracted_groundflow_display_impressions || 0) +
     (t0.contracted_o2o_video_completions || 0) +
-    (t0.contracted_ooh_video_completions || 0);
+    (t0.contracted_ooh_video_completions || 0) +
+    (t0.contracted_groundflow_video_completions || 0);
   const bonusSum =
     (t0.bonus_o2o_display_impressions || 0) +
     (t0.bonus_ooh_display_impressions || 0) +
+    (t0.bonus_groundflow_display_impressions || 0) +
     (t0.bonus_o2o_video_completions || 0) +
-    (t0.bonus_ooh_video_completions || 0);
+    (t0.bonus_ooh_video_completions || 0) +
+    (t0.bonus_groundflow_video_completions || 0);
   return contractedSum === 0 && bonusSum > 0;
 }
 
-// Detecta presença de O2O/OOH na campanha. Critério "tem frente": contrato
-// (incl. bonus, em qualquer mídia) OU entrega real em data.totals. Aceita
-// `data` null/undefined (cenário pré-carga) e devolve ambos false.
+// Detecta presença de O2O/OOH/Groundflow na campanha. Critério "tem frente":
+// contrato (incl. bonus, em qualquer mídia) OU entrega real em data.totals.
+// Aceita `data` null/undefined (cenário pré-carga) e devolve todos false.
 function computeTacticAvailability(data) {
-  if (!data) return { hasO2O: false, hasOOH: false };
+  if (!data) return { hasO2O: false, hasOOH: false, hasGROUNDFLOW: false };
   const t0 = (data.totals || [])[0] || {};
-  const hasO2OContract =
-    (t0.contracted_o2o_display_impressions || 0) > 0 ||
-    (t0.bonus_o2o_display_impressions || 0) > 0 ||
-    (t0.contracted_o2o_video_completions || 0) > 0 ||
-    (t0.bonus_o2o_video_completions || 0) > 0;
-  const hasOOHContract =
-    (t0.contracted_ooh_display_impressions || 0) > 0 ||
-    (t0.bonus_ooh_display_impressions || 0) > 0 ||
-    (t0.contracted_ooh_video_completions || 0) > 0 ||
-    (t0.bonus_ooh_video_completions || 0) > 0;
-  const hasO2ODelivery = (data.totals || []).some((r) => r.tactic_type === "O2O");
-  const hasOOHDelivery = (data.totals || []).some((r) => r.tactic_type === "OOH");
+  const hasContract = (frente) =>
+    (t0[`contracted_${frente}_display_impressions`] || 0) > 0 ||
+    (t0[`bonus_${frente}_display_impressions`] || 0) > 0 ||
+    (t0[`contracted_${frente}_video_completions`] || 0) > 0 ||
+    (t0[`bonus_${frente}_video_completions`] || 0) > 0;
+  const hasDelivery = (tac) => (data.totals || []).some((r) => r.tactic_type === tac);
   return {
-    hasO2O: hasO2OContract || hasO2ODelivery,
-    hasOOH: hasOOHContract || hasOOHDelivery,
+    hasO2O:        hasContract("o2o")        || hasDelivery("O2O"),
+    hasOOH:        hasContract("ooh")        || hasDelivery("OOH"),
+    // Groundflow é frente SÓ com contrato. Entrega sem contrato = dark test
+    // → conta como O2O/OOH (espelha o _GF_CONTRACT_GATE do backend). Por isso
+    // NÃO usa hasDelivery aqui (≠ O2O/OOH).
+    hasGROUNDFLOW: hasContract("groundflow"),
   };
 }
 
@@ -482,9 +484,16 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   // campanha que só tem O2O). Computado aqui em cima pra ser usado
   // dentro do useMemo logo abaixo.
   const tacticAvail = computeTacticAvailability(data);
-  const showCoreFilter = tacticAvail.hasO2O && tacticAvail.hasOOH;
+  // Frentes presentes na campanha (ordem fixa O2O → OOH → Groundflow).
+  const availableCores = [
+    tacticAvail.hasO2O        && "O2O",
+    tacticAvail.hasOOH        && "OOH",
+    tacticAvail.hasGROUNDFLOW && "GROUNDFLOW",
+  ].filter(Boolean);
+  // Filtro de Core só faz sentido com 2+ frentes (senão não há o que separar).
+  const showCoreFilter = availableCores.length >= 2;
   const isBonusOnly = computeIsBonusOnly(data);
-  const effectiveMainCore = showCoreFilter && (mainCore === "O2O" || mainCore === "OOH")
+  const effectiveMainCore = showCoreFilter && availableCores.includes(mainCore)
     ? mainCore
     : "ALL";
 
@@ -809,6 +818,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                   <CoreProductFilterV2
                     value={effectiveMainCore}
                     onChange={setMainCore}
+                    available={availableCores}
                   />
                 )}
                 <DateRangeFilterV2

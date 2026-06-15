@@ -999,10 +999,12 @@ def _align_totals_to_contracted(
     t0 = totals_rows[0]
     o2o_d_raw = float(t0.get("o2o_display_budget") or 0)
     ooh_d_raw = float(t0.get("ooh_display_budget") or 0)
+    gf_d_raw  = float(t0.get("groundflow_display_budget") or 0)
     o2o_v_raw = float(t0.get("o2o_video_budget")   or 0)
     ooh_v_raw = float(t0.get("ooh_video_budget")   or 0)
-    display_raw = o2o_d_raw + ooh_d_raw
-    video_raw   = o2o_v_raw + ooh_v_raw
+    gf_v_raw  = float(t0.get("groundflow_video_budget") or 0)
+    display_raw = o2o_d_raw + ooh_d_raw + gf_d_raw
+    video_raw   = o2o_v_raw + ooh_v_raw + gf_v_raw
 
     # Snap se distância ≤ R$0,10 do inteiro mais próximo
     def _snap(x: float) -> Optional[float]:
@@ -1018,15 +1020,17 @@ def _align_totals_to_contracted(
             [display_raw, video_raw], budget_total,
         )
 
-    # Distribui target entre as 2 tactics por mídia
-    o2o_d, ooh_d = _distribute_largest_remainder([o2o_d_raw, ooh_d_raw], display_target)
-    o2o_v, ooh_v = _distribute_largest_remainder([o2o_v_raw, ooh_v_raw], video_target)
+    # Distribui target entre as tactics por mídia (O2O/OOH/Groundflow)
+    o2o_d, ooh_d, gf_d = _distribute_largest_remainder([o2o_d_raw, ooh_d_raw, gf_d_raw], display_target)
+    o2o_v, ooh_v, gf_v = _distribute_largest_remainder([o2o_v_raw, ooh_v_raw, gf_v_raw], video_target)
 
     budget_by_key = {
-        "DISPLAY|O2O": o2o_d,
-        "DISPLAY|OOH": ooh_d,
-        "VIDEO|O2O":   o2o_v,
-        "VIDEO|OOH":   ooh_v,
+        "DISPLAY|O2O":        o2o_d,
+        "DISPLAY|OOH":        ooh_d,
+        "DISPLAY|GROUNDFLOW": gf_d,
+        "VIDEO|O2O":          o2o_v,
+        "VIDEO|OOH":          ooh_v,
+        "VIDEO|GROUNDFLOW":   gf_v,
     }
 
     # Redistribui effective_total_cost dentro de cada mídia (target = budget alinhado)
@@ -1049,11 +1053,13 @@ def _align_totals_to_contracted(
         k = f"{t.get('media_type')}|{t.get('tactic_type')}"
         new_t = dict(t)
         new_t["effective_total_cost"] = cost_by_key.get(k, float(t.get("effective_total_cost") or 0))
-        new_t["o2o_display_budget"]   = o2o_d
-        new_t["ooh_display_budget"]   = ooh_d
-        new_t["o2o_video_budget"]     = o2o_v
-        new_t["ooh_video_budget"]     = ooh_v
-        new_t["total_invested"]       = budget_by_key.get(k, float(t.get("total_invested") or 0))
+        new_t["o2o_display_budget"]        = o2o_d
+        new_t["ooh_display_budget"]        = ooh_d
+        new_t["groundflow_display_budget"] = gf_d
+        new_t["o2o_video_budget"]          = o2o_v
+        new_t["ooh_video_budget"]          = ooh_v
+        new_t["groundflow_video_budget"]   = gf_v
+        new_t["total_invested"]            = budget_by_key.get(k, float(t.get("total_invested") or 0))
         aligned.append(new_t)
     return aligned
 

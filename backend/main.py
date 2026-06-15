@@ -536,19 +536,48 @@ DATASET_ASSETS  = "prod_assets"
 DATASET_SALES_CENTER = "hypr_sales_center"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Expressão SQL que deriva a tática pelo line_name, ignorando tactic_type da
-# tabela (que pode estar errado por erro de CS).
-# Regra: _O2O_/-O2O- no meio ou _O2O/-O2O no final  →  "O2O"
-#        _OOH_/-OOH- no meio ou _OOH/-OOH no final  →  "OOH"
+# Expressão SQL que deriva a tática (frente) pelo line_name, ignorando o
+# tactic_type da tabela (que pode estar errado por erro de CS).
+# Regra (ORDEM IMPORTA — RMNF/Groundflow vence O2O):
+#        _RMNF_/_GROUNDFLOW_ (ou hífen, meio ou fim)  →  "GROUNDFLOW" (rótulo: Groundflow)
+#        _O2O_/-O2O- no meio ou _O2O/-O2O no final     →  "O2O"
+#        _OOH_/-OOH- no meio ou _OOH/-OOH no final     →  "OOH"
 #        (delimitador pode ser `_` ou `-`)
-#        fallback                                     →  tactic_type original
+#        fallback                                       →  tactic_type original
+#
+# Por que RMNF antes de O2O: as lines da frente Groundflow vêm nomeadas como
+# `..._O2O_GROUNDFLOW_...` (Groundflow aninhado em O2O no naming). Sem a
+# prioridade, casariam O2O e a entrega do Groundflow contaria contra o
+# contratado só-de-O2O (pacing inflado). Checando RMNF/GROUNDFLOW primeiro,
+# a frente é separada corretamente.
 # ─────────────────────────────────────────────────────────────────────────────
-TACTIC_EXPR = (
+TACTIC_EXPR = (  # NOTE: legado/não-referenciado — as queries usam CASE inline + _GF_CONTRACT_GATE.
     "CASE"
+    " WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)') THEN 'GROUNDFLOW'"
     " WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)') THEN 'O2O'"
     " WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)') THEN 'OOH'"
     " ELSE tactic_type"
     " END"
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Gate de contrato do Groundflow. A frente Groundflow SÓ existe quando a
+# campanha tem volumetria contratada de groundflow (display, vídeo ou bônus).
+# Sem contrato, lines com token RMNF/GROUNDFLOW são "dark test" e a entrega
+# conta na frente do OUTRO token do nome (O2O/OOH normal) — NÃO viram uma
+# frente Groundflow fantasma com 0 contratado.
+#
+# Implementado como subquery escalar correlacionada a @token. checklist_info
+# tem 1 linha por token (tabela minúscula) → custo desprezível, avaliada 1x.
+# Usado nas queries per-token (totals/daily/detail). A query de lista (todos
+# os tokens) usa o flag `gf_on` joinado da CTE checklist (ver query_campaigns_list).
+# ─────────────────────────────────────────────────────────────────────────────
+_GF_CONTRACT_GATE = (
+    "(SELECT COALESCE(MAX(contracted_groundflow_display_impressions),0)"
+    " + COALESCE(MAX(contracted_groundflow_video_completions),0)"
+    " + COALESCE(MAX(bonus_groundflow_display_impressions),0)"
+    " + COALESCE(MAX(bonus_groundflow_video_completions),0)"
+    " FROM `site-hypr.prod_assets.checklist_info` WHERE short_token = @token) > 0"
 )
 
 ALLOWED_ORIGINS = [
@@ -2674,6 +2703,7 @@ def report_data(request):
     # enriquecida com Hypr Command via line.code = checklists.short_token.
     #
     #   GET  ?action=pmp_lines_list                    → lista enriquecida
+    #   GET  ?action=pmp_lines_window&date_from&date_to → métricas agregadas na janela
     #   GET  ?action=pmp_line_get&line_id=...          → drill-down + daily
     #   POST ?action=pmp_save_line_overrides           → campos manuais
     #   GET  ?action=pmp_suggest_links&line_id=...     → fuzzy match Command
@@ -2693,6 +2723,23 @@ def report_data(request):
             return (jsonify({"lines": lines}), 200, headers)
         except Exception as e:
             logger.exception(f"[ERROR pmp_lines_list] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    # Métricas de delivery agregadas por line DENTRO de uma janela [date_from, date_to].
+    # Usado pelo Histórico pra "janelar" cost/revenue/margem/imps (tipo filtro de
+    # Excel). PI não entra — é valor de contrato, sempre cheio no frontend.
+    if request.method == "GET" and request.args.get("action") == "pmp_lines_window":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            date_from = (request.args.get("date_from") or "").strip()
+            date_to   = (request.args.get("date_to")   or "").strip()
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_from) or not re.match(r"^\d{4}-\d{2}-\d{2}$", date_to):
+                return (jsonify({"error": "date_from/date_to obrigatórios (YYYY-MM-DD)"}), 400, headers)
+            metrics = pmp_lines.window_metrics(date_from, date_to)
+            return (jsonify({"metrics": metrics}), 200, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_lines_window] {e}")
             return (jsonify({"error": str(e)}), 500, headers)
 
     if request.method == "GET" and request.args.get("action") == "pmp_line_get":
@@ -3455,12 +3502,16 @@ def _compose_totals(per_token, active_token):
         "total_invested",
         "impressions", "viewable_impressions", "clicks", "completions",
         "effective_total_cost", "effective_cost_with_over",
-        "o2o_display_budget", "ooh_display_budget",
-        "o2o_video_budget", "ooh_video_budget",
+        "o2o_display_budget", "ooh_display_budget", "groundflow_display_budget",
+        "o2o_video_budget", "ooh_video_budget", "groundflow_video_budget",
         "contracted_o2o_display_impressions", "contracted_ooh_display_impressions",
+        "contracted_groundflow_display_impressions",
         "contracted_o2o_video_completions", "contracted_ooh_video_completions",
+        "contracted_groundflow_video_completions",
         "bonus_o2o_display_impressions", "bonus_ooh_display_impressions",
+        "bonus_groundflow_display_impressions",
         "bonus_o2o_video_completions", "bonus_ooh_video_completions",
+        "bonus_groundflow_video_completions",
         "viewable_video_view_100_complete",
     )
     ACTIVE_FIELDS = (
@@ -3498,12 +3549,16 @@ def _compose_totals(per_token, active_token):
     INTEGER_FIELDS = ("impressions", "viewable_impressions", "clicks",
                       "completions", "viewable_video_view_100_complete",
                       "contracted_o2o_display_impressions", "contracted_ooh_display_impressions",
+                      "contracted_groundflow_display_impressions",
                       "contracted_o2o_video_completions",   "contracted_ooh_video_completions",
+                      "contracted_groundflow_video_completions",
                       "bonus_o2o_display_impressions", "bonus_ooh_display_impressions",
-                      "bonus_o2o_video_completions", "bonus_ooh_video_completions")
+                      "bonus_groundflow_display_impressions",
+                      "bonus_o2o_video_completions", "bonus_ooh_video_completions",
+                      "bonus_groundflow_video_completions")
     MONEY_FIELDS = ("total_invested", "effective_total_cost", "effective_cost_with_over",
-                    "o2o_display_budget", "ooh_display_budget",
-                    "o2o_video_budget", "ooh_video_budget")
+                    "o2o_display_budget", "ooh_display_budget", "groundflow_display_budget",
+                    "o2o_video_budget", "ooh_video_budget", "groundflow_video_budget")
 
     result = []
     for key, agg in by_key.items():
@@ -5775,6 +5830,7 @@ def query_totals(token, campaign_info, unified_src=None, win_from=None, win_to=N
         WITH base AS (
             SELECT
                 CASE
+                    WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)') AND {_GF_CONTRACT_GATE} THEN 'GROUNDFLOW'
                     WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)') THEN 'O2O'
                     WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)') THEN 'OOH'
                     ELSE 'O2O'
@@ -5822,7 +5878,11 @@ def query_totals(token, campaign_info, unified_src=None, win_from=None, win_to=N
             MAX(bonus_o2o_display_impressions)          AS bonus_o2o_display_impressions,
             MAX(bonus_ooh_display_impressions)          AS bonus_ooh_display_impressions,
             MAX(bonus_o2o_video_completions)            AS bonus_o2o_video_completions,
-            MAX(bonus_ooh_video_completions)            AS bonus_ooh_video_completions
+            MAX(bonus_ooh_video_completions)            AS bonus_ooh_video_completions,
+            MAX(contracted_groundflow_display_impressions)    AS contracted_groundflow_display_impressions,
+            MAX(contracted_groundflow_video_completions)      AS contracted_groundflow_video_completions,
+            MAX(bonus_groundflow_display_impressions)         AS bonus_groundflow_display_impressions,
+            MAX(bonus_groundflow_video_completions)           AS bonus_groundflow_video_completions
         FROM {CHECKLIST}
         WHERE short_token = @token
     """
@@ -5866,6 +5926,15 @@ def query_totals(token, campaign_info, unified_src=None, win_from=None, win_to=N
     bonus_ooh_display      = float(c["bonus_ooh_display_impressions"]      or 0)
     bonus_o2o_video        = float(c["bonus_o2o_video_completions"]        or 0)
     bonus_ooh_video        = float(c["bonus_ooh_video_completions"]        or 0)
+    # RMNF (Groundflow) — 3ª frente. BigQuery Row.get() devolve None se a
+    # coluna não existir; só vira KeyError no SELECT acima se a checklist_info
+    # ainda não tiver as colunas groundflow — por isso o deploy do backend só pode
+    # ir DEPOIS de a pipeline hyprster materializar essas colunas. Hoje só
+    # DISPLAY tem dado (RMNF_imp); vídeo/bônus vêm 0 até o Command emiti-los.
+    contracted_groundflow_display = float(c.get("contracted_groundflow_display_impressions") or 0)
+    contracted_groundflow_video   = float(c.get("contracted_groundflow_video_completions")   or 0)
+    bonus_groundflow_display      = float(c.get("bonus_groundflow_display_impressions")      or 0)
+    bonus_groundflow_video        = float(c.get("bonus_groundflow_video_completions")        or 0)
 
     # Datas da campanha
     start = campaign_info.get("_start_date_raw")
@@ -5880,23 +5949,33 @@ def query_totals(token, campaign_info, unified_src=None, win_from=None, win_to=N
     is_ended     = end < today if end else False
 
     # Budgets contratados por tática (sem bonus — bonus não entra no faturamento)
-    o2o_display_budget = contracted_o2o_display * cpm_neg  / 1000
-    ooh_display_budget = contracted_ooh_display * cpm_neg  / 1000
-    o2o_video_budget   = contracted_o2o_video   * cpcv_neg
-    ooh_video_budget   = contracted_ooh_video   * cpcv_neg
+    o2o_display_budget  = contracted_o2o_display  * cpm_neg  / 1000
+    ooh_display_budget  = contracted_ooh_display  * cpm_neg  / 1000
+    groundflow_display_budget = contracted_groundflow_display * cpm_neg  / 1000
+    o2o_video_budget    = contracted_o2o_video    * cpcv_neg
+    ooh_video_budget    = contracted_ooh_video    * cpcv_neg
+    groundflow_video_budget   = contracted_groundflow_video   * cpcv_neg
 
     # Impressões/views negociadas (contratado + bonus)
-    neg_o2o_display = contracted_o2o_display + bonus_o2o_display
-    neg_ooh_display = contracted_ooh_display + bonus_ooh_display
-    neg_o2o_video   = contracted_o2o_video   + bonus_o2o_video
-    neg_ooh_video   = contracted_ooh_video   + bonus_ooh_video
+    neg_o2o_display  = contracted_o2o_display  + bonus_o2o_display
+    neg_ooh_display  = contracted_ooh_display  + bonus_ooh_display
+    neg_groundflow_display = contracted_groundflow_display + bonus_groundflow_display
+    neg_o2o_video    = contracted_o2o_video    + bonus_o2o_video
+    neg_ooh_video    = contracted_ooh_video    + bonus_ooh_video
+    neg_groundflow_video   = contracted_groundflow_video   + bonus_groundflow_video
+
+    # Lookup por frente — extensível (O2O/OOH/RMNF) e à prova de fallback
+    # (tactic desconhecido → 0). Substitui os ternários is_o2o de 2 frentes.
+    _disp_budget = {"O2O": o2o_display_budget, "OOH": ooh_display_budget, "GROUNDFLOW": groundflow_display_budget}
+    _vid_budget  = {"O2O": o2o_video_budget,   "OOH": ooh_video_budget,   "GROUNDFLOW": groundflow_video_budget}
+    _disp_neg    = {"O2O": neg_o2o_display, "OOH": neg_ooh_display, "GROUNDFLOW": neg_groundflow_display}
+    _vid_neg     = {"O2O": neg_o2o_video,   "OOH": neg_ooh_video,   "GROUNDFLOW": neg_groundflow_video}
 
     result = []
     for r in perf_rows:
         tactic    = r["tactic_type"]
         media     = r["media_type"]
         is_video  = media == "VIDEO"
-        is_o2o    = tactic == "O2O"
 
         impressions        = float(r["impressions"]          or 0)
         viewable           = float(r["viewable_impressions"] or 0)
@@ -5929,13 +6008,13 @@ def query_totals(token, campaign_info, unified_src=None, win_from=None, win_to=N
         row_is_ended     = end < today if end else False
 
 
-        # Budget e negociado por tática/mídia
+        # Budget e negociado por tática/mídia (lookup por frente)
         if is_video:
-            budget   = o2o_video_budget if is_o2o else ooh_video_budget
-            neg      = neg_o2o_video    if is_o2o else neg_ooh_video
+            budget   = _vid_budget.get(tactic, 0.0)
+            neg      = _vid_neg.get(tactic, 0.0)
         else:
-            budget   = o2o_display_budget if is_o2o else ooh_display_budget
-            neg      = neg_o2o_display    if is_o2o else neg_ooh_display
+            budget   = _disp_budget.get(tactic, 0.0)
+            neg      = _disp_neg.get(tactic, 0.0)
 
         # Budget proporcional:
         # - Video: usa days_with_delivery (dias reais de entrega da frente)
@@ -6055,16 +6134,22 @@ def query_totals(token, campaign_info, unified_src=None, win_from=None, win_to=N
             "days_with_delivery":  days_with_delivery,
             "o2o_display_budget":                  round(o2o_display_budget, 4),
             "ooh_display_budget":                  round(ooh_display_budget, 4),
+            "groundflow_display_budget":                 round(groundflow_display_budget, 4),
             "o2o_video_budget":                    round(o2o_video_budget,   4),
             "ooh_video_budget":                    round(ooh_video_budget,   4),
+            "groundflow_video_budget":                   round(groundflow_video_budget,  4),
             "contracted_o2o_display_impressions":  contracted_o2o_display,
             "contracted_ooh_display_impressions":  contracted_ooh_display,
+            "contracted_groundflow_display_impressions": contracted_groundflow_display,
             "contracted_o2o_video_completions":    contracted_o2o_video,
             "contracted_ooh_video_completions":    contracted_ooh_video,
+            "contracted_groundflow_video_completions":   contracted_groundflow_video,
             "bonus_o2o_display_impressions":       bonus_o2o_display,
             "bonus_ooh_display_impressions":       bonus_ooh_display,
+            "bonus_groundflow_display_impressions":      bonus_groundflow_display,
             "bonus_o2o_video_completions":         bonus_o2o_video,
             "bonus_ooh_video_completions":         bonus_ooh_video,
+            "bonus_groundflow_video_completions":        bonus_groundflow_video,
             "viewable_video_view_100_complete":    completions,
         })
     return result
@@ -6080,7 +6165,7 @@ def query_daily(token, cr_src=None, win_from=None, win_to=None):
         SELECT
             date,
             media_type,
-            CASE WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)') THEN 'O2O' WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)') THEN 'OOH' ELSE tactic_type END AS tactic_type,
+            CASE WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)') AND {_GF_CONTRACT_GATE} THEN 'GROUNDFLOW' WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)') THEN 'O2O' WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)') THEN 'OOH' ELSE 'O2O' END AS tactic_type,
             SUM(impressions)                        AS impressions,
             SUM(viewable_impressions)               AS viewable_impressions,
             SUM(clicks)                             AS clicks,
@@ -6217,7 +6302,7 @@ def query_detail(token, cr_src=None, win_from=None, win_to=None):
             creative_name,
             creative_size,
             media_type,
-            CASE WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)') THEN 'O2O' WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)') THEN 'OOH' ELSE tactic_type END AS tactic_type,
+            CASE WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)') AND {_GF_CONTRACT_GATE} THEN 'GROUNDFLOW' WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)') THEN 'O2O' WHEN REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)') THEN 'OOH' ELSE 'O2O' END AS tactic_type,
             SUM(impressions)                        AS impressions,
             SUM(viewable_impressions)               AS viewable_impressions,
             SUM(clicks)                             AS clicks,
@@ -6428,10 +6513,20 @@ def query_campaigns_list():
                 MAX(contracted_ooh_display_impressions)     AS contracted_ooh_display,
                 MAX(contracted_o2o_video_completions)       AS contracted_o2o_video,
                 MAX(contracted_ooh_video_completions)       AS contracted_ooh_video,
+                MAX(contracted_groundflow_display_impressions) AS contracted_groundflow_display,
+                MAX(contracted_groundflow_video_completions)   AS contracted_groundflow_video,
                 MAX(bonus_o2o_display_impressions)          AS bonus_o2o_display,
                 MAX(bonus_ooh_display_impressions)          AS bonus_ooh_display,
                 MAX(bonus_o2o_video_completions)            AS bonus_o2o_video,
-                MAX(bonus_ooh_video_completions)            AS bonus_ooh_video
+                MAX(bonus_ooh_video_completions)            AS bonus_ooh_video,
+                MAX(bonus_groundflow_display_impressions)   AS bonus_groundflow_display,
+                MAX(bonus_groundflow_video_completions)     AS bonus_groundflow_video,
+                -- gate do Groundflow: TRUE só quando há contrato/bônus de
+                -- groundflow. Sem isso, line groundflow é dark test → O2O/OOH.
+                (COALESCE(MAX(contracted_groundflow_display_impressions),0)
+                 + COALESCE(MAX(contracted_groundflow_video_completions),0)
+                 + COALESCE(MAX(bonus_groundflow_display_impressions),0)
+                 + COALESCE(MAX(bonus_groundflow_video_completions),0)) > 0 AS gf_on
             FROM `site-hypr.prod_assets.checklist_info`
             GROUP BY short_token
         ),
@@ -6461,8 +6556,11 @@ def query_campaigns_list():
                 SUM(clicks)                           AS clicks,
                 MAX(effective_total_cost)             AS effective_total_cost,
                 SUM(viewable_video_view_100_complete) AS v100_complete,
-                MAX(effective_cost_with_over)         AS effective_cost_with_over
+                MAX(effective_cost_with_over)         AS effective_cost_with_over,
+                -- gate do Groundflow por token (carregado pro agg classificar)
+                ANY_VALUE(gf_on)                      AS gf_on
             FROM {table_ref()}
+            LEFT JOIN checklist USING(short_token)
             WHERE media_type IN ('DISPLAY', 'VIDEO')
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
@@ -6484,10 +6582,15 @@ def query_campaigns_list():
                 -- vem daqui — NÃO da CTE `unified` (que usa fórmula aproximada
                 -- de viewable p/ vídeo e viewable ≈ impressões p/ display quando
                 -- a viewability não é medida). Mesmo regex de tactic do app.
-                SUM(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), vi,            0)) AS d_o2o_vi,
-                SUM(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), vi,            0)) AS d_ooh_vi,
-                SUM(IF(media_type='VIDEO'   AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), v100_complete, 0)) AS v_o2o_comp,
-                SUM(IF(media_type='VIDEO'   AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), v100_complete, 0)) AS v_ooh_comp
+                -- Groundflow vence O2O/OOH (mesma prioridade do CASE): as lines
+                -- vêm como `_O2O_GROUNDFLOW_`, então O2O/OOH EXCLUEM groundflow
+                -- pra não dupla-contar.
+                SUM(IF(media_type='DISPLAY' AND NOT (gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)')) AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), vi,            0)) AS d_o2o_vi,
+                SUM(IF(media_type='DISPLAY' AND NOT (gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)')) AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), vi,            0)) AS d_ooh_vi,
+                SUM(IF(media_type='DISPLAY' AND gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)'), vi,            0)) AS d_groundflow_vi,
+                SUM(IF(media_type='VIDEO'   AND NOT (gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)')) AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), v100_complete, 0)) AS v_o2o_comp,
+                SUM(IF(media_type='VIDEO'   AND NOT (gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)')) AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), v100_complete, 0)) AS v_ooh_comp,
+                SUM(IF(media_type='VIDEO'   AND gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)'), v100_complete, 0)) AS v_groundflow_comp
             FROM dedup
             GROUP BY short_token
         ),
@@ -6505,10 +6608,12 @@ def query_campaigns_list():
                 -- da mesma mídia.
                 MIN(IF(media_type='VIDEO', date, NULL))              AS v_actual_start_date,
                 MIN(IF(media_type='DISPLAY', date, NULL))            AS d_actual_start_date,
-                MIN(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), date, NULL)) AS d_o2o_actual_start_date,
-                MIN(IF(media_type='DISPLAY' AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), date, NULL)) AS d_ooh_actual_start_date,
-                MIN(IF(media_type='VIDEO'   AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), date, NULL)) AS v_o2o_actual_start_date,
-                MIN(IF(media_type='VIDEO'   AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), date, NULL)) AS v_ooh_actual_start_date,
+                MIN(IF(media_type='DISPLAY' AND NOT (gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)')) AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), date, NULL)) AS d_o2o_actual_start_date,
+                MIN(IF(media_type='DISPLAY' AND NOT (gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)')) AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), date, NULL)) AS d_ooh_actual_start_date,
+                MIN(IF(media_type='DISPLAY' AND gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)'), date, NULL)) AS d_groundflow_actual_start_date,
+                MIN(IF(media_type='VIDEO'   AND NOT (gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)')) AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), date, NULL)) AS v_o2o_actual_start_date,
+                MIN(IF(media_type='VIDEO'   AND NOT (gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)')) AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), date, NULL)) AS v_ooh_actual_start_date,
+                MIN(IF(media_type='VIDEO'   AND gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)'), date, NULL)) AS v_groundflow_actual_start_date,
                 COUNT(DISTINCT IF(media_type='VIDEO', date, NULL)) AS v_days_with_delivery,
                 SUM(IF(media_type='VIDEO' AND impressions > 0,
                         video_view_100_complete * (viewable_impressions / impressions),
@@ -6537,6 +6642,7 @@ def query_campaigns_list():
                 SUM(IF(media_type='VIDEO',   total_cost,  0)) AS v_admin_total_cost,
                 SUM(IF(media_type='VIDEO',   impressions, 0)) AS v_admin_impressions
             FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+            LEFT JOIN checklist USING(short_token)
             WHERE media_type IN ('DISPLAY', 'VIDEO')
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
@@ -6746,18 +6852,26 @@ def query_campaigns_list():
             -- não mexer no Python nem no override de freeze.
             a.d_o2o_vi   AS d_o2o_viewable_impressions,
             a.d_ooh_vi   AS d_ooh_viewable_impressions,
+            a.d_groundflow_vi AS d_groundflow_viewable_impressions,
             a.v_o2o_comp AS v_o2o_viewable_completions,
             a.v_ooh_comp AS v_ooh_viewable_completions,
+            a.v_groundflow_comp AS v_groundflow_viewable_completions,
             c.cpm_amount, c.cpcv_amount,
             c.contracted_o2o_display, c.contracted_ooh_display,
+            c.contracted_groundflow_display,
             c.contracted_o2o_video,   c.contracted_ooh_video,
+            c.contracted_groundflow_video,
             c.bonus_o2o_display,      c.bonus_ooh_display,
+            c.bonus_groundflow_display,
             c.bonus_o2o_video,        c.bonus_ooh_video,
+            c.bonus_groundflow_video,
             u.v_actual_start_date,    u.v_days_with_delivery,  u.v_viewable_completions,
             u.v_viewable_impressions,
             u.d_actual_start_date,
             u.d_o2o_actual_start_date, u.d_ooh_actual_start_date,
+            u.d_groundflow_actual_start_date,
             u.v_o2o_actual_start_date, u.v_ooh_actual_start_date,
+            u.v_groundflow_actual_start_date,
             u.d_days_with_delivery,   u.d_viewable_impressions,
             u.admin_total_cost,       u.admin_impressions,
             u.d_admin_total_cost,     u.d_admin_impressions,
@@ -6910,8 +7024,10 @@ def query_campaigns_list():
         d_actual_start    = _coerce_date(r["d_actual_start_date"])
         d_o2o_actual_start = _coerce_date(r["d_o2o_actual_start_date"])
         d_ooh_actual_start = _coerce_date(r["d_ooh_actual_start_date"])
+        d_groundflow_actual_start = _coerce_date(r["d_groundflow_actual_start_date"])
         v_o2o_actual_start = _coerce_date(r["v_o2o_actual_start_date"])
         v_ooh_actual_start = _coerce_date(r["v_ooh_actual_start_date"])
+        v_groundflow_actual_start = _coerce_date(r["v_groundflow_actual_start_date"])
         d_days_delivery   = int(r["d_days_with_delivery"]     or 0)
         d_viewable_impr   = float(r["d_viewable_impressions"] or 0)
 
@@ -6924,14 +7040,18 @@ def query_campaigns_list():
         # Negociado por tactic (contrato + bonus) — denominador do pacing per-frente.
         d_o2o_neg = float(r["contracted_o2o_display"] or 0) + float(r["bonus_o2o_display"] or 0)
         d_ooh_neg = float(r["contracted_ooh_display"] or 0) + float(r["bonus_ooh_display"] or 0)
+        d_groundflow_neg = float(r["contracted_groundflow_display"] or 0) + float(r["bonus_groundflow_display"] or 0)
         v_o2o_neg = float(r["contracted_o2o_video"]   or 0) + float(r["bonus_o2o_video"]   or 0)
         v_ooh_neg = float(r["contracted_ooh_video"]   or 0) + float(r["bonus_ooh_video"]   or 0)
+        v_groundflow_neg = float(r["contracted_groundflow_video"] or 0) + float(r["bonus_groundflow_video"] or 0)
 
         # Entrega por tactic (viewable impressions/completions) — numerador.
         d_o2o_viewable = float(r["d_o2o_viewable_impressions"]  or 0)
         d_ooh_viewable = float(r["d_ooh_viewable_impressions"]  or 0)
+        d_groundflow_viewable = float(r["d_groundflow_viewable_impressions"] or 0)
         v_o2o_viewable = float(r["v_o2o_viewable_completions"]  or 0)
         v_ooh_viewable = float(r["v_ooh_viewable_completions"]  or 0)
+        v_groundflow_viewable = float(r["v_groundflow_viewable_completions"] or 0)
 
         # Pacing per-frente. Emite só quando há contrato pra aquela frente
         # — sem contrato (None) o front esconde a sub-barra (sem ruído).
@@ -6939,12 +7059,16 @@ def query_campaigns_list():
         # Usa actual_start_date per-tactic — frente atrasada não é penalizada.
         d_o2o_expected = pacing_expected_to_date(d_o2o_neg, start_date, end_date, d_o2o_actual_start)
         d_ooh_expected = pacing_expected_to_date(d_ooh_neg, start_date, end_date, d_ooh_actual_start)
+        d_groundflow_expected = pacing_expected_to_date(d_groundflow_neg, start_date, end_date, d_groundflow_actual_start)
         v_o2o_expected = pacing_expected_to_date(v_o2o_neg, start_date, end_date, v_o2o_actual_start)
         v_ooh_expected = pacing_expected_to_date(v_ooh_neg, start_date, end_date, v_ooh_actual_start)
+        v_groundflow_expected = pacing_expected_to_date(v_groundflow_neg, start_date, end_date, v_groundflow_actual_start)
         display_pacing_o2o = round(d_o2o_viewable / d_o2o_expected * 100, 1) if d_o2o_expected and d_o2o_expected > 0 else None
         display_pacing_ooh = round(d_ooh_viewable / d_ooh_expected * 100, 1) if d_ooh_expected and d_ooh_expected > 0 else None
+        display_pacing_groundflow = round(d_groundflow_viewable / d_groundflow_expected * 100, 1) if d_groundflow_expected and d_groundflow_expected > 0 else None
         video_pacing_o2o   = round(v_o2o_viewable / v_o2o_expected * 100, 1) if v_o2o_expected and v_o2o_expected > 0 else None
         video_pacing_ooh   = round(v_ooh_viewable / v_ooh_expected * 100, 1) if v_ooh_expected and v_ooh_expected > 0 else None
+        video_pacing_groundflow = round(v_groundflow_viewable / v_groundflow_expected * 100, 1) if v_groundflow_expected and v_groundflow_expected > 0 else None
 
         # Esperado AGREGADO = Σ esperado por frente (cada uma com seu próprio
         # actual_start/runway), NÃO o negociado combinado contra um único
@@ -6955,8 +7079,8 @@ def query_campaigns_list():
         # frentes (ex.: Diageo vídeo 90% no card vs O2O 138% / OOH 117% no
         # report; display 59% vs 92% — OOH entrou ~15 dias depois do O2O).
         # Também corrige os campos *_expected_* expostos pro rollup por owner.
-        d_expected = ((d_o2o_expected or 0) + (d_ooh_expected or 0)) or None
-        v_expected = ((v_o2o_expected or 0) + (v_ooh_expected or 0)) or None
+        d_expected = ((d_o2o_expected or 0) + (d_ooh_expected or 0) + (d_groundflow_expected or 0)) or None
+        v_expected = ((v_o2o_expected or 0) + (v_ooh_expected or 0) + (v_groundflow_expected or 0)) or None
 
         # Entrega (numerador do pacing) vem do CR: d_vi / v_comp = mesma fonte
         # do report (query_detail). ANTES usava d_viewable_impr / v_viewable_comp
@@ -6991,8 +7115,10 @@ def query_campaigns_list():
         # contrato pra aquela frente; 0% sinaliza "vendido, não iniciou".
         if display_pacing_o2o is not None: entry["display_pacing_o2o"] = display_pacing_o2o
         if display_pacing_ooh is not None: entry["display_pacing_ooh"] = display_pacing_ooh
+        if display_pacing_groundflow is not None: entry["display_pacing_groundflow"] = display_pacing_groundflow
         if video_pacing_o2o   is not None: entry["video_pacing_o2o"]   = video_pacing_o2o
         if video_pacing_ooh   is not None: entry["video_pacing_ooh"]   = video_pacing_ooh
+        if video_pacing_groundflow is not None: entry["video_pacing_groundflow"] = video_pacing_groundflow
         if display_ctr    is not None: entry["display_ctr"]    = display_ctr
         if video_ctr      is not None: entry["video_ctr"]      = video_ctr
         if video_vtr      is not None: entry["video_vtr"]      = video_vtr

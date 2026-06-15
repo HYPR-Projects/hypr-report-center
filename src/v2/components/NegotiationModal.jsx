@@ -558,13 +558,22 @@ function Volumes({ negotiation, legacyTotals, extras, reportData }) {
   const oohVideoContracted = oohViewsFromExtras || legacyOOHVid;
   const oohVideoBonus = oohBonusViewsFromExtras || legacyOOHVidBonus;
 
+  // Groundflow (RMNF): Sales Center guarda em extras.RMNF_imp (hoje só
+  // display); fallback nas colunas contracted_groundflow_* do checklist_info.
+  const gfDisplayContracted = numFromExtras("RMNF_imp")        || lt.contracted_groundflow_display_impressions || 0;
+  const gfDisplayBonus      = numFromExtras("RMNF_bonus_imp")  || lt.bonus_groundflow_display_impressions      || 0;
+  const gfVideoContracted   = numFromExtras("RMNF_views")      || lt.contracted_groundflow_video_completions   || 0;
+  const gfVideoBonus        = numFromExtras("RMNF_bonus_views") || lt.bonus_groundflow_video_completions        || 0;
+
   const hasO2O = !!(o2oDisplayContracted || o2oDisplayBonus || o2oVideoContracted || o2oVideoBonus);
   const hasOOH = !!(oohDisplayContracted || oohDisplayBonus || oohVideoContracted || oohVideoBonus);
+  const hasGROUNDFLOW = !!(gfDisplayContracted || gfDisplayBonus || gfVideoContracted || gfVideoBonus);
 
-  if (!hasO2O && !hasOOH) return null;
+  if (!hasO2O && !hasOOH && !hasGROUNDFLOW) return null;
 
   const o2oActive = detectTacticActive("O2O", reportData);
   const oohActive = detectTacticActive("OOH", reportData);
+  const gfActive  = detectTacticActive("GROUNDFLOW", reportData);
 
   return (
     <Section title="Volumes contratados">
@@ -587,6 +596,16 @@ function Volumes({ negotiation, legacyTotals, extras, reportData }) {
             displayBonus={oohDisplayBonus}
             videoContracted={oohVideoContracted}
             videoBonus={oohVideoBonus}
+          />
+        )}
+        {hasGROUNDFLOW && (
+          <VolumeCard
+            tactic="Groundflow"
+            active={gfActive}
+            displayContracted={gfDisplayContracted}
+            displayBonus={gfDisplayBonus}
+            videoContracted={gfVideoContracted}
+            videoBonus={gfVideoBonus}
           />
         )}
       </div>

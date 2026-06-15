@@ -22,7 +22,7 @@ import "../../v2.css";
 
 import {
   listPmpLines, savePmpLineOverrides, syncPmpV2,
-  suggestPmpLinks, linkPmpCommand, getPmpLine,
+  suggestPmpLinks, linkPmpCommand, getPmpLine, pmpLineWindowMetrics,
 } from "../../../lib/api";
 import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
@@ -53,6 +53,49 @@ import { PmpFreshnessIndicator } from "../components/PmpFreshnessIndicator";
 import { isFeatureAdmin } from "../../../shared/auth";
 
 const ALL = "__ALL__";
+
+// Sobrepõe nas lines as métricas agregadas DENTRO da janela escolhida
+// (cost/revenue/margem/imps), tipo filtro de Excel. PI e margem configurada
+// ficam intactos (contrato, não filtram). Lines sem delivery na janela viram
+// zeros. Re-deriva também as somas de grupo e os % a partir dos valores
+// janelados pra que tudo (tabela + KPIs + export) leia o mesmo número.
+function applyWindowMetrics(lines, metrics) {
+  if (!metrics) return lines;
+  // 1) Somas por grupo dentro da janela (margem/receita).
+  const gMargin = {}, gRevenue = {};
+  for (const l of lines) {
+    if (!l.group_id) continue;
+    const m = metrics[String(l.line_id)];
+    gMargin[l.group_id]  = (gMargin[l.group_id]  || 0) + (m ? Number(m.curator_margin  || 0) : 0);
+    gRevenue[l.group_id] = (gRevenue[l.group_id] || 0) + (m ? Number(m.curator_revenue || 0) : 0);
+  }
+  // 2) Overlay por line.
+  return lines.map(l => {
+    const m = metrics[String(l.line_id)] || {};
+    const cost    = Number(m.curator_total_cost || 0);
+    const revenue = Number(m.curator_revenue    || 0);
+    const margin  = Number(m.curator_margin     || 0);
+    const imps    = Number(m.imps               || 0);
+    const pi      = l.pi_brl != null ? Number(l.pi_brl) : null;
+    const grpM    = l.group_id ? (gMargin[l.group_id]  || 0) : null;
+    const grpR    = l.group_id ? (gRevenue[l.group_id] || 0) : null;
+    return {
+      ...l,
+      curator_total_cost: cost,
+      curator_revenue: revenue,
+      curator_margin: margin,
+      imps,
+      effective_margin_pct: revenue > 0 ? margin / revenue : null,
+      pct_a_receber: (pi && pi > 0) ? margin / pi : null,
+      ecpm: imps > 0 ? (revenue * 1000) / imps : null,
+      group_curator_margin: grpM,
+      group_curator_revenue: grpR,
+      group_effective_margin_pct: (grpR && grpR > 0) ? grpM / grpR : null,
+      group_pct_a_receber: (grpM != null && pi && pi > 0) ? grpM / pi : l.group_pct_a_receber,
+      _windowed: true,
+    };
+  });
+}
 
 export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   // Permissão de edição — só uma lista curada de operadores pode mutar
@@ -126,6 +169,10 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   const [histPeriod, setHistPeriod] = useState({ presetId: "all", from: null, to: null });
   const [histQuarters, setHistQuarters] = useState([]);
   const [histMonths, setHistMonths]     = useState([]);
+  // Métricas janeladas (tipo Excel): mapa line_id → agregado da janela.
+  // null = sem janela ativa (números lifetime).
+  const [windowMetrics, setWindowMetrics] = useState(null);
+  const [windowLoading, setWindowLoading] = useState(false);
 
   // Sort — duas instâncias separadas porque os defaults fazem sentido
   // diferentes em cada view (Lista: mais stale primeiro; Histórico:
@@ -278,6 +325,35 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     });
   }, [histMonths]);
 
+  // Janela ativa pras MÉTRICAS (só no Histórico). Bounds do período escolhido:
+  // custom range, preset (from/to concretos) ou união de buckets (min→max).
+  // "Tudo" → null (números lifetime). Buckets não-contíguos viram um range
+  // único min→max (inclui o vão) — limitação aceita; uso comum é 1 bucket/range.
+  const metricWindow = useMemo(() => {
+    if (layout !== "history") return null;
+    const ranges = [...quarterRanges, ...monthRanges];
+    const froms = [histPeriod.from, ...ranges.map(r => r.from)].filter(Boolean).sort();
+    const tos   = [histPeriod.to,   ...ranges.map(r => r.to)].filter(Boolean).sort();
+    let from = froms[0] || null;
+    let to   = tos[tos.length - 1] || null;
+    if (!from && !to) return null;          // "Tudo" → sem janela
+    if (from && !to) to = ymd(new Date());  // aberto até hoje
+    if (!from && to) return null;           // só "até" sem início → não janela
+    return { from, to };
+  }, [layout, histPeriod, quarterRanges, monthRanges]);
+
+  // Busca as métricas da janela quando os bounds mudam.
+  useEffect(() => {
+    if (!metricWindow) { setWindowMetrics(null); return; }
+    let cancelled = false;
+    setWindowLoading(true);
+    pmpLineWindowMetrics({ dateFrom: metricWindow.from, dateTo: metricWindow.to })
+      .then(m => { if (!cancelled) setWindowMetrics(m); })
+      .catch(() => { if (!cancelled) setWindowMetrics(null); })
+      .finally(() => { if (!cancelled) setWindowLoading(false); });
+    return () => { cancelled = true; };
+  }, [metricWindow]);
+
   const allLinesFiltered = useMemo(() => {
     const base = applyFilters(lines);
     const { from, to } = histPeriod;
@@ -304,6 +380,16 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     });
   }, [lines, search, customer, bidType, status, histPeriod, quarterRanges, monthRanges]);
 
+  // Histórico com métricas janeladas quando há janela ativa e dado carregado.
+  // Exige mapa não-vazio: se o endpoint ainda não existir no backend (ou
+  // falhar), windowMetrics fica null/{} e caímos de volta nos números lifetime
+  // em vez de zerar tudo.
+  const windowed = !!(metricWindow && windowMetrics && Object.keys(windowMetrics).length > 0);
+  const histLines = useMemo(
+    () => (windowed ? applyWindowMetrics(allLinesFiltered, windowMetrics) : allLinesFiltered),
+    [allLinesFiltered, windowed, windowMetrics],
+  );
+
   const allFiltered = useMemo(() => applyFilters([...partitions.live, ...partitions.other]), [partitions, search, customer, bidType, status]);
 
   // Conjunto exibido na aba atual — KPIs e contagens refletem isso.
@@ -312,10 +398,10 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   // big numbers no topo somem tudo que está exposto abaixo, não só ativas.
   const visibleLines = useMemo(() => {
     if (layout === "live")     return liveFiltered;
-    if (layout === "history")  return allLinesFiltered;
+    if (layout === "history")  return histLines;
     if (layout === "client")   return allLinesFiltered;
     return allFiltered;
-  }, [layout, liveFiltered, allLinesFiltered, allFiltered]);
+  }, [layout, liveFiltered, histLines, allLinesFiltered, allFiltered]);
 
   // ── KPIs ──────────────────────────────────────────────────────────────────
   // Big numbers refletem o dataset visível na aba ativa (com filtros).
@@ -644,7 +730,10 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
         {lines.length > 0 && (
           <div className="mb-6">
             <PmpKpiStrip kpis={kpis} livesCount={partitions.live.length} totalCount={lines.length}
-                         showExtra={layout === "history" || layout === "client"} />
+                         showExtra={layout === "history" || layout === "client"}
+                         windowed={windowed}
+                         windowLabel={windowed ? formatRangeCompact(metricWindow.from, metricWindow.to) : null}
+                         windowLoading={windowLoading} />
           </div>
         )}
 
@@ -686,6 +775,17 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
           )}
         </div>
 
+        {/* Aviso: métricas janeladas (Cost/Revenue/Margem/% refletem o período). */}
+        {layout === "history" && windowed && (
+          <div className="mb-5 -mt-1 inline-flex items-center gap-2 text-[11px] text-fg-muted">
+            <span className="inline-flex w-1.5 h-1.5 rounded-full bg-signature" />
+            <span>
+              Métricas no período <span className="font-medium text-fg">{formatRangeCompact(metricWindow.from, metricWindow.to)}</span>
+              {windowLoading && " · calculando…"} · <span className="text-fg-subtle">PI é o valor de contrato e não filtra</span>
+            </span>
+          </div>
+        )}
+
         {/* Filtros sticky */}
         <div className="mb-6 flex flex-wrap items-center gap-2">
           <SearchInput value={search} onChange={setSearch} />
@@ -715,7 +815,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
                                                          else { setSortBy(LIST_DEFAULT_SORT.by); setSortDir(LIST_DEFAULT_SORT.dir); }
                                                        }}
                                                        onLineClick={setEditing} onLinkClick={canEdit ? setLinking : undefined} />}
-              {layout === "history"  && <HistoryView  lines={allLinesFiltered}
+              {layout === "history"  && <HistoryView  lines={histLines}
                                                        sortBy={histSortBy} sortDir={histSortDir}
                                                        onColumnClick={(f) => {
                                                          // Ciclo 3-estado: desc → asc → default

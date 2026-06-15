@@ -55,16 +55,20 @@ import { SegmentedControlV2 } from "../components/SegmentedControlV2";
 const TACTIC_OPTIONS = [
   { value: "O2O", label: "O2O" },
   { value: "OOH", label: "OOH" },
+  { value: "GROUNDFLOW", label: "Groundflow" },
 ];
 
-// Espelha o CASE do `query_totals` no backend: `_O2O_`/`_O2O$` → "O2O",
-// `_OOH_`/`_OOH$` → "OOH", default → "O2O". Sem isso, detail filtraria
-// por `tactic_type` cru, que tem fallback diferente no `query_detail`.
+// Espelha o CASE do `query_totals` no backend. ORDEM IMPORTA: Groundflow
+// (token RMNF ou GROUNDFLOW) vence O2O — lines vêm como `..._O2O_GROUNDFLOW_...`.
 // Delimitador pode ser `_` ou `-` (naming mistura os dois).
+// `gfOn` = a campanha tem contrato de groundflow (dark test sem contrato →
+// conta como O2O/OOH; espelha o _GF_CONTRACT_GATE do backend).
+const GROUNDFLOW_RE = /(?:^|[_-])(?:RMNF|GROUNDFLOW)(?:[_-]|$)/i;
 const O2O_RE = /(?:^|[_-])O2O(?:[_-]|$)/i;
 const OOH_RE = /(?:^|[_-])OOH(?:[_-]|$)/i;
-const deriveTactic = (lineName) => {
+const deriveTactic = (lineName, gfOn) => {
   const ln = lineName || "";
+  if (gfOn && GROUNDFLOW_RE.test(ln)) return "GROUNDFLOW";
   if (O2O_RE.test(ln)) return "O2O";
   if (OOH_RE.test(ln)) return "OOH";
   return "O2O";
@@ -88,23 +92,20 @@ export default function VideoV2({
 
   // Tactics disponíveis: ver comentário equivalente em DisplayV2.
   const t0Video = (data.totals || [])[0] || {};
-  const hasDeliveryO2O = aggregates.totals.some(
-    (r) => r.media_type === "VIDEO" && r.tactic_type === "O2O",
+  const hasDelivery = (tac) => aggregates.totals.some(
+    (r) => r.media_type === "VIDEO" && r.tactic_type === tac,
   );
-  const hasDeliveryOOH = aggregates.totals.some(
-    (r) => r.media_type === "VIDEO" && r.tactic_type === "OOH",
-  );
-  const hasContractO2O =
-    (t0Video.contracted_o2o_video_completions || 0) > 0 ||
-    (t0Video.bonus_o2o_video_completions || 0) > 0;
-  const hasContractOOH =
-    (t0Video.contracted_ooh_video_completions || 0) > 0 ||
-    (t0Video.bonus_ooh_video_completions || 0) > 0;
-  const showO2O = hasContractO2O || hasDeliveryO2O;
-  const showOOH = hasContractOOH || hasDeliveryOOH;
-  const availableTactics = TACTIC_OPTIONS.filter((opt) =>
-    opt.value === "O2O" ? showO2O : showOOH,
-  );
+  const hasContract = (frente) =>
+    (t0Video[`contracted_${frente}_video_completions`] || 0) > 0 ||
+    (t0Video[`bonus_${frente}_video_completions`] || 0) > 0;
+  // Gate do Groundflow (espelha backend): sem contrato, line é dark test → O2O.
+  const hasGfContract = hasContract("groundflow");
+  const showByTactic = {
+    O2O:        hasContract("o2o")        || hasDelivery("O2O"),
+    OOH:        hasContract("ooh")        || hasDelivery("OOH"),
+    GROUNDFLOW: hasGfContract,  // contract-only (≠ O2O/OOH): dark test não vira frente
+  };
+  const availableTactics = TACTIC_OPTIONS.filter((opt) => showByTactic[opt.value]);
   const effectiveTactic =
     availableTactics.find((t) => t.value === tactic)?.value
     || availableTactics[0]?.value
@@ -118,7 +119,7 @@ export default function VideoV2({
       (r) => r.media_type === "VIDEO" && r.tactic_type === effectiveTactic,
     );
     const detailAll = aggregates.detail.filter(
-      (r) => r.media_type === "VIDEO" && deriveTactic(r.line_name) === effectiveTactic,
+      (r) => r.media_type === "VIDEO" && deriveTactic(r.line_name, hasGfContract) === effectiveTactic,
     );
 
     const kpis = computeVideoKpis({
@@ -142,7 +143,7 @@ export default function VideoV2({
     const byAudience = groupByAudience(detailAll, "video_view_100", "viewable_impressions", "vtr");
 
     return { totals, detailAll, detailNormalized, kpis, daily, bySize, byCreative, byAudience };
-  }, [aggregates, effectiveTactic, t0Video]);
+  }, [aggregates, effectiveTactic, t0Video, hasGfContract]);
 
   const { totals, detailAll, detailNormalized, kpis, daily, bySize, byCreative, byAudience } = view;
   // Alias mantido pelos consumers internos (`detailFiltered`). Pós-refactor
@@ -158,14 +159,9 @@ export default function VideoV2({
   // Views contratadas e bonus — fallback pro checklist (t0Video) quando
   // a tactic ainda não entregou (caso "notStarted").
   const row0 = totals[0] || t0Video || {};
-  const contractedViews =
-    effectiveTactic === "O2O"
-      ? row0.contracted_o2o_video_completions || 0
-      : row0.contracted_ooh_video_completions || 0;
-  const bonusViews =
-    effectiveTactic === "O2O"
-      ? row0.bonus_o2o_video_completions || 0
-      : row0.bonus_ooh_video_completions || 0;
+  const _frente = (effectiveTactic || "O2O").toLowerCase();
+  const contractedViews = row0[`contracted_${_frente}_video_completions`] || 0;
+  const bonusViews       = row0[`bonus_${_frente}_video_completions`]      || 0;
 
   // CPCV "com bonus": equivalente ao cpmNegBonus do Display. Mesmo budget
   // dividido pela entrega total prometida (contracted + bonus completions).

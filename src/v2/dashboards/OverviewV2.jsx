@@ -104,17 +104,20 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
     if (coreFilter !== "ALL") return null;
     const r0 = rows[0] || {};
     const isVideo = mediaType === "VIDEO";
-    const negO2O = isVideo
-      ? (r0.contracted_o2o_video_completions   || 0) + (r0.bonus_o2o_video_completions   || 0)
-      : (r0.contracted_o2o_display_impressions || 0) + (r0.bonus_o2o_display_impressions || 0);
-    const negOOH = isVideo
-      ? (r0.contracted_ooh_video_completions   || 0) + (r0.bonus_ooh_video_completions   || 0)
-      : (r0.contracted_ooh_display_impressions || 0) + (r0.bonus_ooh_display_impressions || 0);
-    if (negO2O === 0 || negOOH === 0) return null;
-    return [
-      { label: "O2O", pacing: computeMediaPacing(rows, camp, mediaType, "O2O") },
-      { label: "OOH", pacing: computeMediaPacing(rows, camp, mediaType, "OOH") },
-    ];
+    const neg = (frente) => isVideo
+      ? (r0[`contracted_${frente}_video_completions`]   || 0) + (r0[`bonus_${frente}_video_completions`]   || 0)
+      : (r0[`contracted_${frente}_display_impressions`] || 0) + (r0[`bonus_${frente}_display_impressions`] || 0);
+    // Uma sub-barra por frente COM contrato; quebra aparece com 2+ frentes.
+    const fronts = [
+      { label: "O2O", tactic: "O2O",        neg: neg("o2o") },
+      { label: "OOH", tactic: "OOH",        neg: neg("ooh") },
+      { label: "GF",  tactic: "GROUNDFLOW", neg: neg("groundflow") },
+    ].filter((f) => f.neg > 0);
+    if (fronts.length < 2) return null;
+    return fronts.map((f) => ({
+      label:  f.label,
+      pacing: computeMediaPacing(rows, camp, mediaType, f.tactic),
+    }));
   };
   const displaySubBars = buildTacticSubBars(display, "DISPLAY");
   const videoSubBars   = buildTacticSubBars(video,   "VIDEO");
@@ -523,13 +526,17 @@ function availableMediaFromData(data) {
   const hasDisplayContract =
     (t0.contracted_o2o_display_impressions || 0) > 0 ||
     (t0.contracted_ooh_display_impressions || 0) > 0 ||
+    (t0.contracted_groundflow_display_impressions || 0) > 0 ||
     (t0.bonus_o2o_display_impressions || 0) > 0 ||
-    (t0.bonus_ooh_display_impressions || 0) > 0;
+    (t0.bonus_ooh_display_impressions || 0) > 0 ||
+    (t0.bonus_groundflow_display_impressions || 0) > 0;
   const hasVideoContract =
     (t0.contracted_o2o_video_completions || 0) > 0 ||
     (t0.contracted_ooh_video_completions || 0) > 0 ||
+    (t0.contracted_groundflow_video_completions || 0) > 0 ||
     (t0.bonus_o2o_video_completions || 0) > 0 ||
-    (t0.bonus_ooh_video_completions || 0) > 0;
+    (t0.bonus_ooh_video_completions || 0) > 0 ||
+    (t0.bonus_groundflow_video_completions || 0) > 0;
   const hasDisplayDelivery = (data?.totals || []).some((r) => r.media_type === "DISPLAY");
   const hasVideoDelivery = (data?.totals || []).some((r) => r.media_type === "VIDEO");
   const out = [];
@@ -545,9 +552,11 @@ function pickBudget(row, media, tactic) {
   if (!row) return 0;
   const o2o = media === "video" ? (row.o2o_video_budget || 0) : (row.o2o_display_budget || 0);
   const ooh = media === "video" ? (row.ooh_video_budget || 0) : (row.ooh_display_budget || 0);
+  const gf  = media === "video" ? (row.groundflow_video_budget || 0) : (row.groundflow_display_budget || 0);
   if (tactic === "O2O") return o2o;
   if (tactic === "OOH") return ooh;
-  return o2o + ooh;
+  if (tactic === "GROUNDFLOW") return gf;
+  return o2o + ooh + gf;
 }
 
 function pickContracted(row, media, tactic) {
@@ -558,9 +567,13 @@ function pickContracted(row, media, tactic) {
   const ooh = media === "video"
     ? (row.contracted_ooh_video_completions   || 0) + (row.bonus_ooh_video_completions   || 0)
     : (row.contracted_ooh_display_impressions || 0) + (row.bonus_ooh_display_impressions || 0);
+  const gf = media === "video"
+    ? (row.contracted_groundflow_video_completions   || 0) + (row.bonus_groundflow_video_completions   || 0)
+    : (row.contracted_groundflow_display_impressions || 0) + (row.bonus_groundflow_display_impressions || 0);
   if (tactic === "O2O") return o2o;
   if (tactic === "OOH") return ooh;
-  return o2o + ooh;
+  if (tactic === "GROUNDFLOW") return gf;
+  return o2o + ooh + gf;
 }
 
 function splitCents(value) {
@@ -592,10 +605,13 @@ function computePacingGeral(display, video, camp, tactic = "ALL") {
   // tactics (O2O+OOH).
   const includeO2O = tactic === "ALL" || tactic === "O2O";
   const includeOOH = tactic === "ALL" || tactic === "OOH";
+  const includeGF  = tactic === "ALL" || tactic === "GROUNDFLOW";
   const dbudget = (includeO2O ? (display[0]?.o2o_display_budget || 0) : 0)
-                + (includeOOH ? (display[0]?.ooh_display_budget || 0) : 0);
+                + (includeOOH ? (display[0]?.ooh_display_budget || 0) : 0)
+                + (includeGF  ? (display[0]?.groundflow_display_budget || 0) : 0);
   const vbudget = (includeO2O ? (video[0]?.o2o_video_budget   || 0) : 0)
-                + (includeOOH ? (video[0]?.ooh_video_budget   || 0) : 0);
+                + (includeOOH ? (video[0]?.ooh_video_budget   || 0) : 0)
+                + (includeGF  ? (video[0]?.groundflow_video_budget || 0) : 0);
   const total = dbudget + vbudget;
   if (!total) return 0;
 

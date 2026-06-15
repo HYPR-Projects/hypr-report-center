@@ -43,3 +43,7 @@ backend/.env
 __pycache__/
 .vercel
 .env*.local
+
+# Artefatos de review/dev local do backend (venv + runner werkzeug)
+backend/.venv/
+backend/_local_serve.py
