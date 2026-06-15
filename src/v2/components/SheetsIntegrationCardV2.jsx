@@ -28,6 +28,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { API_URL, GOOGLE_CLIENT_ID } from "../../shared/config";
 import { adminAuthHeaders } from "../../shared/auth";
+import { fmtDateTimeBR, fmtDateBR } from "../../shared/format";
 import { useReportTrackingContext } from "../contexts/ReportTrackingContext";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -336,17 +337,17 @@ export default function SheetsIntegrationCardV2({
                   )}
                   {integration.last_synced_at && (
                     <div>
-                      Último sync com sucesso: <span className="text-fg-muted">{formatDateTime(integration.last_synced_at)}</span>
+                      Último sync com sucesso: <span className="text-fg-muted">{fmtDateTimeBR(integration.last_synced_at)}</span>
                     </div>
                   )}
                   {integration.last_attempt_at && (
                     <div>
-                      Última tentativa: <span className="text-fg-muted">{formatDateTime(integration.last_attempt_at)}</span>
+                      Última tentativa: <span className="text-fg-muted">{fmtDateTimeBR(integration.last_attempt_at)}</span>
                     </div>
                   )}
                   {integration.sync_until && (
                     <div>
-                      Sync ativo até: <span className="text-fg-muted">{formatDate(integration.sync_until)}</span>
+                      Sync ativo até: <span className="text-fg-muted">{fmtDateBR(integration.sync_until)}</span>
                     </div>
                   )}
                 </div>
@@ -583,21 +584,6 @@ function SheetIcon() {
       </svg>
     </div>
   );
-}
-
-// ─── Format helpers ──────────────────────────────────────────────────────────
-function formatDateTime(iso) {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
-  } catch { return iso; }
-}
-
-function formatDate(iso) {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
-  } catch { return iso; }
 }
 
 // Detecta sync travado.

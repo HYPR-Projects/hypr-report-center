@@ -31,7 +31,7 @@ import {
   ResponsiveContainer, Tooltip,
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Legend,
 } from "recharts";
-import { fmt, fmtR, fmtCompact, fmtP2 } from "../shared/format";
+import { fmt, fmtR, fmtCompact, fmtP2, fmtDateTimeBR } from "../shared/format";
 import {
   readRangeFromUrl, writeRangeToUrl, parseYmd, daysInRange, ymd,
 } from "../shared/dateFilter";
@@ -99,7 +99,7 @@ function LegacyBaseBanner({ data, onEdit, onClear }) {
           </div>
           <p className="text-xs text-fg-subtle mt-3">
             {data?.rows?.length || 0} linhas · enviado em{" "}
-            {data?.uploadedAt ? new Date(data.uploadedAt).toLocaleString("pt-BR") : "data desconhecida"}
+            {fmtDateTimeBR(data?.uploadedAt, { suffix: true }) || "data desconhecida"}
           </p>
         </div>
       </div>
@@ -203,7 +203,7 @@ function RmndV2Dashboard({ data, onClear, onEdit }) {
       {/* ─── Header ───────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-xs text-fg-subtle">
-          Atualizado em {data.uploadedAt ? new Date(data.uploadedAt).toLocaleString("pt-BR") : "—"}
+          Atualizado em {fmtDateTimeBR(data.uploadedAt, { suffix: true }) || "—"}
           {data.filters?.adGroups?.length ? (
             <> · {data.filters.adGroups.length} grupo(s) selecionado(s)</>
           ) : null}

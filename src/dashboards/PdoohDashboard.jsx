@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { Bar } from "recharts";
 import { C } from "../shared/theme";
-import { fmt } from "../shared/format";
+import { fmt, fmtDateTimeBR } from "../shared/format";
 import {
   readRangeFromUrl,
   writeRangeToUrl,
@@ -112,7 +112,7 @@ const PdoohDashboard = ({ data, onClear, isDark = true }) => {
   return (
     <div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:12}}>
-        <div style={{fontSize:11,color:muted}}>Atualizado em: {new Date(data.uploadedAt).toLocaleString("pt-BR")}</div>
+        <div style={{fontSize:11,color:muted}}>Atualizado em: {fmtDateTimeBR(data.uploadedAt, { suffix: true }) || "—"}</div>
         <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
           {range && (
             <span style={{fontSize:12,color:muted}}>

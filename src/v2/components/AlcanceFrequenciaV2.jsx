@@ -76,19 +76,20 @@ function deriveAlcance(frequenciaStr, totalImpressions) {
   return fmt(Math.round(totalImpressions / f), 0);
 }
 
-// "2026-05-12T14:32:00+00:00" → "12/05/2026 às 14:32". Retorna null pra
-// timestamps vazios/inválidos — componente esconde a linha nesse caso.
+// "2026-05-12T14:32:00+00:00" → "12/05/2026 às 11:32 (BRT)". Fixa horário de
+// Brasília (independe do fuso do viewer — pode ser cliente fora do BR).
+// Retorna null pra timestamps vazios/inválidos — componente esconde a linha.
 function formatUpdatedAt(iso) {
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
   const date = d.toLocaleDateString("pt-BR", {
-    day: "2-digit", month: "2-digit", year: "numeric",
+    timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", year: "numeric",
   });
   const time = d.toLocaleTimeString("pt-BR", {
-    hour: "2-digit", minute: "2-digit",
+    timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit",
   });
-  return `${date} às ${time}`;
+  return `${date} às ${time} (BRT)`;
 }
 
 export function AlcanceFrequenciaV2({
