@@ -1496,7 +1496,13 @@ def _write_base_de_dados(
     sheets_svc, spreadsheet_id: str, payload: List[List],
     target_id: str, target_type: str,
 ) -> None:
-    """Limpa + reescreve a aba 'Base de Dados'.
+    """Reescreve a aba 'Base de Dados' SEM esvaziá-la em caso de falha.
+
+    Ordem importante: ESCREVE primeiro (overwrite a partir de A1), DEPOIS limpa
+    só o rabo (linhas antigas além do novo payload). O padrão antigo (clear →
+    update) esvaziava a sheet quando o update falhava no meio: no incidente do
+    502, o clear rodou e o update morreu, deixando a Base de Dados vazia. Com
+    write-first, uma falha no update preserva o conteúdo anterior intacto.
 
     Erros transientes do Google (429 rate-limit, 5xx gateway/backend) são
     re-tentados com backoff exponencial pelo próprio cliente da API
@@ -1508,15 +1514,21 @@ def _write_base_de_dados(
     Erros permanentes mantêm a marcação correta (403/404 = revoked; resto = error).
     """
     try:
-        sheets_svc.spreadsheets().values().clear(
-            spreadsheetId=spreadsheet_id,
-            range="Base de Dados!A:Z",
-        ).execute(num_retries=_SHEETS_NUM_RETRIES)
+        # 1) Escreve o payload completo a partir de A1 (overwrite in-place).
         sheets_svc.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
             range="Base de Dados!A1",
             valueInputOption="RAW",
             body={"values": payload},
+        ).execute(num_retries=_SHEETS_NUM_RETRIES)
+        # 2) Limpa só as linhas remanescentes abaixo do novo conteúdo (quando o
+        #    sync atual tem menos linhas que o anterior). Best-effort: se falhar,
+        #    sobram linhas velhas no rabo, mas o dado novo já está escrito — não
+        #    é perda de dados. payload sempre tem ≥1 linha (header).
+        n_rows = len(payload)
+        sheets_svc.spreadsheets().values().clear(
+            spreadsheetId=spreadsheet_id,
+            range=f"Base de Dados!A{n_rows + 1}:Z",
         ).execute(num_retries=_SHEETS_NUM_RETRIES)
     except HttpError as e:
         http_status = getattr(e.resp, "status", None)
