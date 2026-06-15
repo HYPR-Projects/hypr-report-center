@@ -453,19 +453,37 @@ export default function SheetsIntegrationCardV2({
             )}
             <p className="text-xs text-fg-muted mt-2">
               {integration.status === "revoked"
-                ? "Acesso revogado pelo Google ou planilha foi deletada. Reconecte pra recriar."
-                : "Falha no último sync. Você pode tentar reconectar (recria sheet) ou excluir e começar do zero."}
+                ? "Acesso revogado pelo Google ou planilha foi deletada. Reconecte pra recriar a planilha."
+                : "Falha no último sync — pode ter sido um erro temporário do Google (ex.: 502). Tente sincronizar de novo na MESMA planilha. Só reconecte (que recria uma planilha nova) se o erro persistir."}
             </p>
             {error && <ErrorLine msg={error} />}
           </div>
           <div className="shrink-0 flex flex-col gap-2">
+            {/* Em erro genérico (transiente), a ação primária NÃO-destrutiva é
+                re-sincronizar a planilha existente — não recriar. Reconectar
+                fica como fallback. Em 'revoked' o acesso à planilha sumiu, então
+                reconectar (recria) é o caminho primário. */}
+            {integration.status !== "revoked" && (
+              <button
+                type="button"
+                onClick={handleSyncNow}
+                disabled={busy}
+                className="px-3 py-1.5 text-[11px] font-semibold rounded-md bg-signature text-canvas hover:opacity-90 disabled:opacity-50 transition cursor-pointer"
+              >
+                {busy ? "..." : "Tentar de novo"}
+              </button>
+            )}
             <button
               type="button"
               onClick={handleConnect}
               disabled={busy}
-              className="px-3 py-1.5 text-[11px] font-semibold rounded-md bg-signature text-canvas hover:opacity-90 disabled:opacity-50 transition cursor-pointer"
+              className={
+                integration.status === "revoked"
+                  ? "px-3 py-1.5 text-[11px] font-semibold rounded-md bg-signature text-canvas hover:opacity-90 disabled:opacity-50 transition cursor-pointer"
+                  : "px-3 py-1.5 text-[11px] font-semibold rounded-md border border-border text-fg-subtle hover:text-fg-muted disabled:opacity-50 transition cursor-pointer"
+              }
             >
-              {busy ? "..." : "Reconectar"}
+              {busy && integration.status === "revoked" ? "..." : "Reconectar (recria)"}
             </button>
             <button
               type="button"

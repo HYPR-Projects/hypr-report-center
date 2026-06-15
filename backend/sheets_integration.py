@@ -129,6 +129,17 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 # para mas a sheet permanece acessível no Drive do membro.
 SYNC_GRACE_DAYS = 30
 
+# Status HTTP transientes do lado do Google — vale retry e NÃO devem derrubar
+# a integração pra 'error'. 429 = rate-limit; 5xx = gateway/backend hiccup
+# (ex.: 502 Bad Gateway no values().update). NÃO inclui 403/404, que são
+# permanentes (acesso revogado / sheet deletada).
+_TRANSIENT_SHEETS_STATUS = (429, 500, 502, 503, 504)
+
+# Nº de retries com backoff exponencial randomizado dos requests da Sheets API.
+# Implementado pelo próprio googleapiclient via `request.execute(num_retries=N)`,
+# que já trata 429 + 5xx. Total de até 5 tentativas (1 + 4 retries).
+_SHEETS_NUM_RETRIES = 4
+
 # ID da pasta compartilhada no Drive HYPR onde as sheets são movidas
 # após criação. Vazio = mantém no Meu Drive raiz do membro que ativou.
 # Como a sheet é criada via OAuth do membro, ele precisa ter acesso
@@ -1231,7 +1242,7 @@ def _create_spreadsheet_with_payload(
     created = sheets_svc.spreadsheets().create(
         body=create_body,
         fields="spreadsheetId,spreadsheetUrl,sheets.properties.sheetId,sheets.properties.title",
-    ).execute()
+    ).execute(num_retries=_SHEETS_NUM_RETRIES)
     spreadsheet_id  = created["spreadsheetId"]
     spreadsheet_url = created["spreadsheetUrl"]
 
@@ -1254,7 +1265,7 @@ def _create_spreadsheet_with_payload(
                     {"range": "Base de Dados!A1", "values": payload},
                 ],
             },
-        ).execute()
+        ).execute(num_retries=_SHEETS_NUM_RETRIES)
 
         sheets_svc.spreadsheets().batchUpdate(
             spreadsheetId=spreadsheet_id,
@@ -1282,7 +1293,7 @@ def _create_spreadsheet_with_payload(
                     },
                 ],
             },
-        ).execute()
+        ).execute(num_retries=_SHEETS_NUM_RETRIES)
     except Exception:
         _try_delete_spreadsheet(spreadsheet_id, access_token)
         raise
@@ -1485,25 +1496,46 @@ def _write_base_de_dados(
     sheets_svc, spreadsheet_id: str, payload: List[List],
     target_id: str, target_type: str,
 ) -> None:
-    """Limpa + reescreve a aba 'Base de Dados'. Marca status corretamente
-    em caso de HttpError (403/404 = revoked; resto = error)."""
+    """Limpa + reescreve a aba 'Base de Dados'.
+
+    Erros transientes do Google (429 rate-limit, 5xx gateway/backend) são
+    re-tentados com backoff exponencial pelo próprio cliente da API
+    (`num_retries`). Se sobreviverem aos retries, NÃO derrubam a integração:
+    o status atual é preservado (provavelmente 'active') e só registramos o
+    `last_error` — o cron tenta de novo no próximo ciclo. Isso evita que um
+    soluço de infra do Google force o admin a recriar a sheet do zero.
+
+    Erros permanentes mantêm a marcação correta (403/404 = revoked; resto = error).
+    """
     try:
         sheets_svc.spreadsheets().values().clear(
             spreadsheetId=spreadsheet_id,
             range="Base de Dados!A:Z",
-        ).execute()
+        ).execute(num_retries=_SHEETS_NUM_RETRIES)
         sheets_svc.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
             range="Base de Dados!A1",
             valueInputOption="RAW",
             body={"values": payload},
-        ).execute()
+        ).execute(num_retries=_SHEETS_NUM_RETRIES)
     except HttpError as e:
-        msg = f"HTTP {e.resp.status}: {str(e)[:300]}"
-        status = "error"
-        if e.resp.status in (403, 404):
-            status = "revoked"
-        _update_status(target_id, target_type=target_type, status=status, last_error=msg)
+        http_status = getattr(e.resp, "status", None)
+        msg = f"HTTP {http_status}: {str(e)[:300]}"
+        if http_status in (403, 404):
+            # Acesso revogado / sheet deletada → recuperação real exige recriar.
+            _update_status(target_id, target_type=target_type,
+                           status="revoked", last_error=msg)
+        elif http_status in _TRANSIENT_SHEETS_STATUS:
+            # Erro transiente sobreviveu aos retries. Preserva o status (não
+            # passa `status=`) e só registra o erro pra diagnóstico.
+            logger.warning(
+                f"[sheets transient {target_type}:{target_id}] {msg} "
+                f"(status preservado, cron re-tenta)"
+            )
+            _update_status(target_id, target_type=target_type, last_error=msg)
+        else:
+            _update_status(target_id, target_type=target_type,
+                           status="error", last_error=msg)
         raise
 
 
