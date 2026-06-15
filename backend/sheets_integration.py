@@ -1513,22 +1513,14 @@ def _write_base_de_dados(
 
     Erros permanentes mantêm a marcação correta (403/404 = revoked; resto = error).
     """
+    # 1) Escreve o payload completo a partir de A1 (overwrite in-place). Este é
+    #    o passo crítico — falhas aqui marcam status e propagam.
     try:
-        # 1) Escreve o payload completo a partir de A1 (overwrite in-place).
         sheets_svc.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
             range="Base de Dados!A1",
             valueInputOption="RAW",
             body={"values": payload},
-        ).execute(num_retries=_SHEETS_NUM_RETRIES)
-        # 2) Limpa só as linhas remanescentes abaixo do novo conteúdo (quando o
-        #    sync atual tem menos linhas que o anterior). Best-effort: se falhar,
-        #    sobram linhas velhas no rabo, mas o dado novo já está escrito — não
-        #    é perda de dados. payload sempre tem ≥1 linha (header).
-        n_rows = len(payload)
-        sheets_svc.spreadsheets().values().clear(
-            spreadsheetId=spreadsheet_id,
-            range=f"Base de Dados!A{n_rows + 1}:Z",
         ).execute(num_retries=_SHEETS_NUM_RETRIES)
     except HttpError as e:
         http_status = getattr(e.resp, "status", None)
@@ -1549,6 +1541,24 @@ def _write_base_de_dados(
             _update_status(target_id, target_type=target_type,
                            status="error", last_error=msg)
         raise
+
+    # 2) Limpa o rabo (linhas antigas além do novo payload, quando o sync atual
+    #    tem menos linhas que o anterior). 100% BEST-EFFORT: o dado já está
+    #    escrito, então uma falha aqui NÃO é perda de dados e NÃO deve derrubar
+    #    o sync. Em especial, quando o payload preenche a grade inteira, o range
+    #    A{n+1}:Z estoura o limite ("400 exceeds grid limits") — benigno, não há
+    #    rabo pra limpar. payload sempre tem ≥1 linha (header).
+    n_rows = len(payload)
+    try:
+        sheets_svc.spreadsheets().values().clear(
+            spreadsheetId=spreadsheet_id,
+            range=f"Base de Dados!A{n_rows + 1}:Z",
+        ).execute(num_retries=_SHEETS_NUM_RETRIES)
+    except HttpError as e:
+        logger.warning(
+            f"[sheets tail-clear {target_type}:{target_id}] "
+            f"HTTP {getattr(e.resp, 'status', None)}: {str(e)[:200]} (ignorado)"
+        )
 
 
 def sync_sheet(
