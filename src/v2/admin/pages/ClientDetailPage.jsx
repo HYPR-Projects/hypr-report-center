@@ -383,7 +383,11 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
     setDrawerCampaign((prev) => (prev ? applyTo(prev) : prev));
   }, []);
 
-  // Encerramento antecipado otimista — espelha CampaignMenuV2.handleEarlyEndSaved.
+  // Encerramento antecipado otimista + reconcile — espelha
+  // CampaignMenuV2.handleEarlyEndSaved. O patch otimista reflete na hora; o
+  // refetch (refresh=true) reconcilia com o BQ pra o estado sobreviver ao
+  // F5. Seguro porque o save usa MERGE/DELETE (DML, strongly consistent) —
+  // sem read-after-write lag — e refresh=true bypassa o _list_cache.
   const handleEarlyEndSaved = useCallback((short_token, payload) => {
     const applyTo = (c) => {
       if (c.short_token !== short_token) return c;
@@ -395,7 +399,15 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
     };
     setCampaigns((prev) => prev.map(applyTo));
     setDrawerCampaign((prev) => (prev ? applyTo(prev) : prev));
-  }, []);
+
+    listCampaigns({ refresh: true })
+      .then((camps) => {
+        writeCache("menu.campaigns", camps);
+        setCampaigns(camps.filter((c) => normalizeSlug(c.client_name) === slug));
+        setLastFetchedAt(Date.now());
+      })
+      .catch(() => { /* keep stale — patch otimista já refletiu */ });
+  }, [slug]);
 
   return (
     <TooltipProvider delayDuration={200}>

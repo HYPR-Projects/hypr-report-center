@@ -667,10 +667,18 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
     setDrawerCampaign((prev) => (prev ? applyTo(prev) : prev));
   }, []);
 
-  // Encerramento antecipado — update otimista. `payload` é null quando
-  // revertendo, ou {early_end_date, early_end_reason} quando setando.
-  // Atualiza array local + drawerCampaign aberto pra refletir o badge e
-  // o bloco de observação imediatamente.
+  // Encerramento antecipado — update otimista + reconcile com refresh=true.
+  // `payload` é null quando revertendo, ou {early_end_date, early_end_reason}
+  // quando setando. Atualiza array local + drawerCampaign aberto pra refletir
+  // o badge e o bloco de observação imediatamente.
+  //
+  // Diferente do closure (handleClosureSaved): aqui REFAZEMOS a lista logo
+  // após o patch otimista. O save bate em `campaign_early_ends` via MERGE/
+  // DELETE (DML, strongly consistent no BQ) — não há read-after-write lag,
+  // então o refetch enxerga o early_end recém-gravado. Sem isso, o mount
+  // (listCampaigns sem refresh) podia servir o `_list_cache` do backend
+  // (TTL 15min, per-instância) ainda sem o early_end e sobrescrever o patch
+  // otimista — encerramento "sumia" após F5.
   const handleEarlyEndSaved = useCallback((short_token, payload) => {
     const applyTo = (c) => {
       if (c.short_token !== short_token) return c;
@@ -686,6 +694,17 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
       return next;
     });
     setDrawerCampaign((prev) => (prev ? applyTo(prev) : prev));
+
+    // Reconcilia com a fonte de verdade — refresh=true bypassa o _list_cache.
+    listCampaigns({ refresh: true })
+      .then((camps) => {
+        setCampaigns(camps);
+        writeCache("menu.campaigns", camps);
+        setWorklist(computeWorklist(camps));
+        setLastFetchedAt(Date.now());
+        setClientsFetchedAt(null);
+      })
+      .catch(() => { /* keep stale — patch otimista já refletiu */ });
   }, []);
 
   const handleNewCampaignConfirm = useCallback((tokenData) => {
