@@ -1087,6 +1087,24 @@ export async function listPmpLines({ includeArchived = false, onlyActive = true 
   return d.lines;
 }
 
+/** Métricas de delivery agregadas por line dentro de [dateFrom, dateTo].
+ *  Retorna mapa { [line_id]: { curator_total_cost, curator_revenue,
+ *  curator_margin, imps, first_delivery_day, last_delivery_day, ... } }.
+ *  Usado pra "janelar" as métricas do Histórico (tipo filtro de Excel). */
+export async function pmpLineWindowMetrics({ dateFrom, dateTo }) {
+  const jwt = await getOrIssueAdminJwt();
+  const qs = new URLSearchParams({ action: "pmp_lines_window", date_from: dateFrom, date_to: dateTo });
+  const r = await fetch(`${API_URL}?${qs}`, { headers: { ...adminAuthHeaders(jwt) } });
+  if (r.status === 401 || r.status === 403) {
+    try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
+    window.location.reload();
+    throw new Error("admin session expired");
+  }
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  return d?.metrics || {};
+}
+
 /** Detalhe + timeseries diária de uma line. */
 export async function getPmpLine(lineId) {
   if (!lineId) return null;

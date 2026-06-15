@@ -90,6 +90,47 @@ def list_lines(include_archived: bool = False, only_active: bool = True) -> List
     return out
 
 
+def window_metrics(date_from: str, date_to: str) -> Dict[str, dict]:
+    """Agrega o delivery diário por line dentro de [date_from, date_to].
+
+    Usado pelo Histórico pra "janelar" as métricas (tipo filtro de Excel):
+    cost/revenue/margem/imps passam a refletir só os dias da janela. PI fica
+    de fora — é valor de contrato, somado cheio no frontend.
+
+    Retorna mapa {line_id(str): {imps, curator_total_cost, curator_revenue,
+    curator_margin, ...}}. Só inclui lines com delivery na janela.
+    """
+    sql = f"""
+        SELECT
+          line_id,
+          SUM(imps)                   AS imps,
+          SUM(viewable_imps)          AS viewable_imps,
+          SUM(clicks)                 AS clicks,
+          SUM(curator_net_media_cost) AS curator_net_media_cost,
+          SUM(curator_tech_fees)      AS curator_tech_fees,
+          SUM(curator_total_cost)     AS curator_total_cost,
+          SUM(curator_revenue)        AS curator_revenue,
+          SUM(curator_margin)         AS curator_margin,
+          MIN(day)                    AS first_delivery_day,
+          MAX(day)                    AS last_delivery_day
+        FROM {_full(TABLE_DELIVERY)}
+        WHERE day BETWEEN @date_from AND @date_to
+        GROUP BY line_id
+    """
+    job = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("date_from", "DATE", date_from),
+        bigquery.ScalarQueryParameter("date_to",   "DATE", date_to),
+    ])
+    out: Dict[str, dict] = {}
+    for r in bq.query(sql, job_config=job).result():
+        d = dict(r)
+        for k, v in list(d.items()):
+            if hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+        out[str(d["line_id"])] = d
+    return out
+
+
 def get_line(line_id: int) -> Optional[dict]:
     """Detalhe da line + timeseries diária."""
     sql_master = f"SELECT * FROM {_full(TABLE_LINES_ENRICHED)} WHERE line_id = @lid"

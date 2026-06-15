@@ -178,7 +178,10 @@ export function PmpLayoutToggle({ value, onChange, counts = {} }) {
 // Valores SEMPRE em formato completo (R$ 11.339.437,28) — nunca abreviados.
 // Operação contábil precisa do número exato. Tipografia menor (text-xl)
 // compensa o tamanho dos valores grandes.
-export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false }) {
+export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false, windowed = false, windowLabel = null, windowLoading = false }) {
+  // Subtítulo das receitas: quando janelado, os números JÁ são do período —
+  // então mostra o range em vez do "últ. 7d" (que confundiria).
+  const periodSub = windowed ? (windowLoading ? "calculando…" : `no período ${windowLabel || ""}`.trim()) : null;
   const items = [
     { label: "Lines no ar",   value: livesCount,
       sub: totalCount ? `${livesCount} de ${totalCount} ativas` : null,
@@ -186,9 +189,9 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false })
     { label: "Total PI",      value: formatBRL(kpis.pi),
       sub: kpis.countWithPi != null ? `${kpis.countWithPi} c/ PI vinculado` : null },
     { label: "Receita Bruta", value: formatBRL(kpis.revenue),
-      sub: kpis.revenue7d ? `${formatBRL(kpis.revenue7d)} últ. 7d` : null },
+      sub: windowed ? periodSub : (kpis.revenue7d ? `${formatBRL(kpis.revenue7d)} últ. 7d` : null) },
     { label: "Receita Líquida", value: formatBRL(kpis.margin),
-      sub: kpis.margin7d ? `${formatBRL(kpis.margin7d)} últ. 7d` : null,
+      sub: windowed ? periodSub : (kpis.margin7d ? `${formatBRL(kpis.margin7d)} últ. 7d` : null),
       valueClass: "text-emerald-400" },
     { label: "% Margem PMP", value: kpis.pctReceber != null ? formatRatioPct(kpis.pctReceber) : "—",
       sub: kpis.countWithPi ? `Receita Líquida ÷ Total PI · ${kpis.countWithPi} lines` : "sem PI cadastrado",
@@ -199,7 +202,16 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false })
         : null },
     // Receita Extra só faz sentido como leitura lifetime (Histórico) — fora
     // disso muitas lines mid-flight aparecem muito negativas e poluem.
-    ...(showExtra ? [{
+    // Receita Extra compara margem realizada vs. esperada pelo PI CHEIO do
+    // contrato — não dá pra fatiar por janela (entrega parcial vs. contrato
+    // inteiro daria número enganoso). Com período ativo, esconde ("—").
+    ...(showExtra ? [windowed ? {
+      label: "Receita Extra",
+      value: "—",
+      sub: "indisponível com filtro de período",
+      valueClass: "text-fg-subtle",
+      title: "Receita Extra compara o realizado com o esperado pelo contrato inteiro (PI cheio), então não faz sentido com a data filtrada. Limpe o período pra ver.",
+    } : {
       label: "Receita Extra",
       value: kpis.extraLinesCount > 0
         ? `${kpis.extraRevenue >= 0 ? "+ " : "− "}${formatBRL(Math.abs(kpis.extraRevenue))}`
