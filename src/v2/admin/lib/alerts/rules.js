@@ -203,7 +203,7 @@ const RULES_PER_MEDIA = [
     id: "A6",
     category: CATEGORY.OPERATIONAL,
     severity: SEVERITY.CRITICAL,
-    label: "Frente desbalanceada (O2O/OOH)",
+    label: "Frente desbalanceada (O2O/OOH/Groundflow)",
     evaluate: ({ enriched, media, rawCampaign, detail }) => {
       if (!detail?.campaign) return null;
       const m = enriched[media];

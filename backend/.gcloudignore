@@ -5,3 +5,6 @@ __pycache__/
 .pytest_cache/
 tests/
 requirements-dev.txt
+# Artefatos de review/dev local — NÃO vão pra Cloud Function.
+.venv/
+_local_serve.py

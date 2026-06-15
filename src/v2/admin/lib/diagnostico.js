@@ -462,13 +462,17 @@ export function worstStatus(...statuses) {
  * Retorna `null` quando há frente única (só uma das duas presente) — caller
  * preserva o status combinado nesse caso.
  */
-function computeFrontImbalance(o2oPacing, oohPacing) {
-  if (o2oPacing == null || oohPacing == null) return null;
-  const worstPacing = Math.min(o2oPacing, oohPacing);
-  const worstLabel  = o2oPacing <= oohPacing ? "O2O" : "OOH";
-  const status      = classifyStatus(worstPacing);
+function computeFrontImbalance(fronts) {
+  // `fronts`: [{ label, pacing }, ...]. Só considera frentes com pacing
+  // emitido (!= null = tem contrato). Frente única (< 2 presentes) → null,
+  // caller preserva o status combinado. Pega a PIOR frente das presentes —
+  // generalizado pra O2O/OOH/Groundflow (antes era só O2O×OOH).
+  const present = (fronts || []).filter((f) => f.pacing != null);
+  if (present.length < 2) return null;
+  const worst  = present.reduce((a, b) => (b.pacing < a.pacing ? b : a));
+  const status = classifyStatus(worst.pacing);
   if (!status) return null;
-  return { worstLabel, worstPacing, status };
+  return { worstLabel: worst.label, worstPacing: worst.pacing, status };
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -543,7 +547,11 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
       // por exemplo). Mirror do alert A6 — promove o status pra UNDER/OVER
       // quando a pior frente é mais alarmante que o combinado, evitando
       // que o chip "OK" engane o CS num cenário em que uma frente vai falhar.
-      const displayImbalance = computeFrontImbalance(c.display_pacing_o2o, c.display_pacing_ooh);
+      const displayImbalance = computeFrontImbalance([
+        { label: "O2O", pacing: c.display_pacing_o2o },
+        { label: "OOH", pacing: c.display_pacing_ooh },
+        { label: "GF",  pacing: c.display_pacing_groundflow },
+      ]);
       const displayFinalStatus = displayImbalance
         ? worstStatus(displayMetrics.status, displayImbalance.status) || displayMetrics.status
         : displayMetrics.status;
@@ -588,7 +596,11 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
       const videoProjTech = videoFin.techCostPct != null && multiplier
         ? videoFin.techCostPct * multiplier
         : null;
-      const videoImbalance = computeFrontImbalance(c.video_pacing_o2o, c.video_pacing_ooh);
+      const videoImbalance = computeFrontImbalance([
+        { label: "O2O", pacing: c.video_pacing_o2o },
+        { label: "OOH", pacing: c.video_pacing_ooh },
+        { label: "GF",  pacing: c.video_pacing_groundflow },
+      ]);
       const videoFinalStatus = videoImbalance
         ? worstStatus(videoMetrics.status, videoImbalance.status) || videoMetrics.status
         : videoMetrics.status;

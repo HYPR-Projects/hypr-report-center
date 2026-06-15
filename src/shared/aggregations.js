@@ -246,9 +246,12 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp, chec
   // (campanha pendente de início). Sem o fallback, OOH contratado mas sem
   // delivery aparecia como empty state em vez de exibir o que foi vendido.
   const src = rows[0] || checklist || {};
+  // Prefixo da frente (o2o/ooh/groundflow) — cobre as 3 frentes em vez do
+  // ternário O2O/OOH antigo (Groundflow caía no else → budget/contratado 0).
+  const _f = (tactic || "O2O").toLowerCase();
   const budget = rows.length > 0
-    ? rows.reduce((s, r) => s + (tactic === "O2O" ? (r.o2o_display_budget || 0) : (r.ooh_display_budget || 0)), 0)
-    : (tactic === "O2O" ? (src.o2o_display_budget || 0) : (src.ooh_display_budget || 0));
+    ? rows.reduce((s, r) => s + (r[`${_f}_display_budget`] || 0), 0)
+    : (src[`${_f}_display_budget`] || 0);
   const cpmNeg = src.deal_cpm_amount || 0;
 
   // Runway da frente via pacingRunway (FONTE ÚNICA, com clamp ao início
@@ -262,8 +265,8 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp, chec
   const today = new Date();
   const { end, tDays, eDays } = pacingRunway(rows[0]?.actual_start_date, camp.start_date, camp.end_date, today);
 
-  const contracted = tactic === "O2O" ? (src.contracted_o2o_display_impressions || 0) : (src.contracted_ooh_display_impressions || 0);
-  const bonus      = tactic === "O2O" ? (src.bonus_o2o_display_impressions || 0)      : (src.bonus_ooh_display_impressions || 0);
+  const contracted = src[`contracted_${_f}_display_impressions`] || 0;
+  const bonus      = src[`bonus_${_f}_display_impressions`]      || 0;
   const totalNeg   = contracted + bonus;
 
   // notStarted = há contrato (cpmNeg + algum volume) mas zero delivery
@@ -321,13 +324,15 @@ export const computeVideoKpis = ({ rows, detail, tactic, checklist }) => {
   // Fallback pro checklist quando a tactic ainda não entregou nada — mesma
   // lógica do Display. Sem isso, OOH negociado sem delivery aparecia vazio.
   const src = rows[0] || checklist || {};
+  // Prefixo da frente (o2o/ooh/groundflow) — cobre as 3 frentes.
+  const _f = (tactic || "O2O").toLowerCase();
   const budget = rows.length > 0
-    ? rows.reduce((s, r) => s + (tactic === "O2O" ? (r.o2o_video_budget || 0) : (r.ooh_video_budget || 0)), 0)
-    : (tactic === "O2O" ? (src.o2o_video_budget || 0) : (src.ooh_video_budget || 0));
+    ? rows.reduce((s, r) => s + (r[`${_f}_video_budget`] || 0), 0)
+    : (src[`${_f}_video_budget`] || 0);
   const cpcvNeg = src.deal_cpcv_amount || 0;
 
-  const contracted = tactic === "O2O" ? (src.contracted_o2o_video_completions || 0) : (src.contracted_ooh_video_completions || 0);
-  const bonus      = tactic === "O2O" ? (src.bonus_o2o_video_completions || 0)      : (src.bonus_ooh_video_completions || 0);
+  const contracted = src[`contracted_${_f}_video_completions`] || 0;
+  const bonus      = src[`bonus_${_f}_video_completions`]      || 0;
   const totalNeg   = contracted + bonus;
   const notStarted = rows.length === 0 && detail.length === 0 && cpcvNeg > 0 && totalNeg > 0;
 
@@ -442,6 +447,9 @@ export function computeMediaPacing(rows, camp, mediaType, tactic = "ALL") {
   const negOOH = isVideo
     ? (r0.contracted_ooh_video_completions   || 0) + (r0.bonus_ooh_video_completions   || 0)
     : (r0.contracted_ooh_display_impressions || 0) + (r0.bonus_ooh_display_impressions || 0);
+  const negGROUNDFLOW = isVideo
+    ? (r0.contracted_groundflow_video_completions   || 0) + (r0.bonus_groundflow_video_completions   || 0)
+    : (r0.contracted_groundflow_display_impressions || 0) + (r0.bonus_groundflow_display_impressions || 0);
 
   // Calcula expected pra UMA frente usando o runway clampado (pacingRunway).
   // Quando a frente atrasa, runway = (end - actual_start), refletindo o
@@ -457,11 +465,14 @@ export function computeMediaPacing(rows, camp, mediaType, tactic = "ALL") {
   // Localiza a row de cada frente (denormalizado por tactic_type).
   const o2oRow = rows.find((r) => r.tactic_type === "O2O");
   const oohRow = rows.find((r) => r.tactic_type === "OOH");
+  const groundflowRow = rows.find((r) => r.tactic_type === "GROUNDFLOW");
 
   const includeO2O = tactic === "ALL" || tactic === "O2O";
   const includeOOH = tactic === "ALL" || tactic === "OOH";
+  const includeGROUNDFLOW = tactic === "ALL" || tactic === "GROUNDFLOW";
   const totalExpected = (includeO2O ? expectedForFrente(o2oRow, negO2O) : 0)
-                      + (includeOOH ? expectedForFrente(oohRow, negOOH) : 0);
+                      + (includeOOH ? expectedForFrente(oohRow, negOOH) : 0)
+                      + (includeGROUNDFLOW ? expectedForFrente(groundflowRow, negGROUNDFLOW) : 0);
 
   // Delivered: filtra por tactic e soma.
   const matchingRows = tactic === "ALL"
@@ -658,10 +669,12 @@ export function computeAggregates(data, mainRange, mainTactic = "ALL", creativeF
     const _t0 = totals[0] || {};
     const _o2oD_raw = _t0.o2o_display_budget || 0;
     const _oohD_raw = _t0.ooh_display_budget || 0;
+    const _gfD_raw  = _t0.groundflow_display_budget || 0;
     const _o2oV_raw = _t0.o2o_video_budget   || 0;
     const _oohV_raw = _t0.ooh_video_budget   || 0;
-    const _displayRaw = _o2oD_raw + _oohD_raw;
-    const _videoRaw   = _o2oV_raw + _oohV_raw;
+    const _gfV_raw  = _t0.groundflow_video_budget || 0;
+    const _displayRaw = _o2oD_raw + _oohD_raw + _gfD_raw;
+    const _videoRaw   = _o2oV_raw + _oohV_raw + _gfV_raw;
 
     // Snap helper: arredonda pra inteiro mais próximo se distância ≤ R$0,10
     const _snap = (x) => {
@@ -684,16 +697,18 @@ export function computeAggregates(data, mainRange, mainTactic = "ALL", creativeF
       _videoTarget   = v;
     }
 
-    // (b) Distribui o target de cada mídia entre suas 2 tactics
-    const [_o2oD, _oohD] = distributeLargestRemainder([_o2oD_raw, _oohD_raw], _displayTarget);
-    const [_o2oV, _oohV] = distributeLargestRemainder([_o2oV_raw, _oohV_raw], _videoTarget);
+    // (b) Distribui o target de cada mídia entre suas tactics (O2O/OOH/GF)
+    const [_o2oD, _oohD, _gfD] = distributeLargestRemainder([_o2oD_raw, _oohD_raw, _gfD_raw], _displayTarget);
+    const [_o2oV, _oohV, _gfV] = distributeLargestRemainder([_o2oV_raw, _oohV_raw, _gfV_raw], _videoTarget);
 
     // Aliases das tactics por mídia (= budget da frente daquela linha)
     const _budgetByKey = {
-      "DISPLAY|O2O": _o2oD,
-      "DISPLAY|OOH": _oohD,
-      "VIDEO|O2O":   _o2oV,
-      "VIDEO|OOH":   _oohV,
+      "DISPLAY|O2O":        _o2oD,
+      "DISPLAY|OOH":        _oohD,
+      "DISPLAY|GROUNDFLOW": _gfD,
+      "VIDEO|O2O":          _o2oV,
+      "VIDEO|OOH":          _oohV,
+      "VIDEO|GROUNDFLOW":   _gfV,
     };
 
     // (c) effective_total_cost por linha = redistribui Σ por mídia (target)
@@ -716,12 +731,14 @@ export function computeAggregates(data, mainRange, mainTactic = "ALL", creativeF
       const k = `${t.media_type}|${t.tactic_type}`;
       return {
         ...t,
-        effective_total_cost: _costByRowKey[k] ?? (t.effective_total_cost || 0),
-        o2o_display_budget:   _o2oD,
-        ooh_display_budget:   _oohD,
-        o2o_video_budget:     _o2oV,
-        ooh_video_budget:     _oohV,
-        total_invested:       _budgetByKey[k] ?? (t.total_invested || 0),
+        effective_total_cost:     _costByRowKey[k] ?? (t.effective_total_cost || 0),
+        o2o_display_budget:        _o2oD,
+        ooh_display_budget:        _oohD,
+        groundflow_display_budget: _gfD,
+        o2o_video_budget:          _o2oV,
+        ooh_video_budget:          _oohV,
+        groundflow_video_budget:   _gfV,
+        total_invested:            _budgetByKey[k] ?? (t.total_invested || 0),
       };
     });
   }
@@ -924,18 +941,24 @@ function carryOverContractFields(orig) {
   return {
     deal_cpm_amount:                    orig.deal_cpm_amount  || 0,
     deal_cpcv_amount:                   orig.deal_cpcv_amount || 0,
-    contracted_o2o_display_impressions: orig.contracted_o2o_display_impressions,
-    contracted_ooh_display_impressions: orig.contracted_ooh_display_impressions,
-    contracted_o2o_video_completions:   orig.contracted_o2o_video_completions,
-    contracted_ooh_video_completions:   orig.contracted_ooh_video_completions,
-    bonus_o2o_display_impressions:      orig.bonus_o2o_display_impressions,
-    bonus_ooh_display_impressions:      orig.bonus_ooh_display_impressions,
-    bonus_o2o_video_completions:        orig.bonus_o2o_video_completions,
-    bonus_ooh_video_completions:        orig.bonus_ooh_video_completions,
-    o2o_display_budget:                 orig.o2o_display_budget,
-    ooh_display_budget:                 orig.ooh_display_budget,
-    o2o_video_budget:                   orig.o2o_video_budget,
-    ooh_video_budget:                   orig.ooh_video_budget,
+    contracted_o2o_display_impressions:        orig.contracted_o2o_display_impressions,
+    contracted_ooh_display_impressions:        orig.contracted_ooh_display_impressions,
+    contracted_groundflow_display_impressions: orig.contracted_groundflow_display_impressions,
+    contracted_o2o_video_completions:          orig.contracted_o2o_video_completions,
+    contracted_ooh_video_completions:          orig.contracted_ooh_video_completions,
+    contracted_groundflow_video_completions:   orig.contracted_groundflow_video_completions,
+    bonus_o2o_display_impressions:             orig.bonus_o2o_display_impressions,
+    bonus_ooh_display_impressions:             orig.bonus_ooh_display_impressions,
+    bonus_groundflow_display_impressions:      orig.bonus_groundflow_display_impressions,
+    bonus_o2o_video_completions:               orig.bonus_o2o_video_completions,
+    bonus_ooh_video_completions:               orig.bonus_ooh_video_completions,
+    bonus_groundflow_video_completions:        orig.bonus_groundflow_video_completions,
+    o2o_display_budget:                        orig.o2o_display_budget,
+    ooh_display_budget:                        orig.ooh_display_budget,
+    groundflow_display_budget:                 orig.groundflow_display_budget,
+    o2o_video_budget:                          orig.o2o_video_budget,
+    ooh_video_budget:                          orig.ooh_video_budget,
+    groundflow_video_budget:                   orig.groundflow_video_budget,
   };
 }
 
@@ -1127,11 +1150,23 @@ export function buildFrenteSubBars(detail, mediaType) {
   const negOOH = isVideo
     ? (r0.contracted_ooh_video_completions   || 0) + (r0.bonus_ooh_video_completions   || 0)
     : (r0.contracted_ooh_display_impressions || 0) + (r0.bonus_ooh_display_impressions || 0);
-  if (negO2O === 0 || negOOH === 0) return null;
+  const negGROUNDFLOW = isVideo
+    ? (r0.contracted_groundflow_video_completions   || 0) + (r0.bonus_groundflow_video_completions   || 0)
+    : (r0.contracted_groundflow_display_impressions || 0) + (r0.bonus_groundflow_display_impressions || 0);
 
-  return [
-    { label: "O2O", pacing: computeMediaPacing(mediaRows, camp, mediaType, "O2O") },
-    { label: "OOH", pacing: computeMediaPacing(mediaRows, camp, mediaType, "OOH") },
-  ];
+  // Uma sub-barra por frente COM contrato. Mostra a quebra quando 2+ frentes
+  // têm contrato (frente vendida mas não iniciada aparece 0%, lembrando o CS
+  // de cobrar). "GF" = Groundflow (compacto, alinha com O2O/OOH).
+  const fronts = [
+    { label: "O2O", tactic: "O2O",        neg: negO2O },
+    { label: "OOH", tactic: "OOH",        neg: negOOH },
+    { label: "GF",  tactic: "GROUNDFLOW", neg: negGROUNDFLOW },
+  ].filter((f) => f.neg > 0);
+  if (fronts.length < 2) return null;
+
+  return fronts.map((f) => ({
+    label:  f.label,
+    pacing: computeMediaPacing(mediaRows, camp, mediaType, f.tactic),
+  }));
 }
 

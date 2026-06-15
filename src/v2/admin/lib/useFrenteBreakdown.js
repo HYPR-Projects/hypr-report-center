@@ -29,14 +29,15 @@ export { buildFrenteSubBars };
  * Constrói as subBars a partir dos campos diretos do payload de lista.
  * Retorna null quando só uma das frentes tem pacing emitido (frente única).
  */
-function subBarsFromCampaign(o2oPacing, oohPacing) {
-  const hasO2O = o2oPacing != null;
-  const hasOOH = oohPacing != null;
-  if (!hasO2O || !hasOOH) return null;
-  return [
-    { label: "O2O", pacing: o2oPacing },
-    { label: "OOH", pacing: oohPacing },
-  ];
+function subBarsFromCampaign(pacings) {
+  const fronts = [
+    { label: "O2O", pacing: pacings.o2o },
+    { label: "OOH", pacing: pacings.ooh },
+    { label: "GF",  pacing: pacings.groundflow },
+  ].filter((f) => f.pacing != null);
+  // Mostra a quebra só com 2+ frentes emitidas (frente única não compara).
+  if (fronts.length < 2) return null;
+  return fronts;
 }
 
 export function useFrenteBreakdown(token, campaign) {
@@ -52,12 +53,12 @@ export function useFrenteBreakdown(token, campaign) {
 
   // Fonte primária: campos do payload `?list=true`. Sem flicker.
   if (campaign && (
-    campaign.display_pacing_o2o != null || campaign.display_pacing_ooh != null ||
-    campaign.video_pacing_o2o   != null || campaign.video_pacing_ooh   != null
+    campaign.display_pacing_o2o != null || campaign.display_pacing_ooh != null || campaign.display_pacing_groundflow != null ||
+    campaign.video_pacing_o2o   != null || campaign.video_pacing_ooh   != null || campaign.video_pacing_groundflow   != null
   )) {
     return {
-      displaySubBars: subBarsFromCampaign(campaign.display_pacing_o2o, campaign.display_pacing_ooh),
-      videoSubBars:   subBarsFromCampaign(campaign.video_pacing_o2o,   campaign.video_pacing_ooh),
+      displaySubBars: subBarsFromCampaign({ o2o: campaign.display_pacing_o2o, ooh: campaign.display_pacing_ooh, groundflow: campaign.display_pacing_groundflow }),
+      videoSubBars:   subBarsFromCampaign({ o2o: campaign.video_pacing_o2o,   ooh: campaign.video_pacing_ooh,   groundflow: campaign.video_pacing_groundflow }),
     };
   }
 

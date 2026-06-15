@@ -20,11 +20,17 @@ const OPTIONS = [
   { id: "ALL", label: "Todos" },
   { id: "O2O", label: "O2O" },
   { id: "OOH", label: "OOH" },
+  { id: "GROUNDFLOW", label: "Groundflow" },
 ];
 
-export function CoreProductFilterV2({ value = "ALL", onChange }) {
+// `available` (opcional): ids de frentes presentes na campanha. Quando passado,
+// só mostra "Todos" + as frentes presentes — evita opção que não rende nada.
+export function CoreProductFilterV2({ value = "ALL", onChange, available }) {
   const [open, setOpen] = useState(false);
-  const current = OPTIONS.find((o) => o.id === value) || OPTIONS[0];
+  const options = available
+    ? OPTIONS.filter((o) => o.id === "ALL" || available.includes(o.id))
+    : OPTIONS;
+  const current = options.find((o) => o.id === value) || options[0];
 
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
@@ -70,7 +76,7 @@ export function CoreProductFilterV2({ value = "ALL", onChange }) {
             aria-label="Opções de core product"
             className="flex flex-col p-2"
           >
-            {OPTIONS.map((opt) => {
+            {options.map((opt) => {
               const active = opt.id === value;
               return (
                 <button

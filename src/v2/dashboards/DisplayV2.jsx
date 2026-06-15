@@ -56,16 +56,22 @@ import { SegmentedControlV2 } from "../components/SegmentedControlV2";
 const TACTIC_OPTIONS = [
   { value: "O2O", label: "O2O" },
   { value: "OOH", label: "OOH" },
+  { value: "GROUNDFLOW", label: "Groundflow" },
 ];
 
-// Espelha o CASE do `query_totals` no backend: `_O2O_`/`_O2O$` → "O2O",
-// `_OOH_`/`_OOH$` → "OOH", default → "O2O".
-// Delimitador pode ser `_` ou `-` (naming mistura os dois, ex.
-// `..._DISPLAY-DINAMICO_OOH-AMPLIFIER-...` cairia errado em O2O com só `_`).
+// Espelha o CASE do `query_totals` no backend. ORDEM IMPORTA: Groundflow
+// (token RMNF ou GROUNDFLOW no line_name) vence O2O — as lines vêm como
+// `..._O2O_GROUNDFLOW_...`, então sem a prioridade cairiam em O2O.
+// Delimitador pode ser `_` ou `-` (naming mistura os dois).
+// `gfOn` = a campanha tem contrato de groundflow. Sem contrato, a line é
+// "dark test" e conta como O2O/OOH normal (espelha o _GF_CONTRACT_GATE do
+// backend) — senão a entrega sumiria do O2O na aba.
+const GROUNDFLOW_RE = /(?:^|[_-])(?:RMNF|GROUNDFLOW)(?:[_-]|$)/i;
 const O2O_RE = /(?:^|[_-])O2O(?:[_-]|$)/i;
 const OOH_RE = /(?:^|[_-])OOH(?:[_-]|$)/i;
-const deriveTactic = (lineName) => {
+const deriveTactic = (lineName, gfOn) => {
   const ln = lineName || "";
+  if (gfOn && GROUNDFLOW_RE.test(ln)) return "GROUNDFLOW";
   if (O2O_RE.test(ln)) return "O2O";
   if (OOH_RE.test(ln)) return "OOH";
   return "O2O";
@@ -89,23 +95,21 @@ export default function DisplayV2({
   // `effectiveTactic` cobre o caso do state apontar pra tactic sumida —
   // sem setState em effect (anti-padrão React 19).
   const t0Display = (data.totals || [])[0] || {};
-  const hasDeliveryO2O = aggregates.totals.some(
-    (r) => r.media_type === "DISPLAY" && r.tactic_type === "O2O",
+  const hasDelivery = (tac) => aggregates.totals.some(
+    (r) => r.media_type === "DISPLAY" && r.tactic_type === tac,
   );
-  const hasDeliveryOOH = aggregates.totals.some(
-    (r) => r.media_type === "DISPLAY" && r.tactic_type === "OOH",
-  );
-  const hasContractO2O =
-    (t0Display.contracted_o2o_display_impressions || 0) > 0 ||
-    (t0Display.bonus_o2o_display_impressions || 0) > 0;
-  const hasContractOOH =
-    (t0Display.contracted_ooh_display_impressions || 0) > 0 ||
-    (t0Display.bonus_ooh_display_impressions || 0) > 0;
-  const showO2O = hasContractO2O || hasDeliveryO2O;
-  const showOOH = hasContractOOH || hasDeliveryOOH;
-  const availableTactics = TACTIC_OPTIONS.filter((opt) =>
-    opt.value === "O2O" ? showO2O : showOOH,
-  );
+  const hasContract = (frente) =>
+    (t0Display[`contracted_${frente}_display_impressions`] || 0) > 0 ||
+    (t0Display[`bonus_${frente}_display_impressions`] || 0) > 0;
+  // Gate do Groundflow (espelha o backend): só é frente própria com contrato.
+  // Sem contrato, lines groundflow são dark test → contam como O2O no detail.
+  const hasGfContract = hasContract("groundflow");
+  const showByTactic = {
+    O2O:        hasContract("o2o")        || hasDelivery("O2O"),
+    OOH:        hasContract("ooh")        || hasDelivery("OOH"),
+    GROUNDFLOW: hasGfContract,  // contract-only (≠ O2O/OOH): dark test não vira frente
+  };
+  const availableTactics = TACTIC_OPTIONS.filter((opt) => showByTactic[opt.value]);
   const effectiveTactic =
     availableTactics.find((t) => t.value === tactic)?.value
     || availableTactics[0]?.value
@@ -121,7 +125,7 @@ export default function DisplayV2({
       (r) => r.media_type === "DISPLAY" && r.tactic_type === effectiveTactic,
     );
     const detailAll = aggregates.detail.filter(
-      (r) => r.media_type === "DISPLAY" && deriveTactic(r.line_name) === effectiveTactic,
+      (r) => r.media_type === "DISPLAY" && deriveTactic(r.line_name, hasGfContract) === effectiveTactic,
     );
 
     const kpis = computeDisplayKpis({
@@ -139,7 +143,7 @@ export default function DisplayV2({
     const byAudience = groupByAudience(detailAll, "clicks", "viewable_impressions", "ctr");
 
     return { totals, detailAll, kpis, daily, bySize, byCreative, byAudience };
-  }, [aggregates, effectiveTactic, camp, t0Display]);
+  }, [aggregates, effectiveTactic, camp, t0Display, hasGfContract]);
 
   const { totals, detailAll, kpis, daily, bySize, byCreative, byAudience } = view;
   // Alias mantido pelos consumers internos que esperavam `detailFiltered`.
@@ -158,14 +162,9 @@ export default function DisplayV2({
   // Imp. contratadas e bonus — prioriza qualquer row, cai pro checklist
   // (t0Display) quando a tactic ainda não entregou nada.
   const row0 = totals[0] || t0Display || {};
-  const contractedImps =
-    effectiveTactic === "O2O"
-      ? row0.contracted_o2o_display_impressions || 0
-      : row0.contracted_ooh_display_impressions || 0;
-  const bonusImps =
-    effectiveTactic === "O2O"
-      ? row0.bonus_o2o_display_impressions || 0
-      : row0.bonus_ooh_display_impressions || 0;
+  const _frente = (effectiveTactic || "O2O").toLowerCase();
+  const contractedImps = row0[`contracted_${_frente}_display_impressions`] || 0;
+  const bonusImps      = row0[`bonus_${_frente}_display_impressions`]      || 0;
 
   // CPM "com bonus": divide o mesmo budget pela entrega total prometida
   // (contratadas + bonus). Reflete a economia real do deal — cliente paga
