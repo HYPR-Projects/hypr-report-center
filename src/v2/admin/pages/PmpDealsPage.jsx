@@ -283,16 +283,21 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     const { from, to } = histPeriod;
     const bucketRanges = [...quarterRanges, ...monthRanges];
     if (!from && !to && bucketRanges.length === 0) return base;
-    // Filtra pelo start_date (ativação) com fallback pra last_delivery_day.
+    // Filtra por ENTREGA na janela, não por data de início: a line aparece se
+    // o período em que ela entregou [first_delivery_day, last_delivery_day]
+    // cruzar o range escolhido. Assim uma campanha que começou meses atrás mas
+    // entregou nos últimos dias continua aparecendo. Lines sem entrega
+    // registrada (pending/scheduled) não entregaram em janela nenhuma → saem.
     return base.filter(l => {
-      const ref = l.start_date || l.last_delivery_day;
-      if (!ref) return false;
-      // Período (AND com buckets de trim/mês).
-      if (from && ref < from) return false;
-      if (to   && ref > to)   return false;
-      // Trimestres ∪ meses: line precisa estar em PELO MENOS 1 range.
+      const dFrom = l.first_delivery_day;
+      const dTo   = l.last_delivery_day;
+      if (!dFrom || !dTo) return false;
+      // Overlap com o range custom (AND com buckets de trim/mês).
+      if (to   && dFrom > to)   return false; // entrega começou depois da janela
+      if (from && dTo   < from) return false; // entrega terminou antes da janela
+      // Trimestres ∪ meses: entrega precisa cruzar PELO MENOS 1 range.
       if (bucketRanges.length > 0) {
-        const inAny = bucketRanges.some(r => ref >= r.from && ref <= r.to);
+        const inAny = bucketRanges.some(r => dFrom <= r.to && dTo >= r.from);
         if (!inAny) return false;
       }
       return true;
