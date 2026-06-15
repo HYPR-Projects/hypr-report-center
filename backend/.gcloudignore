@@ -1,0 +1,7 @@
+# Arquivos que NÃO precisam subir pra Cloud Function (lista de EXCLUSÃO —
+# tudo que não estiver aqui é enviado). Mantém só dev/test artifacts de fora.
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+requirements-dev.txt

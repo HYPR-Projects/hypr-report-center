@@ -94,13 +94,19 @@ def _table_id() -> str:
 # ─── Query stale integrations ────────────────────────────────────────────────
 def find_stale_integrations() -> List[Dict]:
     """
-    Retorna integrações ativas cujo último sync com sucesso foi há mais
-    de STALE_THRESHOLD_HOURS. Inclui rows que NUNCA sincronizaram
-    (last_synced_at IS NULL) — esse caso só acontece se a integração
-    falhou logo na criação, mas vale alertar pra reconectar.
+    Retorna integrações que precisam de atenção do CS dono, em 2 casos:
 
-    Excluí integrações com status != 'active' (paused/revoked/error já
-    são visíveis no card como banner vermelho — não precisam email duplo).
+    1. status='active' mas último sync com sucesso há mais de
+       STALE_THRESHOLD_HOURS (inclui last_synced_at IS NULL — nunca
+       sincronizou). Cobre o cron parado ou falha que não se auto-curou.
+    2. status IN ('error', 'revoked') — quebra explícita (independe da idade
+       do sync). ANTES esse caso era EXCLUÍDO do alerta ("já visível no card"),
+       mas o banner vermelho só aparece se alguém abrir o report; ninguém era
+       notificado. Era o ponto cego que deixou a integração da Heineken parada
+       sem ninguém saber. Agora alertamos.
+
+    `paused` (grupo vazio / sync_until vencido) é intencional e NÃO alerta.
+    `deleted` já fica fora (soft-delete só conta em queries específicas).
     """
     sql = f"""
     SELECT
@@ -108,16 +114,23 @@ def find_stale_integrations() -> List[Dict]:
         COALESCE(target_type, 'token') AS target_type,
         spreadsheet_url,
         created_by_email,
+        status,
+        last_error,
         last_synced_at,
         last_attempt_at
     FROM `{_table_id()}`
-    WHERE status = 'active'
+    WHERE created_by_email IS NOT NULL
       AND (
-        last_synced_at IS NULL
-        OR last_synced_at < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {STALE_THRESHOLD_HOURS} HOUR)
+        status IN ('error', 'revoked')
+        OR (
+          status = 'active'
+          AND (
+            last_synced_at IS NULL
+            OR last_synced_at < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {STALE_THRESHOLD_HOURS} HOUR)
+          )
+        )
       )
-      AND created_by_email IS NOT NULL
-    ORDER BY created_by_email, last_synced_at NULLS FIRST
+    ORDER BY created_by_email, status, last_synced_at NULLS FIRST
     """
     rows = list(_bq_client().query(sql).result())
     return [
@@ -126,6 +139,8 @@ def find_stale_integrations() -> List[Dict]:
             "target_type":      r["target_type"],
             "spreadsheet_url":  r["spreadsheet_url"],
             "created_by_email": r["created_by_email"],
+            "status":           r["status"],
+            "last_error":       r["last_error"],
             "last_synced_at":   r["last_synced_at"],
             "last_attempt_at":  r["last_attempt_at"],
         }
@@ -149,56 +164,71 @@ def _format_relative_time(ts: Optional[datetime]) -> str:
     return f"há {days} dia{'s' if days != 1 else ''}"
 
 
+def _status_reason(item: Dict) -> str:
+    """Frase curta explicando por que a integração está no alerta, conforme
+    o status. Diferencia quebra explícita (error/revoked) de sync atrasado."""
+    status = item.get("status")
+    when = _format_relative_time(item["last_synced_at"])
+    if status == "revoked":
+        return "acesso revogado pelo Google — precisa reconectar"
+    if status == "error":
+        return f"erro no último sync (última sync com sucesso {when})"
+    # active + stale
+    return f"sem sincronizar {when}"
+
+
 def _build_email_body(stale: List[Dict]) -> Dict[str, str]:
-    """Monta corpo HTML + texto plano com a lista de integrações stale."""
+    """Monta corpo HTML + texto plano com a lista de integrações que precisam
+    de atenção (sync atrasado, erro, ou acesso revogado)."""
     lines_text = []
     lines_html = []
     for item in stale:
-        when = _format_relative_time(item["last_synced_at"])
+        reason = _status_reason(item)
         kind = "agregado" if item["target_type"] == "merge" else "campanha"
         target = item["target_id"]
         url = item["spreadsheet_url"] or "(sem URL salva)"
-        lines_text.append(f"  • {kind} {target} — última sync {when}")
+        lines_text.append(f"  • {kind} {target} — {reason}")
         lines_text.append(f"    {url}")
         lines_html.append(
             f'<li><b>{kind}</b> <code>{target}</code> '
-            f'— última sync <b>{when}</b><br>'
+            f'— {reason}<br>'
             f'<a href="{url}" style="color:#3397B9">{url}</a></li>'
         )
 
     text = (
         "Olá,\n\n"
-        "Algumas das suas integrações Google Sheets pararam de sincronizar:\n\n"
+        "Algumas das suas integrações Google Sheets precisam de atenção:\n\n"
         + "\n".join(lines_text)
         + "\n\n"
         "O que fazer:\n"
         "  1. Abrir o report no HYPR Report Center\n"
-        "  2. No card do Google Sheets, clicar em 'Sincronizar agora'\n"
-        "  3. Se voltar erro, reconectar a integração (Excluir → Conectar)\n\n"
-        "Esse alerta dispara automaticamente quando a sincronização passa de "
-        f"{STALE_THRESHOLD_HOURS}h sem sucesso. Você só recebe email das "
-        "integrações que VOCÊ ativou.\n\n"
+        "  2. No card do Google Sheets, clicar em 'Tentar de novo' "
+        "(re-sincroniza a MESMA planilha, não recria)\n"
+        "  3. Só se persistir, usar 'Reconectar' (recria a planilha do zero)\n\n"
+        "Esse alerta dispara quando a sincronização passa de "
+        f"{STALE_THRESHOLD_HOURS}h sem sucesso OU a integração está com erro/"
+        "acesso revogado. Você só recebe email das integrações que VOCÊ ativou.\n\n"
         "— HYPR Report Hub\n"
     )
 
     html = f"""<!DOCTYPE html>
 <html>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1C262F;max-width:600px;margin:0 auto;padding:24px">
-  <h2 style="color:#1C262F;margin:0 0 16px">⚠ Integrações Google Sheets paradas</h2>
-  <p>Algumas das suas integrações Google Sheets pararam de sincronizar:</p>
+  <h2 style="color:#1C262F;margin:0 0 16px">⚠ Integrações Google Sheets precisam de atenção</h2>
+  <p>Algumas das suas integrações Google Sheets pararam de atualizar:</p>
   <ul style="background:#FFF8E1;border-left:4px solid #B8A500;padding:12px 12px 12px 32px;margin:16px 0">
     {''.join(lines_html)}
   </ul>
   <h3 style="margin:24px 0 8px">O que fazer</h3>
   <ol>
     <li>Abrir o report no HYPR Report Center</li>
-    <li>No card "Google Sheets conectado", clicar em <b>Sincronizar agora</b></li>
-    <li>Se voltar erro, reconectar a integração (Excluir → Conectar)</li>
+    <li>No card "Google Sheets", clicar em <b>Tentar de novo</b> (re-sincroniza a <b>mesma</b> planilha, não recria)</li>
+    <li>Só se persistir, usar <b>Reconectar</b> (recria a planilha do zero)</li>
   </ol>
   <p style="color:#666;font-size:12px;margin-top:32px;border-top:1px solid #ddd;padding-top:12px">
-    Esse alerta dispara automaticamente quando a sincronização passa de
-    {STALE_THRESHOLD_HOURS}h sem sucesso. Você só recebe email das
-    integrações que <b>você</b> ativou.<br>
+    Esse alerta dispara quando a sincronização passa de
+    {STALE_THRESHOLD_HOURS}h sem sucesso ou a integração está com erro/acesso
+    revogado. Você só recebe email das integrações que <b>você</b> ativou.<br>
     — HYPR Report Hub
   </p>
 </body>

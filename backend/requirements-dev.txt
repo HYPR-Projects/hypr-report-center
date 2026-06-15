@@ -1,0 +1,6 @@
+# Dependências SÓ de desenvolvimento/teste (não vão pra Cloud Function).
+# As deps de runtime ficam em requirements.txt.
+#
+# Rodar os testes:
+#   cd backend && python -m pytest tests/ -q
+pytest==7.4.*
