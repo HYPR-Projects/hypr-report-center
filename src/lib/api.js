@@ -722,6 +722,47 @@ export async function clearCampaignEarlyEnd({ short_token }) {
   return throwIfNotOk(r);
 }
 
+// ── Snapshot / freeze (admin) ────────────────────────────────────────────────
+
+/**
+ * Lê o status de freeze de um report. Retorna { frozen, frozen_at } ou null
+ * em falha / sem sessão admin. Report encerrado é congelado (auto-freeze) e o
+ * cliente passa a ver o SNAPSHOT verbatim — por isso "atualizar snapshot" só
+ * faz sentido quando frozen=true.
+ */
+export async function getFreezeStatus({ short_token }) {
+  try {
+    const jwt = await getOrIssueAdminJwt();
+    const r = await fetch(
+      `${API_URL}?action=freeze_status&token=${encodeURIComponent(short_token)}`,
+      { headers: { ...adminAuthHeaders(jwt) } },
+    );
+    if (!r.ok) return null;
+    const d = await r.json().catch(() => ({}));
+    return { frozen: !!d?.frozen, frozen_at: d?.frozen_at ?? null };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reconstrói o snapshot congelado de um report a partir dos dados ao vivo
+ * (re-roda as queries do report e re-congela em cima). É o que faz uma edição
+ * de checklist (volumetria, CPM negociado etc.) numa campanha JÁ ENCERRADA
+ * finalmente aparecer pro cliente — sem isso, o report serve o snapshot antigo
+ * indefinidamente. Backend: action=freeze_report → build_report_snapshot + UPSERT.
+ */
+export async function rebuildReportSnapshot({ short_token, note }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=freeze_report`,
+    { short_token, note: note || "" },
+    adminAuthHeaders(jwt),
+  );
+  const ok = await throwIfNotOk(r);
+  return ok.json().catch(() => ({}));
+}
+
 // ── Survey (admin) ───────────────────────────────────────────────────────────
 
 /**
