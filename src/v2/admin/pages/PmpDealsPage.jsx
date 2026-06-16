@@ -41,6 +41,7 @@ import {
   formatBRL, formatBRLCompact, formatInt, formatIntCompact, formatRatioPct,
   comparePmpLines, formatLastDelivery,
   pctEntrega, groupPctEntrega,
+  pctEntregaRev, groupPctEntregaRev,
   effectiveStatus, isPmpEditor,
 } from "../lib/pmpFormat";
 import {
@@ -87,11 +88,13 @@ function applyWindowMetrics(lines, metrics) {
       imps,
       effective_margin_pct: revenue > 0 ? margin / revenue : null,
       pct_a_receber: (pi && pi > 0) ? margin / pi : null,
+      pct_a_receber_rev: (pi && pi > 0) ? revenue / pi : null,
       ecpm: imps > 0 ? (revenue * 1000) / imps : null,
       group_curator_margin: grpM,
       group_curator_revenue: grpR,
       group_effective_margin_pct: (grpR && grpR > 0) ? grpM / grpR : null,
       group_pct_a_receber: (grpM != null && pi && pi > 0) ? grpM / pi : l.group_pct_a_receber,
+      group_pct_a_receber_rev: (grpR != null && pi && pi > 0) ? grpR / pi : null,
       _windowed: true,
     };
   });
@@ -468,6 +471,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
       pi, revenue, margin, imps, revenue7d, margin7d,
       countWithPi: withPi,
       pctReceber: pi > 0 ? margin / pi : null,
+      pctReceberRev: pi > 0 ? revenue / pi : null,
       extraRevenue,
       extraLinesCount,
     };
@@ -597,7 +601,8 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
       "Revenue (R$)": Number(l.curator_revenue || 0),
       "Margem (R$)": Number(l.curator_margin || 0),
       "Margin %": l.effective_margin_pct == null ? "" : Number(l.effective_margin_pct),
-      "% Entrega": (() => { const p = pctEntrega(l); return p == null ? "" : Number(p); })(),
+      "% Entrega (Margem)": (() => { const p = pctEntrega(l); return p == null ? "" : Number(p); })(),
+      "% Entrega (Revenue)": (() => { const p = pctEntregaRev(l); return p == null ? "" : Number(p); })(),
       "Impressões": Number(l.imps || 0),
       "eCPM (R$)": l.ecpm == null ? "" : Number(l.ecpm),
       "Início": l.start_date || "", "Fim": l.end_date || "",
@@ -949,7 +954,7 @@ function ListView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLinkCl
           horizontal é UX padrão pra tabelas densas (Linear/Notion/Stripe).
           Inert no desktop (o conteúdo cabe e a barra não aparece). */}
       <div className="overflow-x-auto scrollbar-hidden">
-        <div className="md:min-w-[1160px]">
+        <div className="md:min-w-[1248px]">
           <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
           <div className="divide-y divide-border/60">
         {items.map((it) => {
@@ -960,6 +965,8 @@ function ListView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLinkCl
           const groupPi = resolveGroupPi(it.members);
           // % entrega do grupo = margem agregada ÷ PI compartilhado
           const groupPctReceber = groupPctEntrega(it.members[0], groupPi);
+          // % entrega Rev do grupo = revenue agregado ÷ PI compartilhado
+          const groupPctReceberRev = groupPctEntregaRev(it.members[0], groupPi);
           return (
             <div key={it.group_id} className="relative bg-signature/[0.03] ring-1 ring-inset ring-signature/15">
               <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-signature/70 pointer-events-none z-[1]" />
@@ -971,10 +978,11 @@ function ListView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLinkCl
                               groupBadge={i === 0 ? (m.group_name || "Grupo") : null}
                               isFirstGroupMember={i === 0}
                               groupPi={groupPi}
-                              groupPctReceber={groupPctReceber} />
+                              groupPctReceber={groupPctReceber}
+                              groupPctReceberRev={groupPctReceberRev} />
                 ))}
               </div>
-              <InlineGroupSubtotal members={it.members} groupPi={groupPi} groupPctReceber={groupPctReceber} />
+              <InlineGroupSubtotal members={it.members} groupPi={groupPi} groupPctReceber={groupPctReceber} groupPctReceberRev={groupPctReceberRev} />
             </div>
           );
         })}
@@ -1004,9 +1012,17 @@ const GROUP_FIELD_MAP = {
   curator_margin:       "group_curator_margin",
   effective_margin_pct: "group_effective_margin_pct",
   pct_a_receber:        "group_pct_a_receber",
+  pct_a_receber_rev:    "group_pct_a_receber_rev",
 };
 
 function itemSortValue(item, field) {
+  // % Entr Rev (revenue ÷ PI): computa na hora pra não depender do campo
+  // derivado existir na line (só é setado no caminho janelado).
+  if (field === "pct_a_receber_rev") {
+    if (item.kind === "single") return pctEntregaRev(item.line);
+    const groupPi = resolveGroupPi(item.members);
+    return groupPctEntregaRev(item.members[0], groupPi);
+  }
   if (item.kind === "single") return item.line[field];
   const members = item.members;
   if (field === "pi_brl") return resolveGroupPi(members);
@@ -1102,7 +1118,7 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
           fica aninhado dentro do min-w pra preservar o cabeçalho fixo + a
           altura máxima da lista no desktop. */}
       <div className="overflow-x-auto scrollbar-hidden">
-        <div className="md:min-w-[1160px]">
+        <div className="md:min-w-[1248px]">
           <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
           <div className="divide-y divide-border/60 max-h-[calc(100vh-380px)] overflow-y-auto">
         {sorted.map((it) => {
@@ -1115,6 +1131,8 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
           const groupPi = resolveGroupPi(it.members);
           // % entrega do grupo = margem agregada ÷ PI compartilhado
           const groupPctReceber = groupPctEntrega(it.members[0], groupPi);
+          // % entrega Rev do grupo = revenue agregado ÷ PI compartilhado
+          const groupPctReceberRev = groupPctEntregaRev(it.members[0], groupPi);
           return (
             <div key={it.group_id} className="relative bg-signature/[0.03] ring-1 ring-inset ring-signature/15">
               <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-signature/70 pointer-events-none z-[1]" />
@@ -1125,10 +1143,11 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
                               groupBadge={i === 0 ? (m.group_name || "Grupo · 1 PI") : null}
                               isFirstGroupMember={i === 0}
                               groupPi={groupPi}
-                              groupPctReceber={groupPctReceber} />
+                              groupPctReceber={groupPctReceber}
+                              groupPctReceberRev={groupPctReceberRev} />
                 ))}
               </div>
-              <InlineGroupSubtotal members={it.members} groupPi={groupPi} groupPctReceber={groupPctReceber} />
+              <InlineGroupSubtotal members={it.members} groupPi={groupPi} groupPctReceber={groupPctReceber} groupPctReceberRev={groupPctReceberRev} />
             </div>
           );
         })}
@@ -1140,9 +1159,9 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
 }
 
 // ─── Subtotal inline minimalista (mesmo grid do row, sem cores berrantes) ───
-function InlineGroupSubtotal({ members, groupPi, groupPctReceber }) {
+function InlineGroupSubtotal({ members, groupPi, groupPctReceber, groupPctReceberRev }) {
   const first = members[0];
-  const grid = "grid grid-cols-[12px_minmax(0,1.45fr)_minmax(110px,0.4fr)_88px_140px_140px_140px_150px_60px_72px_minmax(82px,0.5fr)] gap-x-4";
+  const grid = "grid grid-cols-[12px_minmax(0,1.45fr)_minmax(110px,0.4fr)_88px_140px_140px_140px_150px_60px_72px_72px_minmax(82px,0.5fr)] gap-x-4";
   return (
     <div className={cn(grid, "hidden md:grid px-5 py-2.5 items-center border-t border-border/40 bg-surface/40 text-[12px]")}>
       <div />
@@ -1168,6 +1187,9 @@ function InlineGroupSubtotal({ members, groupPi, groupPctReceber }) {
       </div>
       <div className="text-right tabular-nums text-fg font-bold">
         {groupPctReceber != null ? formatRatioPct(groupPctReceber, 0) : "—"}
+      </div>
+      <div className="text-right tabular-nums text-fg font-bold">
+        {groupPctReceberRev != null ? formatRatioPct(groupPctReceberRev, 0) : "—"}
       </div>
       <div />
     </div>
@@ -1419,7 +1441,8 @@ const SORT_FIELD_LABELS = {
   curator_revenue:           "Revenue",
   curator_margin:            "Margem",
   effective_margin_pct:      "Mgm %",
-  pct_a_receber:             "% Entr",
+  pct_a_receber:             "% Entr Mgm",
+  pct_a_receber_rev:         "% Entr Rev",
   hours_since_last_delivery: "Delivery",
   start_date:                "Início",
 };

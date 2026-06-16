@@ -177,6 +177,27 @@ export function groupPctEntrega(line, groupPi) {
   return margin / groupPi;
 }
 
+// ─── % entrega (Revenue) — métrica extra ao lado da % entrega de margem ──────
+// Mesma ideia da pctEntrega, mas no numerador usa o faturamento bruto
+// (curator_revenue) em vez da margem HYPR. Mostra "quanto de receita bruta
+// foi entregue contra o valor contratado (PI)". Coexiste com pctEntrega — não
+// substitui: % Entr Mgm = margem÷PI, % Entr Rev = revenue÷PI.
+export function pctEntregaRev(line) {
+  if (!line) return null;
+  const pi = line.pi_brl;
+  const revenue = line.curator_revenue;
+  if (pi == null || pi <= 0 || revenue == null) return null;
+  return revenue / pi;
+}
+
+/** Versão grupo: usa group_curator_revenue contra o PI compartilhado passado. */
+export function groupPctEntregaRev(line, groupPi) {
+  if (!line || groupPi == null || groupPi <= 0) return null;
+  const revenue = line.group_curator_revenue;
+  if (revenue == null) return null;
+  return revenue / groupPi;
+}
+
 // ─── % de entrega — cor de célula (régua compartilhada com sheets) ───────────
 // Régua definida pelo time (margem ÷ PI):
 //   < 70%   → vermelho      (entrega bem abaixo do esperado)
