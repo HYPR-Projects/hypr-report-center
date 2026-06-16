@@ -1161,7 +1161,7 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
 // ─── Subtotal inline minimalista (mesmo grid do row, sem cores berrantes) ───
 function InlineGroupSubtotal({ members, groupPi, groupPctReceber, groupPctReceberRev }) {
   const first = members[0];
-  const grid = "grid grid-cols-[12px_minmax(0,1.45fr)_minmax(110px,0.4fr)_88px_140px_140px_140px_150px_60px_72px_72px_minmax(82px,0.5fr)] gap-x-4";
+  const grid = "grid grid-cols-[12px_minmax(0,1.3fr)_minmax(104px,0.36fr)_84px_136px_136px_136px_148px_58px_80px_80px_minmax(88px,0.44fr)] gap-x-4";
   return (
     <div className={cn(grid, "hidden md:grid px-5 py-2.5 items-center border-t border-border/40 bg-surface/40 text-[12px]")}>
       <div />

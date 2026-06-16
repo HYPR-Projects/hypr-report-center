@@ -778,7 +778,7 @@ function Chevron({ open }) {
 //
 // Larguras generosas (140-160px) pra acomodar valores completos sem
 // abreviar — operação contábil precisa do número exato.
-const ROW_GRID = "grid grid-cols-[12px_minmax(0,1.45fr)_minmax(110px,0.4fr)_88px_140px_140px_140px_150px_60px_72px_72px_minmax(82px,0.5fr)] gap-x-4";
+const ROW_GRID = "grid grid-cols-[12px_minmax(0,1.3fr)_minmax(104px,0.36fr)_84px_136px_136px_136px_148px_58px_80px_80px_minmax(88px,0.44fr)] gap-x-4";
 
 export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "desc", onColumnClick = null }) {
   const grid = hidePi
