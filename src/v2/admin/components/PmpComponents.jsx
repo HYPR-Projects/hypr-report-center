@@ -17,6 +17,7 @@ import {
   formatBRL, formatBRLCompact, formatInt, formatIntCompact,
   formatRatioPct, formatLastDelivery, emailInitial,
   pctEntrega, groupPctEntrega,
+  pctEntregaRev, groupPctEntregaRev,
   effectiveStatus, formatLineStartPeriod,
   isNewLine,
 } from "../lib/pmpFormat";
@@ -200,6 +201,13 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false, w
       hint: kpis.pctReceber != null
         ? { text: "ideal ≥ 85%", ok: kpis.pctReceber >= 0.85 }
         : null },
+    // % Rev PMP — receita BRUTA entregue ÷ Total PI. Métrica de referência ao
+    // lado da margem; não tem régua de "ideal" (revenue/PI não tem a mesma
+    // meta de 85% que a margem), então fica neutra/sky pra diferenciar.
+    { label: "% Rev PMP", value: kpis.pctReceberRev != null ? formatRatioPct(kpis.pctReceberRev) : "—",
+      sub: kpis.countWithPi ? `Receita Bruta ÷ Total PI · ${kpis.countWithPi} lines` : "sem PI cadastrado",
+      valueClass: kpis.pctReceberRev == null ? "text-fg" : "text-sky-400",
+      title: "Receita bruta entregue ÷ Total PI contratado." },
     // Receita Extra só faz sentido como leitura lifetime (Histórico) — fora
     // disso muitas lines mid-flight aparecem muito negativas e poluem.
     // Receita Extra compara margem realizada vs. esperada pelo PI CHEIO do
@@ -226,7 +234,7 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false, w
   ];
   return (
     <div className={cn("grid grid-cols-2 gap-4",
-      showExtra ? "md:grid-cols-3 lg:grid-cols-6" : "md:grid-cols-5")}>
+      showExtra ? "md:grid-cols-4 lg:grid-cols-7" : "md:grid-cols-3 lg:grid-cols-6")}>
       {items.map((it, i) => (
         <div key={i} className="rounded-xl border border-border bg-canvas-elevated p-5" title={it.title}>
           <div className="text-[10px] uppercase tracking-widest text-fg-subtle font-semibold">{it.label}</div>
@@ -285,6 +293,7 @@ function PmpLiveCardInner({ line, onClick, onLinkClick }) {
   const dm = effectiveDeliveryMeta(line);
   const lastDeliv = formatLastDelivery(line.hours_since_last_delivery);
   const pct = pctEntrega(line);
+  const pctRev = pctEntregaRev(line);
   const hasPi = line.pi_brl != null && line.pi_brl > 0;
 
   // content-visibility:auto — browser pula render/paint dos cards fora do
@@ -341,24 +350,46 @@ function PmpLiveCardInner({ line, onClick, onLinkClick }) {
         </div>
       </div>
 
-      {/* Barra de progresso PI */}
+      {/* Barras de progresso vs PI: margem entregue + revenue entregue */}
       {hasPi ? (
-        <div className="mb-4">
-          <div className="flex items-baseline justify-between mb-1.5">
-            <div className="text-[11px] text-fg-muted">
-              <span className="font-medium text-emerald-400 tabular-nums">{formatBRL(line.curator_margin)}</span>
-              <span className="text-fg-subtle"> de </span>
-              <span className="tabular-nums">{formatBRL(line.pi_brl)}</span>
-              <span className="text-fg-subtle ml-1.5">· margem entregue</span>
+        <div className="mb-4 space-y-2.5">
+          {/* Margem HYPR ÷ PI */}
+          <div>
+            <div className="flex items-baseline justify-between mb-1.5">
+              <div className="text-[11px] text-fg-muted">
+                <span className="font-medium text-emerald-400 tabular-nums">{formatBRL(line.curator_margin)}</span>
+                <span className="text-fg-subtle"> de </span>
+                <span className="tabular-nums">{formatBRL(line.pi_brl)}</span>
+                <span className="text-fg-subtle ml-1.5">· margem entregue</span>
+              </div>
+              <div className={cn("text-sm font-bold tabular-nums",
+                pctDeliveryClass(pct).replace(/bg-\S+/g, "").trim() || "text-fg")}>
+                {formatRatioPct(pct)}
+              </div>
             </div>
-            <div className={cn("text-sm font-bold tabular-nums",
-              pctDeliveryClass(pct).replace(/bg-\S+/g, "").trim() || "text-fg")}>
-              {formatRatioPct(pct)}
+            <div className="h-2 rounded-full bg-surface overflow-hidden">
+              <div className={cn("h-full transition-all", pctBarColor(pct))}
+                   style={{ width: `${Math.min(100, (pct || 0) * 100)}%` }} />
             </div>
           </div>
-          <div className="h-2 rounded-full bg-surface overflow-hidden">
-            <div className={cn("h-full transition-all", pctBarColor(pct))}
-                 style={{ width: `${Math.min(100, (pct || 0) * 100)}%` }} />
+          {/* Revenue bruto ÷ PI */}
+          <div>
+            <div className="flex items-baseline justify-between mb-1.5">
+              <div className="text-[11px] text-fg-muted">
+                <span className="font-medium text-sky-400 tabular-nums">{formatBRL(line.curator_revenue)}</span>
+                <span className="text-fg-subtle"> de </span>
+                <span className="tabular-nums">{formatBRL(line.pi_brl)}</span>
+                <span className="text-fg-subtle ml-1.5">· revenue entregue</span>
+              </div>
+              <div className={cn("text-sm font-bold tabular-nums",
+                pctDeliveryClass(pctRev).replace(/bg-\S+/g, "").trim() || "text-fg")}>
+                {formatRatioPct(pctRev)}
+              </div>
+            </div>
+            <div className="h-2 rounded-full bg-surface overflow-hidden">
+              <div className={cn("h-full transition-all", pctBarColor(pctRev))}
+                   style={{ width: `${Math.min(100, (pctRev || 0) * 100)}%` }} />
+            </div>
           </div>
         </div>
       ) : effectiveStatus(line) === "Cancelado" ? (
@@ -433,6 +464,8 @@ export function PmpLiveGroupCard({ members, onLineClick }) {
   const groupImps = hero.group_imps || 0;
   // % entrega = margem HYPR ÷ PI compartilhado (não revenue)
   const groupPct = groupPi ? groupMargin / groupPi : null;
+  // % entrega Rev = revenue bruto agregado ÷ PI compartilhado
+  const groupPctRev = groupPi ? groupRev / groupPi : null;
   const groupMarginPct = groupRev > 0 ? groupMargin / groupRev : null;
   const groupEcpm = groupImps > 0 ? (groupRev * 1000) / groupImps : null;
 
@@ -483,24 +516,46 @@ export function PmpLiveGroupCard({ members, onLineClick }) {
           )}
         </div>
 
-        {/* Barra de progresso DO GRUPO (margem HYPR ÷ PI compartilhado) */}
+        {/* Barras DO GRUPO vs PI compartilhado: margem + revenue */}
         {groupPi ? (
-          <div className="mb-4">
-            <div className="flex items-baseline justify-between mb-1.5">
-              <div className="text-[11px] text-fg-muted">
-                <span className="font-medium text-emerald-400 tabular-nums">{formatBRL(groupMargin)}</span>
-                <span className="text-fg-subtle"> de </span>
-                <span className="tabular-nums">{formatBRL(groupPi)}</span>
-                <span className="text-fg-subtle ml-1.5">· margem entregue do PI compartilhado</span>
+          <div className="mb-4 space-y-2.5">
+            {/* Margem HYPR agregada ÷ PI compartilhado */}
+            <div>
+              <div className="flex items-baseline justify-between mb-1.5">
+                <div className="text-[11px] text-fg-muted">
+                  <span className="font-medium text-emerald-400 tabular-nums">{formatBRL(groupMargin)}</span>
+                  <span className="text-fg-subtle"> de </span>
+                  <span className="tabular-nums">{formatBRL(groupPi)}</span>
+                  <span className="text-fg-subtle ml-1.5">· margem entregue do PI compartilhado</span>
+                </div>
+                <div className={cn("text-sm font-bold tabular-nums",
+                  pctDeliveryClass(groupPct).replace(/bg-\S+/g, "").trim() || "text-fg")}>
+                  {formatRatioPct(groupPct)}
+                </div>
               </div>
-              <div className={cn("text-sm font-bold tabular-nums",
-                pctDeliveryClass(groupPct).replace(/bg-\S+/g, "").trim() || "text-fg")}>
-                {formatRatioPct(groupPct)}
+              <div className="h-2 rounded-full bg-surface overflow-hidden">
+                <div className={cn("h-full transition-all", pctBarColor(groupPct))}
+                     style={{ width: `${Math.min(100, (groupPct || 0) * 100)}%` }} />
               </div>
             </div>
-            <div className="h-2 rounded-full bg-surface overflow-hidden">
-              <div className={cn("h-full transition-all", pctBarColor(groupPct))}
-                   style={{ width: `${Math.min(100, (groupPct || 0) * 100)}%` }} />
+            {/* Revenue bruto agregado ÷ PI compartilhado */}
+            <div>
+              <div className="flex items-baseline justify-between mb-1.5">
+                <div className="text-[11px] text-fg-muted">
+                  <span className="font-medium text-sky-400 tabular-nums">{formatBRL(groupRev)}</span>
+                  <span className="text-fg-subtle"> de </span>
+                  <span className="tabular-nums">{formatBRL(groupPi)}</span>
+                  <span className="text-fg-subtle ml-1.5">· revenue entregue do PI compartilhado</span>
+                </div>
+                <div className={cn("text-sm font-bold tabular-nums",
+                  pctDeliveryClass(groupPctRev).replace(/bg-\S+/g, "").trim() || "text-fg")}>
+                  {formatRatioPct(groupPctRev)}
+                </div>
+              </div>
+              <div className="h-2 rounded-full bg-surface overflow-hidden">
+                <div className={cn("h-full transition-all", pctBarColor(groupPctRev))}
+                     style={{ width: `${Math.min(100, (groupPctRev || 0) * 100)}%` }} />
+              </div>
             </div>
           </div>
         ) : (
@@ -723,7 +778,7 @@ function Chevron({ open }) {
 //
 // Larguras generosas (140-160px) pra acomodar valores completos sem
 // abreviar — operação contábil precisa do número exato.
-const ROW_GRID = "grid grid-cols-[12px_minmax(0,1.45fr)_minmax(110px,0.4fr)_88px_140px_140px_140px_150px_60px_72px_minmax(82px,0.5fr)] gap-x-4";
+const ROW_GRID = "grid grid-cols-[12px_minmax(0,1.45fr)_minmax(110px,0.4fr)_88px_140px_140px_140px_150px_60px_72px_72px_minmax(82px,0.5fr)] gap-x-4";
 
 export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "desc", onColumnClick = null }) {
   const grid = hidePi
@@ -786,7 +841,8 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
       <Th field="curator_revenue">Revenue</Th>
       <Th field="curator_margin">Margem HYPR</Th>
       <Th field="effective_margin_pct">Mgm %</Th>
-      {!hidePi && <Th field="pct_a_receber">% Entr</Th>}
+      {!hidePi && <Th field="pct_a_receber">% Entr Mgm</Th>}
+      {!hidePi && <Th field="pct_a_receber_rev">% Entr Rev</Th>}
       <Th field="hours_since_last_delivery">Delivery</Th>
     </div>
   );
@@ -798,7 +854,7 @@ function PmpLineRowInner({
   groupBadge = null,
   // Quando a line está num grupo, o pai injeta o PI unificado e o %
   // entrega calculado contra esse PI compartilhado (em vez do per-line).
-  groupPi = null, groupPctReceber = null,
+  groupPi = null, groupPctReceber = null, groupPctReceberRev = null,
   // True só no 1º membro do grupo — usado pra renderizar o badge de
   // Receita Extra uma única vez por grupo (no 1º membro), usando a
   // margem agregada do grupo (não per-line).
@@ -809,6 +865,8 @@ function PmpLineRowInner({
   const hasPi = piToShow != null && piToShow > 0;
   // % entrega per-line agora é margem ÷ PI; em grupo usa o valor injetado pelo pai
   const pctToShow = groupPctReceber != null ? groupPctReceber : pctEntrega(line);
+  // % Entr Rev (revenue ÷ PI) — métrica extra ao lado da de margem
+  const pctRevToShow = groupPctReceberRev != null ? groupPctReceberRev : pctEntregaRev(line);
   const lastDeliv = formatLastDelivery(line.hours_since_last_delivery);
   // Lines canceladas: cores cinza claro em quase tudo, mantendo só o pill
   // de status "Cancelado" colorido como sinal forte. Tira a competição
@@ -967,8 +1025,19 @@ function PmpLineRowInner({
       {!hidePi && (
         <div className={cn("text-right text-[12px] tabular-nums px-2 py-0.5 rounded",
           isCancelado ? "text-fg-subtle" : pctDeliveryClass(pctToShow))}
-             title={groupPctReceber != null ? "% entrega contra o PI compartilhado do grupo" : undefined}>
+             title={groupPctReceber != null
+               ? "% entrega (margem ÷ PI compartilhado do grupo)"
+               : "% entrega = margem HYPR ÷ PI"}>
           {formatRatioPct(pctToShow, 0)}
+        </div>
+      )}
+      {!hidePi && (
+        <div className={cn("text-right text-[12px] tabular-nums px-2 py-0.5 rounded",
+          isCancelado ? "text-fg-subtle" : pctDeliveryClass(pctRevToShow))}
+             title={groupPctReceberRev != null
+               ? "% entrega (revenue ÷ PI compartilhado do grupo)"
+               : "% entrega = revenue bruto ÷ PI"}>
+          {formatRatioPct(pctRevToShow, 0)}
         </div>
       )}
       {/* Pra lines ativas que entregaram ontem, mostra a margem do dia + uma
@@ -1073,9 +1142,16 @@ function PmpLineRowInner({
           </PmpMobileStat>
           <PmpMobileStat label="Mgm %"><span className="text-fg-muted">{formatRatioPct(line.effective_margin_pct, 0)}</span></PmpMobileStat>
           {!hidePi && (
-            <PmpMobileStat label="% Entrega">
+            <PmpMobileStat label="% Entr Mgm">
               <span className={cn("inline-block px-1.5 py-0.5 rounded", !isCancelado && pctDeliveryClass(pctToShow))}>
                 {formatRatioPct(pctToShow, 0)}
+              </span>
+            </PmpMobileStat>
+          )}
+          {!hidePi && (
+            <PmpMobileStat label="% Entr Rev">
+              <span className={cn("inline-block px-1.5 py-0.5 rounded", !isCancelado && pctDeliveryClass(pctRevToShow))}>
+                {formatRatioPct(pctRevToShow, 0)}
               </span>
             </PmpMobileStat>
           )}

@@ -1103,6 +1103,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
         onEarlyEndChange={handleEarlyEndSaved}
         onOpenReport={onOpenReport}
         teamMap={teamMap}
+        user={user}
       />
 
       {showNewCampaign && (

@@ -4902,6 +4902,7 @@ def _get_frozen_payload(short_token):
     payload = _load_snapshot_payload(short_token)
     if payload is not None:
         payload = _overlay_frozen_live_fields(short_token, payload)
+        payload = _overlay_live_contracts(short_token, payload)
         _cache_set(_report_cache, short_token, payload)
     return payload
 
@@ -4918,6 +4919,87 @@ def _overlay_frozen_live_fields(short_token, payload):
             payload[key] = fn(short_token)
         except Exception as e:
             logger.warning(f"[WARN frozen overlay {key} {short_token}] {e}")
+    return payload
+
+
+def _overlay_live_contracts(short_token, payload):
+    """Em report CONGELADO, sobrepõe ao snapshot a VOLUMETRIA CONTRATADA / CPM
+    ao vivo (checklist_info), recomputando budget/pacing/CPM-efetivo/
+    rentabilidade SOBRE A ENTREGA CONGELADA.
+
+    Por quê: report encerrado é servido verbatim do snapshot. Uma edição de
+    volumetria no Command (campanha já encerrada) nunca aparecia sozinha. Aqui
+    ela passa a refletir no dia seguinte (quando checklist_info re-materializa),
+    SEM destravar a entrega — a única parte vulnerável a contaminação por rename
+    de line (ver freeze). Espelha o mesmo princípio do card admin
+    (_apply_frozen_delivery_override mantém contratado/budget/cpm ao vivo).
+
+    Reusa _compute_totals (fonte única da matemática) com perf_rows
+    reconstruídos da entrega congelada → zero risco de drift de fórmula. Roda só
+    no cache miss do snapshot (idem survey/loom). Guard anti-buraco: se a
+    checklist ao vivo some/zera (falha de pipeline upstream), MANTÉM o congelado
+    em vez de zerar a volumetria de um report bom."""
+    totals = payload.get("totals")
+    if not totals or not isinstance(totals, list):
+        return payload
+    camp = payload.get("campaign") or {}
+    start_raw = _parse_iso_date_safe(camp.get("start_date"))
+    end_raw   = _parse_iso_date_safe(camp.get("end_date"))
+    if not start_raw or not end_raw:
+        return payload  # sem datas confiáveis → não recomputa pacing
+    try:
+        check_row = _fetch_contracts(short_token)
+    except Exception as e:
+        logger.warning(f"[WARN _overlay_live_contracts fetch {short_token}] {e}")
+        return payload
+    if check_row is None:
+        return payload
+    # Guard: checklist ao vivo sem NENHUM contrato → não sobrescreve (snapshot
+    # tinha dado bom; pipeline pode ter dropado as colunas/linha).
+    _contract_keys = (
+        "contracted_o2o_display_impressions", "contracted_ooh_display_impressions",
+        "contracted_groundflow_display_impressions", "contracted_o2o_video_completions",
+        "contracted_ooh_video_completions", "contracted_groundflow_video_completions",
+        "bonus_o2o_display_impressions", "bonus_ooh_display_impressions",
+        "bonus_groundflow_display_impressions", "bonus_o2o_video_completions",
+        "bonus_ooh_video_completions", "bonus_groundflow_video_completions",
+    )
+    contract_sum = 0.0
+    for k in _contract_keys:
+        try:
+            contract_sum += float(check_row.get(k) or 0)
+        except Exception:
+            pass
+    if contract_sum <= 0:
+        return payload
+    # Reconstrói perf_rows a partir da ENTREGA CONGELADA (tactic/mídia/agregados).
+    # cost cru não vive no snapshot, mas só alimenta o cpc — cpc*clicks recompõe
+    # o MESMO cpc (puro-entrega → idêntico ao congelado).
+    perf_rows = []
+    for t in totals:
+        clicks = float(t.get("clicks") or 0)
+        cpc    = float(t.get("cpc") or 0)
+        perf_rows.append({
+            "tactic_type":          t.get("tactic_type"),
+            "media_type":           t.get("media_type"),
+            "actual_start_date":    t.get("actual_start_date"),
+            "days_with_delivery":   int(t.get("days_with_delivery") or 0),
+            "impressions":          float(t.get("impressions") or 0),
+            "viewable_impressions": float(t.get("viewable_impressions") or 0),
+            "clicks":               clicks,
+            "completions":          float(t.get("completions") or 0),
+            "effective_total_cost": cpc * clicks,
+        })
+    campaign_info = {"_start_date_raw": start_raw, "_end_date_raw": end_raw}
+    try:
+        new_totals = _compute_totals(perf_rows, check_row, campaign_info)
+    except Exception as e:
+        logger.warning(f"[WARN _overlay_live_contracts compute {short_token}] {e}")
+        return payload
+    if not new_totals:
+        return payload
+    payload = dict(payload)
+    payload["totals"] = new_totals
     return payload
 
 
@@ -5867,7 +5949,36 @@ def query_totals(token, campaign_info, unified_src=None, win_from=None, win_to=N
         GROUP BY 1, 2
     """
 
-    sql_checklist = f"""
+    # unified_daily_performance_metrics está na região US — passar location explícito.
+    # As 2 queries (perf + checklist) são independentes e tocam tabelas diferentes —
+    # rodar em paralelo via _query_pool corta a latência pela metade no caminho
+    # crítico do report (essa função é a query mais pesada de fetch_campaign_data).
+    _perf_params = [bigquery.ScalarQueryParameter("token", "STRING", token)]
+    if win_from is not None:
+        _perf_params.append(bigquery.ScalarQueryParameter("win_from", "DATE", win_from))
+    if win_to is not None:
+        _perf_params.append(bigquery.ScalarQueryParameter("win_to", "DATE", win_to))
+    job_config = bigquery.QueryJobConfig(query_parameters=_perf_params)
+
+    fut_perf  = _query_pool.submit(
+        lambda: list(bq.query(sql_perf, job_config=job_config, location="US").result())
+    )
+    # checklist (contrato) não tem janela — só @token; roda em paralelo
+    fut_check = _query_pool.submit(_fetch_contracts, token)
+    perf_rows  = fut_perf.result()
+    check_row  = fut_check.result()
+
+    if check_row is None:
+        return []
+    return _compute_totals(perf_rows, check_row, campaign_info)
+
+
+def _fetch_contracts(token):
+    """Lê a linha de contratos (volumetria contratada, bônus, CPM/CPCV
+    negociado) de checklist_info pro token. Fonte ÚNICA do contrato — usada
+    por query_totals e pelo overlay de contratos ao vivo em report congelado.
+    Retorna a Row do BQ, ou None se o token não está no checklist_info."""
+    sql = """
         SELECT
             MAX(cpm_amount)                             AS cpm_amount,
             MAX(cpcv_amount)                            AS cpcv_amount,
@@ -5883,38 +5994,22 @@ def query_totals(token, campaign_info, unified_src=None, win_from=None, win_to=N
             MAX(contracted_groundflow_video_completions)      AS contracted_groundflow_video_completions,
             MAX(bonus_groundflow_display_impressions)         AS bonus_groundflow_display_impressions,
             MAX(bonus_groundflow_video_completions)           AS bonus_groundflow_video_completions
-        FROM {CHECKLIST}
+        FROM `site-hypr.prod_assets.checklist_info`
         WHERE short_token = @token
     """
-
-    # unified_daily_performance_metrics está na região US — passar location explícito.
-    # As 2 queries (perf + checklist) são independentes e tocam tabelas diferentes —
-    # rodar em paralelo via _query_pool corta a latência pela metade no caminho
-    # crítico do report (essa função é a query mais pesada de fetch_campaign_data).
-    _perf_params = [bigquery.ScalarQueryParameter("token", "STRING", token)]
-    if win_from is not None:
-        _perf_params.append(bigquery.ScalarQueryParameter("win_from", "DATE", win_from))
-    if win_to is not None:
-        _perf_params.append(bigquery.ScalarQueryParameter("win_to", "DATE", win_to))
-    job_config = bigquery.QueryJobConfig(query_parameters=_perf_params)
-    # checklist (contrato) não tem janela — usa só @token
-    check_config = bigquery.QueryJobConfig(query_parameters=[
+    jc = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("token", "STRING", token)
     ])
+    rows = list(bq.query(sql, job_config=jc, location="US").result())
+    return rows[0] if rows else None
 
-    fut_perf  = _query_pool.submit(
-        lambda: list(bq.query(sql_perf, job_config=job_config, location="US").result())
-    )
-    fut_check = _query_pool.submit(
-        lambda: list(bq.query(sql_checklist, job_config=check_config, location="US").result())
-    )
-    perf_rows  = fut_perf.result()
-    check_rows = fut_check.result()
 
-    if not check_rows:
-        return []
-    c = check_rows[0]
-
+def _compute_totals(perf_rows, c, campaign_info):
+    """Calcula as linhas de `totals` (por frente×mídia) a partir da ENTREGA
+    (`perf_rows`) e do CONTRATO (`c`, Row/dict de _fetch_contracts). Toda a
+    matemática de budget/CPM-efetivo/rentabilidade/pacing vive AQUI — fonte
+    única reusada pelo serve ao vivo (query_totals) e pelo overlay de contratos
+    ao vivo em report congelado (entrega congelada + contrato ao vivo)."""
     # Dados do checklist
     cpm_neg   = float(c["cpm_amount"]  or 0)
     cpcv_neg  = float(c["cpcv_amount"] or 0)

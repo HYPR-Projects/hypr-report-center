@@ -29,7 +29,10 @@ import {
   saveCampaignPause,
   saveCampaignEarlyEnd,
   clearCampaignEarlyEnd,
+  getFreezeStatus,
+  rebuildReportSnapshot,
 } from "../../../lib/api";
+import { isFeatureAdmin } from "../../../shared/auth";
 import {
   formatPacingValue,
   formatPct,
@@ -111,6 +114,12 @@ const ICON = {
       <path d="M15 3h6v6M10 14 21 3" />
     </svg>
   ),
+  snapshot: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+      <path d="M21 3v6h-6" />
+    </svg>
+  ),
   check: (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
       <path d="M20 6 9 17l-5-5" />
@@ -180,6 +189,7 @@ export function CampaignDrawer({
   onEarlyEndChange,    // chamado após admin setar/reverter encerramento antecipado
   onOpenReport,
   teamMap = {},
+  user,
 }) {
   // Negociação (Sales Center) — fetch lazy quando o drawer abre. Botão
   // "Negociado" só aparece quando a campanha tem registro no Sales Center.
@@ -264,6 +274,27 @@ export function CampaignDrawer({
     const t = setTimeout(() => setPauseBusy("idle"), 1500);
     return () => clearTimeout(t);
   }, [pauseBusy]);
+  // Snapshot/freeze: status do report (frozen + frozen_at) e estado do botão
+  // "Atualizar snapshot". Só feature-admins veem/buscam — report encerrado
+  // serve snapshot verbatim, então edição de checklist (volumetria etc.) numa
+  // campanha encerrada só aparece pro cliente depois de reconstruir.
+  const [freezeInfo, setFreezeInfo] = useState(null); // {frozen, frozen_at} | null
+  const [snapshotBusy, setSnapshotBusy] = useState("idle"); // idle|saving|done|error
+  useEffect(() => { setSnapshotBusy("idle"); }, [drawerToken, open]);
+  useEffect(() => {
+    if (snapshotBusy !== "done") return;
+    const t = setTimeout(() => setSnapshotBusy("idle"), 2000);
+    return () => clearTimeout(t);
+  }, [snapshotBusy]);
+  useEffect(() => {
+    setFreezeInfo(null);
+    if (!open || !drawerToken || !isFeatureAdmin(user)) return;
+    let cancelled = false;
+    getFreezeStatus({ short_token: drawerToken })
+      .then((info) => { if (!cancelled) setFreezeInfo(info); })
+      .catch(() => { /* sem status — seção some, drawer segue normal */ });
+    return () => { cancelled = true; };
+  }, [open, drawerToken, user]);
   useEffect(() => {
     if (!open || !drawerToken) {
       setNegotiation(null);
@@ -497,6 +528,28 @@ export function CampaignDrawer({
       onEarlyEndChange?.(short_token, null);
     } catch {
       setEarlyEndBusy("error");
+    }
+  };
+
+  // Reconstrói o snapshot congelado a partir dos dados ao vivo — re-roda as
+  // queries do report e re-congela. Usado quando o admin editou o checklist
+  // (volumetria, CPM negociado…) de uma campanha já encerrada e o número novo
+  // não apareceu pro cliente, pois o report serve o snapshot verbatim.
+  const handleRebuildSnapshot = async () => {
+    if (!short_token || snapshotBusy === "saving") return;
+    setSnapshotBusy("saving");
+    try {
+      await rebuildReportSnapshot({
+        short_token,
+        note: `rebuild manual via admin${user?.email ? ` — ${user.email}` : ""}`,
+      });
+      setSnapshotBusy("done");
+      // Atualiza o frozen_at exibido (cache do backend já foi invalidado).
+      getFreezeStatus({ short_token })
+        .then((info) => setFreezeInfo(info))
+        .catch(() => { /* mantém o frozen_at anterior */ });
+    } catch {
+      setSnapshotBusy("error");
     }
   };
 
@@ -824,6 +877,42 @@ export function CampaignDrawer({
             </ActionGroup>
           )}
 
+          {/* ── 2b. SNAPSHOT — só feature-admin, e só em report congelado.
+              Report encerrado é auto-congelado: o cliente vê o snapshot,
+              não os dados ao vivo. Edição de checklist (volumetria, CPM…)
+              numa campanha encerrada só aparece depois de reconstruir. */}
+          {isFeatureAdmin(user) && freezeInfo?.frozen && (
+            <ActionGroup label="Snapshot" className="drawer-section-rise drawer-stagger-5">
+              <p className="text-[11px] text-fg-subtle leading-snug mb-1 px-0.5">
+                Report congelado — o cliente vê o snapshot, não os dados ao vivo.
+                Edições no checklist (volumetria, CPM negociado…) só aparecem após reconstruir.
+                {freezeInfo.frozen_at && (
+                  <> Congelado em <span className="text-fg-muted">{formatFrozenAt(freezeInfo.frozen_at)}</span>.</>
+                )}
+              </p>
+              <ActionButton
+                icon={
+                  snapshotBusy === "saving" ? <Spinner />
+                  : snapshotBusy === "done" ? <ClosureSuccessIcon />
+                  : ICON.snapshot
+                }
+                label={
+                  snapshotBusy === "saving" ? "Reconstruindo..."
+                  : snapshotBusy === "done"  ? "Snapshot atualizado!"
+                  : snapshotBusy === "error" ? "Erro — tentar de novo"
+                  : "Atualizar snapshot"
+                }
+                variant={
+                  snapshotBusy === "done"  ? "success"
+                  : snapshotBusy === "error" ? "danger"
+                  : "default"
+                }
+                disabled={snapshotBusy === "saving" || snapshotBusy === "done"}
+                onClick={handleRebuildSnapshot}
+              />
+            </ActionGroup>
+          )}
+
           {/* ── 3. CONTEÚDO DO REPORT — o que o cliente vê dentro do report. */}
           <ActionGroup label="Conteúdo do report" className="drawer-section-rise drawer-stagger-5">
             <ActionButton icon={ICON.loom}   label="Adicionar/editar Loom" onClick={() => onLoom?.(short_token)} />
@@ -1077,6 +1166,22 @@ const ACTION_VARIANTS = {
  * stack interno com gap-1.5 entre os botões. Margin-bottom de 5 separa
  * grupos sem precisar de divider explícito.
  */
+// frozen_at vem do backend como ISO tz-aware (UTC). Mostra data+hora em BRT,
+// curto (DD/MM HH:mm). Best-effort: string inválida → "".
+function formatFrozenAt(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  try {
+    return d.toLocaleString("pt-BR", {
+      day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+      timeZone: "America/Sao_Paulo",
+    });
+  } catch {
+    return "";
+  }
+}
+
 function ActionGroup({ label, className, children }) {
   return (
     <div className={cn("mb-5", className)}>
