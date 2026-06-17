@@ -30,6 +30,7 @@ import { cn } from "../../ui/cn";
 import { getClientPortalData, resolveClientShare } from "../../lib/api";
 import { markClientUnlocked } from "../../shared/auth";
 import { useTheme } from "../hooks/useTheme";
+import { useLogoAnalysis } from "../hooks/useLogoAnalysis";
 
 import {
   formatBrlCompact,
@@ -328,25 +329,50 @@ function PortalView({ data }) {
         </header>
 
         <main className="relative max-w-[1400px] mx-auto px-5 sm:px-8 pt-10 sm:pt-14 pb-24">
-          {/* ── Identidade do cliente — limpa, sem card ──────────────────────── */}
-          <div className="flex items-center gap-5 mb-11 sm:mb-14">
-            <LogoChip logo={client.logo_base64} accent={accent} name={client.display_name || client.slug} size={64} radius={16} />
-            <div className="min-w-0">
-              <h1 className="text-[24px] sm:text-[30px] font-bold tracking-tight leading-tight truncate">
+          {/* ── Hero do cliente — eyebrow + nome grande à esquerda, logo da
+              marca flutuando à direita. Espelha o ritmo do header do report
+              (CampaignHeaderV2: barra+eyebrow → título → meta), sem card pra
+              não competir com o glow ambiente da página e preservar o
+              minimalismo do portal. ──────────────────────────────────────── */}
+          <header className="mb-14 sm:mb-16 flex items-center justify-between gap-6 sm:gap-10">
+            <div className="min-w-0 flex-1">
+              {/* Eyebrow: barra na cor da marca + rótulo + status de ativas */}
+              <div className="flex items-center gap-2.5 mb-3 flex-wrap">
+                <span className="inline-block h-[3px] w-7 rounded-full" style={{ background: accent }} aria-hidden />
+                <span className="text-[11px] font-bold uppercase tracking-[0.18em]" style={{ color: accent }}>
+                  Visão geral
+                </span>
+                {summary.active > 0 && (
+                  <span className="inline-flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wider text-fg-muted">
+                    <span className="size-1.5 rounded-full" style={{ background: accent }} aria-hidden />
+                    {summary.active} {summary.active === 1 ? "ativa" : "ativas"}
+                  </span>
+                )}
+              </div>
+
+              {/* Título — nome do cliente em destaque */}
+              <h1 className="text-[26px] sm:text-[33px] lg:text-[38px] font-extrabold leading-[1.06] tracking-[-0.8px] text-fg break-words">
                 {client.display_name || slugToDisplay(client.slug)}
               </h1>
-              <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[13px] sm:text-[14px] text-fg-muted">
-                <span className="tabular-nums">{summary.count} campanhas</span>
-                {summary.active > 0 && (
+
+              {/* Meta: total de campanhas + período do conjunto */}
+              <div className="mt-3.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[14px] sm:text-[15px] text-fg-muted">
+                <span className="tabular-nums">
+                  {summary.count} {summary.count === 1 ? "campanha" : "campanhas"}
+                </span>
+                {periodLabel && (
                   <>
-                    <span className="text-fg-subtle/60">·</span>
-                    <span className="tabular-nums font-medium" style={{ color: accent }}>{summary.active} ativas</span>
+                    <span className="text-fg-subtle/50" aria-hidden>·</span>
+                    <span className="tabular-nums">{periodLabel}</span>
                   </>
                 )}
-                {periodLabel && (<><span className="text-fg-subtle/60">·</span><span className="tabular-nums">{periodLabel}</span></>)}
               </div>
             </div>
-          </div>
+
+            {/* Logo da marca — flutua sem caixa, maior, alinhada à direita
+                e centrada verticalmente com o bloco de texto. */}
+            <PortalHeroLogo logo={client.logo_base64} name={client.display_name || slugToDisplay(client.slug)} />
+          </header>
 
           {/* ── Big numbers — âncora visual ──────────────────────────────────── */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5 sm:gap-4 mb-14 sm:mb-16">
@@ -506,6 +532,49 @@ function LogoChip({ logo, accent, name, size = 44, radius = 12 }) {
   );
 }
 
+// Logo "hero" do topo do portal — diferente do LogoChip dos cards: aqui a
+// marca aparece GRANDE, sem caixa nem ring, flutuando direto sobre o canvas
+// (espelha o header do report). Mantém a COR ORIGINAL da marca; só aplica
+// filtro de contraste quando a logo conflita com o tema (monochrome no tema
+// oposto, ou colored-dark em dark) — mesma régua do CampaignHeaderV2. A altura
+// escala 48→64→72px e o max-width evita que logos largas (ex: lockups
+// horizontais) invadam o título; object-right ancora no canto.
+function PortalHeroLogo({ logo, name }) {
+  const logoKind = useLogoAnalysis(logo);
+  const [theme] = useTheme();
+  const shouldInvert =
+    (logoKind === "monochrome-light" && theme === "light") ||
+    (logoKind === "monochrome-dark" && theme === "dark");
+  const shouldBoost = logoKind === "colored-dark" && theme === "dark";
+  const filter = shouldInvert
+    ? "invert(1)"
+    : shouldBoost
+      ? "brightness(1.7) contrast(1.1)"
+      : undefined;
+
+  if (logo) {
+    return (
+      <img
+        src={logo}
+        alt={name ? `Logo ${name}` : "Logo do cliente"}
+        className="shrink-0 h-10 sm:h-12 lg:h-[56px] w-auto max-w-[110px] sm:max-w-[168px] lg:max-w-[200px] object-contain object-right transition-[filter] duration-200"
+        style={filter ? { filter } : undefined}
+        loading="eager"
+      />
+    );
+  }
+  // Sem logo: monograma num chip discreto pra ancorar o canto direito sem
+  // peso visual (mantém a simetria do hero mesmo sem asset da marca).
+  return (
+    <div
+      className="shrink-0 flex items-center justify-center size-11 sm:size-12 lg:size-[56px] rounded-2xl border border-border bg-canvas-elevated font-bold text-fg-muted text-lg sm:text-xl"
+      aria-hidden
+    >
+      {monogram(name)}
+    </div>
+  );
+}
+
 // Big number: card elevado com borda + sombra (contraste claro nos dois temas).
 // Investimento ganha tom + borda da marca pra ser a âncora.
 function BigNumber({ label, value, fullValue, sub, accent = false }) {
@@ -566,7 +635,7 @@ function PortalCampaignCard({ campaign: c, accent, client }) {
     >
       {/* Header: logo + nome/datas + status */}
       <div className="flex items-start gap-3 min-h-[60px]">
-        <LogoChip logo={logo} accent={accent} name={c.campaign_name} size={40} radius={11} />
+        <LogoChip logo={logo} accent={accent} name={c.campaign_name} size={48} radius={13} />
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
             <h3 className="text-[14px] sm:text-[15px] font-semibold text-fg leading-snug line-clamp-2">
@@ -694,7 +763,7 @@ function MergeGroupCard({ members, accent, client }) {
       style={{ borderColor: `color-mix(in srgb, ${accent} 28%, var(--color-border))` }}
     >
       <div className="flex items-start gap-3 min-h-[60px]">
-        <LogoChip logo={logo} accent={accent} name={title} size={40} radius={11} />
+        <LogoChip logo={logo} accent={accent} name={title} size={48} radius={13} />
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
             <h3 className="text-[14px] sm:text-[15px] font-semibold text-fg leading-snug line-clamp-2">{title}</h3>
