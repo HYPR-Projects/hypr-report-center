@@ -40,6 +40,7 @@ const CampaignMenu         = lazy(() => import("./v2/admin/pages/CampaignMenuV2"
 const ClientDetailPage     = lazy(() => import("./v2/admin/pages/ClientDetailPage"));
 const ClientDashboard      = lazy(() => import("./v2/dashboards/ClientDashboardV2"));
 const PmpDealsPage         = lazy(() => import("./v2/admin/pages/PmpDealsPage"));
+const ClientPortalPage     = lazy(() => import("./v2/portal/ClientPortalPage"));
 
 /**
  * Heurística pra distinguir share_id (formato novo, opaco) de
@@ -153,6 +154,12 @@ function AppRoutes() {
   const path = window.location.pathname;
   const isClient = path.startsWith("/report/");
   const clientToken = isClient ? path.replace("/report/", "") : null;
+  // Rota /c/:shareId — Portal do Cliente (dashboard central client-facing).
+  // Pública por design: o cliente externo abre sem login HYPR. A proteção é o
+  // share_id opaco + senha (resolvidos dentro da própria página). Por ser
+  // client-facing, NÃO expõe nenhum dado interno (custo/margem/tech cost).
+  const clientPortalMatch = path.match(/^\/c\/([A-Za-z0-9_-]+)\/?$/);
+  const clientPortalShareId = clientPortalMatch ? clientPortalMatch[1] : null;
   // Rota /admin/client/:slug — drilldown do cliente. Único caso de "deep
   // link" admin com path-param. Não usamos React Router porque o app
   // tem só duas rotas profundas (esta + /report/) e o overhead da lib
@@ -291,6 +298,17 @@ function AppRoutes() {
     });
     return () => { cancelled = true; };
   }, [needsAdminLookup, clientToken]);
+
+  // Portal do Cliente — rota pública, renderiza antes do gate de login admin.
+  if (clientPortalShareId) {
+    return (
+      <V2ErrorBoundary>
+        <Suspense fallback={<LoadingShell />}>
+          <ClientPortalPage shareId={clientPortalShareId} />
+        </Suspense>
+      </V2ErrorBoundary>
+    );
+  }
 
   if (isClient && clientToken) {
     if (!isAdminMode && !unlocked) {

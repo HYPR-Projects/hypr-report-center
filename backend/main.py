@@ -46,6 +46,7 @@ from auth import (
 import owners
 import shares
 import clients
+import client_portal
 import merges
 import sheets_integration
 import sheets_alerts
@@ -153,6 +154,11 @@ _report_cache    = {}     # short_token -> (timestamp, payload)
 _merged_report_cache = {} # merge_id -> (timestamp, payload merged)
 _list_cache      = {}     # "all" -> (timestamp, payload)
 _clients_cache   = {}     # "all" -> (timestamp, payload)
+# Portal do cliente: payload client-safe agregado por share_id. TTL curto
+# (dado client-facing, mas a base só muda 1x/dia + mutação admin limpa o cache
+# inteiro). Sem isso, cada acesso do cliente pagava 3 queries BQ sequenciais.
+_PORTAL_CACHE_TTL = 300
+_portal_cache    = {}     # share_id -> (timestamp, payload)
 # Caches dos enrichments paralelos de query_campaigns_list. Compartilham TTL
 # da lista — invalidados juntos via _cache_invalidate_token quando ocorre
 # mutação que afeta o payload do menu.
@@ -810,6 +816,156 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR lookup_share] {e}")
             return (jsonify({"error": "Erro ao buscar share_id"}), 500, headers)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PORTAL DO CLIENTE — dashboard central client-facing (ver client_portal.py)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # Admin: config do portal + mapa de publicação por token. Usado pelo
+    # painel "Link compartilhado". NÃO roda a query pesada de campanhas — o
+    # front já tem a lista do cliente carregada na página e a passa pro drawer;
+    # aqui só fazem-se dois lookups leves (config + publish_map).
+    if request.method == "GET" and request.args.get("action") == "client_portal_config":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            slug = clients.normalize_client_slug(request.args.get("slug") or "")
+            if not slug:
+                return (jsonify({"error": "slug obrigatório"}), 400, headers)
+            # Dois lookups independentes em paralelo (cada query BQ tem ~1s de
+            # piso de latência; sequencial = 2s, paralelo = ~1s).
+            fut_cfg = _query_pool.submit(client_portal.get_config, slug, include_secret=True)
+            fut_pub = _query_pool.submit(client_portal.get_publish_map, slug)
+            raw = fut_cfg.result()
+            publish_map = fut_pub.result()
+            # Sanitiza: remove campos internos (_password_hash/_password_plain) e
+            # expõe SÓ a senha em texto (admin precisa repassar ao cliente).
+            config = None
+            if raw:
+                config = {k: v for k, v in raw.items() if not k.startswith("_")}
+                config["password"] = raw.get("_password_plain") or ""
+            return (jsonify({"config": config, "publish_map": publish_map}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR client_portal_config] {e}")
+            return (jsonify({"error": "Erro ao carregar config do portal"}), 500, headers)
+
+    # Admin: salvar config do portal (senha, logo, accent, active).
+    if request.method == "POST" and request.args.get("action") == "save_client_portal":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            slug = clients.normalize_client_slug(body.get("slug") or "")
+            if not slug:
+                return (jsonify({"error": "slug obrigatório"}), 400, headers)
+            config = client_portal.save_config(
+                slug,
+                password=(body.get("password") or None),
+                display_name=(body.get("display_name") or None),
+                logo_base64=(body.get("logo_base64") or None),
+                accent_color=(body.get("accent_color") or None),
+                active=(body.get("active") if "active" in body else None),
+                updated_by=admin.get("email"),
+            )
+            _portal_cache.clear()  # config mudou → invalida payloads cacheados
+            return (jsonify({"config": config}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR save_client_portal] {e}")
+            return (jsonify({"error": "Erro ao salvar portal"}), 500, headers)
+
+    # Admin: publicar/despublicar uma campanha no portal (curadoria).
+    if request.method == "POST" and request.args.get("action") == "set_client_publish":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            slug = clients.normalize_client_slug(body.get("slug") or "")
+            token = (body.get("short_token") or "").strip()
+            if not slug or not token:
+                return (jsonify({"error": "slug e short_token obrigatórios"}), 400, headers)
+            client_portal.set_publish(slug, token, bool(body.get("published")),
+                                      by=admin.get("email"))
+            _portal_cache.clear()  # curadoria mudou → invalida payloads cacheados
+            return (jsonify({"ok": True}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR set_client_publish] {e}")
+            return (jsonify({"error": "Erro ao publicar campanha"}), 500, headers)
+
+    # Público: resolve (share_id, senha) → slug. Gate de senha do portal.
+    if request.method == "POST" and request.args.get("action") == "resolve_client_share":
+        try:
+            body = request.get_json(silent=True) or {}
+            share_id = (body.get("share_id") or "").strip()
+            password = (body.get("password") or "").strip()
+            if not share_id or not password:
+                return (jsonify({"error": "share_id e senha obrigatórios"}), 400, headers)
+            # Distingue "portal desativado" de "senha errada" — mensagem honesta
+            # (estado de ativação não é sensível; o cliente precisa saber).
+            cfg = client_portal.get_config_by_share_id(share_id)
+            if not cfg:
+                return (jsonify({"error": "Portal não encontrado"}), 404, headers)
+            if not cfg.get("active"):
+                return (jsonify({"error": "Portal desativado", "inactive": True}), 403, headers)
+            slug = client_portal.verify_share_password(share_id, password)
+            if not slug:
+                return (jsonify({"error": "Senha inválida"}), 401, headers)
+            return (jsonify({"slug": slug, "ok": True}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR resolve_client_share] {e}")
+            return (jsonify({"error": "Erro ao validar acesso"}), 500, headers)
+
+    # Público gated: dados agregados client-safe do portal (por share_id).
+    # O share_id (~96 bits) é a credencial de leitura — mesmo posture do
+    # ?token= do report. NUNCA expõe dado interno (serializer whitelist).
+    if request.method == "GET" and request.args.get("action") == "client_portal_data":
+        try:
+            share_id = (request.args.get("share_id") or "").strip()
+            if not share_id:
+                return (jsonify({"error": "share_id obrigatório"}), 400, headers)
+
+            # Browser revalida a cada 60s (evita payload preso durante updates);
+            # o cache de servidor (_portal_cache, 5min) ainda protege o backend.
+            resp_headers = {**headers, "Cache-Control": "public, max-age=60"}
+
+            # Cache de payload (TTL 5min) — primeira carga constrói; repetidas
+            # (qualquer cliente/instância) servem instantâneo. Mutação admin
+            # limpa o cache (ver save_client_portal / set_client_publish).
+            cached = _cache_get(_portal_cache, share_id, _PORTAL_CACHE_TTL)
+            if cached is not None:
+                return (jsonify(cached), 200, resp_headers)
+
+            config = client_portal.get_config_by_share_id(share_id)
+            if not config or not config.get("active"):
+                return (jsonify({"error": "Portal não encontrado"}), 404, headers)
+            slug = config["slug"]
+
+            # Paraleliza: tokens publicados + mapa completo de share_ids (full
+            # scan barato, ~300 rows) rodam juntos; a lista de campanhas já vem
+            # do cache compartilhado. Antes eram 3 queries sequenciais (~3s).
+            fut_pub = _query_pool.submit(client_portal.get_published_tokens, slug)
+            fut_share = _query_pool.submit(shares.get_all_share_ids)
+            fut_elements = _query_pool.submit(_safe_get_elements)
+            campaigns, _ = _get_campaigns_list_cached()
+            published = fut_pub.result()
+            # Logos próprias de cada campanha (batch) — só depois de saber os
+            # tokens publicados. Roda em paralelo com a montagem do share_map.
+            fut_logos = _query_pool.submit(query_logos_for_tokens, sorted(published))
+            all_shares = fut_share.result()
+            share_map = {
+                k.upper(): v for k, v in all_shares.items()
+                if k and k.upper() in published
+            }
+            logos_map = fut_logos.result()
+            elements_map = fut_elements.result()  # {token: {assets, negotiated, closure}}
+            payload = client_portal.build_portal_payload(
+                config, campaigns, published, share_map, logos_map, elements_map)
+            _cache_set(_portal_cache, share_id, payload)
+            return (jsonify(payload), 200, resp_headers)
+        except Exception as e:
+            logger.error(f"[ERROR client_portal_data] {e}")
+            return (jsonify({"error": "Erro ao carregar portal"}), 500, headers)
 
     # ── Endpoint: trocar OAuth code por refresh_token e criar sheet ─────────
     # Frontend abre popup OAuth via Google Identity Services, captura o
@@ -4049,6 +4205,35 @@ def query_logo(short_token: str):
     except Exception as e:
         logger.warning(f"[WARN query_logo] {e}")
     return None
+
+
+def query_logos_for_tokens(tokens):
+    """Batch: {short_token_upper: logo_base64} pros tokens com logo cadastrado.
+
+    Usado pelo Portal do Cliente pra exibir a logo PRÓPRIA de cada campanha no
+    card (não só a co-brand do cliente). Uma única query; tokens sem logo ficam
+    ausentes do dict.
+    """
+    if not tokens:
+        return {}
+    upper = sorted({(t or "").upper() for t in tokens if t})
+    if not upper:
+        return {}
+    sql = f"""
+        SELECT short_token, logo_base64
+        FROM `{PROJECT_ID}.{DATASET_ASSETS}.client_logos`
+        WHERE UPPER(short_token) IN UNNEST(@tokens)
+          AND logo_base64 IS NOT NULL
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ArrayQueryParameter("tokens", "STRING", upper)]
+    )
+    try:
+        rows = list(bq.query(sql, job_config=job_config).result())
+        return {r["short_token"].upper(): r["logo_base64"] for r in rows if r["logo_base64"]}
+    except Exception as e:
+        logger.warning(f"[WARN query_logos_for_tokens] {e}")
+        return {}
 
 
 def query_client_logos_meta(short_token: str):

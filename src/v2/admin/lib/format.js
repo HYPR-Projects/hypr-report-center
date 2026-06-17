@@ -456,6 +456,21 @@ export function formatBrlCompact(value) {
   return _BRL_COMPACT.format(Number(value));
 }
 
+// BRL em notação compacta — pra big numbers / colunas estreitas (mobile)
+// onde "R$ 1.465.000" estoura ou trunca. "R$ 1,5 mi" / "R$ 70 mil".
+// Mantém o valor cheio no title/tooltip do consumidor.
+const _BRL_SHORT = new Intl.NumberFormat("pt-BR", {
+  style: "currency",
+  currency: "BRL",
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
+export function formatBrlShort(value) {
+  if (value == null || !Number.isFinite(Number(value))) return "—";
+  return _BRL_SHORT.format(Number(value));
+}
+
 /**
  * "kenvue" → "Kenvue", "coca-cola-brasil" → "Coca Cola Brasil"
  * Usado em fallbacks quando display_name não veio do backend.
