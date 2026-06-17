@@ -34,6 +34,7 @@ import { Card } from "../../../ui/Card";
 import { Skeleton } from "../../../ui/Skeleton";
 import { ThemeToggleV2 } from "../../components/ThemeToggleV2";
 
+import { ClientPortalDrawer } from "../../portal/ClientPortalDrawer";
 import { ToolbarV2 } from "../components/ToolbarV2";
 import { CampaignCardV2 } from "../components/CampaignCardV2";
 import { MergeGroupCardV2 } from "../components/MergeGroupCardV2";
@@ -84,6 +85,7 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
   const [ownerModal, setOwnerModal]         = useState(null);
   const [mergeModal, setMergeModal]         = useState(null);
   const [negotiationModal, setNegotiationModal] = useState(null); // { short_token, negotiation }
+  const [portalOpen, setPortalOpen] = useState(false); // drawer "Link compartilhado"
 
   // Theme — single source of truth via hook V2 (ver CampaignMenuV2).
   const [theme] = useTheme();
@@ -481,6 +483,19 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
               )}
             </p>
           </div>
+
+          {/* Link compartilhado — abre o painel de gestão do Portal do Cliente */}
+          <button
+            type="button"
+            onClick={() => setPortalOpen(true)}
+            className="inline-flex items-center gap-2 h-9 px-3.5 rounded-lg text-[13px] font-semibold text-on-signature bg-signature hover:bg-signature-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+              <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+            </svg>
+            Link compartilhado
+          </button>
         </div>
 
         {/* Banner de "dados desatualizados" — refresh em background falhou. */}
@@ -661,6 +676,14 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
         members={negotiationModal ? [{ short_token: negotiationModal.short_token }] : []}
         defaultActiveToken={negotiationModal?.short_token}
         reportData={negotiationModal?.reportData}
+      />
+
+      <ClientPortalDrawer
+        open={portalOpen}
+        onOpenChange={setPortalOpen}
+        slug={slug}
+        displayName={displayName}
+        clientCampaigns={campaigns}
       />
     </div>
     </TooltipProvider>

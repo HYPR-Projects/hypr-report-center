@@ -32,8 +32,9 @@
 //
 // Click → navega pra `/admin/client/{slug}`.
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { cn } from "../../../ui/cn";
+import { getClientPortalConfig } from "../../../lib/api";
 import { Card } from "../../../ui/Card";
 import { Avatar } from "../../../ui/Avatar";
 import { TrendPill } from "./TrendPill";
@@ -148,7 +149,10 @@ export function ClientCard({ client, onOpen }) {
           </div>
         </div>
         <div className="flex flex-col items-end gap-1 shrink-0">
-          <TrendPill trend={trend} />
+          <div className="flex items-center gap-1">
+            <PortalLinkButton slug={slug} onOpen={onOpen} />
+            <TrendPill trend={trend} />
+          </div>
           <span className="text-[10.5px] text-fg-subtle tabular-nums">
             {formatTimeAgo(last_updated)}
           </span>
@@ -259,4 +263,51 @@ function Metric({ label, value, colorClass, divider }) {
 
 function capitalizeFirst(s) {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+// Acesso rápido ao Portal do Cliente. Clica → busca a config; se o portal
+// está ativo, abre /c/<share_id> numa aba nova; senão leva ao detalhe do
+// cliente (onde se configura o "Link compartilhado"). stopPropagation pra
+// não disparar o onOpen do card inteiro.
+function PortalLinkButton({ slug, onOpen }) {
+  const [loading, setLoading] = useState(false);
+  const handle = async (e) => {
+    e.stopPropagation();
+    if (loading) return;
+    setLoading(true);
+    try {
+      const { config } = await getClientPortalConfig(slug);
+      if (config?.share_id && config.active) {
+        window.open(`/c/${config.share_id}`, "_blank", "noopener");
+      } else {
+        onOpen?.(slug); // sem portal ativo → abre detalhe pra configurar
+      }
+    } catch {
+      onOpen?.(slug);
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={handle}
+      title="Abrir portal do cliente"
+      aria-label="Abrir portal do cliente"
+      className={cn(
+        "shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-md transition-colors",
+        "text-fg-subtle hover:text-signature hover:bg-surface",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
+      )}
+    >
+      {loading ? (
+        <span className="w-3.5 h-3.5 rounded-full border-2 border-border border-t-signature animate-spin" aria-hidden />
+      ) : (
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+          <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+        </svg>
+      )}
+    </button>
+  );
 }

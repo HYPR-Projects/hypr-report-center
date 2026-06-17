@@ -492,6 +492,93 @@ export async function lookupShare(share_id) {
   }
 }
 
+// ── Portal do Cliente ──────────────────────────────────────────────────────
+//
+// Dashboard central client-facing por cliente. Admin gerencia (config + senha
+// + logo + curadoria de campanhas); cliente acessa via /c/<share_id> + senha.
+// Ver backend/client_portal.py.
+
+/**
+ * Admin: config do portal de um cliente + mapa de publicação por token.
+ * Leve (2 lookups, sem a query pesada de campanhas — o caller já tem a lista
+ * carregada na página). Lança em falha. Retorna
+ * { config: {...}|null, publish_map: { TOKEN: bool } }.
+ */
+export async function getClientPortalConfig(slug) {
+  const jwt = await getOrIssueAdminJwt();
+  if (!jwt) throw new Error("no admin jwt");
+  const r = await fetch(
+    `${API_URL}?action=client_portal_config&slug=${encodeURIComponent(slug)}`,
+    { headers: { ...adminAuthHeaders(jwt) } },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/**
+ * Admin: salva a config do portal (senha, display_name, logo_base64,
+ * accent_color, active). Campos ausentes preservam o valor atual no backend.
+ * Retorna { config } ou lança.
+ */
+export async function saveClientPortal(fields) {
+  const jwt = await getOrIssueAdminJwt();
+  const res = await postJson(
+    `${API_URL}?action=save_client_portal`,
+    fields,
+    adminAuthHeaders(jwt),
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Admin: publica/despublica uma campanha no portal (curadoria). Retorna true
+ * ou lança.
+ */
+export async function setClientPublish({ slug, short_token, published }) {
+  const jwt = await getOrIssueAdminJwt();
+  const res = await postJson(
+    `${API_URL}?action=set_client_publish`,
+    { slug, short_token, published },
+    adminAuthHeaders(jwt),
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return true;
+}
+
+/**
+ * Público: dados agregados client-safe do portal (por share_id). Sem auth —
+ * o share_id é a credencial de leitura. Lança em 404 (portal inexistente/
+ * inativo) ou erro. Retorna { client, campaigns }.
+ */
+export async function getClientPortalData(share_id) {
+  const r = await fetch(
+    `${API_URL}?action=client_portal_data&share_id=${encodeURIComponent(share_id)}`,
+  );
+  if (r.status === 404) throw new Error("portal_not_found");
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/**
+ * Público: resolve (share_id, senha) → slug. Gate de senha do portal. Sem auth.
+ * Retorna { ok: true, slug } se a senha bate; { ok: false } se não.
+ */
+export async function resolveClientShare({ share_id, password }) {
+  try {
+    const r = await fetch(`${API_URL}?action=resolve_client_share`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ share_id, password }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return { ok: false, inactive: !!d.inactive };
+    return { ok: !!d.ok, slug: d.slug };
+  } catch {
+    return { ok: false };
+  }
+}
+
 // ── Logo (admin) ─────────────────────────────────────────────────────────────
 
 /**
