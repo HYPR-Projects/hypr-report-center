@@ -473,7 +473,13 @@ def warmup_caches(force_refresh=True, max_reports=150, deadline_s=480):
 
     ok = errors = 0
     timed_out = False
-    pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="warmup")
+    # 4 → 2 workers: cada report aquecido dispara várias sub-queries no
+    # _query_pool (16 workers); com 4 em paralelo o warmup criava um BURST de
+    # slots BQ on-demand que enfileirava as queries de usuário (lista/portal
+    # ficavam 15-65s). 2 workers reduz o pico pela metade; o warmup leva ~2x mais
+    # (~130s → ~260s, bem dentro do deadline de 480s). Trade-off consciente:
+    # warmup um pouco mais lento, menos contenção pro tráfego real.
+    pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="warmup")
     futures = {
         pool.submit(_get_report_cached, st, force_refresh): st
         for st, _ in candidates
@@ -8870,9 +8876,51 @@ def _campaign_choice_lift(survey_json, tf_token):
     )
 
 
+# Categorias canônicas de survey (etapas do funil). Os `nome` no config são
+# texto livre e variam ("AdRecall OOH", "Adrecall", "Ad Recall" → "Ad Recall";
+# "Intent" → "Intenção"). Normalizamos pra rótulos estáveis e client-safe.
+_SURVEY_TYPE_RULES = (
+    (("ad recall", "adrecall", "recall", "lembran"),       "Ad Recall"),
+    (("inten",),                                            "Intenção"),
+    (("consider",),                                         "Consideração"),
+    (("awareness", "conhecimento"),                         "Awareness"),
+    (("associa", "associat"),                               "Associação"),
+    (("favorab",),                                          "Favorabilidade"),
+    (("prefer",),                                           "Preferência"),
+    (("recomend", "recommend", "nps"),                      "Recomendação"),
+)
+# Ordem de exibição (topo→fundo de funil). Tipos fora da lista vão ao fim (alfa).
+_SURVEY_TYPE_ORDER = ["Awareness", "Consideração", "Intenção", "Preferência",
+                      "Favorabilidade", "Associação", "Ad Recall", "Recomendação"]
+_SURVEY_MEDIA_SUFFIXES = (" ooh", " o2o", " pdooh", " display", " video", " vídeo")
+
+
+def _normalize_survey_type(nome):
+    """Rótulo canônico de funil p/ o `nome` livre de uma pergunta, ou None."""
+    if not nome or not isinstance(nome, str):
+        return None
+    s = nome.strip().lower()
+    for suf in _SURVEY_MEDIA_SUFFIXES:
+        if s.endswith(suf):
+            s = s[: -len(suf)].strip()
+    for keys, label in _SURVEY_TYPE_RULES:
+        if any(k in s for k in keys):
+            return label
+    cleaned = nome.strip()
+    return (cleaned[:1].upper() + cleaned[1:]) if cleaned else None
+
+
+def _sort_survey_types(labels):
+    """Ordena rótulos por funil (depois alfabético p/ desconhecidos)."""
+    order = {l: i for i, l in enumerate(_SURVEY_TYPE_ORDER)}
+    return sorted(labels, key=lambda l: (order.get(l, len(_SURVEY_TYPE_ORDER)), l))
+
+
 def compute_portal_brand_lift(share_id: str):
     """Brand lift mensal agregado client-safe p/ o portal. Retorna
-    {"months": [{month, liftRel, liftAbs, responses}], "has_survey": bool}."""
+    {"months": [{month, liftRel, liftAbs, surveyTypes, surveyCount}],
+    "has_survey": bool}. NUNCA expõe contagem de respostas (interno só p/
+    ponderar a média)."""
     config = client_portal.get_config_by_share_id(share_id)
     if not config or not config.get("active"):
         return None
@@ -8917,6 +8965,26 @@ def compute_portal_brand_lift(share_id: str):
                     logger.warning(f"[WARN brand_lift campaign {futs[f]}] {e}")
                     results[futs[f]] = None
 
+    # Tipos de survey ativados por mês + quantidade de surveys. Conta TODA
+    # campanha com survey conectado no mês (mesmo as que não renderam lift
+    # mensurável) — "surveys ativadas" = quantas rodaram, não quantas tiveram
+    # número. Client-safe: categorias do funil, sem contagem de respostas.
+    month_types = {}
+    month_survey_count = {}
+    for t, sv in with_survey:
+        m = (start_by_token.get(t) or start_by_token.get((t or "").upper()) or "")[:7]
+        if not m:
+            continue
+        cfg = _parse_survey_config_py(sv)
+        labels = set()
+        for q in ((cfg or {}).get("questions") or []):
+            if isinstance(q, dict):
+                lbl = _normalize_survey_type(q.get("nome"))
+                if lbl:
+                    labels.add(lbl)
+        month_types.setdefault(m, set()).update(labels)
+        month_survey_count[m] = month_survey_count.get(m, 0) + 1
+
     months = {}
     for t, res in results.items():
         if not res:
@@ -8935,7 +9003,8 @@ def compute_portal_brand_lift(share_id: str):
             "month": m,
             "liftRel": round(v["rel"] / v["w"], 1),
             "liftAbs": round(v["abs"] / v["w"], 1),
-            "responses": int(v["w"]),
+            "surveyTypes": _sort_survey_types(month_types.get(m, set())),
+            "surveyCount": month_survey_count.get(m, 0),
         }
         for m, v in sorted(months.items())
         if v["w"] > 0

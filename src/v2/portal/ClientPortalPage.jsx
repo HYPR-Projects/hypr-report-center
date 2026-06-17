@@ -137,7 +137,7 @@ export default function ClientPortalPage({ shareId }) {
     );
   }
 
-  return <PortalView data={data} />;
+  return <PortalView data={data} shareId={shareId} />;
 }
 
 // ── Helpers client-safe ─────────────────────────────────────────────────────
@@ -158,7 +158,7 @@ function monogram(name) {
 
 // ── Página ───────────────────────────────────────────────────────────────────
 
-function PortalView({ data }) {
+function PortalView({ data, shareId }) {
   const { client, campaigns } = data;
   const accent = client.accent_color || "#3397B9";
 
@@ -402,7 +402,7 @@ function PortalView({ data }) {
             <PortalAnalytics
               campaigns={campaigns}
               accent={accent}
-              shareId={client.share_id}
+              shareId={shareId || client.share_id}
               brandLiftMock={data.brandLift}
             />
           )}

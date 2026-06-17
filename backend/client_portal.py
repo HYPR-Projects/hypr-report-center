@@ -500,6 +500,11 @@ def build_portal_payload(config: dict, campaigns: list, published_tokens: set,
     return {
         "client": {
             "slug":         config["slug"],
+            # share_id é o próprio identificador público da URL (/c/<share_id>) —
+            # client-safe (o cliente já o tem). O front usa pra buscar o brand
+            # lift lazy (?action=client_portal_brand_lift). Sem ele, a aba
+            # Analytics não conseguia carregar a evolução de brand lift.
+            "share_id":     config.get("share_id"),
             "display_name": display_name,
             "logo_base64":  config.get("logo_base64"),
             "accent_color": config.get("accent_color"),
