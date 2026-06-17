@@ -21,7 +21,7 @@
 
 import { useMemo, useState } from "react";
 import {
-  ComposedChart, Bar, Line, LineChart, XAxis, YAxis,
+  ComposedChart, Bar, Line, LineChart, XAxis, YAxis, ReferenceLine,
   CartesianGrid, Tooltip as RTooltip, ResponsiveContainer, PieChart, Pie, Cell,
 } from "recharts";
 
@@ -43,7 +43,9 @@ const num = (v) => Number(v) || 0;
 const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
 const investedOf = (c) => num(c.d_client_budget) + num(c.v_client_budget);
 
-const CORE_LABELS = { O2O: "O2O", OOH: "OOH / PDOOH", GROUNDFLOW: "Groundflow" };
+// Core products (a "ação" central): O2O, OOH (amplifier), Groundflow.
+// PDOOH NÃO é core product — é feature (vive em `features`, não em `tactics`).
+const CORE_LABELS = { O2O: "O2O", OOH: "OOH", GROUNDFLOW: "Groundflow" };
 const compactBrl = (v) =>
   v >= 1_000_000 ? `R$ ${(v / 1_000_000).toFixed(1).replace(".", ",")} mi`
   : v >= 1_000 ? `R$ ${Math.round(v / 1_000)} mil`
@@ -58,9 +60,10 @@ export default function PortalAnalytics({ campaigns, accent, brandLift = null })
   const [periodPresetId, setPeriodPresetId] = useState("all");
   const [coreProducts, setCoreProducts] = useState([]);
   const [formats, setFormats] = useState([]);
+  const [selectedCampaigns, setSelectedCampaigns] = useState([]);
 
   // Dedup por token (rename de line pode trazer o mesmo token 2x) + bounds.
-  const { deduped, firstStart, lastEnd, coreOptions } = useMemo(() => {
+  const { deduped, firstStart, lastEnd, coreOptions, campaignOptions } = useMemo(() => {
     const seen = new Set();
     const out = [];
     let fs = null, le = null;
@@ -78,11 +81,16 @@ export default function PortalAnalytics({ campaigns, accent, brandLift = null })
     const coreOptions = [...tactics]
       .sort((a, b) => order.indexOf(a) - order.indexOf(b))
       .map((t) => ({ value: t, label: CORE_LABELS[t] || t }));
-    return { deduped: out, firstStart: fs, lastEnd: le, coreOptions };
+    const campaignOptions = out
+      .filter((c) => c.short_token)
+      .map((c) => ({ value: c.short_token, label: c.campaign_name || c.short_token }))
+      .sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
+    return { deduped: out, firstStart: fs, lastEnd: le, coreOptions, campaignOptions };
   }, [campaigns]);
 
   const filtered = useMemo(() => {
     return deduped.filter((c) => {
+      if (selectedCampaigns.length && !selectedCampaigns.includes(c.short_token)) return false;
       if (period?.from && period?.to) {
         const from = ymd(period.from), to = ymd(period.to);
         const cs = c.start_date || "", ce = c.end_date || cs;
@@ -92,11 +100,11 @@ export default function PortalAnalytics({ campaigns, accent, brandLift = null })
       if (formats.length && !formats.some((f) => (c.media || []).includes(f))) return false;
       return true;
     });
-  }, [deduped, period, coreProducts, formats]);
+  }, [deduped, period, coreProducts, formats, selectedCampaigns]);
 
-  const filtersActive = !!period || coreProducts.length > 0 || formats.length > 0;
+  const filtersActive = !!period || coreProducts.length > 0 || formats.length > 0 || selectedCampaigns.length > 0;
   const clearFilters = () => {
-    setPeriod(null); setPeriodPresetId("all"); setCoreProducts([]); setFormats([]);
+    setPeriod(null); setPeriodPresetId("all"); setCoreProducts([]); setFormats([]); setSelectedCampaigns([]);
   };
 
   // ── Agregados ──────────────────────────────────────────────────────────
@@ -125,13 +133,15 @@ export default function PortalAnalytics({ campaigns, accent, brandLift = null })
     for (const c of filtered) {
       const m = (c.start_date || "").slice(0, 7);
       if (!m) continue;
-      if (!map.has(m)) map.set(m, { month: m, invested: 0, impressions: 0, clicks: 0, completions: 0, vtrs: [] });
+      if (!map.has(m)) map.set(m, { month: m, invested: 0, impressions: 0, clicks: 0, completions: 0, vtrs: [], dPace: [], vPace: [] });
       const e = map.get(m);
       e.invested += investedOf(c);
       e.impressions += num(c.viewable_impressions);
       e.clicks += num(c.clicks);
       e.completions += num(c.completions);
       if (c.vtr != null) e.vtrs.push(Number(c.vtr));
+      if (c.display_pacing != null) e.dPace.push(Number(c.display_pacing));
+      if (c.video_pacing != null) e.vPace.push(Number(c.video_pacing));
     }
     return [...map.values()]
       .sort((a, b) => a.month.localeCompare(b.month))
@@ -140,8 +150,17 @@ export default function PortalAnalytics({ campaigns, accent, brandLift = null })
         label: formatMonthLabel(e.month, "short"),
         ctr: e.impressions > 0 ? (e.clicks / e.impressions) * 100 : null,
         vtr: e.vtrs.length ? mean(e.vtrs) : null,
+        pacingDisplay: e.dPace.length ? mean(e.dPace) : null,
+        pacingVideo: e.vPace.length ? mean(e.vPace) : null,
       }));
   }, [filtered]);
+
+  // Há pacing por mídia em algum mês? (depende do backend expor display/video
+  // pacing; se ausente, escondemos o card em vez de mostrar gráfico vazio.)
+  const hasPacing = useMemo(
+    () => monthly.some((m) => m.pacingDisplay != null || m.pacingVideo != null),
+    [monthly],
+  );
 
   const coreMix = useMemo(() => {
     const map = new Map();
@@ -192,6 +211,12 @@ export default function PortalAnalytics({ campaigns, accent, brandLift = null })
           options={[{ value: "DISPLAY", label: "Display" }, { value: "VIDEO", label: "Vídeo" }]}
           selected={formats} onChange={setFormats} accent={accent}
         />
+        {campaignOptions.length > 1 && (
+          <MultiSelectDropdown
+            label="Campanha" allLabel="Todas as campanhas"
+            options={campaignOptions} selected={selectedCampaigns} onChange={setSelectedCampaigns} accent={accent}
+          />
+        )}
         {filtersActive && (
           <button
             type="button"
@@ -241,6 +266,13 @@ export default function PortalAnalytics({ campaigns, accent, brandLift = null })
               <CoreProductBars rows={coreMix} accent={accent} />
             </ChartCardV2>
           </div>
+
+          {/* ── Pacing médio mensal (Display × Vídeo) ─────────────────────── */}
+          {hasPacing && (
+            <ChartCardV2 title="Pacing médio mensal · Display × Vídeo">
+              <PacingChart data={monthly} accent={accent} />
+            </ChartCardV2>
+          )}
 
           {/* ── Brand lift (condicional) ──────────────────────────────────── */}
           {Array.isArray(brandLift) && brandLift.length > 0 && (
@@ -351,6 +383,52 @@ function PerformanceChart({ data, accent }) {
         <Line yAxisId="vtr" dataKey="vtr" name="VTR" type="monotone" stroke={hypr.fgMuted} strokeWidth={2} strokeDasharray="5 4" dot={showDots ? { r: 3, fill: hypr.fgMuted } : false} activeDot={{ r: 5 }} connectNulls isAnimationActive={false} />
       </LineChart>
     </ResponsiveContainer>
+  );
+}
+
+// ── Pacing médio mensal: Display × Vídeo (linhas, % com alvo em 100%) ───────
+function PacingChart({ data, accent }) {
+  const neutral = useChartNeutral();
+  const hypr = useThemeColors();
+  if (!data.length) return null;
+  const showDots = data.length <= 14;
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-4 mb-3">
+        <Legend color={accent} label="Display" />
+        <Legend color={hypr.fgMuted} label="Vídeo" dashed />
+        <span className="text-[11px] text-fg-subtle">— alvo 100%</span>
+      </div>
+      <ResponsiveContainer width="100%" height={240}>
+        <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={neutral.grid} vertical={false} />
+          <XAxis dataKey="label" tick={{ fill: neutral.label, fontSize: 11 }} tickLine={false} axisLine={{ stroke: neutral.grid }} padding={{ left: 16, right: 16 }} />
+          <YAxis tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={48} tickFormatter={(v) => `${Number(v).toFixed(0)}%`} padding={{ top: 8 }} domain={[0, (max) => Math.max(120, Math.ceil(max / 20) * 20)]} />
+          <ReferenceLine y={100} stroke={neutral.axis} strokeDasharray="4 4" />
+          <RTooltip content={(p) => (
+            <ChartTooltip {...p} rows={(pl) => pl.map((x) => ({
+              name: x.dataKey === "pacingDisplay" ? "Display" : "Vídeo",
+              value: x.value == null ? "—" : `${Number(x.value).toFixed(0)}%`,
+              color: x.dataKey === "pacingDisplay" ? accent : hypr.fgMuted,
+            }))} />
+          )} />
+          <Line dataKey="pacingDisplay" name="Display" type="monotone" stroke={accent} strokeWidth={2.4} dot={showDots ? { r: 3, fill: accent } : false} activeDot={{ r: 5 }} connectNulls isAnimationActive={false} />
+          <Line dataKey="pacingVideo" name="Vídeo" type="monotone" stroke={hypr.fgMuted} strokeWidth={2} strokeDasharray="5 4" dot={showDots ? { r: 3, fill: hypr.fgMuted } : false} activeDot={{ r: 5 }} connectNulls isAnimationActive={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// Legenda inline reusada pelos charts (dot + label; dashed pra linhas pontilhadas).
+function Legend({ color, label, dashed }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold" style={{ color }}>
+      {dashed
+        ? <span className="inline-block w-4 border-t-2 border-dashed" style={{ borderColor: color }} aria-hidden />
+        : <span className="size-2 rounded-full" style={{ background: color }} aria-hidden />}
+      {label}
+    </span>
   );
 }
 
