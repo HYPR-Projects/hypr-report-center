@@ -27,6 +27,18 @@ import {
 import { formatMonthLabel, getDateRangeParts } from "../admin/lib/format";
 
 const DEFAULT_ACCENT = "#3397B9";
+// Paleta de marca pré-selecionada (swatches). O azul default vem primeiro.
+// O cliente pode sempre escolher qualquer cor pelo seletor livre ao lado.
+const ACCENT_PRESETS = [
+  "#3397B9", // azul HYPR (default)
+  "#2E7D5B", // verde
+  "#7C3AED", // roxo
+  "#E11D48", // vermelho
+  "#EC4899", // rosa
+  "#F59E0B", // âmbar
+  "#0EA5E9", // azul claro
+  "#0F172A", // grafite
+];
 // Limite defensivo pro logo (data-URL base64). ~400KB de arquivo → ~540KB
 // base64; mantém o payload do portal leve e cabe folgado numa célula STRING.
 const MAX_LOGO_BYTES = 400 * 1024;
@@ -306,15 +318,51 @@ export function ClientPortalDrawer({ open, onOpenChange, slug, displayName, clie
                     )}
                     <input ref={fileRef} type="file" accept="image/*" onChange={handleLogoFile} className="hidden" />
                   </div>
-                  <div className="ml-auto flex items-center gap-2">
-                    <label className="text-[12px] text-fg-muted">Cor</label>
-                    <input
-                      type="color"
-                      value={accent}
-                      onChange={(e) => setAccent(e.target.value)}
-                      className="w-9 h-9 rounded-md border border-border bg-transparent cursor-pointer"
-                      aria-label="Cor de marca"
-                    />
+                </div>
+                {/* Cor de marca: paleta de presets + seletor livre */}
+                <div className="mt-4">
+                  <label className="text-[12px] text-fg-muted">Cor de marca</label>
+                  <div className="mt-2 flex items-center gap-2 flex-wrap">
+                    {ACCENT_PRESETS.map((c) => {
+                      const selected = accent.toLowerCase() === c.toLowerCase();
+                      return (
+                        <button
+                          key={c}
+                          type="button"
+                          onClick={() => setAccent(c)}
+                          aria-label={`Cor ${c}`}
+                          aria-pressed={selected}
+                          title={c}
+                          className="size-7 rounded-full transition-transform hover:scale-110"
+                          style={{
+                            background: c,
+                            boxShadow: selected
+                              ? `0 0 0 2px var(--color-canvas-elevated), 0 0 0 4px ${c}`
+                              : "inset 0 0 0 1px rgba(0,0,0,0.12)",
+                          }}
+                        />
+                      );
+                    })}
+                    {/* Seletor livre — qualquer cor. Realça quando a cor atual
+                        não está na paleta. */}
+                    <label
+                      className="relative size-7 rounded-full cursor-pointer inline-flex items-center justify-center overflow-hidden"
+                      title="Cor personalizada"
+                      style={{
+                        background: "conic-gradient(from 0deg, #ef4444, #f59e0b, #22c55e, #0ea5e9, #7c3aed, #ec4899, #ef4444)",
+                        boxShadow: ACCENT_PRESETS.some((c) => c.toLowerCase() === accent.toLowerCase())
+                          ? "inset 0 0 0 1px rgba(0,0,0,0.12)"
+                          : `0 0 0 2px var(--color-canvas-elevated), 0 0 0 4px ${accent}`,
+                      }}
+                    >
+                      <input
+                        type="color"
+                        value={accent}
+                        onChange={(e) => setAccent(e.target.value)}
+                        className="absolute inset-0 opacity-0 cursor-pointer"
+                        aria-label="Cor personalizada"
+                      />
+                    </label>
                   </div>
                 </div>
               </Section>
