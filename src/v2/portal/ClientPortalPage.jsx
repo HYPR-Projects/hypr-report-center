@@ -331,10 +331,16 @@ function PortalView({ data }) {
           <div className="max-w-[1400px] mx-auto px-5 sm:px-8 h-[68px] flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
               <HyprReportCenterLogo height={26} />
-              <span className="hidden sm:inline-block h-4 w-px bg-border-strong" />
-              <span className="hidden sm:inline text-[11px] uppercase tracking-[0.2em] font-semibold text-fg-subtle">
-                Portal do cliente
-              </span>
+              {/* Divisor + label alinhados ao centro ÓPTICO dos glifos do logo,
+                  não ao box do SVG. O viewBox do wordmark tem ~6px de folga no
+                  topo (glifos encostados embaixo), então os glifos visíveis caem
+                  ~3px abaixo do centro do box — daí o translate-y pra casar. */}
+              <div className="hidden sm:flex items-center gap-3 translate-y-[3px]">
+                <span className="h-4 w-px bg-border-strong" />
+                <span className="text-[11px] uppercase tracking-[0.2em] font-semibold text-fg-subtle">
+                  Portal do cliente
+                </span>
+              </div>
             </div>
             <ThemeToggleV2 />
           </div>
