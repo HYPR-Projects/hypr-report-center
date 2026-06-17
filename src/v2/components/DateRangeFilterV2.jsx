@@ -63,6 +63,11 @@ export function DateRangeFilterV2({
   // preset). Usado pra desempatar quando vários presets casam o mesmo
   // range — preserva intenção do user ao trocar de view.
   presetId = null,
+  // Classes extras pro botão-gatilho (pill). Anexadas por último no cn() —
+  // como cn() usa twMerge, utilitárias conflitantes (altura, raio, bg) são
+  // sobrescritas. Permite ao Portal do Cliente casar o pill com os demais
+  // filtros (h-9 rounded-lg bg-canvas-deeper) sem afetar o uso no report.
+  triggerClassName = "",
 }) {
   const presets = useMemo(
     () => buildPresets(new Date(), campaignStart, campaignEnd),
@@ -156,6 +161,7 @@ export function DateRangeFilterV2({
             "transition-colors duration-150 cursor-pointer",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
             open && "border-signature bg-surface-strong",
+            triggerClassName,
           )}
         >
           <CalendarIcon className="size-3.5 text-fg-muted" />

@@ -24,7 +24,9 @@ import "../../ui/typography";
 
 import { TooltipProvider } from "../../ui/Tooltip";
 import { SegmentedControlV2 } from "../components/SegmentedControlV2";
+import { DateRangeFilterV2 } from "../components/DateRangeFilterV2";
 import { ThemeToggleV2 } from "../components/ThemeToggleV2";
+import { ymd } from "../../shared/dateFilter";
 import HyprReportCenterLogo from "../../components/HyprReportCenterLogo";
 import { cn } from "../../ui/cn";
 import { getClientPortalData, resolveClientShare } from "../../lib/api";
@@ -163,7 +165,12 @@ function PortalView({ data }) {
   // Filtros (Bloco B) — todos multi-seleção (arrays vazios = "todos").
   const [fmts, setFmts] = useState([]); // subset de DISPLAY/VIDEO
   const [feats, setFeats] = useState([]); // subset de survey/rmnd/pdooh
-  const [months, setMonths] = useState([]); // subset de "YYYY-MM"
+  // Período: range {from,to}|null (null = todo o período) + id do preset que
+  // o originou (desempate visual no DateRangeFilterV2). Substitui o antigo
+  // multi-select de meses pelo mesmo filtro range do report (presets +
+  // calendário). Filtra campanhas por SOBREPOSIÇÃO do voo com o range.
+  const [period, setPeriod] = useState(null);
+  const [periodPresetId, setPeriodPresetId] = useState("all");
   const [collapsed, setCollapsed] = useState(() => new Set()); // meses recolhidos
 
   const toggleMonth = (key) =>
@@ -173,14 +180,8 @@ function PortalView({ data }) {
       return next;
     });
 
-  const monthOptions = useMemo(() => {
-    const set = new Set();
-    for (const c of campaigns) { const m = (c.start_date || "").slice(0, 7); if (m) set.add(m); }
-    return [...set].sort((a, b) => b.localeCompare(a)).map((m) => ({ value: m, label: formatMonthLabel(m) }));
-  }, [campaigns]);
-
-  const filtersActive = fmts.length > 0 || feats.length > 0 || months.length > 0;
-  const clearFilters = () => { setFmts([]); setFeats([]); setMonths([]); };
+  const filtersActive = fmts.length > 0 || feats.length > 0 || !!period;
+  const clearFilters = () => { setFmts([]); setFeats([]); setPeriod(null); setPeriodPresetId("all"); };
 
   // Big numbers agregados — só métricas seguras.
   const summary = useMemo(() => {
@@ -229,10 +230,18 @@ function PortalView({ data }) {
       if (q && !c.campaign_name?.toLowerCase().includes(q)) return false;
       if (fmts.length > 0 && !fmts.some((f) => (c.media || []).includes(f))) return false;
       if (feats.length > 0 && !feats.some((f) => (c.features || []).includes(f))) return false;
-      if (months.length > 0 && !months.includes((c.start_date || "").slice(0, 7))) return false;
+      if (period?.from && period?.to) {
+        // Sobreposição: a campanha entra se o voo dela (início→fim) cruza o
+        // range escolhido. Comparação lexical de "YYYY-MM-DD" (datas ISO).
+        const from = ymd(period.from);
+        const to   = ymd(period.to);
+        const cs = c.start_date || "";
+        const ce = c.end_date || cs;
+        if (!cs || cs > to || ce < from) return false;
+      }
       return true;
     });
-  }, [campaigns, search, fmts, feats, months]);
+  }, [campaigns, search, fmts, feats, period]);
 
   // Agrupa campanhas merged num único item "group" (1 link, métricas somadas);
   // as demais viram "single". Reports agregados deixam de aparecer soltos.
@@ -400,9 +409,13 @@ function PortalView({ data }) {
           {/* Toolbar: filtros à esquerda, busca à direita */}
           <div className="mb-8 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-wrap items-center gap-2">
-              <MultiSelectDropdown
-                label="Período" allLabel="Todos os meses"
-                options={monthOptions} selected={months} onChange={setMonths} accent={accent}
+              <DateRangeFilterV2
+                value={period}
+                presetId={periodPresetId}
+                campaignStart={summary.firstStart}
+                campaignEnd={summary.lastEnd}
+                onChange={(r, pid) => { setPeriod(r); setPeriodPresetId(pid); }}
+                triggerClassName="h-9 px-3 rounded-lg bg-canvas-deeper font-medium"
               />
               <MultiSelectDropdown
                 label="Formato" allLabel="Todos os formatos"
