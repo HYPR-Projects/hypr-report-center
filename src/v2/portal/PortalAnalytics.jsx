@@ -372,6 +372,18 @@ function ChartTooltip({ active, payload, label, rows }) {
   );
 }
 
+// Tick de eixo Y monetário em UMA linha. O tick padrão do recharts quebra o
+// texto na largura do eixo ("R$ 800 mil" virava 3 linhas); um <text> próprio
+// nunca quebra — só precisa de largura de eixo suficiente.
+function MoneyAxisTick({ x, y, payload, fill }) {
+  return (
+    <text x={x} y={y} dy={3} dx={-2} textAnchor="end" fill={fill}
+          fontSize={10} style={{ fontVariantNumeric: "tabular-nums" }}>
+      {compactBrl(payload.value)}
+    </text>
+  );
+}
+
 // ── Evolução mensal: investimento (barra) × impressões (linha) ──────────────
 function MonthlyInvestChart({ data, accent }) {
   const neutral = useChartNeutral();
@@ -384,7 +396,7 @@ function MonthlyInvestChart({ data, accent }) {
       <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke={neutral.grid} vertical={false} />
         <XAxis dataKey="label" tick={{ fill: neutral.label, fontSize: 11 }} tickLine={false} axisLine={{ stroke: neutral.grid }} padding={{ left: 16, right: 16 }} />
-        <YAxis yAxisId="left" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={48} tickFormatter={compactBrl} padding={{ top: 8 }} />
+        <YAxis yAxisId="left" tick={<MoneyAxisTick fill={neutral.label} />} tickLine={false} axisLine={false} width={66} padding={{ top: 8 }} />
         <YAxis yAxisId="right" orientation="right" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={40} tickFormatter={compactInt} padding={{ top: 8 }} />
         <RTooltip cursor={{ fill: hypr.surfaceStrong }} content={(p) => (
           <ChartTooltip {...p} rows={(pl) => pl.map((x) => ({
@@ -584,20 +596,32 @@ function BrandLiftSection({ monthly, accent }) {
           <thead>
             <tr className="bg-surface-3 text-fg-muted">
               <Th className="text-left">Mês</Th>
+              <Th className="text-left">Surveys ativadas</Th>
               <Th className="text-right">Lift relativo</Th>
               <Th className="text-right">Lift absoluto</Th>
-              <Th className="text-right">Respostas</Th>
             </tr>
           </thead>
           <tbody>
-            {data.map((m) => (
-              <tr key={m.month} className="border-t border-border hover:bg-surface-strong transition-colors">
-                <Td className="text-left text-fg">{formatMonthLabel(m.month, "long")}</Td>
-                <Td className="text-right font-semibold" style={{ color: accent }}>{m.liftRel == null ? "—" : `${m.liftRel.toFixed(1)}%`}</Td>
-                <Td className="text-right text-fg">{m.liftAbs == null ? "—" : `${m.liftAbs.toFixed(1)} pp`}</Td>
-                <Td className="text-right text-fg-muted tabular-nums">{m.responses != null ? formatInt(m.responses) : "—"}</Td>
-              </tr>
-            ))}
+            {data.map((m) => {
+              const types = m.surveyTypes || [];
+              return (
+                <tr key={m.month} className="border-t border-border hover:bg-surface-strong transition-colors">
+                  <Td className="text-left text-fg whitespace-nowrap">{formatMonthLabel(m.month, "long")}</Td>
+                  <Td className="text-left">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {m.surveyCount > 0 && (
+                        <span className="text-[12px] text-fg-muted tabular-nums shrink-0">{m.surveyCount}×</span>
+                      )}
+                      {types.length
+                        ? types.map((t) => <MixChip key={t} label={t} soft />)
+                        : <span className="text-fg-subtle">—</span>}
+                    </div>
+                  </Td>
+                  <Td className="text-right font-semibold" style={{ color: accent }}>{m.liftRel == null ? "—" : `${m.liftRel.toFixed(1)}%`}</Td>
+                  <Td className="text-right text-fg">{m.liftAbs == null ? "—" : `${m.liftAbs.toFixed(1)} pp`}</Td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
