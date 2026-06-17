@@ -386,19 +386,9 @@ function PortalView({ data }) {
             <PortalHeroLogo logo={client.logo_base64} name={client.display_name || slugToDisplay(client.slug)} />
           </header>
 
-          {/* ── Big numbers — âncora visual ──────────────────────────────────── */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5 sm:gap-4 mb-14 sm:mb-16">
-            <BigNumber label="Investimento" value={formatBrlShort(summary.invested)} fullValue={formatBRL(summary.invested)} accent />
-            <BigNumber label="Impressões" value={formatIntCompact(summary.impressions)} fullValue={`${formatInt(summary.impressions)} impressões visíveis`} sub="visíveis" />
-            <BigNumber label="Cliques" value={formatIntCompact(summary.clicks)} fullValue={formatInt(summary.clicks)} />
-            <BigNumber label="CTR" value={formatPct(summary.ctr, 2)} sub="médio" />
-            <BigNumber label="VTR" value={formatPct(summary.vtr, 1)} sub="vídeo" />
-            <BigNumber label="Views 100%" value={formatIntCompact(summary.completions)} fullValue={`${formatInt(summary.completions)} vídeos completos`} sub="vídeo completo" />
-          </div>
-
           {/* ── Navegação: Campanhas × Analytics ─────────────────────────────── */}
-          <div className="mb-7 flex items-center gap-1 border-b border-border">
-            <PortalTab active={view === "campaigns"} onClick={() => setView("campaigns")}>Campanhas</PortalTab>
+          <div className="mb-8 flex items-center gap-1 border-b border-border">
+            <PortalTab active={view === "campaigns"} onClick={() => setView("campaigns")} accent={accent}>Campanhas</PortalTab>
             <PortalTab active={view === "analytics"} onClick={() => setView("analytics")} accent={accent}>Analytics</PortalTab>
           </div>
 
@@ -408,6 +398,18 @@ function PortalView({ data }) {
 
           {view === "campaigns" && (
           <>
+          {/* ── Big numbers — snapshot da conta. Só na aba Campanhas; em
+              Analytics o strip de KPIs reativo aos filtros cumpre esse papel
+              (evita duplicar dois strips quase idênticos). ──────────────────── */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5 sm:gap-4 mb-12">
+            <BigNumber label="Investimento" value={formatBrlShort(summary.invested)} fullValue={formatBRL(summary.invested)} accent />
+            <BigNumber label="Impressões" value={formatIntCompact(summary.impressions)} fullValue={`${formatInt(summary.impressions)} impressões visíveis`} sub="visíveis" />
+            <BigNumber label="Cliques" value={formatIntCompact(summary.clicks)} fullValue={formatInt(summary.clicks)} />
+            <BigNumber label="CTR" value={formatPct(summary.ctr, 2)} sub="médio" />
+            <BigNumber label="VTR" value={formatPct(summary.vtr, 1)} sub="vídeo" />
+            <BigNumber label="Views 100%" value={formatIntCompact(summary.completions)} fullValue={`${formatInt(summary.completions)} vídeos completos`} sub="vídeo completo" />
+          </div>
+
           {/* ── Campanhas — agrupamento + toolbar ────────────────────────────── */}
           <div className="flex items-center justify-end gap-4 mb-5">
             <SegmentedControlV2
