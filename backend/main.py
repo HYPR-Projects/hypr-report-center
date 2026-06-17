@@ -140,24 +140,28 @@ clients.set_bq_client(bq)
 # da base (rebuild manual do Dagster fora de hora) — nesse caso,
 # ?refresh=true bypassa.
 _REPORT_CACHE_TTL  = 3 * 3600
-# Lista admin: era 60s e estava queimando o usuário em todo cache miss; foi a
-# 300s e agora 900s — a query consolidada é cara e o dado de delivery que a
-# alimenta só muda 1x/dia (~06h). Mutações de admin já invalidam via
-# _cache_invalidate_token, então "stale" real só ocorre em mudança externa
-# da base, coberta pelo warmup das 06h30 e pelo refresh manual do menu.
-_LIST_CACHE_TTL    = 900
+# Lista admin: 60s → 300s → 900s → 3h. A query consolidada (query_campaigns_list,
+# 3 full scans de tabelas não particionadas) custa 15-65s fria, e o dado de
+# delivery só muda 1x/dia (~06h). Com 900s o cache vencia entre os warmups (3/3h)
+# e o time pagava a query fria; a 3h casa com a cadência do warmup e fica warm o
+# dia todo. Mutações de admin já invalidam via _cache_invalidate_token, então
+# "stale" só ocorre em mudança externa da base (coberta pelo warmup/?refresh).
+_LIST_CACHE_TTL    = 3 * 3600
 # View "Por cliente" do menu admin — agregação derivada de query_campaigns_list
 # + 1 query temporal pra sparklines. Mesmo raciocínio (e TTL) da lista.
-_CLIENTS_CACHE_TTL = 900
+_CLIENTS_CACHE_TTL = 3 * 3600
 
 _report_cache    = {}     # short_token -> (timestamp, payload)
 _merged_report_cache = {} # merge_id -> (timestamp, payload merged)
 _list_cache      = {}     # "all" -> (timestamp, payload)
 _clients_cache   = {}     # "all" -> (timestamp, payload)
-# Portal do cliente: payload client-safe agregado por share_id. TTL curto
-# (dado client-facing, mas a base só muda 1x/dia + mutação admin limpa o cache
-# inteiro). Sem isso, cada acesso do cliente pagava 3 queries BQ sequenciais.
-_PORTAL_CACHE_TTL = 300
+# Portal do cliente: payload client-safe agregado por share_id. Era 300s (5min)
+# e queimava o acesso: a base só muda 1x/dia (~06h) e qualquer mutação admin
+# (save_config/set_publish) já faz `_portal_cache.clear()`, então 5min era
+# agressivo à toa — rebuildava (lista + shares + elements + logos) toda hora.
+# A 3h casa com os demais caches (_REPORT/_LIST/_CLIENTS) e com o warmup, que
+# agora pré-aquece os portais ativos (warmup_caches). Mutação continua limpando.
+_PORTAL_CACHE_TTL = 3 * 3600
 _portal_cache    = {}     # share_id -> (timestamp, payload)
 # Caches dos enrichments paralelos de query_campaigns_list. Compartilham TTL
 # da lista — invalidados juntos via _cache_invalidate_token quando ocorre
@@ -527,6 +531,41 @@ def warmup_caches(force_refresh=True, max_reports=150, deadline_s=480):
             logger.warning(f"[WARN warmup merges lookup] {e}")
     summary["merged_warmed"] = merged_ok
     summary["merged_errors"] = merged_errors
+
+    # Portais ativos: pré-aquece o payload de cada um (mata o cold do 1º acesso
+    # ao link compartilhável /c/<share_id>). Queries GLOBAIS (shares + elements)
+    # rodam uma vez só; por portal, só published_tokens + logos (escopados,
+    # baratos). campaigns já está warm. Respeita o deadline; best-effort.
+    portals_ok = portals_errors = 0
+    if not timed_out:
+        try:
+            configs = client_portal.list_active_configs()
+            if configs:
+                all_shares = shares.get_all_share_ids()
+                elements_map = _safe_get_elements()
+                for cfg in configs:
+                    if time.time() - t0 > deadline_s:
+                        timed_out = True
+                        break
+                    try:
+                        published = client_portal.get_published_tokens(cfg.get("slug"))
+                        share_map = {
+                            k.upper(): v for k, v in all_shares.items()
+                            if k and k.upper() in published
+                        }
+                        logos_map = query_logos_for_tokens(sorted(published))
+                        payload = client_portal.build_portal_payload(
+                            cfg, campaigns, published, share_map, logos_map, elements_map)
+                        _cache_set(_portal_cache, cfg["share_id"], payload)
+                        portals_ok += 1
+                    except Exception as e:
+                        portals_errors += 1
+                        logger.warning(f"[WARN warmup portal {cfg.get('slug')}] {e}")
+        except Exception as e:
+            logger.warning(f"[WARN warmup portals lookup] {e}")
+    summary["portals_warmed"] = portals_ok
+    summary["portals_errors"] = portals_errors
+
     summary["timed_out"] = timed_out
     summary["duration_s"] = round(time.time() - t0, 1)
     return summary

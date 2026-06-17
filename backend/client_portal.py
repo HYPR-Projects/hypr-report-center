@@ -222,6 +222,19 @@ def get_config_by_share_id(share_id: str, *, include_secret=False) -> dict | Non
     return _row_to_config(rows[0], include_secret=include_secret) if rows else None
 
 
+def list_active_configs() -> list:
+    """Todos os portais ATIVOS (público-safe, sem secret). Usado pelo warmup
+    pra pré-aquecer o payload de cada portal e matar o cold do 1º acesso."""
+    ensure_tables_exist()
+    sql = f"SELECT * FROM `{_config_table_id()}` WHERE active = TRUE"
+    try:
+        rows = list(bq.query(sql).result())
+    except Exception as e:
+        logger.warning(f"[WARN list_active_configs] {e}")
+        return []
+    return [_row_to_config(r) for r in rows]
+
+
 def save_config(slug: str, *, password=None, display_name=None, logo_base64=None,
                 accent_color=None, active=None, updated_by=None) -> dict:
     """Upsert da config. Cria share_id na primeira vez. Campos None não são
