@@ -70,6 +70,49 @@ function legacyAkSuffix() {
 }
 
 /**
+ * Erro tipado pra timeout de fetch — distingue "demorou demais" de erro de
+ * rede genérico, pra o caller poder decidir auto-retry vs. banner.
+ */
+export class TimeoutError extends Error {
+  constructor(ms) {
+    super(`request timed out after ${ms}ms`);
+    this.name = "TimeoutError";
+    this.timeout = true;
+  }
+}
+
+/**
+ * `fetch` com timeout via AbortController.
+ *
+ * Por que existe: os GETs de carregamento do menu (?list=true, list_clients,
+ * list_team_members) NÃO tinham timeout. No 1º acesso do dia a query fria do
+ * backend leva 15-65s (medido nos logs) — sem timeout, a Promise fica pendurada
+ * e o `setLoading(false)` (que vive no .then) nunca roda → skeleton eterno; a
+ * única saída era o usuário dar refresh na mão. Com timeout, um hang vira uma
+ * rejeição rápida que o caller trata (auto-retry + banner "Atualizar").
+ *
+ * Lança TimeoutError no estouro; propaga AbortError se o caller passar o
+ * próprio signal e abortar antes.
+ */
+async function fetchWithTimeout(url, init = {}, timeoutMs = 30_000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new TimeoutError(timeoutMs)), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } catch (err) {
+    // AbortController.abort(reason) faz o fetch rejeitar com um DOMException
+    // AbortError; recuperamos o `reason` (nosso TimeoutError) pra propagar a
+    // intenção. Se foi abort externo (sem reason TimeoutError), repassa o erro.
+    if (ctrl.signal.aborted && ctrl.signal.reason instanceof TimeoutError) {
+      throw ctrl.signal.reason;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * POST com JSON. Quando o caller passa header `Authorization` (ou seja,
  * é uma call admin), `postJson` detecta 401/403 e tenta uma vez:
  *   1) Invalida o JWT em cache
@@ -205,7 +248,7 @@ export async function listCampaigns({ refresh = false } = {}) {
   // sozinho). Usado por mutações que precisam ver efeito imediato (ex.
   // toggle de ABS no CampaignDrawer).
   const url = refresh ? `${API_URL}?list=true&refresh=true` : `${API_URL}?list=true`;
-  const r = await fetch(url, {
+  const r = await fetchWithTimeout(url, {
     headers: { ...adminAuthHeaders(jwt) },
   });
   if (r.status === 401 || r.status === 403) {
@@ -258,7 +301,7 @@ export async function listClients() {
   try {
     const jwt = await getOrIssueAdminJwt();
     if (!jwt) throw new Error("no admin jwt");
-    const r = await fetch(`${API_URL}?action=list_clients`, {
+    const r = await fetchWithTimeout(`${API_URL}?action=list_clients`, {
       headers: { ...adminAuthHeaders(jwt) },
     });
     if (r.status === 401 || r.status === 403) {
@@ -353,7 +396,7 @@ function emptyWorklist() {
 export async function listTeamMembers() {
   const jwt = await getOrIssueAdminJwt();
   if (!jwt) return { cps: [], css: [] };
-  const r = await fetch(`${API_URL}?action=list_team_members`, {
+  const r = await fetchWithTimeout(`${API_URL}?action=list_team_members`, {
     headers: { ...adminAuthHeaders(jwt) },
   });
   if (r.status === 401 || r.status === 403) {

@@ -140,15 +140,20 @@ clients.set_bq_client(bq)
 # da base (rebuild manual do Dagster fora de hora) — nesse caso,
 # ?refresh=true bypassa.
 _REPORT_CACHE_TTL  = 3 * 3600
-# Lista admin: era 60s e estava queimando o usuário em todo cache miss; foi a
-# 300s e agora 900s — a query consolidada é cara e o dado de delivery que a
-# alimenta só muda 1x/dia (~06h). Mutações de admin já invalidam via
-# _cache_invalidate_token, então "stale" real só ocorre em mudança externa
-# da base, coberta pelo warmup das 06h30 e pelo refresh manual do menu.
-_LIST_CACHE_TTL    = 900
+# Lista admin: era 60s → 300s → 900s e ainda queimava o 1º acesso do dia. A
+# query fria custa 15-65s (medido nos logs), e com TTL de 15min o cache vencia
+# ~06h45 — quase 3h ANTES do próximo warmup (cron a cada 3h, 06h30–18h30), bem
+# na janela em que o time chega e dá o primeiro acesso → skeleton de 30-60s.
+# A 3h o TTL casa com a cadência do warmup: o run das 06h30 mantém a lista
+# quente até o das 09h30 re-aquecer, e assim por diante — warm o dia inteiro.
+# Mesma garantia do _REPORT_CACHE_TTL: mutações de admin invalidam por token via
+# _cache_invalidate_token, e o dado de delivery só muda 1x/dia (~06h), então o
+# teto de 3h só vale pra mudança EXTERNA da base (rebuild fora de hora →
+# ?refresh=true ou o warmup manual bypassa).
+_LIST_CACHE_TTL    = 3 * 3600
 # View "Por cliente" do menu admin — agregação derivada de query_campaigns_list
 # + 1 query temporal pra sparklines. Mesmo raciocínio (e TTL) da lista.
-_CLIENTS_CACHE_TTL = 900
+_CLIENTS_CACHE_TTL = 3 * 3600
 
 _report_cache    = {}     # short_token -> (timestamp, payload)
 _merged_report_cache = {} # merge_id -> (timestamp, payload merged)

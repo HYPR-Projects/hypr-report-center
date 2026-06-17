@@ -274,63 +274,92 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   // responsável (a inicialização já é true via useState; o botão de
   // retry seta antes de invocar). Isso evita violação de
   // react-hooks/set-state-in-effect.
+  // Auto-retry: a query da lista pode pendurar/expirar timeout no 1º acesso
+  // do dia (cache frio do backend, 15-65s). Antes, o usuário tinha que dar
+  // refresh na mão; aqui re-tentamos UMA vez automaticamente antes de mostrar
+  // o banner de erro. Bounded a 2 tentativas pra não martelar o backend.
+  const MAX_AUTO_RETRIES = 1;
+  const RETRY_DELAY_MS   = 1500;
   const runRefresh = useCallback(() => {
     let cancelled = false;
+    let retryTimer = null;
 
-    Promise.allSettled([
-      listCampaigns(),
-      listTeamMembers(),
-    ]).then(([campsR, membersR]) => {
-      if (cancelled) return;
+    const attempt = (n) => {
+      Promise.allSettled([
+        listCampaigns(),
+        listTeamMembers(),
+      ]).then(([campsR, membersR]) => {
+        if (cancelled) return;
 
-      const errors = [];
+        const errors = [];
 
-      if (campsR.status === "fulfilled") {
-        setCampaigns(campsR.value);
-        writeCache("menu.campaigns", campsR.value);
-        // Recalcula worklist client-side — paridade com backend
-        // (testada em aggregation.js).
-        setWorklist(computeWorklist(campsR.value));
-        // Dispara prefetch dos access summaries pra alimentar os badges
-        // dos cards. 1 request batched, dedup interno via cache.
-        const tokens = (campsR.value || []).map((c) => c.short_token).filter(Boolean);
-        prefetchAccessSummaries(tokens).catch(() => { /* silencioso */ });
-      } else {
-        errors.push(`campaigns: ${campsR.reason?.message || campsR.reason}`);
-      }
+        if (campsR.status === "fulfilled") {
+          setCampaigns(campsR.value);
+          writeCache("menu.campaigns", campsR.value);
+          // Recalcula worklist client-side — paridade com backend
+          // (testada em aggregation.js).
+          setWorklist(computeWorklist(campsR.value));
+          // Dispara prefetch dos access summaries pra alimentar os badges
+          // dos cards. 1 request batched, dedup interno via cache.
+          const tokens = (campsR.value || []).map((c) => c.short_token).filter(Boolean);
+          prefetchAccessSummaries(tokens).catch(() => { /* silencioso */ });
+        } else {
+          errors.push(`campaigns: ${campsR.reason?.message || campsR.reason}`);
+        }
 
-      if (membersR.status === "fulfilled") {
-        setTeamMembers(membersR.value);
-        writeCache("menu.team", membersR.value);
-        const validEmails = new Set([
-          ...membersR.value.cps.map((p) => p.email),
-          ...membersR.value.css.map((p) => p.email),
-        ]);
-        // Filtra emails que sumiram do team (ex: pessoa removida da planilha).
-        // Mantém os ainda válidos pra não derrubar a seleção do user inteira.
-        setOwnerFilter((prev) => prev.filter((email) => validEmails.has(email)));
-      } else {
-        errors.push(`team: ${membersR.reason?.message || membersR.reason}`);
-      }
+        if (membersR.status === "fulfilled") {
+          setTeamMembers(membersR.value);
+          writeCache("menu.team", membersR.value);
+          const validEmails = new Set([
+            ...membersR.value.cps.map((p) => p.email),
+            ...membersR.value.css.map((p) => p.email),
+          ]);
+          // Filtra emails que sumiram do team (ex: pessoa removida da planilha).
+          // Mantém os ainda válidos pra não derrubar a seleção do user inteira.
+          setOwnerFilter((prev) => prev.filter((email) => validEmails.has(email)));
+        } else {
+          errors.push(`team: ${membersR.reason?.message || membersR.reason}`);
+        }
 
-      // Timestamp avança só se a query principal (campaigns) deu certo —
-      // é a fonte de verdade do menu. Senão o banner de "atualizado há X"
-      // mente.
-      if (campsR.status === "fulfilled") setLastFetchedAt(Date.now());
+        // Timestamp avança só se a query principal (campaigns) deu certo —
+        // é a fonte de verdade do menu. Senão o banner de "atualizado há X"
+        // mente.
+        if (campsR.status === "fulfilled") setLastFetchedAt(Date.now());
 
-      if (errors.length > 0) {
-        setRefreshError(errors.join(" | "));
-        console.warn("[menu] refresh failures:", errors);
-      } else {
-        setRefreshError(null);
-      }
+        // Falha na query principal e ainda temos retry → re-tenta sem
+        // limpar loading/refreshing (skeleton continua, sem flash de estado
+        // vazio). Só desiste depois de esgotar as tentativas.
+        if (campsR.status !== "fulfilled" && n < MAX_AUTO_RETRIES) {
+          console.warn(`[menu] campaigns load falhou (tentativa ${n + 1}), re-tentando…`);
+          retryTimer = setTimeout(() => { if (!cancelled) attempt(n + 1); }, RETRY_DELAY_MS);
+          return;
+        }
 
-      setLoading(false);
-      setRefreshing(false);
-    });
+        if (errors.length > 0) {
+          setRefreshError(errors.join(" | "));
+          console.warn("[menu] refresh failures:", errors);
+        } else {
+          setRefreshError(null);
+        }
 
-    return () => { cancelled = true; };
+        setLoading(false);
+        setRefreshing(false);
+      });
+    };
+
+    attempt(0);
+
+    return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
   }, []);
+
+  // Retry manual (botão do banner de erro). Remostra skeleton só se não há
+  // dados na tela; com cache stale, revalida em background sem apagar nada.
+  const handleManualRetry = useCallback(() => {
+    setRefreshError(null);
+    setRefreshing(true);
+    if (campaigns.length === 0) setLoading(true);
+    runRefresh();
+  }, [runRefresh, campaigns.length]);
 
   useEffect(() => {
     const cancel = runRefresh();
@@ -906,6 +935,31 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
             </Button>
           </div>
         </div>
+
+        {/* Banner de falha de carregamento. O 1º acesso do dia pode pegar o
+            backend frio (query da lista 15-65s) — depois do auto-retry, se
+            ainda falhou, mostramos isto em vez de skeleton/empty mudo. Clicar
+            "Atualizar" re-tenta sem precisar recarregar a página inteira. */}
+        {refreshError && (
+          <div
+            role="alert"
+            className="mb-6 flex flex-col gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:flex-row sm:items-center sm:justify-between dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200"
+          >
+            <span>
+              Não consegui carregar os dados agora — pode ser o primeiro acesso
+              do dia (o servidor leva alguns segundos pra aquecer).
+            </span>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleManualRetry}
+              disabled={refreshing}
+              className="shrink-0"
+            >
+              {refreshing ? "Atualizando…" : "Atualizar"}
+            </Button>
+          </div>
+        )}
 
         {/* MetricStrip no topo — KPIs das campanhas ativas em grid de cards
             bordados leves. Alertas operacionais (críticas, sem owner,
