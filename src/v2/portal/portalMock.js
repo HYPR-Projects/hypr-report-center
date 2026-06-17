@@ -159,4 +159,14 @@ export const PORTAL_MOCK = {
       video_pacing: 101,
     },
   ],
+  // Brand lift mensal agregado (mock). Em produção vem do endpoint lazy
+  // ?action=client_portal_brand_lift. Shape: {month, liftRel(%), liftAbs(pp), responses}.
+  brandLift: {
+    has_survey: true,
+    months: [
+      { month: "2026-04", liftRel: 9.3, liftAbs: 6.1, responses: 1240 },
+      { month: "2026-05", liftRel: 12.7, liftAbs: 8.4, responses: 1890 },
+      { month: "2026-06", liftRel: 15.2, liftAbs: 10.3, responses: 2120 },
+    ],
+  },
 };

@@ -19,7 +19,7 @@
 // Charts em recharts com cores resolvidas por tema (useThemeColors), mesma
 // linguagem visual do report (DualChartV2/ChartCardV2).
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import {
   ComposedChart, Bar, Line, LineChart, XAxis, YAxis, ReferenceLine,
   CartesianGrid, Tooltip as RTooltip, ResponsiveContainer, PieChart, Pie, Cell,
@@ -31,6 +31,7 @@ import { ChartCardV2 } from "../components/ChartCardV2";
 import { DateRangeFilterV2 } from "../components/DateRangeFilterV2";
 import { MultiSelectDropdown } from "./PortalFilters";
 import { ymd } from "../../shared/dateFilter";
+import { getClientPortalBrandLift } from "../../lib/api";
 import { cn } from "../../ui/cn";
 
 import {
@@ -55,7 +56,25 @@ const compactInt = (v) =>
   : v >= 1_000 ? `${Math.round(v / 1_000)}K`
   : String(Math.round(v));
 
-export default function PortalAnalytics({ campaigns, accent, brandLift = null }) {
+export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftMock }) {
+  // Brand lift: mock (protótipo) passa direto; produção busca lazy no backend
+  // (endpoint pesado — só ao abrir o Analytics). Estados: idle|loading|ready|error.
+  // Estado inicial já reflete o destino (evita setState síncrono no effect):
+  // mock → ready; vai buscar → loading; sem fonte → idle.
+  const [brandLift, setBrandLift] = useState(() =>
+    brandLiftMock !== undefined ? { data: brandLiftMock, status: "ready" }
+      : shareId ? { data: null, status: "loading" }
+      : { data: null, status: "idle" },
+  );
+  useEffect(() => {
+    if (brandLiftMock !== undefined || !shareId) return;
+    let cancelled = false;
+    getClientPortalBrandLift(shareId)
+      .then((d) => { if (!cancelled) setBrandLift({ data: d, status: "ready" }); })
+      .catch(() => { if (!cancelled) setBrandLift({ data: null, status: "error" }); });
+    return () => { cancelled = true; };
+  }, [shareId, brandLiftMock]);
+
   const [period, setPeriod] = useState(null);
   const [periodPresetId, setPeriodPresetId] = useState("all");
   const [coreProducts, setCoreProducts] = useState([]);
@@ -133,7 +152,7 @@ export default function PortalAnalytics({ campaigns, accent, brandLift = null })
     for (const c of filtered) {
       const m = (c.start_date || "").slice(0, 7);
       if (!m) continue;
-      if (!map.has(m)) map.set(m, { month: m, invested: 0, impressions: 0, clicks: 0, completions: 0, vtrs: [], dPace: [], vPace: [] });
+      if (!map.has(m)) map.set(m, { month: m, invested: 0, impressions: 0, clicks: 0, completions: 0, vtrs: [], dPace: [], vPace: [], pace: [] });
       const e = map.get(m);
       e.invested += investedOf(c);
       e.impressions += num(c.viewable_impressions);
@@ -142,6 +161,7 @@ export default function PortalAnalytics({ campaigns, accent, brandLift = null })
       if (c.vtr != null) e.vtrs.push(Number(c.vtr));
       if (c.display_pacing != null) e.dPace.push(Number(c.display_pacing));
       if (c.video_pacing != null) e.vPace.push(Number(c.video_pacing));
+      if (c.pacing != null) e.pace.push(Number(c.pacing));
     }
     return [...map.values()]
       .sort((a, b) => a.month.localeCompare(b.month))
@@ -152,14 +172,20 @@ export default function PortalAnalytics({ campaigns, accent, brandLift = null })
         vtr: e.vtrs.length ? mean(e.vtrs) : null,
         pacingDisplay: e.dPace.length ? mean(e.dPace) : null,
         pacingVideo: e.vPace.length ? mean(e.vPace) : null,
+        pacingCombined: e.pace.length ? mean(e.pace) : null,
       }));
   }, [filtered]);
 
-  // Há pacing por mídia em algum mês? (depende do backend expor display/video
-  // pacing; se ausente, escondemos o card em vez de mostrar gráfico vazio.)
-  const hasPacing = useMemo(
+  // Tem pacing split (display/video, vem do backend) em algum mês?
+  const hasSplitPacing = useMemo(
     () => monthly.some((m) => m.pacingDisplay != null || m.pacingVideo != null),
     [monthly],
+  );
+  // Tem QUALQUER pacing? (split OU combinado — o combinado já vem no payload
+  // hoje, então o gráfico aparece mesmo antes do backend expor o split.)
+  const hasPacing = useMemo(
+    () => hasSplitPacing || monthly.some((m) => m.pacingCombined != null),
+    [monthly, hasSplitPacing],
   );
 
   const coreMix = useMemo(() => {
@@ -269,15 +295,30 @@ export default function PortalAnalytics({ campaigns, accent, brandLift = null })
 
           {/* ── Pacing médio mensal (Display × Vídeo) ─────────────────────── */}
           {hasPacing && (
-            <ChartCardV2 title="Pacing médio mensal · Display × Vídeo">
-              <PacingChart data={monthly} accent={accent} />
+            <ChartCardV2 title={hasSplitPacing ? "Pacing médio mensal · Display × Vídeo" : "Pacing médio mensal"}>
+              <PacingChart data={monthly} accent={accent} split={hasSplitPacing} />
             </ChartCardV2>
           )}
 
-          {/* ── Brand lift (condicional) ──────────────────────────────────── */}
-          {Array.isArray(brandLift) && brandLift.length > 0 && (
+          {/* ── Brand lift (lazy; só aparece se houver survey conectado) ───── */}
+          {brandLift.status === "loading" && (
             <ChartCardV2 title="Brand lift mensal · evolução">
-              <BrandLiftSection monthly={brandLift} accent={accent} />
+              <div className="h-[200px] flex items-center justify-center gap-2 text-fg-subtle">
+                <span className="size-3.5 rounded-full border-2 border-current border-t-transparent animate-spin" aria-hidden />
+                <span className="text-[13px]">Calculando brand lift…</span>
+              </div>
+            </ChartCardV2>
+          )}
+          {brandLift.status === "ready" && brandLift.data?.months?.length > 0 && (
+            <ChartCardV2 title="Brand lift mensal · evolução">
+              <BrandLiftSection monthly={brandLift.data.months} accent={accent} />
+            </ChartCardV2>
+          )}
+          {brandLift.status === "ready" && brandLift.data?.has_survey && !brandLift.data?.months?.length && (
+            <ChartCardV2 title="Brand lift mensal · evolução">
+              <div className="h-[120px] flex items-center justify-center text-center px-6">
+                <span className="text-[13px] text-fg-subtle">Survey conectado — ainda sem respostas suficientes para o lift mensal.</span>
+              </div>
             </ChartCardV2>
           )}
 
@@ -386,17 +427,26 @@ function PerformanceChart({ data, accent }) {
   );
 }
 
-// ── Pacing médio mensal: Display × Vídeo (linhas, % com alvo em 100%) ───────
-function PacingChart({ data, accent }) {
+// ── Pacing médio mensal (linhas, % com alvo em 100%) ────────────────────────
+// split=true → 2 linhas (Display × Vídeo, vem do backend). split=false →
+// 1 linha "Pacing médio" do campo combinado (já presente no payload hoje).
+function PacingChart({ data, accent, split }) {
   const neutral = useChartNeutral();
   const hypr = useThemeColors();
   if (!data.length) return null;
   const showDots = data.length <= 14;
+  const label = (key) => key === "pacingDisplay" ? "Display" : key === "pacingVideo" ? "Vídeo" : "Pacing médio";
   return (
     <div>
       <div className="flex flex-wrap items-center gap-4 mb-3">
-        <Legend color={accent} label="Display" />
-        <Legend color={hypr.fgMuted} label="Vídeo" dashed />
+        {split ? (
+          <>
+            <Legend color={accent} label="Display" />
+            <Legend color={hypr.fgMuted} label="Vídeo" dashed />
+          </>
+        ) : (
+          <Legend color={accent} label="Pacing médio" />
+        )}
         <span className="text-[11px] text-fg-subtle">— alvo 100%</span>
       </div>
       <ResponsiveContainer width="100%" height={240}>
@@ -407,13 +457,19 @@ function PacingChart({ data, accent }) {
           <ReferenceLine y={100} stroke={neutral.axis} strokeDasharray="4 4" />
           <RTooltip content={(p) => (
             <ChartTooltip {...p} rows={(pl) => pl.map((x) => ({
-              name: x.dataKey === "pacingDisplay" ? "Display" : "Vídeo",
+              name: label(x.dataKey),
               value: x.value == null ? "—" : `${Number(x.value).toFixed(0)}%`,
-              color: x.dataKey === "pacingDisplay" ? accent : hypr.fgMuted,
+              color: x.dataKey === "pacingVideo" ? hypr.fgMuted : accent,
             }))} />
           )} />
-          <Line dataKey="pacingDisplay" name="Display" type="monotone" stroke={accent} strokeWidth={2.4} dot={showDots ? { r: 3, fill: accent } : false} activeDot={{ r: 5 }} connectNulls isAnimationActive={false} />
-          <Line dataKey="pacingVideo" name="Vídeo" type="monotone" stroke={hypr.fgMuted} strokeWidth={2} strokeDasharray="5 4" dot={showDots ? { r: 3, fill: hypr.fgMuted } : false} activeDot={{ r: 5 }} connectNulls isAnimationActive={false} />
+          {split ? (
+            <>
+              <Line dataKey="pacingDisplay" name="Display" type="monotone" stroke={accent} strokeWidth={2.4} dot={showDots ? { r: 3, fill: accent } : false} activeDot={{ r: 5 }} connectNulls isAnimationActive={false} />
+              <Line dataKey="pacingVideo" name="Vídeo" type="monotone" stroke={hypr.fgMuted} strokeWidth={2} strokeDasharray="5 4" dot={showDots ? { r: 3, fill: hypr.fgMuted } : false} activeDot={{ r: 5 }} connectNulls isAnimationActive={false} />
+            </>
+          ) : (
+            <Line dataKey="pacingCombined" name="Pacing médio" type="monotone" stroke={accent} strokeWidth={2.4} dot={showDots ? { r: 3, fill: accent } : false} activeDot={{ r: 5 }} connectNulls isAnimationActive={false} />
+          )}
         </LineChart>
       </ResponsiveContainer>
     </div>

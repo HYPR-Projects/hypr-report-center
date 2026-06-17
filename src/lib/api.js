@@ -561,6 +561,29 @@ export async function getClientPortalData(share_id) {
 }
 
 /**
+ * Público: brand lift mensal agregado do portal (lazy — chamado só ao abrir a
+ * aba Analytics). Endpoint pesado (busca Typeform por form), com cache próprio
+ * no backend. Retorna { months: [{month, liftRel, liftAbs, responses}],
+ * has_survey: bool }. Timeout generoso (a 1ª chamada por cliente computa tudo).
+ */
+export async function getClientPortalBrandLift(share_id) {
+  // Timeout generoso via AbortController — a 1ª chamada por cliente computa
+  // tudo (busca Typeform por form), depois o backend cacheia (1h).
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 60_000);
+  try {
+    const r = await fetch(
+      `${API_URL}?action=client_portal_brand_lift&share_id=${encodeURIComponent(share_id)}`,
+      { signal: ctrl.signal },
+    );
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return await r.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Público: resolve (share_id, senha) → slug. Gate de senha do portal. Sem auth.
  * Retorna { ok: true, slug } se a senha bate; { ok: false } se não.
  */

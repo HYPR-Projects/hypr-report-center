@@ -393,7 +393,12 @@ function PortalView({ data }) {
           </div>
 
           {view === "analytics" && (
-            <PortalAnalytics campaigns={campaigns} accent={accent} />
+            <PortalAnalytics
+              campaigns={campaigns}
+              accent={accent}
+              shareId={client.share_id}
+              brandLiftMock={data.brandLift}
+            />
           )}
 
           {view === "campaigns" && (
