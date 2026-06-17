@@ -46,6 +46,7 @@ export const PORTAL_MOCK = {
       ctr: 0.79,
       vtr: 88.4,
       media: ["DISPLAY", "VIDEO"],
+      tactics: ["O2O", "GROUNDFLOW"],
     },
     {
       short_token: "PPAY02",
@@ -61,6 +62,7 @@ export const PORTAL_MOCK = {
       ctr: 0.66,
       vtr: null,
       media: ["DISPLAY"],
+      tactics: ["O2O"],
     },
     {
       short_token: "PPAY03",
@@ -76,6 +78,7 @@ export const PORTAL_MOCK = {
       ctr: 0.80,
       vtr: 84.1,
       media: ["DISPLAY", "VIDEO"],
+      tactics: ["O2O"],
     },
     {
       short_token: "PPAY04",
@@ -91,6 +94,7 @@ export const PORTAL_MOCK = {
       ctr: 0.60,
       vtr: 91.2,
       media: ["DISPLAY", "VIDEO"],
+      tactics: ["O2O", "OOH", "GROUNDFLOW"],
     },
     {
       short_token: "PPAY05",
@@ -106,6 +110,7 @@ export const PORTAL_MOCK = {
       ctr: 0.72,
       vtr: null,
       media: ["DISPLAY"],
+      tactics: ["O2O"],
     },
     {
       short_token: "PPAY06",
@@ -121,6 +126,7 @@ export const PORTAL_MOCK = {
       ctr: 0.50,
       vtr: 86.7,
       media: ["DISPLAY", "VIDEO"],
+      tactics: ["OOH", "GROUNDFLOW"],
     },
     {
       short_token: "PPAY07",
@@ -136,6 +142,7 @@ export const PORTAL_MOCK = {
       ctr: 0.85,
       vtr: 82.5,
       media: ["DISPLAY", "VIDEO"],
+      tactics: ["O2O", "GROUNDFLOW"],
     },
   ],
 };
