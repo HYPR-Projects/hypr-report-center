@@ -24,12 +24,17 @@ import "../../ui/typography";
 
 import { TooltipProvider } from "../../ui/Tooltip";
 import { SegmentedControlV2 } from "../components/SegmentedControlV2";
+import { DateRangeFilterV2 } from "../components/DateRangeFilterV2";
 import { ThemeToggleV2 } from "../components/ThemeToggleV2";
+import { ymd } from "../../shared/dateFilter";
+import { MultiSelectDropdown } from "./PortalFilters";
+import PortalAnalytics from "./PortalAnalytics";
 import HyprReportCenterLogo from "../../components/HyprReportCenterLogo";
 import { cn } from "../../ui/cn";
 import { getClientPortalData, resolveClientShare } from "../../lib/api";
 import { markClientUnlocked } from "../../shared/auth";
 import { useTheme } from "../hooks/useTheme";
+import { useLogoAnalysis } from "../hooks/useLogoAnalysis";
 
 import {
   formatBrlCompact,
@@ -157,12 +162,18 @@ function PortalView({ data }) {
   const { client, campaigns } = data;
   const accent = client.accent_color || "#3397B9";
 
+  const [view, setView] = useState("campaigns"); // "campaigns" | "analytics"
   const [groupBy, setGroupBy] = useState("month"); // "month" | "campaign"
   const [search, setSearch] = useState("");
   // Filtros (Bloco B) — todos multi-seleção (arrays vazios = "todos").
   const [fmts, setFmts] = useState([]); // subset de DISPLAY/VIDEO
   const [feats, setFeats] = useState([]); // subset de survey/rmnd/pdooh
-  const [months, setMonths] = useState([]); // subset de "YYYY-MM"
+  // Período: range {from,to}|null (null = todo o período) + id do preset que
+  // o originou (desempate visual no DateRangeFilterV2). Substitui o antigo
+  // multi-select de meses pelo mesmo filtro range do report (presets +
+  // calendário). Filtra campanhas por SOBREPOSIÇÃO do voo com o range.
+  const [period, setPeriod] = useState(null);
+  const [periodPresetId, setPeriodPresetId] = useState("all");
   const [collapsed, setCollapsed] = useState(() => new Set()); // meses recolhidos
 
   const toggleMonth = (key) =>
@@ -172,14 +183,8 @@ function PortalView({ data }) {
       return next;
     });
 
-  const monthOptions = useMemo(() => {
-    const set = new Set();
-    for (const c of campaigns) { const m = (c.start_date || "").slice(0, 7); if (m) set.add(m); }
-    return [...set].sort((a, b) => b.localeCompare(a)).map((m) => ({ value: m, label: formatMonthLabel(m) }));
-  }, [campaigns]);
-
-  const filtersActive = fmts.length > 0 || feats.length > 0 || months.length > 0;
-  const clearFilters = () => { setFmts([]); setFeats([]); setMonths([]); };
+  const filtersActive = fmts.length > 0 || feats.length > 0 || !!period;
+  const clearFilters = () => { setFmts([]); setFeats([]); setPeriod(null); setPeriodPresetId("all"); };
 
   // Big numbers agregados — só métricas seguras.
   const summary = useMemo(() => {
@@ -228,10 +233,18 @@ function PortalView({ data }) {
       if (q && !c.campaign_name?.toLowerCase().includes(q)) return false;
       if (fmts.length > 0 && !fmts.some((f) => (c.media || []).includes(f))) return false;
       if (feats.length > 0 && !feats.some((f) => (c.features || []).includes(f))) return false;
-      if (months.length > 0 && !months.includes((c.start_date || "").slice(0, 7))) return false;
+      if (period?.from && period?.to) {
+        // Sobreposição: a campanha entra se o voo dela (início→fim) cruza o
+        // range escolhido. Comparação lexical de "YYYY-MM-DD" (datas ISO).
+        const from = ymd(period.from);
+        const to   = ymd(period.to);
+        const cs = c.start_date || "";
+        const ce = c.end_date || cs;
+        if (!cs || cs > to || ce < from) return false;
+      }
       return true;
     });
-  }, [campaigns, search, fmts, feats, months]);
+  }, [campaigns, search, fmts, feats, period]);
 
   // Agrupa campanhas merged num único item "group" (1 link, métricas somadas);
   // as demais viram "single". Reports agregados deixam de aparecer soltos.
@@ -318,38 +331,88 @@ function PortalView({ data }) {
           <div className="max-w-[1400px] mx-auto px-5 sm:px-8 h-[68px] flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
               <HyprReportCenterLogo height={26} />
-              <span className="hidden sm:inline-block h-4 w-px bg-border-strong" />
-              <span className="hidden sm:inline text-[11px] uppercase tracking-[0.2em] font-semibold text-fg-subtle">
-                Portal do cliente
-              </span>
+              {/* Divisor + label alinhados ao centro ÓPTICO dos glifos do logo,
+                  não ao box do SVG. O viewBox do wordmark tem ~6px de folga no
+                  topo (glifos encostados embaixo), então os glifos visíveis caem
+                  ~3px abaixo do centro do box — daí o translate-y pra casar. */}
+              <div className="hidden sm:flex items-center gap-3 translate-y-[3px]">
+                <span className="h-4 w-px bg-border-strong" />
+                <span className="text-[11px] uppercase tracking-[0.2em] font-semibold text-fg-subtle">
+                  Portal do cliente
+                </span>
+              </div>
             </div>
             <ThemeToggleV2 />
           </div>
         </header>
 
         <main className="relative max-w-[1400px] mx-auto px-5 sm:px-8 pt-10 sm:pt-14 pb-24">
-          {/* ── Identidade do cliente — limpa, sem card ──────────────────────── */}
-          <div className="flex items-center gap-5 mb-11 sm:mb-14">
-            <LogoChip logo={client.logo_base64} accent={accent} name={client.display_name || client.slug} size={64} radius={16} />
-            <div className="min-w-0">
-              <h1 className="text-[24px] sm:text-[30px] font-bold tracking-tight leading-tight truncate">
+          {/* ── Hero do cliente — eyebrow + nome grande à esquerda, logo da
+              marca flutuando à direita. Espelha o ritmo do header do report
+              (CampaignHeaderV2: barra+eyebrow → título → meta), sem card pra
+              não competir com o glow ambiente da página e preservar o
+              minimalismo do portal. ──────────────────────────────────────── */}
+          <header className="mb-14 sm:mb-16 flex items-center justify-between gap-6 sm:gap-10">
+            <div className="min-w-0 flex-1">
+              {/* Eyebrow: barra na cor da marca + rótulo + status de ativas */}
+              <div className="flex items-center gap-2.5 mb-3 flex-wrap">
+                <span className="inline-block h-[3px] w-7 rounded-full" style={{ background: accent }} aria-hidden />
+                <span className="text-[11px] font-bold uppercase tracking-[0.18em]" style={{ color: accent }}>
+                  Visão geral
+                </span>
+                {summary.active > 0 && (
+                  <span className="inline-flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wider text-fg-muted">
+                    <span className="size-1.5 rounded-full" style={{ background: accent }} aria-hidden />
+                    {summary.active} {summary.active === 1 ? "ativa" : "ativas"}
+                  </span>
+                )}
+              </div>
+
+              {/* Título — nome do cliente em destaque */}
+              <h1 className="text-[26px] sm:text-[33px] lg:text-[38px] font-extrabold leading-[1.06] tracking-[-0.8px] text-fg break-words">
                 {client.display_name || slugToDisplay(client.slug)}
               </h1>
-              <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[13px] sm:text-[14px] text-fg-muted">
-                <span className="tabular-nums">{summary.count} campanhas</span>
-                {summary.active > 0 && (
+
+              {/* Meta: total de campanhas + período do conjunto */}
+              <div className="mt-3.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[14px] sm:text-[15px] text-fg-muted">
+                <span className="tabular-nums">
+                  {summary.count} {summary.count === 1 ? "campanha" : "campanhas"}
+                </span>
+                {periodLabel && (
                   <>
-                    <span className="text-fg-subtle/60">·</span>
-                    <span className="tabular-nums font-medium" style={{ color: accent }}>{summary.active} ativas</span>
+                    <span className="text-fg-subtle/50" aria-hidden>·</span>
+                    <span className="tabular-nums">{periodLabel}</span>
                   </>
                 )}
-                {periodLabel && (<><span className="text-fg-subtle/60">·</span><span className="tabular-nums">{periodLabel}</span></>)}
               </div>
             </div>
+
+            {/* Logo da marca — flutua sem caixa, maior, alinhada à direita
+                e centrada verticalmente com o bloco de texto. */}
+            <PortalHeroLogo logo={client.logo_base64} name={client.display_name || slugToDisplay(client.slug)} />
+          </header>
+
+          {/* ── Navegação: Campanhas × Analytics ─────────────────────────────── */}
+          <div className="mb-8 flex items-center gap-1 border-b border-border">
+            <PortalTab active={view === "campaigns"} onClick={() => setView("campaigns")} accent={accent}>Campanhas</PortalTab>
+            <PortalTab active={view === "analytics"} onClick={() => setView("analytics")} accent={accent}>Analytics</PortalTab>
           </div>
 
-          {/* ── Big numbers — âncora visual ──────────────────────────────────── */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5 sm:gap-4 mb-14 sm:mb-16">
+          {view === "analytics" && (
+            <PortalAnalytics
+              campaigns={campaigns}
+              accent={accent}
+              shareId={client.share_id}
+              brandLiftMock={data.brandLift}
+            />
+          )}
+
+          {view === "campaigns" && (
+          <>
+          {/* ── Big numbers — snapshot da conta. Só na aba Campanhas; em
+              Analytics o strip de KPIs reativo aos filtros cumpre esse papel
+              (evita duplicar dois strips quase idênticos). ──────────────────── */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5 sm:gap-4 mb-12">
             <BigNumber label="Investimento" value={formatBrlShort(summary.invested)} fullValue={formatBRL(summary.invested)} accent />
             <BigNumber label="Impressões" value={formatIntCompact(summary.impressions)} fullValue={`${formatInt(summary.impressions)} impressões visíveis`} sub="visíveis" />
             <BigNumber label="Cliques" value={formatIntCompact(summary.clicks)} fullValue={formatInt(summary.clicks)} />
@@ -358,11 +421,8 @@ function PortalView({ data }) {
             <BigNumber label="Views 100%" value={formatIntCompact(summary.completions)} fullValue={`${formatInt(summary.completions)} vídeos completos`} sub="vídeo completo" />
           </div>
 
-          {/* ── Campanhas — título + toolbar equilibrada ─────────────────────── */}
-          <div className="flex items-baseline justify-between gap-4 mb-5">
-            <h2 className="text-[15px] sm:text-[16px] uppercase tracking-[0.16em] font-bold text-fg">
-              Campanhas
-            </h2>
+          {/* ── Campanhas — agrupamento + toolbar ────────────────────────────── */}
+          <div className="flex items-center justify-end gap-4 mb-5">
             <SegmentedControlV2
               label="Agrupar por"
               options={[{ value: "month", label: "Por mês" }, { value: "campaign", label: "Por campanha" }]}
@@ -374,9 +434,13 @@ function PortalView({ data }) {
           {/* Toolbar: filtros à esquerda, busca à direita */}
           <div className="mb-8 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-wrap items-center gap-2">
-              <MultiSelectDropdown
-                label="Período" allLabel="Todos os meses"
-                options={monthOptions} selected={months} onChange={setMonths} accent={accent}
+              <DateRangeFilterV2
+                value={period}
+                presetId={periodPresetId}
+                campaignStart={summary.firstStart}
+                campaignEnd={summary.lastEnd}
+                onChange={(r, pid) => { setPeriod(r); setPeriodPresetId(pid); }}
+                triggerClassName="h-9 px-3 rounded-lg bg-canvas-deeper font-medium"
               />
               <MultiSelectDropdown
                 label="Formato" allLabel="Todos os formatos"
@@ -452,6 +516,8 @@ function PortalView({ data }) {
               })}
             </div>
           )}
+          </>
+          )}
 
           {/* ── Footer ─────────────────────────────────────────────────────── */}
           <footer className="mt-16 pt-6 border-t border-border flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-left">
@@ -499,6 +565,49 @@ function LogoChip({ logo, accent, name, size = 44, radius = 12 }) {
     <div
       className="shrink-0 flex items-center justify-center overflow-hidden bg-canvas-deeper ring-1 ring-border font-bold text-fg-muted"
       style={{ ...boxStyle, fontSize: size * 0.34 }}
+      aria-hidden
+    >
+      {monogram(name)}
+    </div>
+  );
+}
+
+// Logo "hero" do topo do portal — diferente do LogoChip dos cards: aqui a
+// marca aparece GRANDE, sem caixa nem ring, flutuando direto sobre o canvas
+// (espelha o header do report). Mantém a COR ORIGINAL da marca; só aplica
+// filtro de contraste quando a logo conflita com o tema (monochrome no tema
+// oposto, ou colored-dark em dark) — mesma régua do CampaignHeaderV2. A altura
+// escala 48→64→72px e o max-width evita que logos largas (ex: lockups
+// horizontais) invadam o título; object-right ancora no canto.
+function PortalHeroLogo({ logo, name }) {
+  const logoKind = useLogoAnalysis(logo);
+  const [theme] = useTheme();
+  const shouldInvert =
+    (logoKind === "monochrome-light" && theme === "light") ||
+    (logoKind === "monochrome-dark" && theme === "dark");
+  const shouldBoost = logoKind === "colored-dark" && theme === "dark";
+  const filter = shouldInvert
+    ? "invert(1)"
+    : shouldBoost
+      ? "brightness(1.7) contrast(1.1)"
+      : undefined;
+
+  if (logo) {
+    return (
+      <img
+        src={logo}
+        alt={name ? `Logo ${name}` : "Logo do cliente"}
+        className="shrink-0 h-10 sm:h-12 lg:h-[56px] w-auto max-w-[110px] sm:max-w-[168px] lg:max-w-[200px] object-contain object-right transition-[filter] duration-200"
+        style={filter ? { filter } : undefined}
+        loading="eager"
+      />
+    );
+  }
+  // Sem logo: monograma num chip discreto pra ancorar o canto direito sem
+  // peso visual (mantém a simetria do hero mesmo sem asset da marca).
+  return (
+    <div
+      className="shrink-0 flex items-center justify-center size-11 sm:size-12 lg:size-[56px] rounded-2xl border border-border bg-canvas-elevated font-bold text-fg-muted text-lg sm:text-xl"
       aria-hidden
     >
       {monogram(name)}
@@ -566,7 +675,7 @@ function PortalCampaignCard({ campaign: c, accent, client }) {
     >
       {/* Header: logo + nome/datas + status */}
       <div className="flex items-start gap-3 min-h-[60px]">
-        <LogoChip logo={logo} accent={accent} name={c.campaign_name} size={40} radius={11} />
+        <LogoChip logo={logo} accent={accent} name={c.campaign_name} size={48} radius={13} />
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
             <h3 className="text-[14px] sm:text-[15px] font-semibold text-fg leading-snug line-clamp-2">
@@ -694,7 +803,7 @@ function MergeGroupCard({ members, accent, client }) {
       style={{ borderColor: `color-mix(in srgb, ${accent} 28%, var(--color-border))` }}
     >
       <div className="flex items-start gap-3 min-h-[60px]">
-        <LogoChip logo={logo} accent={accent} name={title} size={40} radius={11} />
+        <LogoChip logo={logo} accent={accent} name={title} size={48} radius={13} />
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
             <h3 className="text-[14px] sm:text-[15px] font-semibold text-fg leading-snug line-clamp-2">{title}</h3>
@@ -873,89 +982,27 @@ function EmptyState({ query, filtered }) {
   );
 }
 
-// ── Filtro multi-seleção (dropdown 100% custom, estilo do site) ────────────────
-function MultiSelectDropdown({ label, allLabel, options, selected, onChange, accent }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    const onEsc = (e) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onEsc);
-    return () => { document.removeEventListener("mousedown", onDoc); document.removeEventListener("keydown", onEsc); };
-  }, [open]);
-
-  const count = selected.length;
-  const toggle = (v) => onChange(selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v]);
-  const active = count > 0;
-
+// Tab primária do portal (Campanhas × Analytics). Underline na cor da marca
+// quando ativa — mesmo idioma das tabs do report, mantendo o minimalismo.
+function PortalTab({ active, onClick, accent, children }) {
   return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className={cn(
-          "h-9 pl-3 pr-2.5 inline-flex items-center gap-2 rounded-lg bg-canvas-deeper border text-[12px] transition-colors",
-          active ? "text-fg" : "text-fg-muted",
-          open ? "border-signature" : "border-border hover:border-border-strong",
-        )}
-        style={active ? { borderColor: `color-mix(in srgb, ${accent} 45%, transparent)` } : undefined}
-      >
-        <span className="whitespace-nowrap">{label}</span>
-        {active && (
-          <span className="tabular-nums text-[10px] font-bold px-1.5 py-0.5 rounded-md text-on-signature" style={{ background: accent }}>
-            {count}
-          </span>
-        )}
-        <svg className={cn("transition-transform text-fg-subtle", open && "rotate-180")} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-          <path d="m6 9 6 6 6-6" />
-        </svg>
-      </button>
-      {open && (
-        <div className="absolute left-0 z-40 mt-1.5 min-w-[200px] max-h-[300px] overflow-y-auto rounded-xl bg-canvas-elevated border border-border shadow-lg p-1.5 animate-fade-in">
-          {active && (
-            <button
-              type="button"
-              onClick={() => onChange([])}
-              className="w-full text-left px-2 py-1.5 rounded-lg text-[11px] uppercase tracking-wider font-semibold text-fg-subtle hover:bg-surface hover:text-fg-muted transition-colors"
-            >
-              {allLabel}
-            </button>
-          )}
-          {options.map((opt) => {
-            const on = selected.includes(opt.value);
-            return (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => toggle(opt.value)}
-                className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-[12.5px] text-fg hover:bg-surface transition-colors text-left"
-              >
-                <Checkbox on={on} accent={accent} />
-                <span className="flex-1 truncate">{opt.label}</span>
-              </button>
-            );
-          })}
-        </div>
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "relative px-1 pb-2.5 pt-1 text-[14px] font-semibold transition-colors",
+        active ? "text-fg" : "text-fg-subtle hover:text-fg-muted",
       )}
-    </div>
-  );
-}
-
-function Checkbox({ on, accent }) {
-  return (
-    <span
-      className={cn("shrink-0 w-4 h-4 rounded flex items-center justify-center border transition-colors", on ? "border-transparent" : "border-border-strong")}
-      style={on ? { background: accent } : undefined}
-      aria-hidden
     >
-      {on && (
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M20 6 9 17l-5-5" />
-        </svg>
+      {children}
+      {active && (
+        <span
+          className="absolute left-0 right-0 -bottom-px h-[2px] rounded-full"
+          style={{ background: accent || "var(--color-signature)" }}
+          aria-hidden
+        />
       )}
-    </span>
+    </button>
   );
 }
 

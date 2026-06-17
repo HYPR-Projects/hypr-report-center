@@ -967,6 +967,27 @@ def report_data(request):
             logger.error(f"[ERROR client_portal_data] {e}")
             return (jsonify({"error": "Erro ao carregar portal"}), 500, headers)
 
+    # ── Endpoint: brand lift mensal agregado (LAZY) ─────────────────────────
+    # Separado do client_portal_data porque é pesado (busca Typeform por form).
+    # O front chama só ao abrir a aba Analytics. Cache próprio (1h).
+    if request.method == "GET" and request.args.get("action") == "client_portal_brand_lift":
+        share_id = (request.args.get("share_id") or "").strip()
+        if not share_id:
+            return (jsonify({"error": "share_id obrigatório"}), 400, headers)
+        resp_headers = {**headers, "Cache-Control": "public, max-age=300"}
+        cached = _cache_get(_brand_lift_cache, share_id, _BRAND_LIFT_CACHE_TTL)
+        if cached is not None:
+            return (jsonify(cached), 200, resp_headers)
+        try:
+            result = compute_portal_brand_lift(share_id)
+            if result is None:
+                return (jsonify({"error": "Portal não encontrado"}), 404, headers)
+        except Exception as e:
+            logger.error(f"[ERROR client_portal_brand_lift] {e}")
+            return (jsonify({"error": "Erro ao calcular brand lift"}), 500, headers)
+        _cache_set(_brand_lift_cache, share_id, result)
+        return (jsonify(result), 200, resp_headers)
+
     # ── Endpoint: trocar OAuth code por refresh_token e criar sheet ─────────
     # Frontend abre popup OAuth via Google Identity Services, captura o
     # `code` retornado e chama este endpoint com {short_token, code}.
@@ -8643,3 +8664,241 @@ def _process_typeform_items(items, field_to_row=None):
                         has_flat = True
 
     return flat_counts, matrix_rows, has_matrix, has_flat
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Brand lift agregado mensal (Portal do Cliente) — client-safe.
+#
+# Calcula, por mês, o lift médio (relativo % + absoluto pp) das campanhas do
+# cliente que têm survey conectado. É PESADO (busca Typeform por form), então
+# roda num endpoint LAZY próprio (?action=client_portal_brand_lift), NÃO no
+# payload do portal — pra não regredir a carga do 1º acesso.
+#
+# Metodologia (escolha pragmática p/ um headline único e comparável):
+#   - Só perguntas CHOICE entram no número (formato padrão de brand lift:
+#     "conhece a marca? Sim/Não"). Matrix (nota/escala) fica fora do headline
+#     mensal — unidade diferente, não somável a pontos percentuais.
+#   - Por pergunta: foca no label `focusRow` (se houver) ou no de maior share
+#     no grupo EXPOSTO. lift_abs = exp% − ctrl% (pp); lift_rel = lift_abs/ctrl%.
+#   - Por campanha: média das perguntas ponderada por respostas (exposto).
+#   - Por mês: média das campanhas ponderada por respostas.
+# ─────────────────────────────────────────────────────────────────────────────
+_BRAND_LIFT_CACHE_TTL = 3600  # 1h — survey muda devagar; admin invalida ao salvar
+_brand_lift_cache = {}  # share_id -> (timestamp, payload)
+_YMD_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _parse_survey_config_py(survey_json):
+    """Porte Python do parseSurveyConfig (src/shared/surveyConfig.js). Normaliza
+    o blob em {questions, clientRange}. Legacy CSV → None (sem Typeform, fora
+    do escopo do brand lift agregado)."""
+    if not survey_json:
+        return None
+    try:
+        parsed = json.loads(survey_json) if isinstance(survey_json, str) else survey_json
+    except Exception:
+        return None
+    if not parsed:
+        return None
+
+    def norm_range(r):
+        if not isinstance(r, dict):
+            return None
+        f, t = r.get("from"), r.get("to")
+        if isinstance(f, str) and isinstance(t, str) and _YMD_RE.match(f) and _YMD_RE.match(t) and f <= t:
+            return {"from": f, "to": t}
+        return None
+
+    if isinstance(parsed, dict) and parsed.get("version") == 2 and isinstance(parsed.get("questions"), list):
+        return {"questions": parsed["questions"], "clientRange": norm_range(parsed.get("clientRange"))}
+    if isinstance(parsed, list):
+        return {"questions": parsed, "clientRange": None}
+    return None
+
+
+def _fetch_typeform_counts(form_id, tf_token, date_from=None, date_to=None):
+    """Contagens agregadas de um form Typeform (choice ou matrix), com filtro
+    opcional de janela (BRT→UTC). Mesma lógica do endpoint typeform_proxy,
+    extraída p/ reuso server-side no brand lift."""
+    since_param = ""
+    until_param = ""
+    BRT_OFFSET = timedelta(hours=3)
+    if date_from and _YMD_RE.match(date_from):
+        d0 = datetime.strptime(date_from, "%Y-%m-%d") + BRT_OFFSET
+        since_param = f"&since={d0.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    if date_to and _YMD_RE.match(date_to):
+        d1 = datetime.strptime(date_to, "%Y-%m-%d") + timedelta(hours=23, minutes=59, seconds=59) + BRT_OFFSET
+        until_param = f"&until={d1.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+
+    field_to_row = _fetch_typeform_form_def(form_id, tf_token)
+    flat_counts = Counter()
+    matrix_rows = {}
+    has_matrix = False
+    total = 0
+    before_token = None
+    while True:
+        url = f"https://api.typeform.com/forms/{urllib.parse.quote(form_id)}/responses?page_size=1000&completed=true{since_param}{until_param}"
+        if before_token:
+            url += f"&before={before_token}"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {tf_token}"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        items = data.get("items", [])
+        total += len(items)
+        page_flat, page_matrix, page_has_matrix, _ = _process_typeform_items(items, field_to_row)
+        flat_counts.update(page_flat)
+        if page_has_matrix:
+            has_matrix = True
+        for rl, rc in page_matrix.items():
+            matrix_rows.setdefault(rl, Counter()).update(rc)
+        if len(items) < 1000:
+            break
+        before_token = items[-1].get("token")
+    if has_matrix:
+        return {"type": "matrix", "total": total}
+    return {"type": "choice", "counts": dict(flat_counts), "total": total}
+
+
+def _survey_side_counts(q, side, tf_token, date_from, date_to):
+    """({label:n}, total) p/ um lado (ctrl/exp) de uma pergunta CHOICE.
+    videoask → counts embutidos; typeform → fetch. (None, 0) se matrix/indisponível."""
+    src_field = "ctrlSource" if side == "ctrl" else "expSource"
+    src = q.get(src_field)
+    if src not in ("typeform", "videoask"):
+        src = "videoask" if q.get("tipo") == "videoask" else "typeform"
+    if src == "videoask":
+        raw = (q.get("ctrlCounts") if side == "ctrl" else q.get("expCounts")) or {}
+        counts = {}
+        for k, v in raw.items():
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                continue
+            if n > 0:
+                counts[k] = n
+        return counts, sum(counts.values())
+    url = q.get("ctrlUrl") if side == "ctrl" else q.get("expUrl")
+    fid = (q.get("ctrlFormId") if side == "ctrl" else q.get("expFormId")) or (_extract_typeform_form_id(url) if url else None)
+    if not fid:
+        return None, 0
+    res = _fetch_typeform_counts(fid, tf_token, date_from, date_to)
+    if res.get("type") != "choice":
+        return None, 0
+    counts = res.get("counts") or {}
+    return counts, res.get("total", sum(counts.values()))
+
+
+def _campaign_choice_lift(survey_json, tf_token):
+    """(lift_rel, lift_abs, responses) da campanha, ou None. Choice-only, foco
+    no focusRow ou no label de maior share no exposto; média ponderada por
+    respostas entre as perguntas."""
+    cfg = _parse_survey_config_py(survey_json)
+    if not cfg or not cfg.get("questions"):
+        return None
+    crange = cfg.get("clientRange") or {}
+    df, dt = crange.get("from"), crange.get("to")
+    rels, abss, weights = [], [], []
+    for q in cfg["questions"]:
+        if not isinstance(q, dict):
+            continue
+        try:
+            ctrl, ct = _survey_side_counts(q, "ctrl", tf_token, df, dt)
+            exp, et = _survey_side_counts(q, "exp", tf_token, df, dt)
+        except Exception as e:
+            logger.warning(f"[WARN brand_lift question] {e}")
+            continue
+        if not ctrl or not exp or ct <= 0 or et <= 0:
+            continue
+        focus = q.get("focusRow")
+        if focus not in exp:
+            focus = max(exp, key=lambda k: exp[k]) if exp else None
+        if not focus or focus not in ctrl:
+            continue
+        cp = ctrl[focus] / ct * 100
+        ep = exp[focus] / et * 100
+        if cp <= 0:
+            continue
+        abss.append(ep - cp)
+        rels.append((ep - cp) / cp * 100)
+        weights.append(et)
+    if not weights:
+        return None
+    wsum = sum(weights)
+    return (
+        sum(r * w for r, w in zip(rels, weights)) / wsum,
+        sum(a * w for a, w in zip(abss, weights)) / wsum,
+        wsum,
+    )
+
+
+def compute_portal_brand_lift(share_id: str):
+    """Brand lift mensal agregado client-safe p/ o portal. Retorna
+    {"months": [{month, liftRel, liftAbs, responses}], "has_survey": bool}."""
+    config = client_portal.get_config_by_share_id(share_id)
+    if not config or not config.get("active"):
+        return None
+    slug = config.get("slug")
+    published = client_portal.get_published_tokens(slug)
+    pub = {t for t, ok in published.items() if ok} if isinstance(published, dict) else set(published or [])
+    if not pub:
+        return {"months": [], "has_survey": False}
+
+    campaigns, _ = _get_campaigns_list_cached()
+    start_by_token = {}
+    for c in (campaigns or []):
+        t = (c.get("short_token") or "").upper()
+        if t:
+            start_by_token[t] = c.get("start_date")
+
+    tf_token = os.environ.get("TYPEFORM_TOKEN", "")
+    tokens = [t for t in pub if t]
+
+    # Surveys em paralelo (BQ).
+    surveys = {}
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="blift-sv") as ex:
+        futs = {ex.submit(query_survey, t): t for t in tokens}
+        for f in futs:
+            try:
+                surveys[futs[f]] = f.result()
+            except Exception:
+                surveys[futs[f]] = None
+
+    has_survey = any(bool(sv) for sv in surveys.values())
+    with_survey = [(t, sv) for t, sv in surveys.items() if sv]
+
+    # Lift por campanha em paralelo (Typeform IO-bound).
+    results = {}
+    if with_survey and tf_token:
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="blift-tf") as ex:
+            futs = {ex.submit(_campaign_choice_lift, sv, tf_token): t for t, sv in with_survey}
+            for f in futs:
+                try:
+                    results[futs[f]] = f.result()
+                except Exception as e:
+                    logger.warning(f"[WARN brand_lift campaign {futs[f]}] {e}")
+                    results[futs[f]] = None
+
+    months = {}
+    for t, res in results.items():
+        if not res:
+            continue
+        rel, ab, w = res
+        m = (start_by_token.get(t) or start_by_token.get((t or "").upper()) or "")[:7]
+        if not m or w <= 0:
+            continue
+        b = months.setdefault(m, {"rel": 0.0, "abs": 0.0, "w": 0.0})
+        b["rel"] += rel * w
+        b["abs"] += ab * w
+        b["w"] += w
+
+    out = [
+        {
+            "month": m,
+            "liftRel": round(v["rel"] / v["w"], 1),
+            "liftAbs": round(v["abs"] / v["w"], 1),
+            "responses": int(v["w"]),
+        }
+        for m, v in sorted(months.items())
+        if v["w"] > 0
+    ]
+    return {"months": out, "has_survey": has_survey}

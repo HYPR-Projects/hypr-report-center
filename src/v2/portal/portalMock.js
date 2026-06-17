@@ -46,6 +46,9 @@ export const PORTAL_MOCK = {
       ctr: 0.79,
       vtr: 88.4,
       media: ["DISPLAY", "VIDEO"],
+      tactics: ["O2O", "GROUNDFLOW"],
+      display_pacing: 102,
+      video_pacing: 95,
     },
     {
       short_token: "PPAY02",
@@ -61,6 +64,9 @@ export const PORTAL_MOCK = {
       ctr: 0.66,
       vtr: null,
       media: ["DISPLAY"],
+      tactics: ["O2O"],
+      display_pacing: 88,
+      video_pacing: null,
     },
     {
       short_token: "PPAY03",
@@ -76,6 +82,9 @@ export const PORTAL_MOCK = {
       ctr: 0.80,
       vtr: 84.1,
       media: ["DISPLAY", "VIDEO"],
+      tactics: ["O2O"],
+      display_pacing: 110,
+      video_pacing: 92,
     },
     {
       short_token: "PPAY04",
@@ -91,6 +100,9 @@ export const PORTAL_MOCK = {
       ctr: 0.60,
       vtr: 91.2,
       media: ["DISPLAY", "VIDEO"],
+      tactics: ["O2O", "OOH", "GROUNDFLOW"],
+      display_pacing: 97,
+      video_pacing: 99,
     },
     {
       short_token: "PPAY05",
@@ -106,6 +118,9 @@ export const PORTAL_MOCK = {
       ctr: 0.72,
       vtr: null,
       media: ["DISPLAY"],
+      tactics: ["O2O"],
+      display_pacing: 75,
+      video_pacing: null,
     },
     {
       short_token: "PPAY06",
@@ -121,6 +136,9 @@ export const PORTAL_MOCK = {
       ctr: 0.50,
       vtr: 86.7,
       media: ["DISPLAY", "VIDEO"],
+      tactics: ["OOH", "GROUNDFLOW"],
+      display_pacing: 120,
+      video_pacing: 84,
     },
     {
       short_token: "PPAY07",
@@ -136,6 +154,19 @@ export const PORTAL_MOCK = {
       ctr: 0.85,
       vtr: 82.5,
       media: ["DISPLAY", "VIDEO"],
+      tactics: ["O2O", "GROUNDFLOW"],
+      display_pacing: 93,
+      video_pacing: 101,
     },
   ],
+  // Brand lift mensal agregado (mock). Em produção vem do endpoint lazy
+  // ?action=client_portal_brand_lift. Shape: {month, liftRel(%), liftAbs(pp), responses}.
+  brandLift: {
+    has_survey: true,
+    months: [
+      { month: "2026-04", liftRel: 9.3, liftAbs: 6.1, responses: 1240 },
+      { month: "2026-05", liftRel: 12.7, liftAbs: 8.4, responses: 1890 },
+      { month: "2026-06", liftRel: 15.2, liftAbs: 10.3, responses: 2120 },
+    ],
+  },
 };

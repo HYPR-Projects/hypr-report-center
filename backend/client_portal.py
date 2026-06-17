@@ -421,6 +421,11 @@ def _safe_campaign(entry: dict, share_id_map: dict, logos_map: dict = None,
     return {
         "short_token":         token,
         "pacing":              _combined_pacing(entry),
+        # Pacing por mídia (client-safe — % de entrega vs contratado, mesmo
+        # nível do pacing combinado que o cliente já vê). Alimenta o gráfico
+        # de pacing médio mensal Display × Vídeo no Analytics do portal.
+        "display_pacing":      entry.get("display_pacing"),
+        "video_pacing":        entry.get("video_pacing"),
         "tactics":             _derive_tactics(entry),
         "features":            features,
         "aggregated":          bool(entry.get("merge_id")),
