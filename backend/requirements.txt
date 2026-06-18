@@ -4,3 +4,4 @@ google-cloud-kms==3.*
 google-api-python-client==2.*
 google-auth==2.*
 flask==3.*
+anthropic==0.*

@@ -584,6 +584,28 @@ export async function getClientPortalBrandLift(share_id) {
 }
 
 /**
+ * Público: quebra por audiência agregada do portal (lazy — chamado só ao abrir
+ * a aba Analytics). Endpoint pesado (1 query de detail por campanha), com cache
+ * próprio no backend (1h). Retorna { rows: [{token, month, media, tactic,
+ * audience, impressions, viewable_impressions, clicks}], groups, has_data }.
+ * As audiências já vêm unificadas em grupos canônicos pelo backend.
+ */
+export async function getClientPortalAudiences(share_id) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 60_000);
+  try {
+    const r = await fetch(
+      `${API_URL}?action=client_portal_audiences&share_id=${encodeURIComponent(share_id)}`,
+      { signal: ctrl.signal },
+    );
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return await r.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Público: resolve (share_id, senha) → slug. Gate de senha do portal. Sem auth.
  * Retorna { ok: true, slug } se a senha bate; { ok: false } se não.
  */

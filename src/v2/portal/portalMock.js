@@ -47,6 +47,7 @@ export const PORTAL_MOCK = {
       vtr: 88.4,
       media: ["DISPLAY", "VIDEO"],
       tactics: ["O2O", "GROUNDFLOW"],
+      negotiated_features: ["Survey", "PDOOH", "Design Studio"],
       display_pacing: 102,
       video_pacing: 95,
     },
@@ -65,6 +66,7 @@ export const PORTAL_MOCK = {
       vtr: null,
       media: ["DISPLAY"],
       tactics: ["O2O"],
+      negotiated_features: ["Survey"],
       display_pacing: 88,
       video_pacing: null,
     },
@@ -83,6 +85,7 @@ export const PORTAL_MOCK = {
       vtr: 84.1,
       media: ["DISPLAY", "VIDEO"],
       tactics: ["O2O"],
+      negotiated_features: ["RMND", "Tap to Go"],
       display_pacing: 110,
       video_pacing: 92,
     },
@@ -164,10 +167,65 @@ export const PORTAL_MOCK = {
   // surveyTypes[], surveyCount}. NUNCA expõe contagem de respostas.
   brandLift: {
     has_survey: true,
+    // surveyDetails: lift por TIPO (exposto×controle) — alimenta a cor
+    // condicional (verde/vermelho) e o hover de cada chip. exposed/control são
+    // taxas %, NUNCA contagem de respostas.
     months: [
-      { month: "2026-04", liftRel: 9.3, liftAbs: 6.1, surveyTypes: ["Awareness", "Intenção"], surveyCount: 2 },
-      { month: "2026-05", liftRel: 12.7, liftAbs: 8.4, surveyTypes: ["Consideração", "Ad Recall"], surveyCount: 3 },
-      { month: "2026-06", liftRel: 15.2, liftAbs: 10.3, surveyTypes: ["Awareness", "Intenção", "Ad Recall"], surveyCount: 3 },
+      { month: "2026-04", liftRel: 9.3, liftAbs: 6.1, surveyTypes: ["Awareness", "Intenção"], surveyCount: 2,
+        surveyDetails: [
+          { type: "Awareness", exposed: 41.2, control: 33.0, liftAbs: 8.2, liftRel: 24.8 },
+          { type: "Intenção",  exposed: 28.5, control: 30.6, liftAbs: -2.1, liftRel: -6.9 },
+        ] },
+      { month: "2026-05", liftRel: 12.7, liftAbs: 8.4, surveyTypes: ["Consideração", "Ad Recall"], surveyCount: 3,
+        surveyDetails: [
+          { type: "Consideração", exposed: 52.3, control: 44.1, liftAbs: 8.2, liftRel: 18.6 },
+          { type: "Ad Recall",    exposed: 61.0, control: 52.4, liftAbs: 8.6, liftRel: 16.4 },
+        ] },
+      { month: "2026-06", liftRel: 15.2, liftAbs: 10.3, surveyTypes: ["Awareness", "Intenção", "Ad Recall"], surveyCount: 3,
+        surveyDetails: [
+          { type: "Awareness", exposed: 47.8, control: 35.2, liftAbs: 12.6, liftRel: 35.8 },
+          { type: "Intenção",  exposed: 34.1, control: 27.0, liftAbs: 7.1,  liftRel: 26.3 },
+          { type: "Ad Recall", exposed: 58.2, control: 60.9, liftAbs: -2.7, liftRel: -4.4 },
+        ] },
+    ],
+  },
+  // Quebra por audiência (mock). Em produção vem do endpoint lazy
+  // ?action=client_portal_audiences, com as audiências JÁ unificadas em grupos
+  // canônicos pelo backend (audience_normalize). Shape de cada row:
+  // {token, month, media, tactic, audience, impressions, viewable_impressions, clicks}.
+  // `groups` mapeia o canônico → rótulos crus que foram fundidos (transparência).
+  audiences: {
+    has_data: true,
+    groups: {
+      "Supermercados": ["supermercado", "supermercados", "mercado", "atacadão"],
+      "Farmácias": ["farmacia", "drogarias"],
+      "Restaurantes": ["restaurantes", "lanchonete"],
+      "Postos de Combustível": ["postos", "posto de gasolina"],
+      "Shopping Centers": ["shopping", "shoppings"],
+      "Pet Shops": ["petshop", "pet shop"],
+      "Academias": ["academia", "academias"],
+      "Padarias": ["padaria"],
+      "Lojas de Conveniência": ["conveniencia"],
+    },
+    rows: [
+      // PPAY01 · maio · O2O
+      { token: "PPAY01", month: "2026-05", media: "DISPLAY", tactic: "O2O", audience: "Supermercados", impressions: 9_800_000, viewable_impressions: 7_900_000, clicks: 71_000 },
+      { token: "PPAY01", month: "2026-05", media: "VIDEO", tactic: "O2O", audience: "Supermercados", impressions: 3_200_000, viewable_impressions: 2_700_000, clicks: 9_400 },
+      { token: "PPAY01", month: "2026-05", media: "DISPLAY", tactic: "GROUNDFLOW", audience: "Farmácias", impressions: 4_100_000, viewable_impressions: 3_350_000, clicks: 29_800 },
+      { token: "PPAY01", month: "2026-05", media: "DISPLAY", tactic: "O2O", audience: "Restaurantes", impressions: 2_900_000, viewable_impressions: 2_280_000, clicks: 21_400 },
+      { token: "PPAY01", month: "2026-05", media: "DISPLAY", tactic: "O2O", audience: "Pet Shops", impressions: 1_350_000, viewable_impressions: 1_060_000, clicks: 8_900 },
+      // PPAY03 · maio–junho · O2O
+      { token: "PPAY03", month: "2026-05", media: "DISPLAY", tactic: "O2O", audience: "Supermercados", impressions: 5_600_000, viewable_impressions: 4_480_000, clicks: 39_200 },
+      { token: "PPAY03", month: "2026-06", media: "DISPLAY", tactic: "O2O", audience: "Postos de Combustível", impressions: 3_750_000, viewable_impressions: 2_920_000, clicks: 24_100 },
+      { token: "PPAY03", month: "2026-06", media: "VIDEO", tactic: "O2O", audience: "Shopping Centers", impressions: 2_400_000, viewable_impressions: 1_980_000, clicks: 6_300 },
+      { token: "PPAY03", month: "2026-06", media: "DISPLAY", tactic: "O2O", audience: "Academias", impressions: 1_200_000, viewable_impressions: 940_000, clicks: 7_700 },
+      // PPAY04 · junho · O2O/OOH/GROUNDFLOW
+      { token: "PPAY04", month: "2026-06", media: "DISPLAY", tactic: "O2O", audience: "Supermercados", impressions: 8_100_000, viewable_impressions: 6_480_000, clicks: 44_900 },
+      { token: "PPAY04", month: "2026-06", media: "VIDEO", tactic: "OOH", audience: "Shopping Centers", impressions: 6_300_000, viewable_impressions: 5_400_000, clicks: 12_600 },
+      { token: "PPAY04", month: "2026-06", media: "DISPLAY", tactic: "GROUNDFLOW", audience: "Farmácias", impressions: 3_900_000, viewable_impressions: 3_120_000, clicks: 27_300 },
+      { token: "PPAY04", month: "2026-06", media: "DISPLAY", tactic: "O2O", audience: "Restaurantes", impressions: 2_650_000, viewable_impressions: 2_100_000, clicks: 18_900 },
+      { token: "PPAY04", month: "2026-06", media: "DISPLAY", tactic: "O2O", audience: "Padarias", impressions: 980_000, viewable_impressions: 770_000, clicks: 6_200 },
+      { token: "PPAY04", month: "2026-06", media: "DISPLAY", tactic: "O2O", audience: "Lojas de Conveniência", impressions: 720_000, viewable_impressions: 560_000, clicks: 4_500 },
     ],
   },
 };

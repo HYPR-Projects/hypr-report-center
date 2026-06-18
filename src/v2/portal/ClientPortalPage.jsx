@@ -404,6 +404,7 @@ function PortalView({ data, shareId }) {
               accent={accent}
               shareId={shareId || client.share_id}
               brandLiftMock={data.brandLift}
+              audiencesMock={data.audiences}
             />
           )}
 
