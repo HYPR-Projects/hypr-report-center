@@ -205,7 +205,7 @@ export function FormatBreakdownTableV2({
                     value={r[groupKey]}
                     overridden={isRowOverridden?.(r) || false}
                     busy={busyAudience != null && busyAudience === r[groupKey]}
-                    onRename={(name) => onRenameGroup?.(r, name)}
+                    onRename={(name, scope) => onRenameGroup?.(r, name, scope)}
                     onReset={() => onResetGroup?.(r)}
                   />
                 ) : (
@@ -297,37 +297,53 @@ function Td({ children, align = "right", mono = false, accent = false }) {
 
 // ─── Célula de nome editável (admin · tabela "Por Audiência") ───────────────
 //
-// Hover mostra o lápis; clique abre input inline. Enter/blur salva (se mudou),
-// Esc cancela. Quando o grupo está overridado, mostra um "↺" pra reverter ao
-// rótulo cru da plataforma. Tudo opera sobre a ROW (que carrega _rawLabels) —
-// a persistência por rótulo cru fica no callback do pai.
+// Hover mostra o lápis; clique abre o editor inline (input + escopo + confirmar).
+// O escopo deixa o admin escolher se a correção vale só nesta campanha ou em
+// todo o anunciante. Enter confirma, Esc cancela. Quando overridado, mostra um
+// "↺" pra reverter. Opera sobre a ROW (que carrega _rawLabels) — a persistência
+// por rótulo cru fica no callback do pai. onRename recebe (name, scope).
 function EditableNameCell({ value, overridden, busy, onRename, onReset }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value || "");
+  const [scope, setScope] = useState("advertiser");
 
-  const start = () => { setDraft(value || ""); setEditing(true); };
+  const start = () => { setDraft(value || ""); setScope("advertiser"); setEditing(true); };
   const commit = () => {
     const name = draft.trim();
     setEditing(false);
-    if (name && name !== (value || "")) onRename?.(name);
+    if (name && name !== (value || "")) onRename?.(name, scope);
   };
   const cancel = () => { setEditing(false); setDraft(value || ""); };
 
   return (
     <td className="px-4 py-2.5 text-left">
       {editing ? (
-        <input
-          autoFocus
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") commit();
-            else if (e.key === "Escape") cancel();
-          }}
-          maxLength={120}
-          className="w-44 rounded-md border border-signature bg-canvas px-2 py-1 text-xs text-fg font-medium outline-none focus:ring-1 focus:ring-signature"
-        />
+        <div className="inline-flex flex-wrap items-center gap-1.5">
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commit();
+              else if (e.key === "Escape") cancel();
+            }}
+            maxLength={120}
+            className="w-44 rounded-md border border-signature bg-canvas px-2 py-1 text-xs text-fg font-medium outline-none focus:ring-1 focus:ring-signature"
+          />
+          <ScopeToggle scope={scope} onChange={setScope} />
+          <button
+            type="button" onClick={commit} title="Salvar" aria-label="Salvar"
+            className="rounded-md bg-signature p-1 text-white hover:opacity-90"
+          >
+            <CheckIcon />
+          </button>
+          <button
+            type="button" onClick={cancel} title="Cancelar" aria-label="Cancelar"
+            className="rounded-md border border-border p-1 text-fg-subtle hover:text-fg"
+          >
+            <XIcon />
+          </button>
+        </div>
       ) : (
         <div className="group/aud flex items-center gap-1.5">
           <span className="tabular-nums font-medium text-fg">{value || "—"}</span>
@@ -366,6 +382,51 @@ function EditableNameCell({ value, overridden, busy, onRename, onReset }) {
         </div>
       )}
     </td>
+  );
+}
+
+// Toggle compacto de escopo do override (inline e modal compartilham a regra:
+// "advertiser" = todo o anunciante | "campaign" = só esta campanha).
+export function ScopeToggle({ scope, onChange, size = "sm" }) {
+  const opts = [
+    { v: "advertiser", label: "Anunciante", title: "Vale em todas as campanhas do anunciante" },
+    { v: "campaign", label: "Esta campanha", title: "Vale só neste report" },
+  ];
+  return (
+    <div className={cn("inline-flex rounded-md border border-border overflow-hidden", size === "sm" ? "text-[10px]" : "text-[11px]")}>
+      {opts.map((o) => (
+        <button
+          key={o.v}
+          type="button"
+          title={o.title}
+          onClick={() => onChange(o.v)}
+          className={cn(
+            "px-2 py-1 font-semibold transition-colors",
+            scope === o.v ? "bg-signature text-white" : "bg-surface text-fg-subtle hover:text-fg",
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
   );
 }
 
