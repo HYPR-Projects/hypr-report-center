@@ -572,6 +572,25 @@ def warmup_caches(force_refresh=True, max_reports=150, deadline_s=480):
                             cfg, campaigns, published, share_map, logos_map, elements_map)
                         _cache_set(_portal_cache, cfg["share_id"], payload)
                         portals_ok += 1
+                        # Pré-aquece os endpoints LAZY da aba Analytics (audiências
+                        # + brand lift) — matam o cold do 1º acesso. Pesados
+                        # (detail por campanha / Typeform por survey), então só
+                        # rodam se ainda dentro do deadline; best-effort cada um.
+                        sid = cfg["share_id"]
+                        if time.time() - t0 <= deadline_s:
+                            try:
+                                res = compute_portal_audiences(sid)
+                                if res is not None:
+                                    _cache_set(_audiences_cache, sid, res)
+                            except Exception as e:
+                                logger.warning(f"[WARN warmup audiences {cfg.get('slug')}] {e}")
+                        if time.time() - t0 <= deadline_s:
+                            try:
+                                res = compute_portal_brand_lift(sid)
+                                if res is not None:
+                                    _cache_set(_brand_lift_cache, sid, res)
+                            except Exception as e:
+                                logger.warning(f"[WARN warmup brand_lift {cfg.get('slug')}] {e}")
                     except Exception as e:
                         portals_errors += 1
                         logger.warning(f"[WARN warmup portal {cfg.get('slug')}] {e}")
@@ -9033,7 +9052,8 @@ def _process_typeform_items(items, field_to_row=None):
 #   - Por campanha: média das perguntas ponderada por respostas (exposto).
 #   - Por mês: média das campanhas ponderada por respostas.
 # ─────────────────────────────────────────────────────────────────────────────
-_BRAND_LIFT_CACHE_TTL = 3600  # 1h — survey muda devagar; admin invalida ao salvar
+_BRAND_LIFT_CACHE_TTL = 10800  # 3h — casa com o warmup (3/3h) e o cache do report;
+                               # survey muda devagar; admin invalida ao salvar
 _brand_lift_cache = {}  # share_id -> (timestamp, payload)
 _YMD_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -9370,7 +9390,7 @@ def compute_portal_brand_lift(share_id: str):
 # (?action=client_portal_audiences) com cache 1h, fora do payload do portal —
 # mesmo molde do brand lift, não regride o 1º acesso do dia.
 # ─────────────────────────────────────────────────────────────────────────────
-_AUDIENCES_CACHE_TTL = 3600  # 1h — alinhado ao cache de detail/report
+_AUDIENCES_CACHE_TTL = 10800  # 3h — casa com o warmup (3/3h) e o cache do report
 _audiences_cache = {}  # share_id -> (timestamp, payload)
 
 
