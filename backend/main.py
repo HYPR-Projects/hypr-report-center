@@ -7513,6 +7513,35 @@ def query_campaigns_list():
     frozen_map     = fut_frozen.result()
     elements_map   = fut_elements.result()
 
+    # Override de core products (curadoria admin) — zera contratado/bônus das
+    # frentes fora do set TAMBÉM no card admin, consistente com o report
+    # client-facing (que aplica em _fetch_contracts). Só toca tokens COM override
+    # (raros): converte a Row pra dict mutável e zera as colunas da frente
+    # inativa. Mixed Row/dict é seguro — o loop abaixo lê via r[...]/r.get(...).
+    try:
+        _cp_overrides = query_core_product_overrides()
+    except Exception as e:
+        logger.warning(f"[WARN list cp_override] {e}")
+        _cp_overrides = {}
+    if _cp_overrides:
+        _new_rows = []
+        for r in rows:
+            active = _cp_overrides.get(r["short_token"])
+            if not active:
+                _new_rows.append(r)
+                continue
+            rd = dict(r.items())
+            for frente, prefix in _CP_COLUMN_PREFIX.items():
+                if frente in active:
+                    continue
+                for tmpl in ("contracted_{p}_display", "contracted_{p}_video",
+                             "bonus_{p}_display", "bonus_{p}_video"):
+                    col = tmpl.format(p=prefix)
+                    if col in rd:
+                        rd[col] = 0
+            _new_rows.append(rd)
+        rows = _new_rows
+
     # Tokens congelados presentes na lista: carrega o snapshot pra sobrescrever
     # a ENTREGA do card (delivery ao vivo vaza via rename → diverge do report).
     # Raro (0-2 tokens normalmente); load em paralelo. Ver
