@@ -8,11 +8,10 @@
 //   • Anunciante    → vale em todas as campanhas do cliente.
 //   • Esta campanha → vale só neste report (vence o do anunciante).
 //
-// É list-driven (fonte de verdade = endpoint list_audience_overrides, que traz
-// o scope_token), então o selo de escopo de cada grupo é preciso. Cada
-// save/delete refaz o fetch.
-//
-// Renomear também funciona inline na tabela "Por Audiência" do report.
+// PERF: o display/agrupamento sai do mapa EFETIVO que já vem no payload do
+// report (data.audience_overrides) + estado otimista do hook — instantâneo, sem
+// esperar rede. O selo de escopo (anunciante × campanha) de cada override é
+// carregado em SEGUNDO PLANO (list endpoint) e não trava a tela.
 
 import { useEffect, useMemo, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -20,11 +19,8 @@ import { cn } from "../../../ui/cn";
 import { toast } from "../../../lib/toast";
 import { extractAudience, normAudienceKey } from "../../../shared/aggregations";
 import { ScopeToggle } from "../../components/FormatBreakdownTableV2";
-import {
-  listAudienceOverrides,
-  saveAudienceOverride,
-  deleteAudienceOverride,
-} from "../../../lib/api";
+import { useAudienceOverrides } from "../../hooks/useAudienceOverrides";
+import { listAudienceOverrides } from "../../../lib/api";
 
 export function AudienceOverridesModal({
   open,
@@ -32,107 +28,96 @@ export function AudienceOverridesModal({
   clientName,
   shortToken,
   detailRows,           // reportData.detail — pra descobrir as audiências cruas
+  overrideMap,          // reportData.audience_overrides — mapa EFETIVO {raw_key: display}
 }) {
-  const [rows, setRows] = useState(null);   // linhas do list endpoint (null = carregando)
-  const [busyKey, setBusyKey] = useState(null);
-  const [scope, setScope] = useState("advertiser"); // escopo p/ novas edições
+  const aud = useAudienceOverrides({
+    initialMap: overrideMap,
+    clientName,
+    shortToken,
+    isAdmin: true,
+  });
+  const [scope, setScope] = useState("advertiser");       // escopo p/ NOVAS edições
+  const [scopeByKey, setScopeByKey] = useState(null);     // raw_key -> 'advertiser'|'campaign' (selo, async)
   const [newRaw, setNewRaw] = useState("");
   const [newName, setNewName] = useState("");
 
-  const reload = async () => {
-    if (!clientName) { setRows([]); return; }
+  // Selos de escopo — carregados em segundo plano; NÃO travam a lista.
+  const reloadScopes = async () => {
+    if (!clientName) { setScopeByKey({}); return; }
     try {
       const r = await listAudienceOverrides(clientName);
-      // Só os escopos relevantes a ESTE report: anunciante ('') + esta campanha.
-      const relevant = (r?.overrides || []).filter(
+      const rel = (r?.overrides || []).filter(
         (o) => o.scope_token === "" || o.scope_token === shortToken,
       );
-      setRows(relevant);
-    } catch (e) {
-      toast.error(e?.message || "Erro ao carregar audiências");
-      setRows([]);
+      const m = {};
+      for (const o of rel) if (o.scope_token === "") m[o.raw_key] = "advertiser";
+      for (const o of rel) if (o.scope_token && o.scope_token === shortToken) m[o.raw_key] = "campaign";
+      setScopeByKey(m);
+    } catch {
+      setScopeByKey({}); // falha no selo não quebra a edição
     }
   };
 
   useEffect(() => {
     if (!open) return;
-    setRows(null);
+    setScopeByKey(null);
     setNewRaw("");
     setNewName("");
-    reload();
+    reloadScopes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, clientName, shortToken]);
 
-  // Override EFETIVO por raw_key: anunciante ('') sobreposto pela campanha
-  // (que vence). Guarda o scope vencedor pro selo.
-  const effective = useMemo(() => {
-    const m = new Map(); // raw_key -> { display, scope, raw }
-    for (const o of rows || []) {
-      if (o.scope_token === "") m.set(o.raw_key, { display: o.display_name, scope: "advertiser", raw: o.raw_audience || o.raw_key });
-    }
-    for (const o of rows || []) {
-      if (o.scope_token && o.scope_token === shortToken) m.set(o.raw_key, { display: o.display_name, scope: "campaign", raw: o.raw_audience || o.raw_key });
-    }
-    return m;
-  }, [rows, shortToken]);
-
-  // Candidatos = audiências cruas da campanha (detail) ∪ overrides existentes.
+  // Candidatos = audiências cruas da campanha (detail) ∪ overrides do mapa
+  // efetivo. Display sai do mapa efetivo (override do hook), sem rede.
   const candidates = useMemo(() => {
     const byKey = new Map(); // raw_key -> { key, raw, display }
     for (const r of detailRows || []) {
       const raw = extractAudience(r.line_name);
       if (!raw || raw === "N/A" || /survey/i.test(raw)) continue;
       const key = normAudienceKey(raw);
-      if (!byKey.has(key)) byKey.set(key, { key, raw, display: effective.get(key)?.display || raw });
+      if (!byKey.has(key)) byKey.set(key, { key, raw, display: aud.overrideMap[key] || raw });
     }
-    for (const [key, e] of effective) {
-      if (!byKey.has(key)) byKey.set(key, { key, raw: e.raw, display: e.display });
+    for (const [key, display] of Object.entries(aud.overrideMap || {})) {
+      if (!byKey.has(key)) byKey.set(key, { key, raw: key, display });
     }
     return [...byKey.values()];
-  }, [detailRows, effective]);
+  }, [detailRows, aud.overrideMap]);
 
   // Agrupa por nome resolvido (merge por nome exato).
   const groups = useMemo(() => {
     const byDisplay = new Map();
     for (const c of candidates) {
       if (!byDisplay.has(c.display)) byDisplay.set(c.display, { display: c.display, members: [] });
-      byDisplay.get(c.display).members.push({ key: c.key, raw: c.raw, scope: effective.get(c.key)?.scope || null });
+      byDisplay.get(c.display).members.push({
+        key: c.key,
+        raw: c.raw,
+        overridden: aud.overrideMap[c.key] != null,
+        scope: scopeByKey?.[c.key] || null,
+      });
     }
     return [...byDisplay.values()].sort((a, b) => a.display.localeCompare(b.display));
-  }, [candidates, effective]);
+  }, [candidates, aud.overrideMap, scopeByKey]);
 
-  const run = async (fn, key) => {
-    setBusyKey(key);
-    try { await fn(); await reload(); }
-    catch (e) { toast.error(e?.message || "Erro"); }
-    finally { setBusyKey(null); }
-  };
-
-  const renameGroup = (members, name) => {
-    const display = String(name || "").trim();
-    if (!display) return;
-    run(() => saveAudienceOverride({
-      client_name: clientName,
-      raw_audience: members.map((m) => m.raw),
-      display_name: display,
-      short_token: shortToken,
-      scope,
-    }), members.map((m) => m.key).join("|"));
-  };
+  const renameGroup = (members, name) =>
+    aud.renameAudience(members.map((m) => m.raw), name, members.map((m) => m.key).join("|"), scope)
+      .then(reloadScopes)
+      .catch((e) => toast.error(e?.message || "Erro ao salvar"));
   const revertMember = (raw, key) =>
-    run(() => deleteAudienceOverride({ client_name: clientName, raw_audience: raw, short_token: shortToken, scope: "all" }), key);
+    aud.resetAudience([raw], key, "all")
+      .then(reloadScopes)
+      .catch((e) => toast.error(e?.message || "Erro ao reverter"));
 
   const handleAdd = () => {
     const raw = newRaw.trim();
     const name = newName.trim();
     if (!raw || !name) return;
-    run(() => saveAudienceOverride({
-      client_name: clientName, raw_audience: raw, display_name: name, short_token: shortToken, scope,
-    }).then(() => { setNewRaw(""); setNewName(""); }), "__new__");
+    aud.renameAudience([raw], name, "__new__", scope)
+      .then(() => { setNewRaw(""); setNewName(""); return reloadScopes(); })
+      .catch((e) => toast.error(e?.message || "Erro ao adicionar"));
   };
 
   return (
-    <Dialog.Root open={open} onOpenChange={busyKey ? undefined : onOpenChange}>
+    <Dialog.Root open={open} onOpenChange={aud.busyAudience ? undefined : onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay
           className={cn(
@@ -167,7 +152,6 @@ export function AudienceOverridesModal({
                 mesclá-las (somam métricas no report).
               </p>
             </div>
-            {/* Escopo das edições feitas aqui */}
             <div className="mt-2.5 flex items-center justify-between gap-2">
               <span className="text-[11px] font-semibold text-fg-muted">Aplicar edições em:</span>
               <ScopeToggle scope={scope} onChange={setScope} size="md" />
@@ -176,7 +160,7 @@ export function AudienceOverridesModal({
 
           {/* Lista */}
           <div className="flex-1 overflow-y-auto px-5 py-4 space-y-2.5">
-            {rows === null || detailRows == null ? (
+            {detailRows == null ? (
               <div className="py-8 text-center text-xs text-fg-subtle">Carregando audiências…</div>
             ) : groups.length === 0 ? (
               <div className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-xs text-fg-subtle">
@@ -188,7 +172,7 @@ export function AudienceOverridesModal({
                 <GroupCard
                   key={`${g.display}:${g.members.map((m) => m.key).join("|")}`}
                   group={g}
-                  busy={busyKey}
+                  busy={aud.busyAudience}
                   onRename={(name) => renameGroup(g.members, name)}
                   onRevert={revertMember}
                 />
@@ -220,10 +204,10 @@ export function AudienceOverridesModal({
               <button
                 type="button"
                 onClick={handleAdd}
-                disabled={!newRaw.trim() || !newName.trim() || busyKey === "__new__"}
+                disabled={!newRaw.trim() || !newName.trim() || aud.busyAudience === "__new__"}
                 className="shrink-0 rounded-md bg-signature px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
               >
-                {busyKey === "__new__" ? "…" : "Add"}
+                {aud.busyAudience === "__new__" ? "…" : "Add"}
               </button>
             </div>
           </div>
@@ -233,7 +217,7 @@ export function AudienceOverridesModal({
             <button
               type="button"
               onClick={() => onOpenChange?.(false)}
-              disabled={!!busyKey}
+              disabled={!!aud.busyAudience}
               className="rounded-md border border-border px-3.5 py-1.5 text-xs font-semibold text-fg hover:bg-surface disabled:opacity-40"
             >
               Fechar
@@ -248,10 +232,10 @@ export function AudienceOverridesModal({
 function GroupCard({ group, busy, onRename, onRevert }) {
   const [draft, setDraft] = useState(group.display || "");
   const merged = group.members.length > 1;
-  const overriddenMembers = group.members.filter((m) => m.scope);
+  const overriddenMembers = group.members.filter((m) => m.overridden);
   const overridden = overriddenMembers.length > 0;
-  // Selo de escopo: se algum membro é de campanha → "campanha"; senão anunciante.
-  const groupScope = overriddenMembers.some((m) => m.scope === "campaign") ? "campaign" : "advertiser";
+  const groupScope = overriddenMembers.some((m) => m.scope === "campaign") ? "campaign"
+    : overriddenMembers.some((m) => m.scope === "advertiser") ? "advertiser" : null;
   const groupBusy = busy === group.members.map((m) => m.key).join("|");
 
   const commit = () => {
@@ -276,7 +260,7 @@ function GroupCard({ group, busy, onRename, onRevert }) {
             mesclada · {group.members.length}
           </span>
         )}
-        {overridden && (
+        {overridden && groupScope && (
           <span
             title={groupScope === "campaign" ? "Vale só nesta campanha" : "Vale em todo o anunciante"}
             className="shrink-0 rounded-full bg-fg/10 px-2 py-0.5 text-[10px] font-semibold text-fg-muted"
