@@ -262,17 +262,23 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
       return true;
     };
 
+    const TACTIC_ORDER = ["O2O", "OOH", "GROUNDFLOW"];
     const map = new Map();
     for (const r of rows) {
       if (!passes(r)) continue;
-      const e = map.get(r.audience) || { audience: r.audience, impressions: 0, viewable: 0, clicks: 0 };
+      const e = map.get(r.audience) || { audience: r.audience, impressions: 0, viewable: 0, clicks: 0, tactics: new Set() };
       e.impressions += num(r.impressions);
       e.viewable += num(r.viewable_impressions);
       e.clicks += num(r.clicks);
+      if (r.tactic) e.tactics.add(r.tactic);  // core product(s) da audiência
       map.set(r.audience, e);
     }
     const list = [...map.values()]
-      .map((e) => ({ ...e, ctr: e.viewable > 0 ? (e.clicks / e.viewable) * 100 : null }))
+      .map((e) => ({
+        ...e,
+        ctr: e.viewable > 0 ? (e.clicks / e.viewable) * 100 : null,
+        tactics: [...e.tactics].sort((a, b) => TACTIC_ORDER.indexOf(a) - TACTIC_ORDER.indexOf(b)),
+      }))
       .sort((a, b) => b.viewable - a.viewable);
     const totalViewable = list.reduce((s, e) => s + e.viewable, 0);
 
@@ -774,6 +780,9 @@ function AudienceBreakdown({ data, accent, top }) {
                       <span className="inline-flex items-center gap-2 min-w-0">
                         <span className="size-2.5 rounded-sm shrink-0" style={{ background: sw.color, opacity: sw.opacity }} aria-hidden />
                         <span className="font-medium text-fg line-clamp-1">{e.audience}</span>
+                        {(e.tactics || []).map((t) => (
+                          <MixChip key={t} label={CORE_LABELS[t] || t} soft />
+                        ))}
                       </span>
                     </Td>
                     <Td className="text-right font-semibold text-fg tabular-nums" style={{ whiteSpace: "nowrap" }}>
