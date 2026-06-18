@@ -22,6 +22,7 @@ import { cn } from "../../ui/cn";
 import {
   getClientPortalConfig,
   saveClientPortal,
+  getClientPortalAudiences,
   setClientPublish,
 } from "../../lib/api";
 import { formatMonthLabel, getDateRangeParts } from "../admin/lib/format";
@@ -60,6 +61,10 @@ export function ClientPortalDrawer({ open, onOpenChange, slug, displayName, clie
   const [logoTouched, setLogoTouched] = useState(false);
   const [pwCopied, setPwCopied] = useState(false);
   const [saved, setSaved] = useState(false);
+  // Unificação de audiências (Fase 2): regras {from, to} que vencem heurística+IA.
+  const [audRules, setAudRules] = useState([]);
+  const [detecting, setDetecting] = useState(false);
+  const [detectedGroups, setDetectedGroups] = useState(null); // {canonical: [raw...]} | null
   const fileRef = useRef(null);
 
   // Constrói a lista exibida a partir das campanhas da página + flags.
@@ -94,6 +99,9 @@ export function ClientPortalDrawer({ open, onOpenChange, slug, displayName, clie
       setLogo(cfg?.logo_base64 || null);
       setLogoTouched(false);
       setPassword(cfg?.password || "");
+      const ov = cfg?.audience_overrides || {};
+      setAudRules(Object.entries(ov).map(([from, to]) => ({ from, to })));
+      setDetectedGroups(null);
     } catch (e) {
       setLoadFailed(true);
       setError(e?.message || "erro");
@@ -141,6 +149,14 @@ export function ClientPortalDrawer({ open, onOpenChange, slug, displayName, clie
       const fields = { slug, active, accent_color: accent };
       if (password.trim()) fields.password = password.trim();
       if (logoTouched) fields.logo_base64 = logo || "";
+      // Override de audiência: {from: to} só com pares preenchidos. Sempre
+      // enviado (objeto vazio limpa) para refletir remoções de regra.
+      fields.audience_overrides = audRules.reduce((acc, r) => {
+        const from = (r.from || "").trim();
+        const to = (r.to || "").trim();
+        if (from && to) acc[from] = to;
+        return acc;
+      }, {});
       const { config: cfg } = await saveClientPortal(fields);
       setConfig(cfg);
       setLogoTouched(false);
@@ -152,6 +168,29 @@ export function ClientPortalDrawer({ open, onOpenChange, slug, displayName, clie
       setSaving(false);
     }
   };
+
+  // Detecta o agrupamento atual de audiências (heurística+IA) via o endpoint
+  // público do portal — mostra ao admin o que corrigir/fundir com regras.
+  const detectGroups = async () => {
+    if (!config?.share_id) return;
+    setDetecting(true);
+    setError(null);
+    try {
+      const data = await getClientPortalAudiences(config.share_id);
+      setDetectedGroups(data?.groups || {});
+    } catch (e) {
+      setError(e?.message || "Não consegui detectar as audiências.");
+    } finally {
+      setDetecting(false);
+    }
+  };
+
+  const addRule = () => setAudRules((r) => [...r, { from: "", to: "" }]);
+  const updateRule = (i, key, val) =>
+    setAudRules((r) => r.map((x, j) => (j === i ? { ...x, [key]: val } : x)));
+  const removeRule = (i) => setAudRules((r) => r.filter((_, j) => j !== i));
+  const mergeInto = (canonical) =>
+    setAudRules((r) => [...r, { from: canonical, to: "" }]);
 
   // Toggle de publicação — otimista, persiste no backend em background.
   const togglePublish = async (token, next) => {
@@ -364,6 +403,91 @@ export function ClientPortalDrawer({ open, onOpenChange, slug, displayName, clie
                       />
                     </label>
                   </div>
+                </div>
+              </Section>
+
+              {/* Unificação de audiências (Analytics) */}
+              <Section
+                title="Unificação de audiências"
+                hint="Audiências parecidas já são unificadas automaticamente (heurística + IA). Use regras só para corrigir ou fundir grupos."
+                action={
+                  config?.share_id && (
+                    <button
+                      type="button"
+                      onClick={detectGroups}
+                      disabled={detecting}
+                      className="text-[11px] font-semibold text-signature hover:opacity-80 transition-opacity disabled:opacity-50"
+                    >
+                      {detecting ? "Detectando…" : "Detectar agrupamento"}
+                    </button>
+                  )
+                }
+              >
+                {detectedGroups && (
+                  <div className="mb-3 rounded-lg border border-border bg-canvas-deeper p-2.5 space-y-1.5 max-h-44 overflow-y-auto">
+                    {Object.keys(detectedGroups).length === 0 ? (
+                      <p className="text-[11.5px] text-fg-subtle">Nenhuma audiência detectada (publique campanhas com line items).</p>
+                    ) : (
+                      Object.entries(detectedGroups)
+                        .sort((a, b) => b[1].length - a[1].length)
+                        .map(([canonical, members]) => (
+                          <div key={canonical} className="flex items-start gap-2">
+                            <button
+                              type="button"
+                              onClick={() => mergeInto(canonical)}
+                              title="Criar regra a partir deste grupo"
+                              className="mt-0.5 text-[10px] leading-none text-fg-subtle hover:text-signature transition-colors shrink-0"
+                            >
+                              ＋
+                            </button>
+                            <div className="min-w-0">
+                              <span className="text-[12px] font-semibold text-fg">{canonical}</span>
+                              {members.length > 1 && (
+                                <span className="text-[11px] text-fg-subtle"> · {members.length} variações</span>
+                              )}
+                            </div>
+                          </div>
+                        ))
+                    )}
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  {audRules.length === 0 && (
+                    <p className="text-[12px] text-fg-subtle">Sem regras manuais. A unificação automática cuida do resto.</p>
+                  )}
+                  {audRules.map((rule, i) => (
+                    <div key={i} className="flex items-center gap-1.5">
+                      <input
+                        value={rule.from}
+                        onChange={(e) => updateRule(i, "from", e.target.value)}
+                        placeholder="Mercado"
+                        className="flex-1 min-w-0 h-8 px-2.5 rounded-lg bg-canvas-deeper border border-border text-[12px] text-fg placeholder:text-fg-subtle focus:outline-none focus:border-signature"
+                      />
+                      <span className="text-fg-subtle text-[12px] shrink-0">→</span>
+                      <input
+                        value={rule.to}
+                        onChange={(e) => updateRule(i, "to", e.target.value)}
+                        placeholder="Supermercados"
+                        className="flex-1 min-w-0 h-8 px-2.5 rounded-lg bg-canvas-deeper border border-border text-[12px] text-fg placeholder:text-fg-subtle focus:outline-none focus:border-signature"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeRule(i)}
+                        aria-label="Remover regra"
+                        className="shrink-0 size-8 rounded-lg text-fg-subtle hover:text-danger hover:bg-danger/8 transition-colors text-[14px]"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={addRule}
+                    className="text-[12px] font-semibold text-signature hover:opacity-80 transition-opacity"
+                  >
+                    + Adicionar regra
+                  </button>
                 </div>
               </Section>
 

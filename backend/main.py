@@ -56,6 +56,8 @@ import pmp_deals
 import pmp_lines
 import pmp_groups
 import xandr_curate
+import audience_normalize
+import audience_ai
 
 logger = logging.getLogger(__name__)
 
@@ -570,6 +572,25 @@ def warmup_caches(force_refresh=True, max_reports=150, deadline_s=480):
                             cfg, campaigns, published, share_map, logos_map, elements_map)
                         _cache_set(_portal_cache, cfg["share_id"], payload)
                         portals_ok += 1
+                        # Pré-aquece os endpoints LAZY da aba Analytics (audiências
+                        # + brand lift) — matam o cold do 1º acesso. Pesados
+                        # (detail por campanha / Typeform por survey), então só
+                        # rodam se ainda dentro do deadline; best-effort cada um.
+                        sid = cfg["share_id"]
+                        if time.time() - t0 <= deadline_s:
+                            try:
+                                res = compute_portal_audiences(sid)
+                                if res is not None:
+                                    _cache_set(_audiences_cache, sid, res)
+                            except Exception as e:
+                                logger.warning(f"[WARN warmup audiences {cfg.get('slug')}] {e}")
+                        if time.time() - t0 <= deadline_s:
+                            try:
+                                res = compute_portal_brand_lift(sid)
+                                if res is not None:
+                                    _cache_set(_brand_lift_cache, sid, res)
+                            except Exception as e:
+                                logger.warning(f"[WARN warmup brand_lift {cfg.get('slug')}] {e}")
                     except Exception as e:
                         portals_errors += 1
                         logger.warning(f"[WARN warmup portal {cfg.get('slug')}] {e}")
@@ -917,9 +938,11 @@ def report_data(request):
                 logo_base64=(body.get("logo_base64") or None),
                 accent_color=(body.get("accent_color") or None),
                 active=(body.get("active") if "active" in body else None),
+                audience_overrides=(body.get("audience_overrides") if "audience_overrides" in body else None),
                 updated_by=admin.get("email"),
             )
             _portal_cache.clear()  # config mudou → invalida payloads cacheados
+            _audiences_cache.clear()  # override de audiência muda a quebra → recomputa
             return (jsonify({"config": config}), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR save_client_portal] {e}")
@@ -1037,6 +1060,27 @@ def report_data(request):
             logger.error(f"[ERROR client_portal_brand_lift] {e}")
             return (jsonify({"error": "Erro ao calcular brand lift"}), 500, headers)
         _cache_set(_brand_lift_cache, share_id, result)
+        return (jsonify(result), 200, resp_headers)
+
+    # Quebra por audiência (Portal · Analytics). LAZY/pesado (1 detail por
+    # campanha) → cache 1h próprio, igual ao brand lift. O front chama ao abrir
+    # a aba Analytics e aplica os filtros client-side.
+    if request.method == "GET" and request.args.get("action") == "client_portal_audiences":
+        share_id = (request.args.get("share_id") or "").strip()
+        if not share_id:
+            return (jsonify({"error": "share_id obrigatório"}), 400, headers)
+        resp_headers = {**headers, "Cache-Control": "public, max-age=300"}
+        cached = _cache_get(_audiences_cache, share_id, _AUDIENCES_CACHE_TTL)
+        if cached is not None:
+            return (jsonify(cached), 200, resp_headers)
+        try:
+            result = compute_portal_audiences(share_id)
+            if result is None:
+                return (jsonify({"error": "Portal não encontrado"}), 404, headers)
+        except Exception as e:
+            logger.error(f"[ERROR client_portal_audiences] {e}")
+            return (jsonify({"error": "Erro ao calcular audiências"}), 500, headers)
+        _cache_set(_audiences_cache, share_id, result)
         return (jsonify(result), 200, resp_headers)
 
     # ── Endpoint: trocar OAuth code por refresh_token e criar sheet ─────────
@@ -5226,12 +5270,21 @@ def query_all_campaign_elements() -> dict:
             REGEXP_CONTAINS(LOWER(TO_JSON_STRING(extras)), r'rmnd')
             OR REGEXP_CONTAINS(LOWER(ARRAY_TO_STRING(products, ',')), r'rmn')
           )
+        UNION ALL
+        -- Pacote COMPLETO de features negociadas (extras.cl_features) — lista
+        -- crua que o NegotiationModal parseia. Alimenta os chips de "tudo que
+        -- foi negociado" na tabela do portal (Design Studio, etc.).
+        SELECT DISTINCT short_token, 'negfeat', feat
+        FROM `{PROJECT_ID}.{DATASET_SALES_CENTER}.checklists`,
+             UNNEST(JSON_EXTRACT_STRING_ARRAY(TO_JSON_STRING(extras), '$.cl_features')) AS feat
+        WHERE short_token IS NOT NULL AND short_token != ''
+          AND feat IS NOT NULL AND TRIM(feat) != ''
     """
     out = {}
     for sql in (sql_assets, sql_negotiated):
         for row in bq.query(sql).result():
-            bucket = out.setdefault(row["short_token"], {"assets": [], "negotiated": [], "closure": []})
-            key = {"asset": "assets", "negotiated": "negotiated", "closure": "closure"}[row["kind"]]
+            bucket = out.setdefault(row["short_token"], {"assets": [], "negotiated": [], "closure": [], "neg_features": []})
+            key = {"asset": "assets", "negotiated": "negotiated", "closure": "closure", "negfeat": "neg_features"}[row["kind"]]
             if row["item"] not in bucket[key]:
                 bucket[key].append(row["item"])
     return out
@@ -8999,7 +9052,8 @@ def _process_typeform_items(items, field_to_row=None):
 #   - Por campanha: média das perguntas ponderada por respostas (exposto).
 #   - Por mês: média das campanhas ponderada por respostas.
 # ─────────────────────────────────────────────────────────────────────────────
-_BRAND_LIFT_CACHE_TTL = 3600  # 1h — survey muda devagar; admin invalida ao salvar
+_BRAND_LIFT_CACHE_TTL = 10800  # 3h — casa com o warmup (3/3h) e o cache do report;
+                               # survey muda devagar; admin invalida ao salvar
 _brand_lift_cache = {}  # share_id -> (timestamp, payload)
 _YMD_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -9104,16 +9158,19 @@ def _survey_side_counts(q, side, tf_token, date_from, date_to):
     return counts, res.get("total", sum(counts.values()))
 
 
-def _campaign_choice_lift(survey_json, tf_token):
-    """(lift_rel, lift_abs, responses) da campanha, ou None. Choice-only, foco
-    no focusRow ou no label de maior share no exposto; média ponderada por
-    respostas entre as perguntas."""
+def _campaign_question_lifts(survey_json, tf_token):
+    """Lift POR PERGUNTA da campanha (não agregado) — alimenta tanto o lift
+    mensal quanto a quebra por TIPO de survey (chip verde/vermelho + hover).
+
+    Retorna [{type, exposed, control, lift_abs, lift_rel, weight}] (choice-only,
+    foco no focusRow/maior share no exposto). `exposed`/`control` são TAXAS (%),
+    client-safe; `weight` é interno (Σ respostas expostas) e NUNCA é emitido."""
     cfg = _parse_survey_config_py(survey_json)
     if not cfg or not cfg.get("questions"):
-        return None
+        return []
     crange = cfg.get("clientRange") or {}
     df, dt = crange.get("from"), crange.get("to")
-    rels, abss, weights = [], [], []
+    out = []
     for q in cfg["questions"]:
         if not isinstance(q, dict):
             continue
@@ -9134,17 +9191,15 @@ def _campaign_choice_lift(survey_json, tf_token):
         ep = exp[focus] / et * 100
         if cp <= 0:
             continue
-        abss.append(ep - cp)
-        rels.append((ep - cp) / cp * 100)
-        weights.append(et)
-    if not weights:
-        return None
-    wsum = sum(weights)
-    return (
-        sum(r * w for r, w in zip(rels, weights)) / wsum,
-        sum(a * w for a, w in zip(abss, weights)) / wsum,
-        wsum,
-    )
+        out.append({
+            "type": _normalize_survey_type(q.get("nome")) or "Survey",
+            "exposed": ep,
+            "control": cp,
+            "lift_abs": ep - cp,
+            "lift_rel": (ep - cp) / cp * 100,
+            "weight": et,
+        })
+    return out
 
 
 # Categorias canônicas de survey (etapas do funil). Os `nome` no config são
@@ -9224,17 +9279,18 @@ def compute_portal_brand_lift(share_id: str):
     has_survey = any(bool(sv) for sv in surveys.values())
     with_survey = [(t, sv) for t, sv in surveys.items() if sv]
 
-    # Lift por campanha em paralelo (Typeform IO-bound).
+    # Lift por PERGUNTA por campanha (Typeform IO-bound, paralelo) — base tanto
+    # do lift mensal quanto da quebra por tipo de survey.
     results = {}
     if with_survey and tf_token:
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="blift-tf") as ex:
-            futs = {ex.submit(_campaign_choice_lift, sv, tf_token): t for t, sv in with_survey}
+            futs = {ex.submit(_campaign_question_lifts, sv, tf_token): t for t, sv in with_survey}
             for f in futs:
                 try:
-                    results[futs[f]] = f.result()
+                    results[futs[f]] = f.result() or []
                 except Exception as e:
                     logger.warning(f"[WARN brand_lift campaign {futs[f]}] {e}")
-                    results[futs[f]] = None
+                    results[futs[f]] = []
 
     # Tipos de survey ativados por mês + quantidade de surveys. Conta TODA
     # campanha com survey conectado no mês (mesmo as que não renderam lift
@@ -9256,28 +9312,174 @@ def compute_portal_brand_lift(share_id: str):
         month_types.setdefault(m, set()).update(labels)
         month_survey_count[m] = month_survey_count.get(m, 0) + 1
 
-    months = {}
-    for t, res in results.items():
-        if not res:
-            continue
-        rel, ab, w = res
+    # Agrega lift por MÊS (geral) e por (MÊS, TIPO), ponderado por respostas
+    # expostas (peso interno — nunca emitido).
+    months = {}      # m -> {rel, abs, w}
+    month_type = {}  # m -> {type -> {ea, ca, ab, rel, w}}
+    for t, qs in results.items():
         m = (start_by_token.get(t) or start_by_token.get((t or "").upper()) or "")[:7]
-        if not m or w <= 0:
+        if not m:
             continue
-        b = months.setdefault(m, {"rel": 0.0, "abs": 0.0, "w": 0.0})
-        b["rel"] += rel * w
-        b["abs"] += ab * w
-        b["w"] += w
+        for q in qs:
+            w = q["weight"]
+            if w <= 0:
+                continue
+            b = months.setdefault(m, {"rel": 0.0, "abs": 0.0, "w": 0.0})
+            b["rel"] += q["lift_rel"] * w
+            b["abs"] += q["lift_abs"] * w
+            b["w"]   += w
+            tb = month_type.setdefault(m, {}).setdefault(
+                q["type"], {"ea": 0.0, "ca": 0.0, "ab": 0.0, "rel": 0.0, "w": 0.0})
+            tb["ea"]  += q["exposed"] * w
+            tb["ca"]  += q["control"] * w
+            tb["ab"]  += q["lift_abs"] * w
+            tb["rel"] += q["lift_rel"] * w
+            tb["w"]   += w
 
-    out = [
-        {
-            "month": m,
-            "liftRel": round(v["rel"] / v["w"], 1),
-            "liftAbs": round(v["abs"] / v["w"], 1),
-            "surveyTypes": _sort_survey_types(month_types.get(m, set())),
-            "surveyCount": month_survey_count.get(m, 0),
-        }
-        for m, v in sorted(months.items())
-        if v["w"] > 0
-    ]
+    _order = {l: i for i, l in enumerate(_SURVEY_TYPE_ORDER)}
+
+    def _details(m):
+        rows = []
+        for tp, v in (month_type.get(m) or {}).items():
+            if v["w"] <= 0:
+                continue
+            rows.append({
+                "type":    tp,
+                "exposed": round(v["ea"] / v["w"], 1),  # taxa %, client-safe
+                "control": round(v["ca"] / v["w"], 1),
+                "liftAbs": round(v["ab"] / v["w"], 1),  # pontos percentuais
+                "liftRel": round(v["rel"] / v["w"], 1),
+            })
+        rows.sort(key=lambda r: (_order.get(r["type"], len(_order)), r["type"]))
+        return rows
+
+    # Inclui meses com survey mesmo sem lift mensurável (lift = None) — o cliente
+    # ainda vê "surveys ativadas". Chips com lift mensurável recebem cor+hover.
+    all_months = sorted(set(months) | set(month_survey_count))
+    out = []
+    for m in all_months:
+        v = months.get(m)
+        has_w = bool(v and v["w"] > 0)
+        out.append({
+            "month":         m,
+            "liftRel":       round(v["rel"] / v["w"], 1) if has_w else None,
+            "liftAbs":       round(v["abs"] / v["w"], 1) if has_w else None,
+            "surveyTypes":   _sort_survey_types(month_types.get(m, set())),
+            "surveyCount":   month_survey_count.get(m, 0),
+            "surveyDetails": _details(m),
+        })
     return {"months": out, "has_survey": has_survey}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Quebra por AUDIÊNCIA agregada (Portal do Cliente · aba Analytics) — client-safe.
+#
+# Lê o detail (query_detail) de cada campanha publicada, agrega por
+# (token, mês, mídia, frente, audiência crua) e UNIFICA as audiências cruas em
+# grupos canônicos (audience_normalize — plural/acento/caixa + sinônimos seed +
+# fuzzy). Devolve as linhas JÁ taggeadas com a audiência canônica, em granular
+# o bastante (token/mês/mídia/frente) p/ o front re-aplicar os filtros do
+# Analytics (período, core product, formato, campanha) e re-agregar por
+# audiência sem perda.
+#
+# Métricas expostas: impressão total, impressão visível, cliques (CTR é
+# derivado no front = cliques/visíveis). NENHUMA é sensível (não há custo /
+# margem / CPM admin), então passa no whitelist client-safe.
+#
+# PESADO (1 query_detail por campanha) → endpoint LAZY próprio
+# (?action=client_portal_audiences) com cache 1h, fora do payload do portal —
+# mesmo molde do brand lift, não regride o 1º acesso do dia.
+# ─────────────────────────────────────────────────────────────────────────────
+_AUDIENCES_CACHE_TTL = 10800  # 3h — casa com o warmup (3/3h) e o cache do report
+_audiences_cache = {}  # share_id -> (timestamp, payload)
+
+
+def compute_portal_audiences(share_id: str):
+    """Quebra por audiência canônica agregada das campanhas publicadas.
+
+    Retorna {
+      "rows": [{token, month, media, tactic, audience, impressions,
+                viewable_impressions, clicks}],
+      "groups": {audiência_canônica: [rótulos_crus...]},  # transparência
+      "has_data": bool,
+    } ou None se o portal não existe / inativo.
+    """
+    config = client_portal.get_config_by_share_id(share_id)
+    if not config or not config.get("active"):
+        return None
+    slug = config.get("slug")
+    published = client_portal.get_published_tokens(slug)
+    pub = {t for t, ok in published.items() if ok} if isinstance(published, dict) else set(published or [])
+    tokens = [t for t in pub if t]
+    if not tokens:
+        return {"rows": [], "groups": {}, "has_data": False}
+
+    # Detail por campanha em paralelo (IO-bound em BQ), igual ao brand lift.
+    details = {}
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="aud-detail") as ex:
+        futs = {ex.submit(query_detail, t): t for t in tokens}
+        for f in futs:
+            try:
+                details[futs[f]] = f.result() or []
+            except Exception as e:
+                logger.warning(f"[WARN portal_audiences detail {futs[f]}] {e}")
+                details[futs[f]] = []
+
+    # Agrega por (token, mês, mídia, frente, audiência crua).
+    buckets = {}          # key -> {impressions, viewable_impressions, clicks}
+    raw_weight = {}       # rótulo cru -> Σ impressões visíveis (peso p/ display)
+    for token, rows in details.items():
+        for r in rows:
+            raw_aud = audience_normalize.extract_audience(r.get("line_name"))
+            if audience_normalize._is_ignorable(raw_aud):
+                continue
+            month = (r.get("date") or "")[:7]
+            if not month:
+                continue
+            key = (token, month, r.get("media_type") or "", r.get("tactic_type") or "", raw_aud)
+            b = buckets.get(key)
+            if b is None:
+                b = {"impressions": 0.0, "viewable_impressions": 0.0, "clicks": 0.0}
+                buckets[key] = b
+            vi = float(r.get("viewable_impressions") or 0)
+            b["impressions"]          += float(r.get("impressions") or 0)
+            b["viewable_impressions"] += vi
+            b["clicks"]               += float(r.get("clicks") or 0)
+            raw_weight[raw_aud] = raw_weight.get(raw_aud, 0.0) + vi
+
+    if not buckets:
+        return {"rows": [], "groups": {}, "has_data": False}
+
+    # 1) Heurística determinística (plural/acento/caixa + seed de sinônimos).
+    grouped = audience_normalize.group_audiences(raw_weight)
+    mapping = grouped["mapping"]
+
+    # 2) Camada IA (Fase 2): funde sinônimos entre os displays canônicos
+    # (cacheada pelo conjunto de rótulos; identidade no fallback gracioso).
+    displays = list({v for v in mapping.values()})
+    ai_map = audience_ai.refine_groups_with_ai(displays)
+    mapping = {raw: ai_map.get(disp, disp) for raw, disp in mapping.items()}
+
+    # 3) Override do admin (precedência FINAL — vence heurística e IA).
+    overrides = config.get("audience_overrides") or {}
+    mapping = audience_normalize.apply_overrides(mapping, overrides)
+
+    # Reconstrói os grupos (transparência) a partir do mapeamento final.
+    groups_final = {}
+    for raw, disp in mapping.items():
+        groups_final.setdefault(disp, []).append(raw)
+
+    rows_out = []
+    for (token, month, media, tactic, raw_aud), b in buckets.items():
+        rows_out.append({
+            "token":                token,
+            "month":                month,
+            "media":                media,
+            "tactic":               tactic,
+            "audience":             mapping.get(raw_aud, audience_normalize.prettify(raw_aud)),
+            "impressions":          round(b["impressions"]),
+            "viewable_impressions": round(b["viewable_impressions"]),
+            "clicks":               round(b["clicks"]),
+        })
+
+    return {"rows": rows_out, "groups": groups_final, "has_data": True}

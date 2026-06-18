@@ -52,7 +52,9 @@ chamado em todo acesso. Custo: zero quando já existem (flag por instância).
 
 import hashlib
 import hmac
+import json
 import logging
+import re
 import os
 import secrets
 import threading
@@ -119,6 +121,13 @@ def ensure_tables_exist() -> None:
             ALTER TABLE `{_config_table_id()}`
             ADD COLUMN IF NOT EXISTS password_plain STRING
         """).result()
+        # Coluna audience_overrides (Fase 2 da quebra por audiência): mapa
+        # {de: para} curado pelo admin que vence heurística + IA na unificação
+        # de audiências. JSON livre — admin-only, sai só pro drawer admin.
+        bq.query(f"""
+            ALTER TABLE `{_config_table_id()}`
+            ADD COLUMN IF NOT EXISTS audience_overrides JSON
+        """).result()
         bq.query(f"""
             CREATE TABLE IF NOT EXISTS `{_campaigns_table_id()}` (
                 client_slug   STRING NOT NULL,
@@ -169,6 +178,16 @@ def _row_to_config(row, *, include_secret=False) -> dict:
         plain = row["password_plain"]
     except (KeyError, IndexError):
         plain = None
+    # audience_overrides é JSON; o client BQ pode devolver dict OU string crua.
+    overrides = {}
+    try:
+        raw_ov = row["audience_overrides"]
+        if isinstance(raw_ov, str):
+            overrides = json.loads(raw_ov) if raw_ov else {}
+        elif isinstance(raw_ov, dict):
+            overrides = raw_ov
+    except (KeyError, IndexError, ValueError, TypeError):
+        overrides = {}
     out = {
         "slug":         row["client_slug"],
         "share_id":     row["share_id"],
@@ -177,6 +196,7 @@ def _row_to_config(row, *, include_secret=False) -> dict:
         "accent_color": row["accent_color"],
         "active":       bool(row["active"]) if row["active"] is not None else False,
         "has_password": bool(row["password_hash"] or plain),
+        "audience_overrides": overrides if isinstance(overrides, dict) else {},
         "created_by":   row["created_by"],
         "created_at":   str(row["created_at"]) if row["created_at"] else None,
         "updated_at":   str(row["updated_at"]) if row["updated_at"] else None,
@@ -236,9 +256,13 @@ def list_active_configs() -> list:
 
 
 def save_config(slug: str, *, password=None, display_name=None, logo_base64=None,
-                accent_color=None, active=None, updated_by=None) -> dict:
+                accent_color=None, active=None, audience_overrides=None,
+                updated_by=None) -> dict:
     """Upsert da config. Cria share_id na primeira vez. Campos None não são
     tocados (preserva o valor atual) — exceto `active`, que é explícito.
+
+    `audience_overrides` (dict {de: para}) é serializado como JSON; None preserva
+    o atual, {} limpa explicitamente (o admin removeu todas as regras).
 
     Retorna a config (sem o hash de senha).
     """
@@ -268,15 +292,19 @@ def save_config(slug: str, *, password=None, display_name=None, logo_base64=None
             logo_base64    = COALESCE(@logo_base64, T.logo_base64),
             accent_color   = COALESCE(@accent_color, T.accent_color),
             active         = COALESCE(@active, T.active),
+            audience_overrides = COALESCE(@audience_overrides, T.audience_overrides),
             updated_at     = CURRENT_TIMESTAMP()
         WHEN NOT MATCHED THEN INSERT
             (client_slug, share_id, password_hash, password_plain, display_name,
-             logo_base64, accent_color, active, created_by, created_at, updated_at)
+             logo_base64, accent_color, active, audience_overrides,
+             created_by, created_at, updated_at)
         VALUES
             (@slug, @share_id, @pw_hash, @pw_plain, @display_name, @logo_base64,
-             @accent_color, COALESCE(@active, FALSE), @updated_by,
-             CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())
+             @accent_color, COALESCE(@active, FALSE), @audience_overrides,
+             @updated_by, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())
     """
+    # None → NULL (preserva); dict (mesmo {}) → JSON string (seta/limpa).
+    ov_json = json.dumps(audience_overrides) if isinstance(audience_overrides, dict) else None
     params = [
         bigquery.ScalarQueryParameter("slug",         "STRING", slug),
         bigquery.ScalarQueryParameter("share_id",     "STRING", share_id),
@@ -286,6 +314,7 @@ def save_config(slug: str, *, password=None, display_name=None, logo_base64=None
         bigquery.ScalarQueryParameter("logo_base64",  "STRING", logo_base64),
         bigquery.ScalarQueryParameter("accent_color", "STRING", accent_color),
         bigquery.ScalarQueryParameter("active",       "BOOL",   active),
+        bigquery.ScalarQueryParameter("audience_overrides", "JSON", ov_json),
         bigquery.ScalarQueryParameter("updated_by",   "STRING", updated_by),
     ]
     bq.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
@@ -376,6 +405,55 @@ def get_publish_map(slug: str) -> dict[str, bool]:
 
 
 # ─── Serializer client-safe (WHITELIST) ────────────────────────────────────────
+# Normalização das features negociadas (extras.cl_features é texto livre) para
+# rótulos de exibição limpos e estáveis. Mantém siglas conhecidas em caixa alta.
+_FEATURE_CANON = (
+    (re.compile(r"^p[-\s]?dooh$|pdooh", re.I),    "PDOOH"),
+    (re.compile(r"rmnd|amazon\s*ads?", re.I),     "RMND"),
+    (re.compile(r"brand\s*lift|^survey$", re.I),  "Survey"),
+    (re.compile(r"design\s*studio", re.I),        "Design Studio"),
+)
+# Assets ativos com slot dedicado — garantem o chip mesmo se ausentes no
+# cl_features (Loom fica de fora: é artefato de entrega, não feature negociada).
+_ASSET_LABEL = {"survey": "Survey", "rmnd": "RMND", "pdooh": "PDOOH"}
+
+
+def _clean_feature_label(name: str):
+    s = re.sub(r"\s+", " ", str(name or "").strip())
+    if not s:
+        return None
+    for rx, label in _FEATURE_CANON:
+        if rx.search(s):
+            return label
+    # Title Case preservando siglas curtas tudo-maiúsculas (CRM, B2B, O2O).
+    return " ".join(
+        w if (w.isupper() and len(w) <= 4) else (w[:1].upper() + w[1:].lower())
+        for w in s.split(" ")
+    )
+
+
+def _clean_features(raw_list, assets) -> list:
+    """Pacote de features negociadas p/ exibição: normaliza cl_features +
+    garante os assets ativos (survey/rmnd/pdooh). Dedup case-insensitive,
+    ordem estável (negociadas primeiro, na ordem do checklist)."""
+    seen, out = set(), []
+
+    def add(label):
+        if not label:
+            return
+        k = label.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(label)
+
+    for name in (raw_list or []):
+        add(_clean_feature_label(name))
+    for a in (assets or []):
+        if a in _ASSET_LABEL:
+            add(_ASSET_LABEL[a])
+    return out
+
+
 def _derive_tactics(entry: dict) -> list:
     """Core products ativados, derivados da presença dos pacings por tática."""
     out = []
@@ -431,6 +509,9 @@ def _safe_campaign(entry: dict, share_id_map: dict, logos_map: dict = None,
     elements = (elements_map or {}).get(token) or {}
     assets = elements.get("assets") or []
     features = [f for f in ("survey", "rmnd", "pdooh") if f in assets]
+    # Pacote completo negociado (cl_features + assets ativos) p/ os chips da
+    # tabela do portal. `features` (canônico) fica pro filtro; este é exibição.
+    negotiated_features = _clean_features(elements.get("neg_features"), assets)
     return {
         "short_token":         token,
         "pacing":              _combined_pacing(entry),
@@ -441,6 +522,7 @@ def _safe_campaign(entry: dict, share_id_map: dict, logos_map: dict = None,
         "video_pacing":        entry.get("video_pacing"),
         "tactics":             _derive_tactics(entry),
         "features":            features,
+        "negotiated_features": negotiated_features,
         "aggregated":          bool(entry.get("merge_id")),
         "merge_id":            entry.get("merge_id") or None,
         # share_id do report individual (link "Ver relatório"). Fallback no

@@ -127,6 +127,13 @@ DAGSTER_API_TOKEN=$(read_secret_if_missing "DAGSTER_API_TOKEN" "$DAGSTER_API_TOK
 # esta env num deploy significa voltar a pagar caro por clique.
 DAGSTER_JOB_NAME=$(extract_env "DAGSTER_JOB_NAME")
 
+# ANTHROPIC_API_KEY — liga a camada de IA da unificação de audiências do Portal
+# (audience_ai.py). Opcional: sem ela, a quebra por audiência roda só com a
+# heurística + override do admin (degrada gracioso). Mesmo padrão dos demais:
+# captura da revisão ativa OU lê do Secret Manager.
+ANTHROPIC_API_KEY=$(extract_env "ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY=$(read_secret_if_missing "ANTHROPIC_API_KEY" "$ANTHROPIC_API_KEY")
+
 if [ -z "$JWT_SECRET" ]; then
   echo "✗ JWT_SECRET não encontrado na revisão $ACTIVE_REV. Abortando."
   echo "  (sem ele o login admin quebra em loop)"
@@ -176,6 +183,11 @@ if [ -n "$DAGSTER_API_TOKEN" ]; then
   echo "  ✓ DAGSTER_API_TOKEN capturado (botão Reconstruir agora habilitado)"
 else
   echo "  ⚠ DAGSTER_API_TOKEN ausente — botão Reconstruir agora retorna erro de config"
+fi
+if [ -n "$ANTHROPIC_API_KEY" ]; then
+  echo "  ✓ ANTHROPIC_API_KEY capturado (IA da unificação de audiências habilitada)"
+else
+  echo "  ⚠ ANTHROPIC_API_KEY ausente — unificação de audiências roda só na heurística"
 fi
 
 # ── 2. Montar arquivo YAML com todas as envvars ──────────────────────────────
@@ -229,6 +241,9 @@ if [ -n "$DAGSTER_API_TOKEN" ]; then
 fi
 if [ -n "$DAGSTER_JOB_NAME" ]; then
   echo "DAGSTER_JOB_NAME: '${DAGSTER_JOB_NAME}'" >> "$ENV_FILE"
+fi
+if [ -n "$ANTHROPIC_API_KEY" ]; then
+  echo "ANTHROPIC_API_KEY: '${ANTHROPIC_API_KEY}'" >> "$ENV_FILE"
 fi
 
 # ── 3. Deploy ────────────────────────────────────────────────────────────────

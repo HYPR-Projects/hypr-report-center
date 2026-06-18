@@ -19,7 +19,8 @@
 // Charts em recharts com cores resolvidas por tema (useThemeColors), mesma
 // linguagem visual do report (DualChartV2/ChartCardV2).
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   ComposedChart, Bar, Line, LineChart, XAxis, YAxis, ReferenceLine,
   CartesianGrid, Tooltip as RTooltip, ResponsiveContainer, PieChart, Pie, Cell,
@@ -31,7 +32,7 @@ import { ChartCardV2 } from "../components/ChartCardV2";
 import { DateRangeFilterV2 } from "../components/DateRangeFilterV2";
 import { MultiSelectDropdown } from "./PortalFilters";
 import { ymd } from "../../shared/dateFilter";
-import { getClientPortalBrandLift } from "../../lib/api";
+import { getClientPortalBrandLift, getClientPortalAudiences } from "../../lib/api";
 import { cn } from "../../ui/cn";
 
 import {
@@ -47,6 +48,16 @@ const investedOf = (c) => num(c.d_client_budget) + num(c.v_client_budget);
 // Core products (a "ação" central): O2O, OOH (amplifier), Groundflow.
 // PDOOH NÃO é core product — é feature (vive em `features`, não em `tactics`).
 const CORE_LABELS = { O2O: "O2O", OOH: "OOH", GROUNDFLOW: "Groundflow" };
+// Fallback de rótulo p/ as features canônicas (quando o backend ainda não
+// expõe `negotiated_features` — o pacote completo do checklist).
+const FEATURE_LABEL = { survey: "Survey", rmnd: "RMND", pdooh: "PDOOH" };
+// Pacote de features negociadas de uma campanha p/ os chips da coluna Mix.
+// Prioriza `negotiated_features` (checklist completo: Survey, PDOOH, Design
+// Studio…); cai pras 3 canônicas mapeadas quando ausente.
+const featuresOf = (c) =>
+  c.negotiated_features?.length
+    ? c.negotiated_features
+    : (c.features || []).map((k) => FEATURE_LABEL[k] || k);
 const compactBrl = (v) =>
   v >= 1_000_000 ? `R$ ${(v / 1_000_000).toFixed(1).replace(".", ",")} mi`
   : v >= 1_000 ? `R$ ${Math.round(v / 1_000)} mil`
@@ -56,7 +67,7 @@ const compactInt = (v) =>
   : v >= 1_000 ? `${Math.round(v / 1_000)}K`
   : String(Math.round(v));
 
-export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftMock }) {
+export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftMock, audiencesMock }) {
   // Brand lift: mock (protótipo) passa direto; produção busca lazy no backend
   // (endpoint pesado — só ao abrir o Analytics). Estados: idle|loading|ready|error.
   // Estado inicial já reflete o destino (evita setState síncrono no effect):
@@ -74,6 +85,24 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
       .catch(() => { if (!cancelled) setBrandLift({ data: null, status: "error" }); });
     return () => { cancelled = true; };
   }, [shareId, brandLiftMock]);
+
+  // Quebra por audiência: mesmo padrão lazy do brand lift. Endpoint pesado (1
+  // detail por campanha) → busca só ao abrir o Analytics; o backend cacheia 1h.
+  // As audiências já vêm unificadas em grupos canônicos; os filtros (período /
+  // core product / formato / campanha) são aplicados client-side sobre as rows.
+  const [audiences, setAudiences] = useState(() =>
+    audiencesMock !== undefined ? { data: audiencesMock, status: "ready" }
+      : shareId ? { data: null, status: "loading" }
+      : { data: null, status: "idle" },
+  );
+  useEffect(() => {
+    if (audiencesMock !== undefined || !shareId) return;
+    let cancelled = false;
+    getClientPortalAudiences(shareId)
+      .then((d) => { if (!cancelled) setAudiences({ data: d, status: "ready" }); })
+      .catch(() => { if (!cancelled) setAudiences({ data: null, status: "error" }); });
+    return () => { cancelled = true; };
+  }, [shareId, audiencesMock]);
 
   const [period, setPeriod] = useState(null);
   const [periodPresetId, setPeriodPresetId] = useState("all");
@@ -212,6 +241,62 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
     return { rows, total };
   }, [kpis]);
 
+  // Quebra por audiência canônica, respeitando os MESMOS filtros da aba. As
+  // rows vêm granulares (token/mês/mídia/frente) do backend, então aplicamos
+  // período (por mês), core product (tactic), formato (media) e campanha
+  // (token) aqui e re-agregamos por audiência. Top N pro donut + "Outras".
+  const AUD_TOP = 7;
+  const audienceData = useMemo(() => {
+    const rows = audiences.data?.rows || [];
+    const hasAny = !!audiences.data?.has_data && rows.length > 0;
+    if (!rows.length) return { list: [], pie: [], colorOf: {}, totalViewable: 0, hasAny, restCount: 0 };
+
+    const fromM = period?.from ? ymd(period.from).slice(0, 7) : null;
+    const toM = period?.to ? ymd(period.to).slice(0, 7) : null;
+    const passes = (r) => {
+      if (selectedCampaigns.length && !selectedCampaigns.includes(r.token)) return false;
+      if (fromM && r.month < fromM) return false;
+      if (toM && r.month > toM) return false;
+      if (coreProducts.length && !coreProducts.includes(r.tactic)) return false;
+      if (formats.length && !formats.includes(r.media)) return false;
+      return true;
+    };
+
+    const TACTIC_ORDER = ["O2O", "OOH", "GROUNDFLOW"];
+    const map = new Map();
+    for (const r of rows) {
+      if (!passes(r)) continue;
+      const e = map.get(r.audience) || { audience: r.audience, impressions: 0, viewable: 0, clicks: 0, tactics: new Set() };
+      e.impressions += num(r.impressions);
+      e.viewable += num(r.viewable_impressions);
+      e.clicks += num(r.clicks);
+      if (r.tactic) e.tactics.add(r.tactic);  // core product(s) da audiência
+      map.set(r.audience, e);
+    }
+    const list = [...map.values()]
+      .map((e) => ({
+        ...e,
+        ctr: e.viewable > 0 ? (e.clicks / e.viewable) * 100 : null,
+        tactics: [...e.tactics].sort((a, b) => TACTIC_ORDER.indexOf(a) - TACTIC_ORDER.indexOf(b)),
+      }))
+      .sort((a, b) => b.viewable - a.viewable);
+    const totalViewable = list.reduce((s, e) => s + e.viewable, 0);
+
+    // Donut: Top N em rampa de opacidade do accent + "Outras" neutro. Mesma
+    // cor é reusada no swatch da tabela (amarra visual donut↔linha).
+    const OPACITY = [1, 0.82, 0.66, 0.52, 0.41, 0.32, 0.25];
+    const colorOf = {};
+    const top = list.slice(0, AUD_TOP);
+    const rest = list.slice(AUD_TOP);
+    top.forEach((e, i) => { colorOf[e.audience] = { color: accent, opacity: OPACITY[i] ?? 0.2 }; });
+    const pie = top.map((e) => ({ name: e.audience, value: e.viewable }));
+    if (rest.length) {
+      const restSum = rest.reduce((s, e) => s + e.viewable, 0);
+      pie.push({ name: "Outras", value: restSum, isOther: true, count: rest.length });
+    }
+    return { list, pie, colorOf, totalViewable, hasAny, restCount: rest.length };
+  }, [audiences.data, period, coreProducts, formats, selectedCampaigns, accent]);
+
   const hasData = filtered.length > 0;
 
   return (
@@ -292,6 +377,21 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
               <CoreProductBars rows={coreMix} accent={accent} />
             </ChartCardV2>
           </div>
+
+          {/* ── Performance por audiência (lazy; donut Top N + tabela) ─────── */}
+          {audiences.status === "loading" && (
+            <ChartCardV2 title="Performance por audiência">
+              <div className="h-[220px] flex items-center justify-center gap-2 text-fg-subtle">
+                <span className="size-3.5 rounded-full border-2 border-current border-t-transparent animate-spin" aria-hidden />
+                <span className="text-[13px]">Carregando audiências…</span>
+              </div>
+            </ChartCardV2>
+          )}
+          {audiences.status === "ready" && audienceData.hasAny && (
+            <ChartCardV2 title="Performance por audiência">
+              <AudienceBreakdown data={audienceData} accent={accent} top={AUD_TOP} />
+            </ChartCardV2>
+          )}
 
           {/* ── Pacing médio mensal (Display × Vídeo) ─────────────────────── */}
           {hasPacing && (
@@ -565,6 +665,159 @@ function CoreProductBars({ rows, accent }) {
   );
 }
 
+// ── Performance por audiência (donut Top N + tabela ordenável/expansível) ────
+// Audiências semelhantes já chegam unificadas do backend (plural/acento/caixa
+// + sinônimos). O donut mostra as Top N por impressão visível (rampa de accent)
+// + fatia "Outras"; a tabela lista todas com imp. visíveis, imp. totais e CTR.
+const AUD_DEFAULT_VISIBLE = 8;
+const AUD_COLS = [
+  { key: "audience", label: "Audiência", align: "left" },
+  { key: "viewable", label: "Imp. visíveis", align: "right" },
+  { key: "impressions", label: "Imp. totais", align: "right" },
+  { key: "ctr", label: "CTR", align: "right" },
+];
+
+function AudienceBreakdown({ data, accent, top }) {
+  const hypr = useThemeColors();
+  const neutral = useChartNeutral();
+  const [sortKey, setSortKey] = useState("viewable");
+  const [sortDir, setSortDir] = useState("desc");
+  const [expanded, setExpanded] = useState(false);
+
+  const { list, pie, colorOf, totalViewable, restCount } = data;
+
+  const sorted = useMemo(() => {
+    const val = (e) => (sortKey === "audience" ? (e.audience || "").toLowerCase() : num(e[sortKey]));
+    const arr = [...list].sort((a, b) => {
+      const va = val(a), vb = val(b);
+      if (typeof va === "string") return va.localeCompare(vb, "pt-BR");
+      return va - vb;
+    });
+    return sortDir === "desc" ? arr.reverse() : arr;
+  }, [list, sortKey, sortDir]);
+
+  const onSort = (key) => {
+    if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(key); setSortDir(key === "audience" ? "asc" : "desc"); }
+  };
+
+  if (!list.length) {
+    return (
+      <div className="h-[200px] flex items-center justify-center">
+        <p className="text-[13px] text-fg-subtle">Nenhuma audiência com os filtros atuais.</p>
+      </div>
+    );
+  }
+
+  const visible = expanded ? sorted : sorted.slice(0, AUD_DEFAULT_VISIBLE);
+  const swatch = (name) => colorOf[name] || { color: hypr.fgMuted, opacity: 0.5 };
+
+  return (
+    <div className="flex flex-col lg:flex-row gap-5 lg:gap-6">
+      {/* Donut */}
+      <div className="flex items-center gap-4 lg:flex-col lg:items-center lg:w-[200px] lg:shrink-0">
+        <div className="relative shrink-0" style={{ width: 176, height: 176 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie data={pie} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={56} outerRadius={84} paddingAngle={2} stroke="none" isAnimationActive={false}>
+                {pie.map((p) => {
+                  const sw = swatch(p.name);
+                  return (
+                    <Cell
+                      key={p.name}
+                      fill={p.isOther ? neutral.axis : sw.color}
+                      fillOpacity={p.isOther ? 0.55 : sw.opacity}
+                    />
+                  );
+                })}
+              </Pie>
+              <RTooltip content={(props) => (
+                <ChartTooltip {...props} rows={(pl) => pl.map((x) => {
+                  const pctv = totalViewable > 0 ? (x.value / totalViewable) * 100 : 0;
+                  return {
+                    name: x.payload?.isOther ? `Outras (${x.payload.count})` : x.name,
+                    value: `${formatInt(x.value)} · ${pctv.toFixed(0)}%`,
+                    color: x.payload?.isOther ? hypr.fgMuted : accent,
+                  };
+                })} />
+              )} />
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+            <span className="text-[10px] uppercase tracking-wider text-fg-subtle">Visíveis</span>
+            <span className="text-[15px] font-bold text-fg tabular-nums">{compactInt(totalViewable)}</span>
+            <span className="text-[10px] text-fg-subtle mt-0.5">{list.length} audiências</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Tabela */}
+      <div className="flex-1 min-w-0">
+        <div className="overflow-x-auto rounded-xl border border-border">
+          <table className="w-full text-[13px]">
+            <thead>
+              <tr className="bg-surface-3 text-fg-muted">
+                {AUD_COLS.map((col) => (
+                  <Th
+                    key={col.key}
+                    className={col.align === "right" ? "text-right" : "text-left"}
+                    sortable
+                    active={sortKey === col.key}
+                    dir={sortDir}
+                    onClick={() => onSort(col.key)}
+                  >
+                    {col.label}
+                  </Th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((e) => {
+                const sw = swatch(e.audience);
+                return (
+                  <tr key={e.audience} className="border-t border-border hover:bg-surface-strong transition-colors">
+                    <Td className="text-left">
+                      <span className="inline-flex items-center gap-2 min-w-0">
+                        <span className="size-2.5 rounded-sm shrink-0" style={{ background: sw.color, opacity: sw.opacity }} aria-hidden />
+                        <span className="font-medium text-fg line-clamp-1">{e.audience}</span>
+                        {(e.tactics || []).map((t) => (
+                          <MixChip key={t} label={CORE_LABELS[t] || t} soft />
+                        ))}
+                      </span>
+                    </Td>
+                    <Td className="text-right font-semibold text-fg tabular-nums" style={{ whiteSpace: "nowrap" }}>
+                      <span title={`${formatInt(e.viewable)} impressões visíveis`}>{formatIntCompact(e.viewable)}</span>
+                    </Td>
+                    <Td className="text-right text-fg-muted tabular-nums" style={{ whiteSpace: "nowrap" }}>
+                      <span title={`${formatInt(e.impressions)} impressões totais`}>{formatIntCompact(e.impressions)}</span>
+                    </Td>
+                    <Td className="text-right tabular-nums" style={{ color: accent }}>{e.ctr != null ? `${e.ctr.toFixed(2)}%` : "—"}</Td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 pt-2.5">
+          <p className="text-[11px] text-fg-subtle">
+            Audiências semelhantes são unificadas automaticamente.
+          </p>
+          {list.length > AUD_DEFAULT_VISIBLE && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="text-[12px] font-medium text-fg-muted hover:text-fg underline-offset-2 hover:underline transition-colors shrink-0"
+            >
+              {expanded ? "Ver menos" : `Ver todas (${list.length})`}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Brand lift mensal (relativo % + absoluto pp) ────────────────────────────
 function BrandLiftSection({ monthly, accent }) {
   const neutral = useChartNeutral();
@@ -604,6 +857,7 @@ function BrandLiftSection({ monthly, accent }) {
           <tbody>
             {data.map((m) => {
               const types = m.surveyTypes || [];
+              const detailByType = Object.fromEntries((m.surveyDetails || []).map((d) => [d.type, d]));
               return (
                 <tr key={m.month} className="border-t border-border hover:bg-surface-strong transition-colors">
                   <Td className="text-left text-fg whitespace-nowrap">{formatMonthLabel(m.month, "long")}</Td>
@@ -613,7 +867,7 @@ function BrandLiftSection({ monthly, accent }) {
                         <span className="text-[12px] text-fg-muted tabular-nums shrink-0">{m.surveyCount}×</span>
                       )}
                       {types.length
-                        ? types.map((t) => <MixChip key={t} label={t} soft />)
+                        ? types.map((t) => <SurveyTypeChip key={t} type={t} detail={detailByType[t]} />)
                         : <span className="text-fg-subtle">—</span>}
                     </div>
                   </Td>
@@ -707,6 +961,7 @@ function CampaignAnalyticsTable({ rows, accent }) {
                   <div className="flex flex-wrap gap-1">
                     {(c.media || []).map((m) => <MixChip key={m} label={m === "VIDEO" ? "Vídeo" : "Display"} />)}
                     {(c.tactics || []).map((t) => <MixChip key={t} label={CORE_LABELS[t] || t} soft />)}
+                    {featuresOf(c).map((f) => <MixChip key={`f-${f}`} label={f} variant="outline" />)}
                   </div>
                 </Td>
               </tr>
@@ -718,13 +973,95 @@ function CampaignAnalyticsTable({ rows, accent }) {
   );
 }
 
-function MixChip({ label, soft }) {
+// variant: "brand" (formato), "soft" (core product), "outline" (feature negociada).
+function MixChip({ label, soft, variant }) {
+  const v = variant || (soft ? "soft" : "brand");
+  const cls = {
+    brand: "bg-signature-soft text-signature",
+    soft: "bg-surface-strong text-fg-muted",
+    outline: "border border-border text-fg-subtle",
+  }[v];
   return (
     <span className={cn(
       "inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide",
-      soft ? "bg-surface-strong text-fg-muted" : "bg-signature-soft text-signature",
+      cls,
     )}>
       {label}
+    </span>
+  );
+}
+
+// Chip de tipo de survey com cor condicional (verde = lift positivo, vermelho =
+// negativo, neutro = sem lift mensurável) + hover com o resumo exposto×controle.
+// `detail` = {type, exposed, control, liftAbs, liftRel} | undefined. O tooltip
+// é renderizado em PORTAL (position:fixed no body) p/ escapar do overflow da
+// tabela — antes o resumo era cortado pela borda do card.
+function SurveyTypeChip({ type, detail }) {
+  const has = detail && detail.liftAbs != null;
+  const positive = has && detail.liftAbs > 0;
+  const negative = has && detail.liftAbs < 0;
+  const tone = positive
+    ? "bg-success-soft text-success"
+    : negative
+      ? "bg-danger-soft text-danger"
+      : "bg-surface-strong text-fg-muted";
+  const ref = useRef(null);
+  const [coords, setCoords] = useState(null);
+  const show = () => {
+    if (!ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    setCoords({ x: r.left + r.width / 2, y: r.top });
+  };
+  const hide = () => setCoords(null);
+  return (
+    <span
+      ref={ref}
+      onMouseEnter={show}
+      onMouseLeave={hide}
+      className={cn(
+        "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide cursor-help",
+        tone,
+      )}
+    >
+      {has && <span className="size-1.5 rounded-full" style={{ background: "currentColor" }} aria-hidden />}
+      {type}
+      {coords && createPortal(
+        <div
+          role="tooltip"
+          style={{ position: "fixed", left: coords.x, top: coords.y - 10, transform: "translate(-50%, -100%)", zIndex: 60 }}
+          className="pointer-events-none w-[212px] rounded-xl border border-border bg-canvas-elevated shadow-xl p-3 text-left normal-case tracking-normal"
+        >
+          <div className="text-[11px] font-bold text-fg mb-2">{type}</div>
+          {has ? (
+            <>
+              <div className="flex items-center justify-between text-[11px] mb-1">
+                <span className="text-fg-muted">Exposto</span>
+                <span className="font-semibold text-fg tabular-nums">{detail.exposed.toFixed(1)}%</span>
+              </div>
+              <div className="flex items-center justify-between text-[11px] mb-2">
+                <span className="text-fg-muted">Controle</span>
+                <span className="font-semibold text-fg tabular-nums">{detail.control.toFixed(1)}%</span>
+              </div>
+              <div className="flex items-center justify-between text-[11px] pt-2 border-t border-border">
+                <span className="text-fg-muted">Lift</span>
+                <span className={cn("font-bold tabular-nums", positive ? "text-success" : "text-danger")}>
+                  {detail.liftAbs > 0 ? "+" : ""}{detail.liftAbs.toFixed(1)} pp
+                  <span className="font-medium opacity-80"> ({detail.liftRel > 0 ? "+" : ""}{detail.liftRel.toFixed(0)}%)</span>
+                </span>
+              </div>
+            </>
+          ) : (
+            // Survey rodou no mês mas sem lift de escolha mensurável (ex.:
+            // pergunta de escala/matriz — a metodologia de lift é Sim/Não).
+            <div className="text-[11px] text-fg-muted leading-snug">
+              Survey ativado neste mês. Sem lift de escolha mensurável (ex.: pergunta de escala/matriz).
+            </div>
+          )}
+          <span className="absolute top-full left-1/2 -translate-x-1/2 -mt-px border-[5px] border-transparent"
+                style={{ borderTopColor: "var(--color-border)" }} aria-hidden />
+        </div>,
+        document.body,
+      )}
     </span>
   );
 }
