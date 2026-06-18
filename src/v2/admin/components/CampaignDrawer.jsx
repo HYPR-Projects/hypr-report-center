@@ -1009,13 +1009,18 @@ export function CampaignDrawer({
         onSaved={handleClosureSaved}
       />
 
-      {/* Gestão dos nomes de audiência do anunciante (criação principal é
-          inline na tabela do report; aqui é editar/reverter em lote). */}
+      {/* Gestão dos nomes de audiência do anunciante. Lista as audiências cruas
+          da campanha (reportData.detail) + overrides já existentes. `key`
+          inclui a presença do reportData pra remontar (re-seed do hook) quando
+          o detail termina de carregar. */}
       <AudienceOverridesModal
+        key={`aud-${short_token}-${reportData ? "r" : "n"}`}
         open={audienceModalOpen}
         onOpenChange={setAudienceModalOpen}
         clientName={client_name}
         shortToken={short_token}
+        detailRows={reportData?.detail}
+        overrideMap={reportData?.audience_overrides}
       />
     </Drawer>
   );
