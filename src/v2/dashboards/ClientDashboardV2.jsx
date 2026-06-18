@@ -212,13 +212,18 @@ function computeTacticAvailability(data) {
     (t0[`contracted_${frente}_video_completions`] || 0) > 0 ||
     (t0[`bonus_${frente}_video_completions`] || 0) > 0;
   const hasDelivery = (tac) => (data.totals || []).some((r) => r.tactic_type === tac);
+  // Override de core products (curadoria admin): quando presente, esconde
+  // frentes fora do set INCLUSIVE as que têm entrega. O backend já zerou o
+  // contrato delas (hasContract cai sozinho); isto cobre o gating por entrega.
+  const active = data.campaign?.active_core_products;
+  const isActive = (frente) => !active || active.includes(frente);
   return {
-    hasO2O:        hasContract("o2o")        || hasDelivery("O2O"),
-    hasOOH:        hasContract("ooh")        || hasDelivery("OOH"),
+    hasO2O:        isActive("O2O")        && (hasContract("o2o")        || hasDelivery("O2O")),
+    hasOOH:        isActive("OOH")        && (hasContract("ooh")        || hasDelivery("OOH")),
     // Groundflow é frente SÓ com contrato. Entrega sem contrato = dark test
     // → conta como O2O/OOH (espelha o _GF_CONTRACT_GATE do backend). Por isso
     // NÃO usa hasDelivery aqui (≠ O2O/OOH).
-    hasGROUNDFLOW: hasContract("groundflow"),
+    hasGROUNDFLOW: isActive("GROUNDFLOW") && hasContract("groundflow"),
   };
 }
 

@@ -173,6 +173,11 @@ _merges_cache    = {}     # "all" -> (timestamp, dict[short_token -> {merge_id, 
 _closures_cache  = {}     # "all" -> (timestamp, dict[short_token -> closed_at_iso])
 _pauses_cache    = {}     # "all" -> (timestamp, dict[short_token -> paused_at_iso])
 _early_ends_cache= {}     # "all" -> (timestamp, dict[short_token -> {early_end_date, reason, ended_by}])
+# Override de core products ATIVOS por token (curadoria admin). Quando presente,
+# vence o checklist_info: frentes fora do set têm contratado/bônus zerados em
+# _fetch_contracts (some do report). Blinda campanha encerrada de drift da
+# pipeline (frente removida no Command que continua materializada). TTL da lista.
+_cp_override_cache = {}   # "all" -> (timestamp, dict[short_token -> set(products)])
 # Detalhes do fechamento (pós-venda, material extra, checkups) — por token.
 # Enriquecido na camada de SERVING do report (não dentro de fetch_campaign_data)
 # pra valer também em reports congelados, que servem snapshot verbatim.
@@ -252,6 +257,7 @@ def _cache_invalidate_token(short_token):
         _closures_cache.pop("all", None)
         _pauses_cache.pop("all", None)
         _early_ends_cache.pop("all", None)
+        _cp_override_cache.pop("all", None)
         _closure_details_cache.pop(short_token, None)
         _elements_cache.pop("all", None)
         _frozen_cache.pop("all", None)
@@ -1506,6 +1512,51 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR save_abs_override] {e}")
             return (jsonify({"error": "Erro ao salvar override de ABS"}), 500, headers)
+
+    # ── Endpoint: ler override de core products ─────────────────────────────
+    # Devolve {override: {products, updated_by, updated_at}} ou {override: null}
+    # (= automático, frentes derivadas do checklist). Admin-only.
+    if request.method == "GET" and request.args.get("action") == "get_core_products_override":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        short_token = request.args.get("short_token", "").strip()
+        if not short_token:
+            return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+        try:
+            override = query_core_product_override(short_token)
+            return (jsonify({"override": override}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR get_core_products_override] {e}")
+            return (jsonify({"error": "Erro ao buscar override de core products"}), 500, headers)
+
+    # ── Endpoint: salvar override de core products ──────────────────────────
+    # Body: {short_token, products: ["O2O", ...]}. Lista vazia/ausente → remove o
+    # override (volta ao automático). Curadoria de quais frentes aparecem no report.
+    if request.method == "POST" and request.args.get("action") == "save_core_products_override":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            products    = body.get("products")
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            valid = sorted(_parse_cp_products(products))
+            save_core_product_override(short_token, valid, updated_by=admin.get("email"))
+            _cache_invalidate_token(short_token)
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="core_products_override",
+                actor_email=admin.get("email"),
+                message=(f"definiu core products ativos = {valid}" if valid
+                         else "removeu override de core products (automático)"),
+                payload={"products": valid},
+            )
+            return (jsonify({"ok": True, "products": valid}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR save_core_products_override] {e}")
+            return (jsonify({"error": "Erro ao salvar override de core products"}), 500, headers)
 
     # ── Endpoint: marcar campanha como encerrada (ou reverter) ──────────────
     # Body: {short_token, closed: bool, details?: {pos_venda_url, pos_venda_mode,
@@ -3533,6 +3584,17 @@ def fetch_campaign_data(short_token, src=None):
     if early_for_token and early_for_token.get("early_end_date"):
         campaign_info["early_end_date"] = early_for_token["early_end_date"]
 
+    # Override de core products ativos (curadoria admin). Quando presente, o front
+    # esconde frentes fora do set INCLUSIVE as que têm entrega (o backend já zerou
+    # o contrato delas em _fetch_contracts → gating por contrato cai sozinho; este
+    # campo cobre o gating por ENTREGA). Ausente ≡ automático (deriva do checklist).
+    try:
+        _cp_active = query_core_product_overrides().get(short_token)
+        if _cp_active:
+            campaign_info["active_core_products"] = sorted(_cp_active)
+    except Exception as e:
+        logger.warning(f"[WARN active_core_products {short_token}] {e}")
+
     # totals é o único que depende de campaign_info — dispara agora
     fut_totals = _query_pool.submit(query_totals, short_token, campaign_info, _unified_src, _win_from, _win_to)
 
@@ -4654,6 +4716,182 @@ def query_abs_override(short_token: str):
     except Exception as e:
         logger.warning(f"[WARN query_abs_override] {e}")
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core products override — curadoria admin de QUAIS frentes (O2O/OOH/GROUNDFLOW)
+# aparecem no report de um token. Existe pra resolver uma classe de bug recorrente:
+# ao encerrar uma campanha o CS edita o Command pra remover uma frente, mas
+# `checklist_info` mantém `contracted_<frente>_*`/`bonus_<frente>_*` stale (a
+# pipeline hyprster materializa o que o Command emite e não zera frente removida).
+# Como o report deriva a presença da frente do contrato (contracted_* > 0) — e lê
+# isso AO VIVO até em report congelado (_overlay_live_contracts) — a frente
+# "fantasma" reaparece. Ajuste de front ou UPDATE manual em checklist_info não
+# seguram (read ao vivo + re-materialização da pipeline os sobrescrevem).
+#
+# Este override é a fonte autoritativa do Report Hub: quando presente, _fetch_contracts
+# ZERA contratado/bônus das frentes fora do set — propagando pra TODA a matemática
+# (budget/pacing/CPM/gating de tab), num único ponto. Mesma família de freeze /
+# delivery_window / ABS override. Ausência ≡ "automático" (deriva do checklist).
+# ─────────────────────────────────────────────────────────────────────────────
+VALID_CORE_PRODUCTS = ("O2O", "OOH", "GROUNDFLOW")
+# Prefixo de coluna em checklist_info por frente (espelha _compute_totals).
+_CP_COLUMN_PREFIX = {"O2O": "o2o", "OOH": "ooh", "GROUNDFLOW": "groundflow"}
+
+
+def _cp_override_table_id() -> str:
+    return f"{PROJECT_ID}.{DATASET_ASSETS}.report_core_products_override"
+
+
+_cp_override_table_ensured = False
+_cp_override_ensure_lock = threading.Lock()
+
+
+def _ensure_cp_override_table() -> None:
+    """Cria a tabela `report_core_products_override` se não existir. Idempotente."""
+    global _cp_override_table_ensured
+    if _cp_override_table_ensured:
+        return
+    with _cp_override_ensure_lock:
+        if _cp_override_table_ensured:
+            return
+        sql = f"""
+            CREATE TABLE IF NOT EXISTS `{_cp_override_table_id()}` (
+                short_token STRING NOT NULL,
+                products    STRING,
+                note        STRING,
+                updated_by  STRING,
+                updated_at  TIMESTAMP
+            )
+        """
+        bq.query(sql).result()
+        _cp_override_table_ensured = True
+
+
+def _parse_cp_products(raw) -> set:
+    """Normaliza 'O2O,OOH' (ou lista) → set válido contra VALID_CORE_PRODUCTS."""
+    if not raw:
+        return set()
+    items = raw if isinstance(raw, (list, tuple, set)) else str(raw).split(",")
+    return {p for p in (str(x).strip().upper() for x in items) if p in VALID_CORE_PRODUCTS}
+
+
+def query_core_product_overrides() -> dict:
+    """Retorna {short_token: set(products)} de TODOS os overrides cadastrados.
+    Cacheado no TTL da lista (tabela pequena, só exceções curadas). Usado por
+    _fetch_contracts (lookup por token, sem custo de query no caminho do report)."""
+    cached = _cache_get(_cp_override_cache, "all", _LIST_CACHE_TTL)
+    if cached is not None:
+        return cached
+    _ensure_cp_override_table()
+    out = {}
+    try:
+        for row in bq.query(f"SELECT short_token, products FROM `{_cp_override_table_id()}`").result():
+            products = _parse_cp_products(row["products"])
+            if products:  # set vazio ≡ sem override (não esconde tudo)
+                out[row["short_token"]] = products
+    except Exception as e:
+        logger.warning(f"[WARN query_core_product_overrides] {e}")
+    _cache_set(_cp_override_cache, "all", out)
+    return out
+
+
+def query_core_product_override(short_token: str):
+    """Override de um token: {products: [...], updated_by, updated_at} ou None."""
+    _ensure_cp_override_table()
+    sql = f"""
+        SELECT products, updated_by, updated_at
+        FROM `{_cp_override_table_id()}`
+        WHERE short_token = @token
+        LIMIT 1
+    """
+    jc = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("token", "STRING", short_token)
+    ])
+    try:
+        rows = list(bq.query(sql, job_config=jc).result())
+        if rows:
+            products = sorted(_parse_cp_products(rows[0]["products"]))
+            if products:
+                ts = rows[0]["updated_at"]
+                return {"products": products,
+                        "updated_by": rows[0]["updated_by"],
+                        "updated_at": ts.isoformat() if ts else None}
+    except Exception as e:
+        logger.warning(f"[WARN query_core_product_override {short_token}] {e}")
+    return None
+
+
+def save_core_product_override(short_token: str, products, note: str | None = None,
+                               updated_by: str | None = None):
+    """UPSERT do override (atômico via MERGE). `products` = lista/set das frentes
+    ATIVAS. Set vazio → DELETE (volta ao automático)."""
+    _ensure_cp_override_table()
+    valid = sorted(_parse_cp_products(products))
+    if not valid:
+        delete_core_product_override(short_token)
+        return
+    sql = f"""
+        MERGE `{_cp_override_table_id()}` T
+        USING (SELECT @token AS short_token) S
+        ON T.short_token = S.short_token
+        WHEN MATCHED THEN
+            UPDATE SET products = @products, note = @note,
+                       updated_by = @by, updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+            INSERT (short_token, products, note, updated_by, updated_at)
+            VALUES (@token, @products, @note, @by, CURRENT_TIMESTAMP())
+    """
+    jc = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("token",    "STRING", short_token),
+        bigquery.ScalarQueryParameter("products", "STRING", ",".join(valid)),
+        bigquery.ScalarQueryParameter("note",     "STRING", note),
+        bigquery.ScalarQueryParameter("by",       "STRING", updated_by),
+    ])
+    bq.query(sql, job_config=jc).result()
+    _cache_invalidate_token(short_token)
+
+
+def delete_core_product_override(short_token: str):
+    """Remove o override — token volta a derivar frentes do checklist (automático)."""
+    _ensure_cp_override_table()
+    jc = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("token", "STRING", short_token)
+    ])
+    bq.query(f"DELETE FROM `{_cp_override_table_id()}` WHERE short_token = @token",
+             job_config=jc).result()
+    _cache_invalidate_token(short_token)
+
+
+def _apply_cp_override_to_contracts(check_row, short_token):
+    """Se há override de core products pro token, devolve um DICT do contrato com
+    contratado/bônus ZERADO nas frentes fora do set. Sem override → devolve a Row
+    original intacta (zero overhead, zero mudança de comportamento).
+
+    Ponto ÚNICO: _fetch_contracts é a fonte de contrato do serve ao vivo
+    (query_totals) E do overlay de report congelado — então zerar aqui propaga
+    pra toda a matemática (budget/pacing/CPM) e pro gating de tab no front."""
+    if check_row is None:
+        return None
+    try:
+        active = query_core_product_overrides().get(short_token)
+    except Exception as e:
+        logger.warning(f"[WARN _apply_cp_override fetch {short_token}] {e}")
+        return check_row
+    if not active:
+        return check_row
+    # Materializa a Row num dict mutável e zera as frentes inativas.
+    c = dict(check_row.items()) if hasattr(check_row, "items") else dict(check_row)
+    for frente, prefix in _CP_COLUMN_PREFIX.items():
+        if frente in active:
+            continue
+        for col in (f"contracted_{prefix}_display_impressions",
+                    f"contracted_{prefix}_video_completions",
+                    f"bonus_{prefix}_display_impressions",
+                    f"bonus_{prefix}_video_completions"):
+            if col in c:
+                c[col] = 0
+    return c
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6252,7 +6490,11 @@ def _fetch_contracts(token):
         bigquery.ScalarQueryParameter("token", "STRING", token)
     ])
     rows = list(bq.query(sql, job_config=jc, location="US").result())
-    return rows[0] if rows else None
+    if not rows:
+        return None
+    # Override de core products (curadoria admin) vence o checklist: zera
+    # contratado/bônus das frentes fora do set ANTES de virar budget/pacing.
+    return _apply_cp_override_to_contracts(rows[0], token)
 
 
 def _compute_totals(perf_rows, c, campaign_info):

@@ -718,6 +718,39 @@ export async function saveAbsOverride({ short_token, has_abs }) {
   );
 }
 
+// ── Core products override (admin) ───────────────────────────────────────────
+
+/**
+ * Lê o override de core products ATIVOS do token. Devolve
+ * {products: ["O2O", ...], updated_by, updated_at} ou null (= automático,
+ * frentes derivadas do checklist). Curadoria de quais frentes aparecem no
+ * report — vence o checklist_info (blinda frente removida no Command que a
+ * pipeline ainda materializa stale).
+ */
+export async function getCoreProductsOverride({ short_token }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=get_core_products_override&short_token=${encodeURIComponent(short_token)}`,
+    { headers: adminAuthHeaders(jwt) },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json().catch(() => ({}));
+  return d?.override ?? null;
+}
+
+/**
+ * Salva o override. `products` = array das frentes ativas (ex: ["O2O"]).
+ * Array vazio remove o override (volta ao automático).
+ */
+export async function saveCoreProductsOverride({ short_token, products }) {
+  const jwt = await getOrIssueAdminJwt();
+  return postJson(
+    `${API_URL}?action=save_core_products_override`,
+    { short_token, products },
+    adminAuthHeaders(jwt),
+  );
+}
+
 // ── Campaign closure (admin) ────────────────────────────────────────────────
 
 /**
