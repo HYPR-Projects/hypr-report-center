@@ -149,6 +149,13 @@ export function FormatBreakdownTableV2({
   // relativo ao 100% — formato top sempre cheia, demais proporcionais).
   const maxShare = enriched[0]?.share || 100;
 
+  // Estrelinha de "melhor taxa" (CTR no Display, VTR no Video): marca a linha
+  // com o maior valor da coluna de taxa. Só quando há comparação (2+ linhas) e
+  // taxa > 0 — destacar uma linha só não faz sentido.
+  const bestRate = enriched.length >= 2
+    ? Math.max(...enriched.map((r) => Number(r[rateKey]) || 0))
+    : 0;
+
   return (
     <Card ref={cardRef} className={cn("overflow-hidden", className)}>
       <div className="px-5 pt-4 pb-3 border-b border-border flex items-center justify-between gap-3">
@@ -223,7 +230,12 @@ export function FormatBreakdownTableV2({
                 </Td>
                 <Td>{fmt(r[denomKey])}</Td>
                 <Td>{fmt(r[numeratorKey])}</Td>
-                <Td>{rateFormatter(r[rateKey])}</Td>
+                <Td>
+                  <span className="inline-flex items-center justify-end gap-1">
+                    {bestRate > 0 && (Number(r[rateKey]) || 0) === bestRate && <BestRateStar />}
+                    {rateFormatter(r[rateKey])}
+                  </span>
+                </Td>
                 {mediaType === "DISPLAY" ? (
                   <>
                     <Td>{r.viewability > 0 ? `${r.viewability.toFixed(1)}%` : "—"}</Td>
@@ -305,9 +317,9 @@ function Td({ children, align = "right", mono = false, accent = false }) {
 function EditableNameCell({ value, overridden, busy, onRename, onReset }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value || "");
-  const [scope, setScope] = useState("advertiser");
+  const [scope, setScope] = useState("campaign");
 
-  const start = () => { setDraft(value || ""); setScope("advertiser"); setEditing(true); };
+  const start = () => { setDraft(value || ""); setScope("campaign"); setEditing(true); };
   const commit = () => {
     const name = draft.trim();
     setEditing(false);
@@ -426,6 +438,21 @@ function XIcon() {
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
       strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
       <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
+// Estrelinha dourada minimalista — marca a linha de melhor taxa (CTR/VTR).
+function BestRateStar() {
+  return (
+    <svg
+      width="12" height="12" viewBox="0 0 24 24" fill="#fbbf24" stroke="none"
+      className="shrink-0"
+      style={{ filter: "drop-shadow(0 0 2.5px rgba(251,191,36,0.55))" }}
+      aria-label="Melhor CTR"
+    >
+      <title>Melhor CTR</title>
+      <path d="M12 2l2.94 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l7.06-1.01z" />
     </svg>
   );
 }

@@ -36,7 +36,7 @@ export function AudienceOverridesModal({
     shortToken,
     isAdmin: true,
   });
-  const [scope, setScope] = useState("advertiser");       // escopo p/ NOVAS edições
+  const [scope, setScope] = useState("campaign");          // escopo p/ NOVAS edições (default: só esta campanha)
   const [scopeByKey, setScopeByKey] = useState(null);     // raw_key -> 'advertiser'|'campaign' (selo, async)
   const [newRaw, setNewRaw] = useState("");
   const [newName, setNewName] = useState("");
