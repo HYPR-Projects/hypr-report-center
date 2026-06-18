@@ -41,7 +41,7 @@
 // Limite visual: 10 linhas (raro ter mais; Display HYPR opera com ~6
 // formatos padrão e Video com ~3 durações).
 
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { fmt, fmtR } from "../../shared/format";
 import { Card } from "../../ui/Card";
 import { cn } from "../../ui/cn";
@@ -69,6 +69,15 @@ export function FormatBreakdownTableV2({
   // Botão de baixar PNG no header (só admin). filename = nome do arquivo.
   downloadable = false,
   filename,
+  // Edição inline do nome do grupo (usado só na tabela "Por Audiência", admin).
+  // editable liga o lápis; os callbacks recebem a ROW inteira (carrega
+  // _rawLabels p/ persistir por rótulo cru). busyAudience = chave do grupo
+  // salvando agora. isRowOverridden(row) → mostra o "reverter".
+  editable = false,
+  onRenameGroup = null,
+  onResetGroup = null,
+  isRowOverridden = null,
+  busyAudience = null,
 }) {
   const cardRef = useRef(null);
   // Junta cost / impressions brutas / clicks por chave de agrupamento se
@@ -191,9 +200,19 @@ export function FormatBreakdownTableV2({
                 key={r[groupKey]}
                 className="border-b border-border/50 last:border-b-0 hover:bg-surface transition-colors"
               >
-                <Td align="left" mono>
-                  {r[groupKey] || "—"}
-                </Td>
+                {editable ? (
+                  <EditableNameCell
+                    value={r[groupKey]}
+                    overridden={isRowOverridden?.(r) || false}
+                    busy={busyAudience != null && busyAudience === r[groupKey]}
+                    onRename={(name) => onRenameGroup?.(r, name)}
+                    onReset={() => onResetGroup?.(r)}
+                  />
+                ) : (
+                  <Td align="left" mono>
+                    {r[groupKey] || "—"}
+                  </Td>
+                )}
                 <Td align="left">
                   <ShareBar pct={r.share} maxShare={maxShare} />
                 </Td>
@@ -273,5 +292,99 @@ function Td({ children, align = "right", mono = false, accent = false }) {
     >
       {children}
     </td>
+  );
+}
+
+// ─── Célula de nome editável (admin · tabela "Por Audiência") ───────────────
+//
+// Hover mostra o lápis; clique abre input inline. Enter/blur salva (se mudou),
+// Esc cancela. Quando o grupo está overridado, mostra um "↺" pra reverter ao
+// rótulo cru da plataforma. Tudo opera sobre a ROW (que carrega _rawLabels) —
+// a persistência por rótulo cru fica no callback do pai.
+function EditableNameCell({ value, overridden, busy, onRename, onReset }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value || "");
+
+  const start = () => { setDraft(value || ""); setEditing(true); };
+  const commit = () => {
+    const name = draft.trim();
+    setEditing(false);
+    if (name && name !== (value || "")) onRename?.(name);
+  };
+  const cancel = () => { setEditing(false); setDraft(value || ""); };
+
+  return (
+    <td className="px-4 py-2.5 text-left">
+      {editing ? (
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            else if (e.key === "Escape") cancel();
+          }}
+          maxLength={120}
+          className="w-44 rounded-md border border-signature bg-canvas px-2 py-1 text-xs text-fg font-medium outline-none focus:ring-1 focus:ring-signature"
+        />
+      ) : (
+        <div className="group/aud flex items-center gap-1.5">
+          <span className="tabular-nums font-medium text-fg">{value || "—"}</span>
+          {busy ? (
+            <span className="text-[10px] text-fg-subtle">salvando…</span>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={start}
+                title="Editar nome da audiência"
+                aria-label="Editar nome da audiência"
+                className="opacity-0 group-hover/aud:opacity-100 transition-opacity text-fg-subtle hover:text-signature"
+              >
+                <PencilIcon />
+              </button>
+              {overridden && (
+                <button
+                  type="button"
+                  onClick={onReset}
+                  title="Reverter ao nome original da plataforma"
+                  aria-label="Reverter ao nome original"
+                  className="opacity-0 group-hover/aud:opacity-100 transition-opacity text-fg-subtle hover:text-danger"
+                >
+                  <RevertIcon />
+                </button>
+              )}
+              {overridden && (
+                <span
+                  title="Nome editado pelo admin"
+                  className="h-1.5 w-1.5 rounded-full bg-signature shrink-0"
+                />
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </td>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+function RevertIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 7v6h6" />
+      <path d="M3.51 13a9 9 0 1 0 2.13-9.36L3 7" />
+    </svg>
   );
 }

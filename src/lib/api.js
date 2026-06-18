@@ -499,6 +499,54 @@ export async function lookupShare(share_id) {
 // Ver backend/client_portal.py.
 
 /**
+ * Admin: salva o override de NOME de audiência (Report Center). Escopo POR
+ * ANUNCIANTE (client_name). `raw_audience` pode ser string ou array (renomear
+ * um grupo já mesclado aplica o mesmo nome a todos os rótulos crus dele).
+ * `short_token` é opcional — só pro audit log. Lança em falha.
+ */
+export async function saveAudienceOverride({ client_name, raw_audience, display_name, short_token }) {
+  const jwt = await getOrIssueAdminJwt();
+  const res = await postJson(
+    `${API_URL}?action=save_audience_override`,
+    { client_name, raw_audience, display_name, short_token },
+    adminAuthHeaders(jwt),
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return true;
+}
+
+/**
+ * Admin: remove o override de audiência (reverte pro rótulo cru). `raw_audience`
+ * string ou array. Lança em falha.
+ */
+export async function deleteAudienceOverride({ client_name, raw_audience, short_token }) {
+  const jwt = await getOrIssueAdminJwt();
+  const res = await postJson(
+    `${API_URL}?action=delete_audience_override`,
+    { client_name, raw_audience, short_token },
+    adminAuthHeaders(jwt),
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return true;
+}
+
+/**
+ * Admin: lista os overrides de audiência de um anunciante (drawer "Gerenciar
+ * audiências"). Retorna { overrides: [{raw_key, raw_audience, display_name,
+ * edited_by, updated_at}] } ou lança.
+ */
+export async function listAudienceOverrides(client_name) {
+  const jwt = await getOrIssueAdminJwt();
+  if (!jwt) throw new Error("no admin jwt");
+  const r = await fetch(
+    `${API_URL}?action=list_audience_overrides&client_name=${encodeURIComponent(client_name)}`,
+    { headers: { ...adminAuthHeaders(jwt) } },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/**
  * Admin: config do portal de um cliente + mapa de publicação por token.
  * Leve (2 lookups, sem a query pesada de campanhas — o caller já tem a lista
  * carregada na página). Lança em falha. Retorna

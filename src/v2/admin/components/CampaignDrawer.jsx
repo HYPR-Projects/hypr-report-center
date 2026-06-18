@@ -23,6 +23,7 @@ import { AbsToggle } from "./AbsToggle";
 import { CoreProductsOverride } from "./CoreProductsOverride";
 import { TokenChip } from "./TokenChip";
 import { ClosureModal } from "./ClosureModal";
+import { AudienceOverridesModal } from "./AudienceOverridesModal";
 import {
   getNegotiation,
   getCampaign,
@@ -65,6 +66,13 @@ const ICON = {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="3" width="18" height="18" rx="2" />
       <path d="M9 12h6M9 8h6M9 16h6" />
+    </svg>
+  ),
+  audience: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
     </svg>
   ),
   logo: (
@@ -215,6 +223,9 @@ export function CampaignDrawer({
   // Popup de fechamento (pós-venda + checkups). closureModalMode distingue
   // o fluxo "encerrar agora" (close) do "editar dados de campanha já
   // encerrada" (edit, pré-populado via getClosureDetails).
+  const [audienceModalOpen, setAudienceModalOpen] = useState(false);
+  useEffect(() => { setAudienceModalOpen(false); }, [drawerToken, open]);
+
   const [closureModalOpen, setClosureModalOpen] = useState(false);
   const [closureModalMode, setClosureModalMode] = useState("close");
   const [closureInitialDetails, setClosureInitialDetails] = useState(null);
@@ -927,9 +938,10 @@ export function CampaignDrawer({
 
           {/* ── 3. CONTEÚDO DO REPORT — o que o cliente vê dentro do report. */}
           <ActionGroup label="Conteúdo do report" className="drawer-section-rise drawer-stagger-5">
-            <ActionButton icon={ICON.loom}   label="Adicionar/editar Loom" onClick={() => onLoom?.(short_token)} />
-            <ActionButton icon={ICON.survey} label="Gerenciar Survey"      onClick={() => onSurvey?.(short_token)} />
-            <ActionButton icon={ICON.logo}   label="Trocar logo"           onClick={() => onLogo?.(short_token)} />
+            <ActionButton icon={ICON.loom}     label="Adicionar/editar Loom"   onClick={() => onLoom?.(short_token)} />
+            <ActionButton icon={ICON.survey}   label="Gerenciar Survey"        onClick={() => onSurvey?.(short_token)} />
+            <ActionButton icon={ICON.audience} label="Editar nomes de audiência" onClick={() => setAudienceModalOpen(true)} />
+            <ActionButton icon={ICON.logo}     label="Trocar logo"             onClick={() => onLogo?.(short_token)} />
           </ActionGroup>
 
           {/* ── 4. ATRIBUIÇÕES — owner, agrupamento, e "Ver Negociado"
@@ -995,6 +1007,15 @@ export function CampaignDrawer({
         mode={closureModalMode}
         initialDetails={closureInitialDetails}
         onSaved={handleClosureSaved}
+      />
+
+      {/* Gestão dos nomes de audiência do anunciante (criação principal é
+          inline na tabela do report; aqui é editar/reverter em lote). */}
+      <AudienceOverridesModal
+        open={audienceModalOpen}
+        onOpenChange={setAudienceModalOpen}
+        clientName={client_name}
+        shortToken={short_token}
       />
     </Drawer>
   );

@@ -20,6 +20,7 @@
 // apresentação — recebe tudo via props.
 
 import { TableMultiSelectFilter } from "./TableMultiSelectFilter";
+import { applyAudienceOverride } from "../../shared/aggregations";
 
 export function GlobalDataFilterBarV2({
   // Options
@@ -28,6 +29,11 @@ export function GlobalDataFilterBarV2({
   creativeLineOptions,
   sizeOptions,
   formatOptions,
+  // Override de nome de audiência (Report Center) — relabela SÓ o texto
+  // exibido no filtro; o valor (rótulo cru) e o predicado (extractAudience)
+  // ficam intactos, então a filtragem não muda. Mantém o filtro coerente
+  // com a tabela "Por Audiência", que mostra os nomes corrigidos.
+  audienceOverrideMap = null,
   // State + setters
   audiences,
   setAudiences,
@@ -59,6 +65,11 @@ export function GlobalDataFilterBarV2({
           options={audienceOptions}
           selected={audiences}
           onChange={setAudiences}
+          formatLabel={
+            audienceOverrideMap
+              ? (a) => applyAudienceOverride(a, audienceOverrideMap)
+              : undefined
+          }
           icon={
             <svg
               width="12"

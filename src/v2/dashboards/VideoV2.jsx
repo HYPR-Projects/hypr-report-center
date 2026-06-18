@@ -30,8 +30,10 @@
 //   detail vinha sem tactic_type setado, deixando KPIs zerados.
 
 import { useMemo } from "react";
+import { useAudienceOverrides } from "../hooks/useAudienceOverrides";
 import {
   computeVideoKpis,
+  applyAudienceOverride,
   extractAudience,
   getCreativeLineKey,
   groupByDate,
@@ -90,6 +92,15 @@ export default function VideoV2({
   const camp = data.campaign;
   const { trackCta } = useReportTrackingContext();
 
+  // Override de nome de audiência (Report Center, por anunciante) — igual ao
+  // DisplayV2. Aplicado na quebra "Por Audiência"; editável inline só admin.
+  const aud = useAudienceOverrides({
+    initialMap: data.audience_overrides,
+    clientName: camp.client_name,
+    shortToken: camp.short_token,
+    isAdmin,
+  });
+
   // Tactics disponíveis: ver comentário equivalente em DisplayV2.
   const t0Video = (data.totals || [])[0] || {};
   const hasDelivery = (tac) => aggregates.totals.some(
@@ -144,10 +155,10 @@ export default function VideoV2({
     const daily = groupByDate(detailAll, "video_view_100", "viewable_impressions", "vtr");
     const bySize = groupBySize(detailNormalized, "video_view_100", "viewable_impressions", "vtr");
     const byCreative = groupByCreativeName(detailAll, "video_view_100", "viewable_impressions", "vtr");
-    const byAudience = groupByAudience(detailAll, "video_view_100", "viewable_impressions", "vtr");
+    const byAudience = groupByAudience(detailAll, "video_view_100", "viewable_impressions", "vtr", aud.overrideMap);
 
     return { totals, detailAll, detailNormalized, kpis, daily, bySize, byCreative, byAudience };
-  }, [aggregates, effectiveTactic, t0Video, hasGfContract]);
+  }, [aggregates, effectiveTactic, t0Video, hasGfContract, aud.overrideMap]);
 
   const { totals, detailAll, detailNormalized, kpis, daily, bySize, byCreative, byAudience } = view;
   // Alias mantido pelos consumers internos (`detailFiltered`). Pós-refactor
@@ -259,6 +270,7 @@ export default function VideoV2({
           useProjection={useProjection}
           notStarted={kpis.notStarted}
           isAdmin={isAdmin}
+          aud={aud}
         />
       )}
     </div>
@@ -287,6 +299,7 @@ function VideoContent({
   useProjection,
   notStarted,
   isAdmin = false,
+  aud,
 }) {
   const campName = camp.campaign_name || "campanha";
   return (
@@ -503,10 +516,15 @@ function VideoContent({
           rateLabel="VTR"
           rateFormatter={fmtP2}
           extraRows={detailAll}
-          getDetailGroupKey={(r) => extractAudience(r.line_name)}
+          getDetailGroupKey={(r) => applyAudienceOverride(extractAudience(r.line_name), aud?.overrideMap)}
           mediaType="VIDEO"
           downloadable={isAdmin}
           filename={`${campName} - Video ${tactic} - Por Audiencia`}
+          editable={isAdmin}
+          busyAudience={aud?.busyAudience}
+          isRowOverridden={(row) => aud?.isOverridden?.(row._rawLabels)}
+          onRenameGroup={(row, name) => aud?.renameAudience(row._rawLabels, name, row.audience)}
+          onResetGroup={(row) => aud?.resetAudience(row._rawLabels, row.audience)}
         />
       )}
 
