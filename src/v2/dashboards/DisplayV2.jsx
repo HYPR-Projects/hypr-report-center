@@ -558,7 +558,7 @@ function DisplayContent({
           editable={isAdmin}
           busyAudience={aud?.busyAudience}
           isRowOverridden={(row) => aud?.isOverridden?.(row._rawLabels)}
-          onRenameGroup={(row, name) => aud?.renameAudience(row._rawLabels, name, row.audience)}
+          onRenameGroup={(row, name, scope) => aud?.renameAudience(row._rawLabels, name, row.audience, scope)}
           onResetGroup={(row) => aud?.resetAudience(row._rawLabels, row.audience)}
         />
       )}

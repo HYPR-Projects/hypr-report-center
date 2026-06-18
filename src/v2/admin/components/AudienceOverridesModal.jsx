@@ -1,30 +1,30 @@
 // src/v2/admin/components/AudienceOverridesModal.jsx
 //
-// Gerencia os overrides de NOME de audiência de um ANUNCIANTE (Report Center).
-// Abre pelo botão "Editar nomes de audiência" no CampaignDrawer.
+// Gerencia os overrides de NOME de audiência (Report Center). Abre pelo botão
+// "Editar nomes de audiência" no CampaignDrawer.
 //
-// Lista as audiências da campanha AGRUPADAS pelo nome resolvido. A regra de
-// merge é por NOME EXATO: dar o mesmo nome a duas audiências cruas funde as
-// duas (soma métricas no report). Aqui isso fica explícito — um grupo mesclado
-// mostra os rótulos crus que o compõem, cada um com "separar" pra desfazer.
+// Agrupa as audiências da campanha pelo nome resolvido (merge por nome exato) e
+// deixa o admin escolher o ESCOPO de cada correção:
+//   • Anunciante    → vale em todas as campanhas do cliente.
+//   • Esta campanha → vale só neste report (vence o do anunciante).
 //
-// Renomear também funciona inline na tabela "Por Audiência" do report; este
-// modal é o atalho admin que não exige rolar até a tabela.
+// É list-driven (fonte de verdade = endpoint list_audience_overrides, que traz
+// o scope_token), então o selo de escopo de cada grupo é preciso. Cada
+// save/delete refaz o fetch.
 //
-// Escopo por anunciante: a correção vale em todos os reports do cliente e vira
-// seed pra IA do Client Hub (backend). Nested dialog sobre o Drawer (Radix
-// empilha as camadas).
+// Renomear também funciona inline na tabela "Por Audiência" do report.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { cn } from "../../../ui/cn";
 import { toast } from "../../../lib/toast";
+import { extractAudience, normAudienceKey } from "../../../shared/aggregations";
+import { ScopeToggle } from "../../components/FormatBreakdownTableV2";
 import {
-  extractAudience,
-  applyAudienceOverride,
-  normAudienceKey,
-} from "../../../shared/aggregations";
-import { useAudienceOverrides } from "../../hooks/useAudienceOverrides";
+  listAudienceOverrides,
+  saveAudienceOverride,
+  deleteAudienceOverride,
+} from "../../../lib/api";
 
 export function AudienceOverridesModal({
   open,
@@ -32,88 +32,124 @@ export function AudienceOverridesModal({
   clientName,
   shortToken,
   detailRows,           // reportData.detail — pra descobrir as audiências cruas
-  overrideMap,          // reportData.audience_overrides — {raw_key: display} do anunciante
 }) {
-  const aud = useAudienceOverrides({
-    initialMap: overrideMap,
-    clientName,
-    shortToken,
-    isAdmin: true,
-  });
+  const [rows, setRows] = useState(null);   // linhas do list endpoint (null = carregando)
+  const [busyKey, setBusyKey] = useState(null);
+  const [scope, setScope] = useState("advertiser"); // escopo p/ novas edições
   const [newRaw, setNewRaw] = useState("");
   const [newName, setNewName] = useState("");
 
-  // Candidatos crus = audiências da campanha (detail) ∪ overrides já existentes
-  // do anunciante (overrideMap traz TODOS do slug, inclusive de outras campanhas).
+  const reload = async () => {
+    if (!clientName) { setRows([]); return; }
+    try {
+      const r = await listAudienceOverrides(clientName);
+      // Só os escopos relevantes a ESTE report: anunciante ('') + esta campanha.
+      const relevant = (r?.overrides || []).filter(
+        (o) => o.scope_token === "" || o.scope_token === shortToken,
+      );
+      setRows(relevant);
+    } catch (e) {
+      toast.error(e?.message || "Erro ao carregar audiências");
+      setRows([]);
+    }
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    setRows(null);
+    setNewRaw("");
+    setNewName("");
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, clientName, shortToken]);
+
+  // Override EFETIVO por raw_key: anunciante ('') sobreposto pela campanha
+  // (que vence). Guarda o scope vencedor pro selo.
+  const effective = useMemo(() => {
+    const m = new Map(); // raw_key -> { display, scope, raw }
+    for (const o of rows || []) {
+      if (o.scope_token === "") m.set(o.raw_key, { display: o.display_name, scope: "advertiser", raw: o.raw_audience || o.raw_key });
+    }
+    for (const o of rows || []) {
+      if (o.scope_token && o.scope_token === shortToken) m.set(o.raw_key, { display: o.display_name, scope: "campaign", raw: o.raw_audience || o.raw_key });
+    }
+    return m;
+  }, [rows, shortToken]);
+
+  // Candidatos = audiências cruas da campanha (detail) ∪ overrides existentes.
   const candidates = useMemo(() => {
     const byKey = new Map(); // raw_key -> { key, raw, display }
     for (const r of detailRows || []) {
       const raw = extractAudience(r.line_name);
       if (!raw || raw === "N/A" || /survey/i.test(raw)) continue;
       const key = normAudienceKey(raw);
-      if (!byKey.has(key)) {
-        byKey.set(key, { key, raw, display: applyAudienceOverride(raw, aud.overrideMap) });
-      }
+      if (!byKey.has(key)) byKey.set(key, { key, raw, display: effective.get(key)?.display || raw });
     }
-    for (const [key, display] of Object.entries(aud.overrideMap || {})) {
-      if (!byKey.has(key)) byKey.set(key, { key, raw: key, display });
+    for (const [key, e] of effective) {
+      if (!byKey.has(key)) byKey.set(key, { key, raw: e.raw, display: e.display });
     }
     return [...byKey.values()];
-  }, [detailRows, aud.overrideMap]);
+  }, [detailRows, effective]);
 
-  // Agrupa por NOME resolvido — é exatamente o que a tabela do report faz.
-  // Grupo com 2+ membros = mesclado.
+  // Agrupa por nome resolvido (merge por nome exato).
   const groups = useMemo(() => {
-    const byDisplay = new Map(); // display -> { display, members: [{key, raw, overridden}] }
+    const byDisplay = new Map();
     for (const c of candidates) {
       if (!byDisplay.has(c.display)) byDisplay.set(c.display, { display: c.display, members: [] });
-      byDisplay.get(c.display).members.push({
-        key: c.key,
-        raw: c.raw,
-        overridden: aud.isOverridden([c.raw]),
-      });
+      byDisplay.get(c.display).members.push({ key: c.key, raw: c.raw, scope: effective.get(c.key)?.scope || null });
     }
     return [...byDisplay.values()].sort((a, b) => a.display.localeCompare(b.display));
-  }, [candidates, aud]);
+  }, [candidates, effective]);
 
-  const renameGroup = (members, name) =>
-    aud.renameAudience(members.map((m) => m.raw), name, members[0]?.raw)
-      .catch((e) => toast.error(e?.message || "Erro ao salvar"));
-  const splitMember = (raw) =>
-    aud.resetAudience([raw], raw).catch((e) => toast.error(e?.message || "Erro ao separar"));
+  const run = async (fn, key) => {
+    setBusyKey(key);
+    try { await fn(); await reload(); }
+    catch (e) { toast.error(e?.message || "Erro"); }
+    finally { setBusyKey(null); }
+  };
+
+  const renameGroup = (members, name) => {
+    const display = String(name || "").trim();
+    if (!display) return;
+    run(() => saveAudienceOverride({
+      client_name: clientName,
+      raw_audience: members.map((m) => m.raw),
+      display_name: display,
+      short_token: shortToken,
+      scope,
+    }), members.map((m) => m.key).join("|"));
+  };
+  const revertMember = (raw, key) =>
+    run(() => deleteAudienceOverride({ client_name: clientName, raw_audience: raw, short_token: shortToken, scope: "all" }), key);
 
   const handleAdd = () => {
     const raw = newRaw.trim();
     const name = newName.trim();
     if (!raw || !name) return;
-    aud.renameAudience([raw], name, "__new__")
-      .then(() => { setNewRaw(""); setNewName(""); })
-      .catch((e) => toast.error(e?.message || "Erro ao adicionar"));
+    run(() => saveAudienceOverride({
+      client_name: clientName, raw_audience: raw, display_name: name, short_token: shortToken, scope,
+    }).then(() => { setNewRaw(""); setNewName(""); }), "__new__");
   };
 
   return (
-    <Dialog.Root open={open} onOpenChange={aud.busyAudience ? undefined : onOpenChange}>
+    <Dialog.Root open={open} onOpenChange={busyKey ? undefined : onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay
           className={cn(
             "fixed inset-0 z-[60] bg-black/60 backdrop-blur-[3px]",
             "data-[state=open]:animate-in data-[state=closed]:animate-out",
-            "data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0",
-            "duration-200",
+            "data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 duration-200",
           )}
         />
         <Dialog.Content
           className={cn(
-            "fixed left-1/2 top-1/2 z-[70]",
-            "-translate-x-1/2 -translate-y-1/2",
-            "w-[calc(100vw-32px)] max-w-[600px]",
-            "max-h-[calc(100vh-48px)] overflow-hidden",
+            "fixed left-1/2 top-1/2 z-[70] -translate-x-1/2 -translate-y-1/2",
+            "w-[calc(100vw-32px)] max-w-[600px] max-h-[calc(100vh-48px)] overflow-hidden",
             "rounded-2xl border border-border-strong bg-canvas-elevated shadow-2xl",
             "flex flex-col outline-none",
             "data-[state=open]:animate-in data-[state=closed]:animate-out",
             "data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0",
-            "data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95",
-            "duration-200",
+            "data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95 duration-200",
           )}
         >
           {/* Header */}
@@ -122,21 +158,25 @@ export function AudienceOverridesModal({
               Nomes de audiência · {clientName}
             </Dialog.Title>
             <Dialog.Description className="mt-1 text-xs text-fg-muted leading-relaxed">
-              Renomeie audiências que vieram estranhas da plataforma. Valem em
-              todos os reports do anunciante e ajudam a IA do hub.
+              Renomeie audiências que vieram estranhas da plataforma. Ajudam a IA do hub.
             </Dialog.Description>
             <div className="mt-2.5 flex items-start gap-2 rounded-lg bg-signature/10 border border-signature/20 px-3 py-2">
               <MergeIcon className="mt-px shrink-0 text-signature" />
               <p className="text-[11px] leading-relaxed text-fg-muted">
                 <span className="font-semibold text-fg">Dê o mesmo nome a duas audiências</span> para
-                mesclá-las — elas viram um grupo só e somam as métricas no report.
+                mesclá-las (somam métricas no report).
               </p>
+            </div>
+            {/* Escopo das edições feitas aqui */}
+            <div className="mt-2.5 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-fg-muted">Aplicar edições em:</span>
+              <ScopeToggle scope={scope} onChange={setScope} size="md" />
             </div>
           </div>
 
           {/* Lista */}
           <div className="flex-1 overflow-y-auto px-5 py-4 space-y-2.5">
-            {detailRows == null ? (
+            {rows === null || detailRows == null ? (
               <div className="py-8 text-center text-xs text-fg-subtle">Carregando audiências…</div>
             ) : groups.length === 0 ? (
               <div className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-xs text-fg-subtle">
@@ -146,12 +186,11 @@ export function AudienceOverridesModal({
             ) : (
               groups.map((g) => (
                 <GroupCard
-                  // display na key: remonta (re-seed do draft) quando o nome muda.
                   key={`${g.display}:${g.members.map((m) => m.key).join("|")}`}
                   group={g}
-                  busy={aud.busyAudience}
+                  busy={busyKey}
                   onRename={(name) => renameGroup(g.members, name)}
-                  onSplit={splitMember}
+                  onRevert={revertMember}
                 />
               ))
             )}
@@ -181,10 +220,10 @@ export function AudienceOverridesModal({
               <button
                 type="button"
                 onClick={handleAdd}
-                disabled={!newRaw.trim() || !newName.trim() || aud.busyAudience === "__new__"}
+                disabled={!newRaw.trim() || !newName.trim() || busyKey === "__new__"}
                 className="shrink-0 rounded-md bg-signature px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
               >
-                {aud.busyAudience === "__new__" ? "…" : "Add"}
+                {busyKey === "__new__" ? "…" : "Add"}
               </button>
             </div>
           </div>
@@ -194,7 +233,7 @@ export function AudienceOverridesModal({
             <button
               type="button"
               onClick={() => onOpenChange?.(false)}
-              disabled={!!aud.busyAudience}
+              disabled={!!busyKey}
               className="rounded-md border border-border px-3.5 py-1.5 text-xs font-semibold text-fg hover:bg-surface disabled:opacity-40"
             >
               Fechar
@@ -206,13 +245,14 @@ export function AudienceOverridesModal({
   );
 }
 
-// Um grupo = todas as audiências cruas que resolvem pro mesmo nome. Editar o
-// nome do grupo aplica a TODOS os membros (mantém o merge sob o novo nome).
-function GroupCard({ group, busy, onRename, onSplit }) {
+function GroupCard({ group, busy, onRename, onRevert }) {
   const [draft, setDraft] = useState(group.display || "");
   const merged = group.members.length > 1;
-  const overridden = group.members.some((m) => m.overridden);
-  const groupBusy = busy === group.members[0]?.raw;
+  const overriddenMembers = group.members.filter((m) => m.scope);
+  const overridden = overriddenMembers.length > 0;
+  // Selo de escopo: se algum membro é de campanha → "campanha"; senão anunciante.
+  const groupScope = overriddenMembers.some((m) => m.scope === "campaign") ? "campaign" : "advertiser";
+  const groupBusy = busy === group.members.map((m) => m.key).join("|");
 
   const commit = () => {
     const name = draft.trim();
@@ -220,12 +260,7 @@ function GroupCard({ group, busy, onRename, onSplit }) {
   };
 
   return (
-    <div
-      className={cn(
-        "rounded-lg border bg-surface",
-        merged ? "border-signature/40" : "border-border",
-      )}
-    >
+    <div className={cn("rounded-lg border bg-surface", merged ? "border-signature/40" : "border-border")}>
       <div className="flex items-center gap-2 px-3 py-2">
         <input
           value={draft}
@@ -241,45 +276,45 @@ function GroupCard({ group, busy, onRename, onSplit }) {
             mesclada · {group.members.length}
           </span>
         )}
-        {overridden && !merged && (
-          <span title="Nome editado pelo admin" className="h-1.5 w-1.5 shrink-0 rounded-full bg-signature" />
+        {overridden && (
+          <span
+            title={groupScope === "campaign" ? "Vale só nesta campanha" : "Vale em todo o anunciante"}
+            className="shrink-0 rounded-full bg-fg/10 px-2 py-0.5 text-[10px] font-semibold text-fg-muted"
+          >
+            {groupScope === "campaign" ? "campanha" : "anunciante"}
+          </span>
         )}
         {groupBusy && <span className="shrink-0 text-[11px] text-fg-subtle">…</span>}
       </div>
 
       {merged ? (
-        // Membros do merge — cada rótulo cru com "separar" pra desfazer só ele.
         <div className="flex flex-wrap gap-1.5 border-t border-border/60 px-3 py-2">
           {group.members.map((m) => (
-            <span
-              key={m.key}
-              className="inline-flex items-center gap-1 rounded-md bg-canvas-deeper px-2 py-1 text-[10px] font-mono text-fg-muted"
-            >
+            <span key={m.key} className="inline-flex items-center gap-1 rounded-md bg-canvas-deeper px-2 py-1 text-[10px] font-mono text-fg-muted">
               {m.raw}
               <button
                 type="button"
-                onClick={() => onSplit(m.raw)}
-                disabled={busy === m.raw}
+                onClick={() => onRevert(m.raw, m.key)}
+                disabled={busy === m.key}
                 title="Separar do merge (reverter este rótulo)"
                 className="text-fg-subtle hover:text-danger disabled:opacity-40"
                 aria-label={`Separar ${m.raw}`}
               >
-                <XIcon />
+                <XMini />
               </button>
             </span>
           ))}
         </div>
       ) : (
         overridden && (
-          // Audiência única já renomeada: mostra o cru + reverter.
           <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-1.5">
             <span className="text-[10px] text-fg-subtle truncate">
               cru: <span className="font-mono">{group.members[0]?.raw}</span>
             </span>
             <button
               type="button"
-              onClick={() => onSplit(group.members[0]?.raw)}
-              disabled={busy === group.members[0]?.raw}
+              onClick={() => onRevert(group.members[0]?.raw, group.members[0]?.key)}
+              disabled={busy === group.members[0]?.key}
               title="Reverter ao nome original da plataforma"
               className="shrink-0 text-[11px] font-semibold text-fg-subtle hover:text-danger disabled:opacity-40"
             >
@@ -304,7 +339,7 @@ function MergeIcon({ className }) {
   );
 }
 
-function XIcon() {
+function XMini() {
   return (
     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
       strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

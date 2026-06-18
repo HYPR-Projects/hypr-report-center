@@ -504,11 +504,11 @@ export async function lookupShare(share_id) {
  * um grupo já mesclado aplica o mesmo nome a todos os rótulos crus dele).
  * `short_token` é opcional — só pro audit log. Lança em falha.
  */
-export async function saveAudienceOverride({ client_name, raw_audience, display_name, short_token }) {
+export async function saveAudienceOverride({ client_name, raw_audience, display_name, short_token, scope }) {
   const jwt = await getOrIssueAdminJwt();
   const res = await postJson(
     `${API_URL}?action=save_audience_override`,
-    { client_name, raw_audience, display_name, short_token },
+    { client_name, raw_audience, display_name, short_token, scope },
     adminAuthHeaders(jwt),
   );
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -517,13 +517,14 @@ export async function saveAudienceOverride({ client_name, raw_audience, display_
 
 /**
  * Admin: remove o override de audiência (reverte pro rótulo cru). `raw_audience`
- * string ou array. Lança em falha.
+ * string ou array. `scope`: "all" (default — limpa anunciante + esta campanha)
+ * | "advertiser" | "campaign". Lança em falha.
  */
-export async function deleteAudienceOverride({ client_name, raw_audience, short_token }) {
+export async function deleteAudienceOverride({ client_name, raw_audience, short_token, scope }) {
   const jwt = await getOrIssueAdminJwt();
   const res = await postJson(
     `${API_URL}?action=delete_audience_override`,
-    { client_name, raw_audience, short_token },
+    { client_name, raw_audience, short_token, scope },
     adminAuthHeaders(jwt),
   );
   if (!res.ok) throw new Error(`HTTP ${res.status}`);

@@ -32,7 +32,10 @@ export function useAudienceOverrides({ initialMap, clientName, shortToken, isAdm
 
   // Renomeia (e funde, quando vira nome de outro grupo) um conjunto de rótulos
   // crus pro `newName`. rawLabels = row._rawLabels da tabela agrupada.
-  const renameAudience = useCallback(async (rawLabels, newName, busyKey = null) => {
+  // `scope`: "advertiser" (default — todo o anunciante) | "campaign" (só este
+  // report). Em ambos, o display EFETIVO neste report vira `name`, então o
+  // patch otimista no overrideMap é o mesmo.
+  const renameAudience = useCallback(async (rawLabels, newName, busyKey = null, scope = "advertiser") => {
     if (!isAdmin || !clientName) return;
     const labels = (Array.isArray(rawLabels) ? rawLabels : [rawLabels]).filter(Boolean);
     const name = String(newName || "").trim();
@@ -45,6 +48,7 @@ export function useAudienceOverrides({ initialMap, clientName, shortToken, isAdm
         raw_audience: labels,
         display_name: name,
         short_token: shortToken,
+        scope,
       });
       setOverrideMap((prev) => {
         const next = { ...prev };
@@ -59,8 +63,9 @@ export function useAudienceOverrides({ initialMap, clientName, shortToken, isAdm
     }
   }, [isAdmin, clientName, shortToken]);
 
-  // Reverte (remove override) — volta ao rótulo cru da plataforma.
-  const resetAudience = useCallback(async (rawLabels, busyKey = null) => {
+  // Reverte — volta ao rótulo cru da plataforma. `scope` default "all" limpa
+  // o efeito neste report (anunciante + esta campanha).
+  const resetAudience = useCallback(async (rawLabels, busyKey = null, scope = "all") => {
     if (!isAdmin || !clientName) return;
     const labels = (Array.isArray(rawLabels) ? rawLabels : [rawLabels]).filter(Boolean);
     if (!labels.length) return;
@@ -71,6 +76,7 @@ export function useAudienceOverrides({ initialMap, clientName, shortToken, isAdm
         client_name: clientName,
         raw_audience: labels,
         short_token: shortToken,
+        scope,
       });
       setOverrideMap((prev) => {
         const next = { ...prev };

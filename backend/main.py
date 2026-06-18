@@ -1888,10 +1888,10 @@ def report_data(request):
             return (jsonify({"error": "Erro ao reverter encerramento antecipado"}), 500, headers)
 
     # ── Endpoint: salvar override de nome de audiência (admin) ───────────────
-    # Body: {client_name, raw_audience, display_name}
-    # Escopo POR ANUNCIANTE (client_name → slug). Aplica no Report Center e
-    # vira seed pra IA do Client Hub. raw_audience pode vir como ARRAY (renomear
-    # um grupo já mesclado aplica o mesmo display a todos os rótulos crus dele).
+    # Body: {client_name, raw_audience, display_name, scope?, short_token?}
+    # scope: "advertiser" (default, vale em todo o anunciante) | "campaign"
+    # (só este report — exige short_token). raw_audience pode vir como ARRAY
+    # (renomear um grupo já mesclado aplica o mesmo display a todos os crus).
     if request.method == "POST" and request.args.get("action") == "save_audience_override":
         admin = authenticate_admin(request)
         if not admin:
@@ -1903,6 +1903,8 @@ def report_data(request):
             raw = body.get("raw_audience")
             raws = raw if isinstance(raw, list) else [raw]
             raws = [str(r).strip() for r in raws if r and str(r).strip()]
+            scope = (body.get("scope") or "advertiser").strip().lower()
+            short_token = (body.get("short_token") or "").strip()
             if not slug:
                 return (jsonify({"error": "client_name é obrigatório"}), 400, headers)
             if not raws:
@@ -1911,15 +1913,20 @@ def report_data(request):
                 return (jsonify({"error": "display_name é obrigatório"}), 400, headers)
             if len(display_name) > 120:
                 return (jsonify({"error": "display_name muito longo (máx 120)"}), 400, headers)
+            if scope == "campaign" and not short_token:
+                return (jsonify({"error": "short_token é obrigatório p/ escopo de campanha"}), 400, headers)
+            scope_token = short_token if scope == "campaign" else ""
             for raw_audience in raws:
-                save_audience_override(slug, raw_audience, display_name, edited_by=admin.get("email"))
+                save_audience_override(slug, raw_audience, display_name,
+                                       scope_token=scope_token, edited_by=admin.get("email"))
             _audiences_cache.clear()  # quebra do hub usa o seed → recomputa
             audit_log.safe_write_event(
-                short_token=(body.get("short_token") or "").strip() or None,
+                short_token=short_token or None,
                 event_type="audience_override_saved",
                 actor_email=admin.get("email"),
-                message=f"renomeou audiência {raws} → \"{display_name}\" ({slug})",
-                payload={"client_slug": slug, "raw_audience": raws, "display_name": display_name},
+                message=f"renomeou audiência {raws} → \"{display_name}\" ({slug}, escopo={scope})",
+                payload={"client_slug": slug, "raw_audience": raws,
+                         "display_name": display_name, "scope": scope, "scope_token": scope_token},
             )
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
@@ -1927,7 +1934,9 @@ def report_data(request):
             return (jsonify({"error": "Erro ao salvar nome da audiência"}), 500, headers)
 
     # ── Endpoint: remover override de nome de audiência (admin) ──────────────
-    # Body: {client_name, raw_audience}. raw_audience pode vir como ARRAY.
+    # Body: {client_name, raw_audience, scope?, short_token?}. raw_audience pode
+    # ser ARRAY. scope: "all" (default — limpa anunciante + esta campanha) |
+    # "advertiser" | "campaign".
     if request.method == "POST" and request.args.get("action") == "delete_audience_override":
         admin = authenticate_admin(request)
         if not admin:
@@ -1938,17 +1947,27 @@ def report_data(request):
             raw = body.get("raw_audience")
             raws = raw if isinstance(raw, list) else [raw]
             raws = [str(r).strip() for r in raws if r and str(r).strip()]
+            scope = (body.get("scope") or "all").strip().lower()
+            short_token = (body.get("short_token") or "").strip()
             if not slug or not raws:
                 return (jsonify({"error": "client_name e raw_audience são obrigatórios"}), 400, headers)
+            if scope == "advertiser":
+                scope_tokens = [""]
+            elif scope == "campaign":
+                if not short_token:
+                    return (jsonify({"error": "short_token é obrigatório p/ escopo de campanha"}), 400, headers)
+                scope_tokens = [short_token]
+            else:  # all — limpa o efeito neste report (anunciante + esta campanha)
+                scope_tokens = ["", short_token] if short_token else None
             for raw_audience in raws:
-                delete_audience_override(slug, raw_audience)
+                delete_audience_override(slug, raw_audience, scope_tokens=scope_tokens)
             _audiences_cache.clear()
             audit_log.safe_write_event(
-                short_token=(body.get("short_token") or "").strip() or None,
+                short_token=short_token or None,
                 event_type="audience_override_deleted",
                 actor_email=admin.get("email"),
-                message=f"reverteu override de audiência {raws} ({slug})",
-                payload={"client_slug": slug, "raw_audience": raws},
+                message=f"reverteu override de audiência {raws} ({slug}, escopo={scope})",
+                payload={"client_slug": slug, "raw_audience": raws, "scope": scope},
             )
             return (jsonify({"ok": True}), 200, headers)
         except Exception as e:
@@ -6129,19 +6148,23 @@ def delete_campaign_early_end(short_token: str):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Override de NOME de audiência (Report Center) — admin corrige uma audiência
-# que veio estranha/mal separada da plataforma. Escopo POR ANUNCIANTE
-# (client_slug): a correção de um rótulo cru vale em TODOS os reports daquele
-# cliente. Distinto do override de audiência do PORTAL
-# (client_portal.audience_overrides, hard no hub):
+# que veio estranha/mal separada da plataforma. Distinto do override de
+# audiência do PORTAL (client_portal.audience_overrides, hard no hub):
 #   • No Report Center é APLICADO (front faz relabel/merge da quebra crua).
-#   • No Client Hub é uma DICA pra IA (seed em compute_portal_audiences) — a
-#     IA continua mandando lá, só aprende com a correção humana.
-# Chave lógica: (client_slug, raw_key) onde raw_key = normalize_key(raw_audience).
+#   • No Client Hub é uma DICA pra IA (seed em compute_portal_audiences) — só
+#     o nível ANUNCIANTE entra como seed; a IA continua mandando lá.
+#
+# ESCOPO (scope_token) — o admin escolhe a cada edição:
+#   • ''           → todo o anunciante: vale em TODAS as campanhas do cliente.
+#   • <short_token>→ só aquela campanha.
+# Precedência ao servir um report: o override DA CAMPANHA vence o do anunciante
+# pro mesmo rótulo. Chave lógica: (client_slug, scope_token, raw_key) com
+# raw_key = normalize_key(raw_audience).
 # ─────────────────────────────────────────────────────────────────────────────
 _aud_overrides_table_ensured = False
 _aud_overrides_ensure_lock = threading.Lock()
 _AUD_OVERRIDES_TTL = 300  # 5min — escrita admin limpa o slug afetado na hora
-_aud_overrides_cache = {}  # client_slug -> {raw_key: display_name}
+_aud_overrides_cache = {}  # client_slug -> [rows]  (lista crua, resolução é por report)
 
 
 def _aud_overrides_table_id() -> str:
@@ -6149,7 +6172,8 @@ def _aud_overrides_table_id() -> str:
 
 
 def _ensure_aud_overrides_table() -> None:
-    """Cria a tabela `audience_overrides` se não existir. Idempotente."""
+    """Cria a tabela `audience_overrides` se não existir + garante a coluna
+    `scope_token` (tabelas antigas nasceram sem ela). Idempotente."""
     global _aud_overrides_table_ensured
     if _aud_overrides_table_ensured:
         return
@@ -6162,34 +6186,53 @@ def _ensure_aud_overrides_table() -> None:
                 raw_key      STRING NOT NULL,
                 raw_audience STRING,
                 display_name STRING NOT NULL,
+                scope_token  STRING,
                 edited_by    STRING,
                 updated_at   TIMESTAMP NOT NULL
             )
         """
         bq.query(sql).result()
+        # Migração p/ tabelas pré-escopo: adiciona a coluna e normaliza NULL→''
+        # (overrides antigos eram todos a nível anunciante).
+        try:
+            bq.query(
+                f"ALTER TABLE `{_aud_overrides_table_id()}` "
+                f"ADD COLUMN IF NOT EXISTS scope_token STRING"
+            ).result()
+            bq.query(
+                f"UPDATE `{_aud_overrides_table_id()}` "
+                f"SET scope_token = '' WHERE scope_token IS NULL"
+            ).result()
+        except Exception as e:
+            logger.warning(f"[WARN _ensure_aud_overrides_table scope_token] {e}")
         _aud_overrides_table_ensured = True
 
 
-def save_audience_override(client_slug: str, raw_audience: str, display_name: str, edited_by: str | None = None):
-    """UPSERT de um override por (client_slug, raw_key). `raw_key` é derivado de
-    raw_audience por normalize_key (mesma normalização do front), pra casar
-    variações de caixa/acento do mesmo rótulo cru."""
+def save_audience_override(client_slug: str, raw_audience: str, display_name: str,
+                           scope_token: str = "", edited_by: str | None = None):
+    """UPSERT por (client_slug, scope_token, raw_key). scope_token='' = anunciante;
+    =short_token = só aquela campanha. raw_key vem de normalize_key (mesma
+    normalização do front)."""
     _ensure_aud_overrides_table()
     raw_key = audience_normalize.normalize_key(raw_audience)
+    scope = scope_token or ""
     sql = f"""
         MERGE `{_aud_overrides_table_id()}` T
-        USING (SELECT @slug AS client_slug, @raw_key AS raw_key) S
-        ON T.client_slug = S.client_slug AND T.raw_key = S.raw_key
+        USING (SELECT @slug AS client_slug, @scope AS scope_token, @raw_key AS raw_key) S
+        ON T.client_slug = S.client_slug
+           AND IFNULL(T.scope_token, '') = S.scope_token
+           AND T.raw_key = S.raw_key
         WHEN MATCHED THEN
             UPDATE SET raw_audience = @raw_audience, display_name = @display_name,
                        edited_by = @edited_by, updated_at = CURRENT_TIMESTAMP()
         WHEN NOT MATCHED THEN
-            INSERT (client_slug, raw_key, raw_audience, display_name, edited_by, updated_at)
-            VALUES (@slug, @raw_key, @raw_audience, @display_name, @edited_by, CURRENT_TIMESTAMP())
+            INSERT (client_slug, scope_token, raw_key, raw_audience, display_name, edited_by, updated_at)
+            VALUES (@slug, @scope, @raw_key, @raw_audience, @display_name, @edited_by, CURRENT_TIMESTAMP())
     """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("slug",         "STRING", client_slug),
+            bigquery.ScalarQueryParameter("scope",        "STRING", scope),
             bigquery.ScalarQueryParameter("raw_key",      "STRING", raw_key),
             bigquery.ScalarQueryParameter("raw_audience", "STRING", raw_audience),
             bigquery.ScalarQueryParameter("display_name", "STRING", display_name),
@@ -6200,32 +6243,47 @@ def save_audience_override(client_slug: str, raw_audience: str, display_name: st
     _aud_overrides_cache.pop(client_slug, None)
 
 
-def delete_audience_override(client_slug: str, raw_audience: str):
-    """Remove um override (reverte pro rótulo cru da plataforma)."""
+def delete_audience_override(client_slug: str, raw_audience: str, scope_tokens: list | None = None):
+    """Remove override(s) de um rótulo. `scope_tokens` = lista de escopos a
+    apagar ('' = anunciante, token = campanha). Default: apaga AMBOS os níveis
+    do rótulo (revert total)."""
     _ensure_aud_overrides_table()
     raw_key = audience_normalize.normalize_key(raw_audience)
-    sql = f"""
-        DELETE FROM `{_aud_overrides_table_id()}`
-        WHERE client_slug = @slug AND raw_key = @raw_key
-    """
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
+    scopes = [s or "" for s in scope_tokens] if scope_tokens else None
+    if scopes is None:
+        where = "client_slug = @slug AND raw_key = @raw_key"
+        params = [
             bigquery.ScalarQueryParameter("slug",    "STRING", client_slug),
             bigquery.ScalarQueryParameter("raw_key", "STRING", raw_key),
         ]
-    )
-    bq.query(sql, job_config=job_config).result()
+    else:
+        where = ("client_slug = @slug AND raw_key = @raw_key "
+                 "AND IFNULL(scope_token, '') IN UNNEST(@scopes)")
+        params = [
+            bigquery.ScalarQueryParameter("slug",    "STRING", client_slug),
+            bigquery.ScalarQueryParameter("raw_key", "STRING", raw_key),
+            bigquery.ArrayQueryParameter("scopes", "STRING", scopes),
+        ]
+    bq.query(
+        f"DELETE FROM `{_aud_overrides_table_id()}` WHERE {where}",
+        job_config=bigquery.QueryJobConfig(query_parameters=params),
+    ).result()
     _aud_overrides_cache.pop(client_slug, None)
 
 
 def query_audience_overrides(client_slug: str) -> list:
-    """Lista os overrides de um anunciante (pro drawer admin gerenciar/reverter).
-    Retorna [{raw_key, raw_audience, display_name, edited_by, updated_at_iso}]."""
+    """Linhas cruas de override de um anunciante (todos os escopos), cacheadas
+    (TTL 5min). Cada linha: {raw_key, raw_audience, display_name, scope_token,
+    edited_by, updated_at}."""
     if not client_slug:
         return []
+    cached = _cache_get(_aud_overrides_cache, client_slug, _AUD_OVERRIDES_TTL)
+    if cached is not None:
+        return cached
     _ensure_aud_overrides_table()
     sql = f"""
-        SELECT raw_key, raw_audience, display_name, edited_by, updated_at
+        SELECT raw_key, raw_audience, display_name, IFNULL(scope_token, '') AS scope_token,
+               edited_by, updated_at
         FROM `{_aud_overrides_table_id()}`
         WHERE client_slug = @slug
         ORDER BY display_name
@@ -6241,37 +6299,47 @@ def query_audience_overrides(client_slug: str) -> list:
                 "raw_key":      row["raw_key"],
                 "raw_audience": row["raw_audience"] or "",
                 "display_name": row["display_name"] or "",
+                "scope_token":  row["scope_token"] or "",
                 "edited_by":    row["edited_by"] or "",
                 "updated_at":   ts.isoformat() if ts else "",
             })
     except Exception as e:
         logger.warning(f"[WARN query_audience_overrides] {e}")
-    return out
-
-
-def audience_overrides_map(client_slug: str) -> dict:
-    """{raw_key: display_name} de um anunciante, cacheado (TTL 5min). É o que o
-    payload do report carrega pro front aplicar o relabel/merge client-side e o
-    que o hub usa como seed pra IA."""
-    if not client_slug:
-        return {}
-    cached = _cache_get(_aud_overrides_cache, client_slug, _AUD_OVERRIDES_TTL)
-    if cached is not None:
-        return cached
-    out = {r["raw_key"]: r["display_name"] for r in query_audience_overrides(client_slug)}
     _cache_set(_aud_overrides_cache, client_slug, out)
     return out
 
 
+def audience_overrides_map_for_report(client_slug: str, short_token: str | None) -> dict:
+    """{raw_key: display} EFETIVO pra um report: nível anunciante ('') sobreposto
+    pelo nível da campanha (scope_token == short_token, que VENCE)."""
+    if not client_slug:
+        return {}
+    rows = query_audience_overrides(client_slug)
+    adv = {r["raw_key"]: r["display_name"] for r in rows if r["scope_token"] == ""}
+    camp = {r["raw_key"]: r["display_name"] for r in rows
+            if short_token and r["scope_token"] == short_token}
+    return {**adv, **camp}
+
+
+def audience_overrides_advertiser_map(client_slug: str) -> dict:
+    """{raw_key: display} SÓ do nível anunciante — é o que vira seed pra IA do
+    hub (override de campanha é granular demais pra quebra agregada do portal)."""
+    if not client_slug:
+        return {}
+    return {r["raw_key"]: r["display_name"]
+            for r in query_audience_overrides(client_slug) if r["scope_token"] == ""}
+
+
 def _attach_audience_overrides(data: dict) -> dict:
-    """Anexa `audience_overrides` ({raw_key: display}) ao payload do report, na
-    camada de serving — vale também pra reports congelados (snapshot verbatim),
-    porque é um relabel de exibição, não mexe nos dados. Front (DisplayV2/
-    VideoV2) aplica via shared/aggregations.js."""
+    """Anexa `audience_overrides` ({raw_key: display} EFETIVO) ao payload do
+    report, na camada de serving — vale também pra reports congelados (relabel de
+    exibição, não mexe nos dados). Resolve escopo anunciante+campanha pro token
+    do report. Front (DisplayV2/VideoV2) aplica via shared/aggregations.js."""
     try:
         camp = (data or {}).get("campaign") or {}
         slug = clients.normalize_client_slug(camp.get("client_name") or "")
-        ov = audience_overrides_map(slug) if slug else {}
+        token = camp.get("short_token")
+        ov = audience_overrides_map_for_report(slug, token) if slug else {}
         if ov:
             return {**data, "audience_overrides": ov}
     except Exception as e:
@@ -9692,7 +9760,7 @@ def compute_portal_audiences(share_id: str):
     # Os nomes corrigidos pelo admin no Report Center (por anunciante) entram
     # como SEED — dica pra IA, não override forte. A IA (Fase 2) ainda refina;
     # o override DO PORTAL (Fase 3, abaixo) é o que vence de fato no hub.
-    admin_seed = audience_overrides_map(slug)
+    admin_seed = audience_overrides_advertiser_map(slug)
     grouped = audience_normalize.group_audiences(raw_weight, seed_overrides=admin_seed)
     mapping = grouped["mapping"]
 
