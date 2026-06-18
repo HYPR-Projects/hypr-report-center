@@ -3,10 +3,13 @@
 // Gerencia os overrides de NOME de audiência de um ANUNCIANTE (Report Center).
 // Abre pelo botão "Editar nomes de audiência" no CampaignDrawer.
 //
-// Lista as audiências CRUAS da campanha (derivadas do detail) ∪ os overrides
-// já existentes do anunciante — cada uma renomeável direto aqui. Renomear
-// também funciona inline na tabela "Por Audiência" do report; este modal é o
-// atalho admin que não exige rolar até a tabela.
+// Lista as audiências da campanha AGRUPADAS pelo nome resolvido. A regra de
+// merge é por NOME EXATO: dar o mesmo nome a duas audiências cruas funde as
+// duas (soma métricas no report). Aqui isso fica explícito — um grupo mesclado
+// mostra os rótulos crus que o compõem, cada um com "separar" pra desfazer.
+//
+// Renomear também funciona inline na tabela "Por Audiência" do report; este
+// modal é o atalho admin que não exige rolar até a tabela.
 //
 // Escopo por anunciante: a correção vale em todos os reports do cliente e vira
 // seed pra IA do Client Hub (backend). Nested dialog sobre o Drawer (Radix
@@ -40,11 +43,10 @@ export function AudienceOverridesModal({
   const [newRaw, setNewRaw] = useState("");
   const [newName, setNewName] = useState("");
 
-  // Candidatos = audiências cruas da campanha (detail) ∪ overrides já existentes
-  // (overrideMap traz TODOS do anunciante, inclusive de outras campanhas).
-  // Cada um vira uma linha renomeável — não só os já editados.
+  // Candidatos crus = audiências da campanha (detail) ∪ overrides já existentes
+  // do anunciante (overrideMap traz TODOS do slug, inclusive de outras campanhas).
   const candidates = useMemo(() => {
-    const byKey = new Map(); // key -> { key, raw, display }
+    const byKey = new Map(); // raw_key -> { key, raw, display }
     for (const r of detailRows || []) {
       const raw = extractAudience(r.line_name);
       if (!raw || raw === "N/A" || /survey/i.test(raw)) continue;
@@ -53,22 +55,32 @@ export function AudienceOverridesModal({
         byKey.set(key, { key, raw, display: applyAudienceOverride(raw, aud.overrideMap) });
       }
     }
-    // Overrides que não apareceram no detail desta campanha (criados em outra
-    // campanha do anunciante) — ainda mostráveis/revertíveis. Sem o rótulo cru
-    // original, usamos a própria raw_key (normalize_key é idempotente, então
-    // salvar/reverter por ela funciona).
     for (const [key, display] of Object.entries(aud.overrideMap || {})) {
       if (!byKey.has(key)) byKey.set(key, { key, raw: key, display });
     }
-    return [...byKey.values()].sort((a, b) => a.display.localeCompare(b.display));
+    return [...byKey.values()];
   }, [detailRows, aud.overrideMap]);
 
-  const rename = (raw, name) =>
-    aud.renameAudience([raw], name, raw).catch((e) =>
-      toast.error(e?.message || "Erro ao salvar"));
-  const reset = (raw) =>
-    aud.resetAudience([raw], raw).catch((e) =>
-      toast.error(e?.message || "Erro ao reverter"));
+  // Agrupa por NOME resolvido — é exatamente o que a tabela do report faz.
+  // Grupo com 2+ membros = mesclado.
+  const groups = useMemo(() => {
+    const byDisplay = new Map(); // display -> { display, members: [{key, raw, overridden}] }
+    for (const c of candidates) {
+      if (!byDisplay.has(c.display)) byDisplay.set(c.display, { display: c.display, members: [] });
+      byDisplay.get(c.display).members.push({
+        key: c.key,
+        raw: c.raw,
+        overridden: aud.isOverridden([c.raw]),
+      });
+    }
+    return [...byDisplay.values()].sort((a, b) => a.display.localeCompare(b.display));
+  }, [candidates, aud]);
+
+  const renameGroup = (members, name) =>
+    aud.renameAudience(members.map((m) => m.raw), name, members[0]?.raw)
+      .catch((e) => toast.error(e?.message || "Erro ao salvar"));
+  const splitMember = (raw) =>
+    aud.resetAudience([raw], raw).catch((e) => toast.error(e?.message || "Erro ao separar"));
 
   const handleAdd = () => {
     const raw = newRaw.trim();
@@ -94,7 +106,7 @@ export function AudienceOverridesModal({
           className={cn(
             "fixed left-1/2 top-1/2 z-[70]",
             "-translate-x-1/2 -translate-y-1/2",
-            "w-[calc(100vw-32px)] max-w-[560px]",
+            "w-[calc(100vw-32px)] max-w-[600px]",
             "max-h-[calc(100vh-48px)] overflow-hidden",
             "rounded-2xl border border-border-strong bg-canvas-elevated shadow-2xl",
             "flex flex-col outline-none",
@@ -104,81 +116,86 @@ export function AudienceOverridesModal({
             "duration-200",
           )}
         >
+          {/* Header */}
           <div className="px-5 pt-4 pb-3 border-b border-border">
             <Dialog.Title className="text-sm font-bold text-fg">
-              Nomes de audiência
+              Nomes de audiência · {clientName}
             </Dialog.Title>
-            <Dialog.Description className="mt-0.5 text-xs text-fg-muted">
-              Correções de nome para <span className="font-semibold text-fg">{clientName}</span>.
-              Valem em todos os reports do anunciante e ajudam a IA do hub a
-              identificar melhor. Você também renomeia direto na tabela do report.
+            <Dialog.Description className="mt-1 text-xs text-fg-muted leading-relaxed">
+              Renomeie audiências que vieram estranhas da plataforma. Valem em
+              todos os reports do anunciante e ajudam a IA do hub.
             </Dialog.Description>
+            <div className="mt-2.5 flex items-start gap-2 rounded-lg bg-signature/10 border border-signature/20 px-3 py-2">
+              <MergeIcon className="mt-px shrink-0 text-signature" />
+              <p className="text-[11px] leading-relaxed text-fg-muted">
+                <span className="font-semibold text-fg">Dê o mesmo nome a duas audiências</span> para
+                mesclá-las — elas viram um grupo só e somam as métricas no report.
+              </p>
+            </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+          {/* Lista */}
+          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-2.5">
             {detailRows == null ? (
               <div className="py-8 text-center text-xs text-fg-subtle">Carregando audiências…</div>
-            ) : candidates.length === 0 ? (
+            ) : groups.length === 0 ? (
               <div className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-xs text-fg-subtle">
                 Nenhuma audiência com entrega nesta campanha. Adicione um
                 mapeamento manual abaixo se já souber o rótulo cru.
               </div>
             ) : (
-              <div className="space-y-2">
-                {candidates.map((c) => (
-                  <CandidateRow
-                    // inclui display na key: remonta (reinicia o draft) quando o
-                    // nome muda pós-save, sem setState em effect.
-                    key={`${c.key}:${c.display}`}
-                    raw={c.raw}
-                    display={c.display}
-                    overridden={aud.isOverridden([c.raw])}
-                    busy={aud.busyAudience === c.raw}
-                    onRename={(name) => rename(c.raw, name)}
-                    onReset={() => reset(c.raw)}
-                  />
-                ))}
-              </div>
+              groups.map((g) => (
+                <GroupCard
+                  // display na key: remonta (re-seed do draft) quando o nome muda.
+                  key={`${g.display}:${g.members.map((m) => m.key).join("|")}`}
+                  group={g}
+                  busy={aud.busyAudience}
+                  onRename={(name) => renameGroup(g.members, name)}
+                  onSplit={splitMember}
+                />
+              ))
             )}
+          </div>
 
-            {/* Adicionar manual: rótulo cru (como vem da plataforma) → nome */}
-            <div className="mt-2 rounded-lg border border-border bg-surface px-3 py-3">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle mb-2">
-                Adicionar manualmente
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  value={newRaw}
-                  onChange={(e) => setNewRaw(e.target.value)}
-                  placeholder="Rótulo cru (ex: SPORTS-STORE)"
-                  className="min-w-0 flex-1 rounded-md border border-border bg-canvas px-2 py-1.5 text-xs text-fg outline-none focus:ring-1 focus:ring-signature"
-                />
-                <span className="text-fg-subtle text-xs">→</span>
-                <input
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  placeholder="Nome corrigido"
-                  maxLength={120}
-                  className="min-w-0 flex-1 rounded-md border border-border bg-canvas px-2 py-1.5 text-xs text-fg outline-none focus:ring-1 focus:ring-signature"
-                />
-                <button
-                  type="button"
-                  onClick={handleAdd}
-                  disabled={!newRaw.trim() || !newName.trim() || aud.busyAudience === "__new__"}
-                  className="shrink-0 rounded-md bg-signature px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
-                >
-                  {aud.busyAudience === "__new__" ? "…" : "Add"}
-                </button>
-              </div>
+          {/* Adicionar manual */}
+          <div className="px-5 pt-3 pb-3 border-t border-border">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle mb-2">
+              Adicionar manualmente
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                value={newRaw}
+                onChange={(e) => setNewRaw(e.target.value)}
+                placeholder="Rótulo cru (ex: SPORTS-STORE)"
+                className="min-w-0 flex-1 rounded-md border border-border bg-canvas px-2.5 py-1.5 text-xs text-fg outline-none focus:ring-1 focus:ring-signature"
+              />
+              <span className="text-fg-subtle text-xs">→</span>
+              <input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
+                placeholder="Nome corrigido"
+                maxLength={120}
+                className="min-w-0 flex-1 rounded-md border border-border bg-canvas px-2.5 py-1.5 text-xs text-fg outline-none focus:ring-1 focus:ring-signature"
+              />
+              <button
+                type="button"
+                onClick={handleAdd}
+                disabled={!newRaw.trim() || !newName.trim() || aud.busyAudience === "__new__"}
+                className="shrink-0 rounded-md bg-signature px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+              >
+                {aud.busyAudience === "__new__" ? "…" : "Add"}
+              </button>
             </div>
           </div>
 
+          {/* Footer */}
           <div className="px-5 py-3 border-t border-border flex justify-end">
             <button
               type="button"
               onClick={() => onOpenChange?.(false)}
               disabled={!!aud.busyAudience}
-              className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold text-fg hover:bg-surface disabled:opacity-40"
+              className="rounded-md border border-border px-3.5 py-1.5 text-xs font-semibold text-fg hover:bg-surface disabled:opacity-40"
             >
               Fechar
             </button>
@@ -189,51 +206,109 @@ export function AudienceOverridesModal({
   );
 }
 
-function CandidateRow({ raw, display, overridden, busy, onRename, onReset }) {
-  const [draft, setDraft] = useState(display || "");
+// Um grupo = todas as audiências cruas que resolvem pro mesmo nome. Editar o
+// nome do grupo aplica a TODOS os membros (mantém o merge sob o novo nome).
+function GroupCard({ group, busy, onRename, onSplit }) {
+  const [draft, setDraft] = useState(group.display || "");
+  const merged = group.members.length > 1;
+  const overridden = group.members.some((m) => m.overridden);
+  const groupBusy = busy === group.members[0]?.raw;
+
   const commit = () => {
     const name = draft.trim();
-    if (name && name !== (display || "")) onRename(name);
+    if (name && name !== (group.display || "")) onRename(name);
   };
 
   return (
-    <div className="flex items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <input
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
-            onBlur={commit}
-            maxLength={120}
-            disabled={busy}
-            className="w-full rounded-md border border-transparent bg-transparent px-1 py-0.5 text-xs font-medium text-fg outline-none focus:border-signature focus:bg-canvas"
-          />
-          {overridden && (
-            <span
-              title="Nome editado pelo admin"
-              className="h-1.5 w-1.5 shrink-0 rounded-full bg-signature"
-            />
-          )}
-        </div>
-        {raw && raw !== display && (
-          <div className="mt-0.5 px-1 text-[10px] text-fg-subtle truncate">
-            cru: <span className="font-mono">{raw}</span>
-          </div>
+    <div
+      className={cn(
+        "rounded-lg border bg-surface",
+        merged ? "border-signature/40" : "border-border",
+      )}
+    >
+      <div className="flex items-center gap-2 px-3 py-2">
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
+          onBlur={commit}
+          maxLength={120}
+          disabled={groupBusy}
+          className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1 py-0.5 text-xs font-semibold text-fg outline-none focus:border-signature focus:bg-canvas"
+        />
+        {merged && (
+          <span className="shrink-0 rounded-full bg-signature/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-signature">
+            mesclada · {group.members.length}
+          </span>
         )}
+        {overridden && !merged && (
+          <span title="Nome editado pelo admin" className="h-1.5 w-1.5 shrink-0 rounded-full bg-signature" />
+        )}
+        {groupBusy && <span className="shrink-0 text-[11px] text-fg-subtle">…</span>}
       </div>
-      {busy ? (
-        <span className="shrink-0 px-2 text-[11px] text-fg-subtle">…</span>
-      ) : overridden ? (
-        <button
-          type="button"
-          onClick={onReset}
-          title="Reverter ao nome original da plataforma"
-          className="shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold text-fg-subtle hover:text-danger"
-        >
-          Reverter
-        </button>
-      ) : null}
+
+      {merged ? (
+        // Membros do merge — cada rótulo cru com "separar" pra desfazer só ele.
+        <div className="flex flex-wrap gap-1.5 border-t border-border/60 px-3 py-2">
+          {group.members.map((m) => (
+            <span
+              key={m.key}
+              className="inline-flex items-center gap-1 rounded-md bg-canvas-deeper px-2 py-1 text-[10px] font-mono text-fg-muted"
+            >
+              {m.raw}
+              <button
+                type="button"
+                onClick={() => onSplit(m.raw)}
+                disabled={busy === m.raw}
+                title="Separar do merge (reverter este rótulo)"
+                className="text-fg-subtle hover:text-danger disabled:opacity-40"
+                aria-label={`Separar ${m.raw}`}
+              >
+                <XIcon />
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : (
+        overridden && (
+          // Audiência única já renomeada: mostra o cru + reverter.
+          <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-1.5">
+            <span className="text-[10px] text-fg-subtle truncate">
+              cru: <span className="font-mono">{group.members[0]?.raw}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => onSplit(group.members[0]?.raw)}
+              disabled={busy === group.members[0]?.raw}
+              title="Reverter ao nome original da plataforma"
+              className="shrink-0 text-[11px] font-semibold text-fg-subtle hover:text-danger disabled:opacity-40"
+            >
+              Reverter
+            </button>
+          </div>
+        )
+      )}
     </div>
+  );
+}
+
+function MergeIcon({ className }) {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="12" r="3" />
+      <path d="M9 6c4 0 6 2 6 6M9 18c4 0 6-2 6-6" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
   );
 }
