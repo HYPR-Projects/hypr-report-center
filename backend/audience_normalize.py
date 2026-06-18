@@ -225,13 +225,19 @@ def _is_ignorable(label):
             or k in _NEVER_AUDIENCE or k.startswith("li "))
 
 
-def group_audiences(weights):
+def group_audiences(weights, seed_overrides=None):
     """Unifica audiências cruas em grupos canônicos (Fase 1 determinística).
 
     Args:
         weights: dict {raw_label: peso} — o peso (ex.: impressões visíveis)
                  decide o representante de cada cluster. Pode ser {label: 1}
                  se não houver peso.
+        seed_overrides: dict {normalize_key(raw_label): display} OPCIONAL — os
+                 nomes que o admin corrigiu no Report Center. Entram como SEED
+                 (prioridade sobre SEED_GROUPS): rótulos com a mesma correção
+                 se agrupam sob o nome do admin, e esse nome vira o display
+                 alimentado à IA (Fase 2) — que continua livre pra refinar.
+                 É a "dica" do Report Center pro hub, não um override forte.
 
     Returns:
         {
@@ -242,6 +248,7 @@ def group_audiences(weights):
     labels = [l for l in (weights or {}) if not _is_ignorable(l)]
     if not labels:
         return {"mapping": {}, "groups": {}}
+    seed_overrides = seed_overrides or {}
 
     # union-find simples
     parent = {l: l for l in labels}
@@ -261,7 +268,9 @@ def group_audiences(weights):
     for l in labels:
         nk = normalize_key(l)
         sk = singularize_key(nk)
-        info[l] = {"norm": nk, "sing": sk, "seed": _seed_canonical(sk)}
+        # Override do admin (se houver) tem prioridade sobre o seed heurístico.
+        seed = seed_overrides.get(nk) or _seed_canonical(sk)
+        info[l] = {"norm": nk, "sing": sk, "seed": seed}
 
     # 1) une por chave singularizada idêntica (plural/acento/caixa)
     by_sing = {}

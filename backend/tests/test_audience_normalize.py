@@ -144,3 +144,36 @@ def test_override_empty_is_noop():
     mapping = {"a": "A", "b": "B"}
     assert an.apply_overrides(mapping, None) == mapping
     assert an.apply_overrides(mapping, {}) == mapping
+
+
+# ── Seed overrides (ponte Report Center → IA do hub) ──────────────────────────
+# O override de nome do Report Center entra como SEED em group_audiences: agrupa
+# os rótulos crus sob o nome do admin e tem prioridade sobre SEED_GROUPS.
+
+def test_seed_override_merges_variants_under_admin_name():
+    weights = {"SPORTS-STORE": 100, "sports store": 50, "BARES": 30}
+    seed = {an.normalize_key("SPORTS-STORE"): "Lojas de Esporte",
+            an.normalize_key("sports store"): "Lojas de Esporte"}
+    out = an.group_audiences(weights, seed_overrides=seed)
+    m = out["mapping"]
+    assert m["SPORTS-STORE"] == "Lojas de Esporte"
+    assert m["sports store"] == "Lojas de Esporte"
+    # BARES não foi tocado → prettify normal
+    assert m["BARES"] == "Bares"
+    # os dois variantes colapsam num grupo só
+    assert sorted(out["groups"]["Lojas de Esporte"]) == ["SPORTS-STORE", "sports store"]
+
+
+def test_seed_override_wins_over_seed_groups():
+    # "mercado" cairia em "Supermercados" pelo SEED_GROUPS; o admin força outro nome.
+    weights = {"mercado": 10}
+    seed = {an.normalize_key("mercado"): "Mercadinhos do Bairro"}
+    out = an.group_audiences(weights, seed_overrides=seed)
+    assert out["mapping"]["mercado"] == "Mercadinhos do Bairro"
+
+
+def test_group_audiences_seed_none_is_backward_compatible():
+    weights = {"mercado": 10, "atacadao": 5}
+    base = an.group_audiences(weights)
+    assert an.group_audiences(weights, seed_overrides=None) == base
+    assert an.group_audiences(weights, seed_overrides={}) == base

@@ -31,6 +31,7 @@
 import { useMemo } from "react";
 import {
   computeDisplayKpis,
+  applyAudienceOverride,
   extractAudience,
   getCreativeLineKey,
   groupByDate,
@@ -38,6 +39,7 @@ import {
   groupByCreativeName,
   groupByAudience,
 } from "../../shared/aggregations";
+import { useAudienceOverrides } from "../hooks/useAudienceOverrides";
 import { fmt, fmtP, fmtP2, fmtR } from "../../shared/format";
 
 import { Button } from "../../ui/Button";
@@ -87,6 +89,16 @@ export default function DisplayV2({
   const camp = data.campaign;
   // trackCta vem do contexto montado pelo ClientDashboardV2. Noop fora dele.
   const { trackCta } = useReportTrackingContext();
+
+  // Override de nome de audiência (Report Center, por anunciante). Aplicado na
+  // quebra "Por Audiência" abaixo; editável inline só por admin. Mapa inicial
+  // vem no payload (data.audience_overrides), mutado otimista pelo hook.
+  const aud = useAudienceOverrides({
+    initialMap: data.audience_overrides,
+    clientName: camp.client_name,
+    shortToken: camp.short_token,
+    isAdmin,
+  });
 
   // Tactics disponíveis: O2O e OOH só aparecem se houver contrato (incl.
   // bônus) OU entrega real pra essa frente. Evita mostrar segmento
@@ -144,10 +156,10 @@ export default function DisplayV2({
     const daily = groupByDate(detailAll, "clicks", "viewable_impressions", "ctr");
     const bySize = groupBySize(detailAll, "clicks", "viewable_impressions", "ctr");
     const byCreative = groupByCreativeName(detailAll, "clicks", "viewable_impressions", "ctr");
-    const byAudience = groupByAudience(detailAll, "clicks", "viewable_impressions", "ctr");
+    const byAudience = groupByAudience(detailAll, "clicks", "viewable_impressions", "ctr", aud.overrideMap);
 
     return { totals, detailAll, kpis, daily, bySize, byCreative, byAudience };
-  }, [aggregates, effectiveTactic, camp, t0Display, hasGfContract]);
+  }, [aggregates, effectiveTactic, camp, t0Display, hasGfContract, aud.overrideMap]);
 
   const { totals, detailAll, kpis, daily, bySize, byCreative, byAudience } = view;
   // Alias mantido pelos consumers internos que esperavam `detailFiltered`.
@@ -284,6 +296,7 @@ export default function DisplayV2({
           useProjection={useProjection}
           notStarted={kpis.notStarted}
           isAdmin={isAdmin}
+          aud={aud}
         />
       )}
     </div>
@@ -312,6 +325,7 @@ function DisplayContent({
   useProjection,
   notStarted,
   isAdmin = false,
+  aud,
 }) {
   const campName = camp.campaign_name || "campanha";
   return (
@@ -537,10 +551,15 @@ function DisplayContent({
           rateLabel="CTR"
           rateFormatter={fmtP2}
           extraRows={detailAll}
-          getDetailGroupKey={(r) => extractAudience(r.line_name)}
+          getDetailGroupKey={(r) => applyAudienceOverride(extractAudience(r.line_name), aud?.overrideMap)}
           mediaType="DISPLAY"
           downloadable={isAdmin}
           filename={`${campName} - Display ${tactic} - Por Audiencia`}
+          editable={isAdmin}
+          busyAudience={aud?.busyAudience}
+          isRowOverridden={(row) => aud?.isOverridden?.(row._rawLabels)}
+          onRenameGroup={(row, name) => aud?.renameAudience(row._rawLabels, name, row.audience)}
+          onResetGroup={(row) => aud?.resetAudience(row._rawLabels, row.audience)}
         />
       )}
 

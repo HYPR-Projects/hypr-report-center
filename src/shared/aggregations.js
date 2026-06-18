@@ -61,6 +61,31 @@ export const extractAudience = (lineName) => {
 };
 
 /**
+ * Chave de comparação de audiência — espelha `normalize_key` do backend
+ * (backend/audience_normalize.py): minúscula, sem acento, sem pontuação,
+ * espaço único. Usada pra casar um rótulo cru com o mapa de override
+ * (que vem keyed por essa mesma normalização).
+ */
+export const normAudienceKey = (label) =>
+  String(label || "")
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/**
+ * Resolve o nome de exibição de uma audiência crua aplicando o override do
+ * admin (Report Center). `overrideMap` é {raw_key: display} vindo no payload
+ * do report. Sem override → devolve o rótulo cru intacto.
+ */
+export const applyAudienceOverride = (rawLabel, overrideMap) => {
+  if (!overrideMap) return rawLabel;
+  return overrideMap[normAudienceKey(rawLabel)] || rawLabel;
+};
+
+/**
  * Agrega rows por data, somando duas métricas, e calcula uma taxa derivada.
  *
  * @param {Array} rows         Linhas com `date`, `numeratorKey`, `denomKey`.
@@ -181,16 +206,23 @@ export const groupByCreativeName = (rows, numeratorKey, denomKey, rateKey) =>
  * conjunto total — não filtra por line, porque essa visão deve mostrar
  * todas as audiências independentemente do filtro do usuário.
  */
-export const groupByAudience = (rows, numeratorKey, denomKey, rateKey) =>
+export const groupByAudience = (rows, numeratorKey, denomKey, rateKey, overrideMap = null) =>
   Object.values(rows.reduce((acc, r) => {
-    const k = extractAudience(r.line_name);
-    if (/survey/i.test(k) || k === "N/A") return acc;
-    if (!acc[k]) acc[k] = { audience: k, [denomKey]: 0, [numeratorKey]: 0 };
-    acc[k][denomKey]      += r[denomKey]      || 0;
-    acc[k][numeratorKey]  += r[numeratorKey]  || 0;
+    const raw = extractAudience(r.line_name);
+    if (/survey/i.test(raw) || raw === "N/A") return acc;
+    // Agrupa pelo nome RESOLVIDO (override do admin): dois rótulos crus que o
+    // admin renomeou pro mesmo nome FUNDEM aqui (rename = merge). `_rawLabels`
+    // guarda os rótulos crus que alimentam o grupo — usados pra salvar/reverter
+    // o override (o admin edita o que vê; persistimos por rótulo cru).
+    const display = applyAudienceOverride(raw, overrideMap);
+    if (!acc[display]) acc[display] = { audience: display, _rawLabels: new Set(), [denomKey]: 0, [numeratorKey]: 0 };
+    acc[display]._rawLabels.add(raw);
+    acc[display][denomKey]      += r[denomKey]      || 0;
+    acc[display][numeratorKey]  += r[numeratorKey]  || 0;
     return acc;
   }, {})).map(r => ({
     ...r,
+    _rawLabels: [...r._rawLabels],
     [rateKey]: r[denomKey] > 0 ? r[numeratorKey] / r[denomKey] * 100 : 0,
   }));
 

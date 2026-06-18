@@ -846,6 +846,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
             {(effectiveTab === "overview" || effectiveTab === "display" || effectiveTab === "video") && (
               <GlobalDataFilterBarV2
                 audienceOptions={filterOptions.audiences}
+                audienceOverrideMap={data?.audience_overrides}
                 lineOptions={filterOptions.lines}
                 creativeLineOptions={filterOptions.creativeLines}
                 sizeOptions={filterOptions.sizes}
