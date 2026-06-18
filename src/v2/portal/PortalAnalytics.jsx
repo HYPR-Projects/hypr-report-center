@@ -1008,7 +1008,7 @@ function SurveyTypeChip({ type, detail }) {
   const ref = useRef(null);
   const [coords, setCoords] = useState(null);
   const show = () => {
-    if (!has || !ref.current) return;
+    if (!ref.current) return;
     const r = ref.current.getBoundingClientRect();
     setCoords({ x: r.left + r.width / 2, y: r.top });
   };
@@ -1019,34 +1019,44 @@ function SurveyTypeChip({ type, detail }) {
       onMouseEnter={show}
       onMouseLeave={hide}
       className={cn(
-        "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide",
-        tone, has && "cursor-help",
+        "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide cursor-help",
+        tone,
       )}
     >
       {has && <span className="size-1.5 rounded-full" style={{ background: "currentColor" }} aria-hidden />}
       {type}
-      {has && coords && createPortal(
+      {coords && createPortal(
         <div
           role="tooltip"
           style={{ position: "fixed", left: coords.x, top: coords.y - 10, transform: "translate(-50%, -100%)", zIndex: 60 }}
           className="pointer-events-none w-[212px] rounded-xl border border-border bg-canvas-elevated shadow-xl p-3 text-left normal-case tracking-normal"
         >
           <div className="text-[11px] font-bold text-fg mb-2">{type}</div>
-          <div className="flex items-center justify-between text-[11px] mb-1">
-            <span className="text-fg-muted">Exposto</span>
-            <span className="font-semibold text-fg tabular-nums">{detail.exposed.toFixed(1)}%</span>
-          </div>
-          <div className="flex items-center justify-between text-[11px] mb-2">
-            <span className="text-fg-muted">Controle</span>
-            <span className="font-semibold text-fg tabular-nums">{detail.control.toFixed(1)}%</span>
-          </div>
-          <div className="flex items-center justify-between text-[11px] pt-2 border-t border-border">
-            <span className="text-fg-muted">Lift</span>
-            <span className={cn("font-bold tabular-nums", positive ? "text-success" : "text-danger")}>
-              {detail.liftAbs > 0 ? "+" : ""}{detail.liftAbs.toFixed(1)} pp
-              <span className="font-medium opacity-80"> ({detail.liftRel > 0 ? "+" : ""}{detail.liftRel.toFixed(0)}%)</span>
-            </span>
-          </div>
+          {has ? (
+            <>
+              <div className="flex items-center justify-between text-[11px] mb-1">
+                <span className="text-fg-muted">Exposto</span>
+                <span className="font-semibold text-fg tabular-nums">{detail.exposed.toFixed(1)}%</span>
+              </div>
+              <div className="flex items-center justify-between text-[11px] mb-2">
+                <span className="text-fg-muted">Controle</span>
+                <span className="font-semibold text-fg tabular-nums">{detail.control.toFixed(1)}%</span>
+              </div>
+              <div className="flex items-center justify-between text-[11px] pt-2 border-t border-border">
+                <span className="text-fg-muted">Lift</span>
+                <span className={cn("font-bold tabular-nums", positive ? "text-success" : "text-danger")}>
+                  {detail.liftAbs > 0 ? "+" : ""}{detail.liftAbs.toFixed(1)} pp
+                  <span className="font-medium opacity-80"> ({detail.liftRel > 0 ? "+" : ""}{detail.liftRel.toFixed(0)}%)</span>
+                </span>
+              </div>
+            </>
+          ) : (
+            // Survey rodou no mês mas sem lift de escolha mensurável (ex.:
+            // pergunta de escala/matriz — a metodologia de lift é Sim/Não).
+            <div className="text-[11px] text-fg-muted leading-snug">
+              Survey ativado neste mês. Sem lift de escolha mensurável (ex.: pergunta de escala/matriz).
+            </div>
+          )}
           <span className="absolute top-full left-1/2 -translate-x-1/2 -mt-px border-[5px] border-transparent"
                 style={{ borderTopColor: "var(--color-border)" }} aria-hidden />
         </div>,

@@ -181,7 +181,7 @@ export const PORTAL_MOCK = {
           { type: "Consideração", exposed: 52.3, control: 44.1, liftAbs: 8.2, liftRel: 18.6 },
           { type: "Ad Recall",    exposed: 61.0, control: 52.4, liftAbs: 8.6, liftRel: 16.4 },
         ] },
-      { month: "2026-06", liftRel: 15.2, liftAbs: 10.3, surveyTypes: ["Awareness", "Intenção", "Ad Recall"], surveyCount: 3,
+      { month: "2026-06", liftRel: 15.2, liftAbs: 10.3, surveyTypes: ["Awareness", "Intenção", "Associação", "Ad Recall"], surveyCount: 3,
         surveyDetails: [
           { type: "Awareness", exposed: 47.8, control: 35.2, liftAbs: 12.6, liftRel: 35.8 },
           { type: "Intenção",  exposed: 34.1, control: 27.0, liftAbs: 7.1,  liftRel: 26.3 },
