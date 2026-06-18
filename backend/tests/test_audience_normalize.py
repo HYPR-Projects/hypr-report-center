@@ -32,6 +32,15 @@ def test_extract_audience_both_conventions():
     assert an.extract_audience("semsep") == ""
 
 
+def test_extract_audience_ignores_line_item_tiers():
+    # tier de line item no fim (LI-1/PREMIUM/...) NÃO é audiência: pega o anterior
+    assert an.extract_audience("ID-X_HYPR_K_BABY_ABS_DISPLAY_O2O_MARKETS_LI-1") == "MARKETS"
+    assert an.extract_audience("ID-X_HYPR_K_FORTNITE_ABS_DISPLAY_O2O_LUXURY_LI-TOP-PERFORMANCE") == "LUXURY"
+    assert an.extract_audience("ID-X_HYPR_K_LISTERINE_DISPLAY_O2O_BAR_LI-PREMIUM-LIST") == "BAR"
+    assert an.extract_audience("ID-X_HYPR_K_BABY_ABS_DISPLAY_O2O_MARKETS_PREMIUM") == "MARKETS"
+    assert an.extract_audience("ID-X_HYPR_K_NEUTROGENA_DISPLAY_OOH_REDE-2_LI-STANDARD") == "REDE-2"
+
+
 def test_extract_audience_front_fallback_when_no_public():
     # Line sem público próprio (só frente+mídia / genérico) → rotula pela FRENTE,
     # nunca pela mídia.

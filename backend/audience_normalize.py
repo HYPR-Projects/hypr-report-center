@@ -170,11 +170,22 @@ def prettify(label):
 # Usados p/ "pular" ao extrair o público — que costuma ser o último segmento real.
 _FRONTS = {"o2o", "ooh", "groundflow", "rmnf", "rmnd"}
 _MEDIA = {"display", "video", "pdooh", "dooh"}
-_GENERIC = {"li standard", "standard", "li", "abs", "padrao", "default", "geral", "todos", "all"}
-_STRUCTURAL = _FRONTS | _MEDIA | _GENERIC
-# Nunca são audiência, NEM como rótulo (mídia + grupos de survey). Frentes ficam
-# de FORA — viram rótulo de fallback quando a line não tem público próprio.
-_NEVER_AUDIENCE = _MEDIA | {"control", "controle", "exposto", "pos venda", "pos"}
+# TIERS/qualidade de LINE ITEM no fim do nome — NÃO são audiência (a audiência é
+# o segmento ANTES). Ex.: '..._O2O_MARKETS_LI-1', '..._O2O_LUXURY_PREMIUM',
+# '..._OOH_REDE-2_LI-STANDARD'. 'LI-*' é pego por prefixo em `_structural`.
+_TIER = {"premium", "top performance", "premium list", "standard"}
+_GENERIC = {"li standard", "li", "abs", "padrao", "default", "geral", "todos", "all"}
+_STRUCTURAL = _FRONTS | _MEDIA | _TIER | _GENERIC
+# Nunca são audiência, NEM como rótulo (mídia + tiers + grupos de survey).
+# Frentes ficam de FORA — viram rótulo de fallback quando a line não tem público.
+_NEVER_AUDIENCE = _MEDIA | _TIER | {"control", "controle", "exposto", "pos venda", "pos"}
+
+
+def _structural(seg):
+    """Token estrutural (frente/mídia/tier de line/genérico) — não é público."""
+    k = normalize_key(seg)
+    # 'li ' cobre os tiers de line item: LI-1, LI-TOP-PERFORMANCE, LI-PREMIUM-LIST…
+    return k in _STRUCTURAL or k.startswith("li ")
 
 
 def extract_audience(line_name):
@@ -195,7 +206,7 @@ def extract_audience(line_name):
         return ""  # sem estrutura "_-separada" → não há padrão de audiência
     cands = [segs[-1], segs[-2]]
     for cand in cands:
-        if normalize_key(cand) not in _STRUCTURAL:
+        if not _structural(cand):
             return cand
     for s in reversed(segs):
         if normalize_key(s) in _FRONTS:
@@ -210,7 +221,8 @@ def _is_ignorable(label):
     if not label:
         return True
     k = normalize_key(label)
-    return k in ("", "na", "n a") or "survey" in k or k in _NEVER_AUDIENCE
+    return (k in ("", "na", "n a") or "survey" in k
+            or k in _NEVER_AUDIENCE or k.startswith("li "))
 
 
 def group_audiences(weights):
