@@ -35,7 +35,13 @@ _SYSTEM = (
     "deixe separado. (2) Escolha um nome canônico curto, em português, Title Case, "
     "preferindo o plural natural do segmento ('Supermercados', 'Farmácias'). "
     "(3) TODO rótulo de entrada deve aparecer em exatamente um grupo. "
-    "(4) Não invente audiências que não estão na entrada."
+    "(4) Não invente audiências que não estão na entrada. "
+    "(5) NUNCA expanda nem adivinhe o significado de SIGLAS ou CÓDIGOS curtos "
+    "(ex.: 'LI', 'LI-1', 'LI-TOP-PERFORMANCE', 'ABS', 'REDE-2', 'FAIXA-2') — "
+    "'LI' é Line Item, NÃO LinkedIn. Mantenha esses códigos como estão (no máximo "
+    "Title Case, ex.: 'LI-1' → 'LI 1'); preserve o original quando não tiver certeza. "
+    "(6) Traduza para português apenas palavras comuns e inequívocas "
+    "('Clothing' → 'Vestuário', 'Students' → 'Estudantes')."
 )
 
 _SCHEMA = {

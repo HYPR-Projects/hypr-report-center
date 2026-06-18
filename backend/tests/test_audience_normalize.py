@@ -22,9 +22,22 @@ def test_singularize_common_plurals():
     assert an.singularize_key("as") == "as"
 
 
-def test_extract_audience_penultimate_segment():
+def test_extract_audience_both_conventions():
+    # Kenvue-V2: MÍDIA_FRENTE_AUDIÊNCIA → público é o ÚLTIMO segmento
+    assert an.extract_audience("ID-X_HYPR_K_CPG_LISTERINE_ABS_DISPLAY_O2O_MARKETS-&-FARMACIAS") == "MARKETS-&-FARMACIAS"
+    assert an.extract_audience("ID-X_HYPR_K_SEMPRE-LIVRE_ABS_DISPLAY_O2O_STUDENTS") == "STUDENTS"
+    assert an.extract_audience("ID-X_HYPR_K_LISTERINE_ABS_DISPLAY_RMNF_FAIXA-2") == "FAIXA-2"
+    # convenção antiga: FRENTE_AUDIÊNCIA_MÍDIA → público é o PENÚLTIMO
     assert an.extract_audience("camp_O2O_Supermercados_DISPLAY") == "Supermercados"
     assert an.extract_audience("semsep") == ""
+
+
+def test_extract_audience_front_fallback_when_no_public():
+    # Line sem público próprio (só frente+mídia / genérico) → rotula pela FRENTE,
+    # nunca pela mídia.
+    assert an.extract_audience("ID-X_..._SEMPRE-LIVRE_ABS_DISPLAY_OOH") == "OOH"
+    assert an.extract_audience("ID-X_..._BABY-PROMO_DISPLAY_GROUNDFLOW_LI-STANDARD") == "GROUNDFLOW"
+    assert an.extract_audience("ID-X_..._SAO-JOAO_VIDEO_OOH_LI-STANDARD") == "OOH"
 
 
 def test_plural_accent_case_collapse_to_one_group():
@@ -76,12 +89,13 @@ def test_ignores_survey_and_na():
     assert set(res["groups"].keys()) == {"Supermercados"}
 
 
-def test_ignores_structural_tokens():
-    """Frentes/mídias/features que vazam do line_name curto não viram audiência."""
-    weights = {"O2O": 100, "OOH": 80, "GROUNDFLOW": 60, "DISPLAY": 200,
-               "VIDEO": 50, "PDOOH": 30, "Supermercados": 500, "Farmácias": 300}
+def test_ignores_media_but_keeps_fronts():
+    """Mídia (Display/Vídeo/PDOOH) nunca é audiência; frentes (Groundflow/RMNF)
+    podem aparecer como rótulo de fallback e NÃO são filtradas."""
+    weights = {"DISPLAY": 200, "VIDEO": 50, "PDOOH": 30,
+               "Supermercados": 500, "Groundflow": 120}
     res = an.group_audiences(weights)
-    assert set(res["groups"].keys()) == {"Supermercados", "Farmácias"}
+    assert set(res["groups"].keys()) == {"Supermercados", "Groundflow"}
 
 
 def test_display_picks_heaviest_representative():

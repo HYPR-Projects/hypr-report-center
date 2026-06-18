@@ -19,7 +19,8 @@
 // Charts em recharts com cores resolvidas por tema (useThemeColors), mesma
 // linguagem visual do report (DualChartV2/ChartCardV2).
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   ComposedChart, Bar, Line, LineChart, XAxis, YAxis, ReferenceLine,
   CartesianGrid, Tooltip as RTooltip, ResponsiveContainer, PieChart, Pie, Cell,
@@ -983,8 +984,9 @@ function MixChip({ label, soft, variant }) {
 
 // Chip de tipo de survey com cor condicional (verde = lift positivo, vermelho =
 // negativo, neutro = sem lift mensurável) + hover com o resumo exposto×controle.
-// `detail` = {type, exposed, control, liftAbs, liftRel} | undefined. Tooltip
-// CSS-only (group-hover) — minimalista, sem dependência, fecha sozinho.
+// `detail` = {type, exposed, control, liftAbs, liftRel} | undefined. O tooltip
+// é renderizado em PORTAL (position:fixed no body) p/ escapar do overflow da
+// tabela — antes o resumo era cortado pela borda do card.
 function SurveyTypeChip({ type, detail }) {
   const has = detail && detail.liftAbs != null;
   const positive = has && detail.liftAbs > 0;
@@ -994,44 +996,52 @@ function SurveyTypeChip({ type, detail }) {
     : negative
       ? "bg-danger-soft text-danger"
       : "bg-surface-strong text-fg-muted";
+  const ref = useRef(null);
+  const [coords, setCoords] = useState(null);
+  const show = () => {
+    if (!has || !ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    setCoords({ x: r.left + r.width / 2, y: r.top });
+  };
+  const hide = () => setCoords(null);
   return (
-    <span className={cn("relative group inline-flex items-center", has && "cursor-help")}>
-      <span className={cn(
+    <span
+      ref={ref}
+      onMouseEnter={show}
+      onMouseLeave={hide}
+      className={cn(
         "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide",
-        tone,
-      )}>
-        {has && (
-          <span className="size-1.5 rounded-full" style={{ background: "currentColor" }} aria-hidden />
-        )}
-        {type}
-      </span>
-      {has && (
-        <span
+        tone, has && "cursor-help",
+      )}
+    >
+      {has && <span className="size-1.5 rounded-full" style={{ background: "currentColor" }} aria-hidden />}
+      {type}
+      {has && coords && createPortal(
+        <div
           role="tooltip"
-          className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-20 w-[208px]
-                     opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0
-                     transition-all duration-150 rounded-xl border border-border bg-canvas-elevated
-                     shadow-lg p-3 text-left normal-case tracking-normal"
+          style={{ position: "fixed", left: coords.x, top: coords.y - 10, transform: "translate(-50%, -100%)", zIndex: 60 }}
+          className="pointer-events-none w-[212px] rounded-xl border border-border bg-canvas-elevated shadow-xl p-3 text-left normal-case tracking-normal"
         >
-          <span className="block text-[11px] font-bold text-fg mb-2">{type}</span>
-          <span className="flex items-center justify-between text-[11px] mb-1">
+          <div className="text-[11px] font-bold text-fg mb-2">{type}</div>
+          <div className="flex items-center justify-between text-[11px] mb-1">
             <span className="text-fg-muted">Exposto</span>
             <span className="font-semibold text-fg tabular-nums">{detail.exposed.toFixed(1)}%</span>
-          </span>
-          <span className="flex items-center justify-between text-[11px] mb-2">
+          </div>
+          <div className="flex items-center justify-between text-[11px] mb-2">
             <span className="text-fg-muted">Controle</span>
             <span className="font-semibold text-fg tabular-nums">{detail.control.toFixed(1)}%</span>
-          </span>
-          <span className="flex items-center justify-between text-[11px] pt-2 border-t border-border">
+          </div>
+          <div className="flex items-center justify-between text-[11px] pt-2 border-t border-border">
             <span className="text-fg-muted">Lift</span>
             <span className={cn("font-bold tabular-nums", positive ? "text-success" : "text-danger")}>
               {detail.liftAbs > 0 ? "+" : ""}{detail.liftAbs.toFixed(1)} pp
               <span className="font-medium opacity-80"> ({detail.liftRel > 0 ? "+" : ""}{detail.liftRel.toFixed(0)}%)</span>
             </span>
-          </span>
+          </div>
           <span className="absolute top-full left-1/2 -translate-x-1/2 -mt-px border-[5px] border-transparent"
                 style={{ borderTopColor: "var(--color-border)" }} aria-hidden />
-        </span>
+        </div>,
+        document.body,
       )}
     </span>
   );

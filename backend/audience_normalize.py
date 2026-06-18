@@ -165,29 +165,52 @@ def prettify(label):
     return " ".join(out)
 
 
+# Tokens ESTRUTURAIS no line_name (chave normalizada) que NÃO são audiência.
+# Frentes (core products), mídias e identificadores genéricos de line item.
+# Usados p/ "pular" ao extrair o público — que costuma ser o último segmento real.
+_FRONTS = {"o2o", "ooh", "groundflow", "rmnf", "rmnd"}
+_MEDIA = {"display", "video", "pdooh", "dooh"}
+_GENERIC = {"li standard", "standard", "li", "abs", "padrao", "default", "geral", "todos", "all"}
+_STRUCTURAL = _FRONTS | _MEDIA | _GENERIC
+# Nunca são audiência, NEM como rótulo (mídia + grupos de survey). Frentes ficam
+# de FORA — viram rótulo de fallback quando a line não tem público próprio.
+_NEVER_AUDIENCE = _MEDIA | {"control", "controle", "exposto", "pos venda", "pos"}
+
+
 def extract_audience(line_name):
-    """Porte Python de extractAudience (src/shared/aggregations.js): penúltimo
-    segmento '_-separado' do line_name. 'camp_O2O_Supermercados_DISPLAY' →
-    'Supermercados'. Retorna '' quando não há padrão reconhecível."""
-    parts = str(line_name or "").split("_")
-    return parts[-2] if len(parts) >= 2 else ""
+    """Extrai a AUDIÊNCIA (público-alvo) do line_name, robusto às DUAS
+    convenções de nomenclatura HYPR:
+      • MÍDIA_FRENTE_AUDIÊNCIA (Kenvue-V2): público = ÚLTIMO segmento
+        (ex.: '..._DISPLAY_O2O_MARKETS-&-FARMACIAS' → 'MARKETS-&-FARMACIAS').
+      • FRENTE_AUDIÊNCIA_MÍDIA (antiga):     público = PENÚLTIMO segmento
+        (ex.: 'camp_O2O_Supermercados_DISPLAY' → 'Supermercados').
 
-
-# Tokens ESTRUTURAIS que não são audiência — vazam pra cá quando o line_name é
-# curto e o penúltimo segmento cai numa frente/mídia/feature em vez do público
-# (ex.: "camp_O2O_DISPLAY" → penúltimo "O2O"). Nunca são públicos reais.
-_NON_AUDIENCE = {
-    "o2o", "ooh", "groundflow", "rmnf", "rmnd", "display", "video",
-    "pdooh", "dooh", "pos venda", "pos", "control", "controle", "exposto",
-}
+    Estratégia: varre do fim e devolve o 1º segmento que NÃO é estrutural —
+    cobre as duas convenções e impede a frente (O2O/OOH) de virar "audiência".
+    Se a line não tem público próprio (só frente+mídia, ex.: '..._DISPLAY_OOH'
+    ou '..._GROUNDFLOW_LI-STANDARD'), rotula pela FRENTE (Groundflow/RMNF/O2O/
+    OOH) p/ não perder volume — nunca pela mídia. '' se nada reconhecível."""
+    segs = [s for s in str(line_name or "").split("_") if s]
+    if len(segs) < 2:
+        return ""  # sem estrutura "_-separada" → não há padrão de audiência
+    cands = [segs[-1], segs[-2]]
+    for cand in cands:
+        if normalize_key(cand) not in _STRUCTURAL:
+            return cand
+    for s in reversed(segs):
+        if normalize_key(s) in _FRONTS:
+            return s
+    return ""
 
 
 def _is_ignorable(label):
-    """Audiências que não entram na quebra (survey, vazias, N/A, estruturais)."""
+    """Audiências que não entram na quebra (survey, vazias, N/A, mídia/grupos de
+    survey). Frentes NÃO entram aqui — `extract_audience` pode devolvê-las como
+    rótulo de fallback (Groundflow/RMNF) quando a line não tem público próprio."""
     if not label:
         return True
     k = normalize_key(label)
-    return k in ("", "na", "n a") or "survey" in k or k in _NON_AUDIENCE
+    return k in ("", "na", "n a") or "survey" in k or k in _NEVER_AUDIENCE
 
 
 def group_audiences(weights):
