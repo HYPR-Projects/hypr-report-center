@@ -76,6 +76,14 @@ def test_ignores_survey_and_na():
     assert set(res["groups"].keys()) == {"Supermercados"}
 
 
+def test_ignores_structural_tokens():
+    """Frentes/mídias/features que vazam do line_name curto não viram audiência."""
+    weights = {"O2O": 100, "OOH": 80, "GROUNDFLOW": 60, "DISPLAY": 200,
+               "VIDEO": 50, "PDOOH": 30, "Supermercados": 500, "Farmácias": 300}
+    res = an.group_audiences(weights)
+    assert set(res["groups"].keys()) == {"Supermercados", "Farmácias"}
+
+
 def test_display_picks_heaviest_representative():
     """Sem seed, o display vem do representante de maior peso, prettificado."""
     weights = {"publico jovem": 50, "Público Jovem": 400}

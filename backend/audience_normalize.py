@@ -173,12 +173,21 @@ def extract_audience(line_name):
     return parts[-2] if len(parts) >= 2 else ""
 
 
+# Tokens ESTRUTURAIS que não são audiência — vazam pra cá quando o line_name é
+# curto e o penúltimo segmento cai numa frente/mídia/feature em vez do público
+# (ex.: "camp_O2O_DISPLAY" → penúltimo "O2O"). Nunca são públicos reais.
+_NON_AUDIENCE = {
+    "o2o", "ooh", "groundflow", "rmnf", "rmnd", "display", "video",
+    "pdooh", "dooh", "pos venda", "pos", "control", "controle", "exposto",
+}
+
+
 def _is_ignorable(label):
-    """Audiências que não entram na quebra (survey, vazias, N/A)."""
+    """Audiências que não entram na quebra (survey, vazias, N/A, estruturais)."""
     if not label:
         return True
     k = normalize_key(label)
-    return k in ("", "na", "n a") or "survey" in k
+    return k in ("", "na", "n a") or "survey" in k or k in _NON_AUDIENCE
 
 
 def group_audiences(weights):
