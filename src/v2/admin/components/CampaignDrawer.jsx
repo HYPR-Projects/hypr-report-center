@@ -20,6 +20,7 @@ import { Button } from "../../../ui/Button";
 import { cn } from "../../../ui/cn";
 import { Avatar } from "../../../ui/Avatar";
 import { AbsToggle } from "./AbsToggle";
+import { CoreProductsOverride } from "./CoreProductsOverride";
 import { TokenChip } from "./TokenChip";
 import { ClosureModal } from "./ClosureModal";
 import {
@@ -668,6 +669,17 @@ export function CampaignDrawer({
             <AbsToggle
               shortToken={short_token}
               autoDetected={autoDetected}
+              onChange={onAbsChange}
+            />
+          </div>
+
+          {/* Core products no report — curadoria de quais frentes aparecem.
+              Vence o checklist_info: blinda frente removida no Command que a
+              pipeline ainda materializa stale (frente "fantasma"). Backend
+              invalida o cache; onChange só força re-render da lista. */}
+          <div className="drawer-section-rise drawer-stagger-2 mb-5">
+            <CoreProductsOverride
+              shortToken={short_token}
               onChange={onAbsChange}
             />
           </div>

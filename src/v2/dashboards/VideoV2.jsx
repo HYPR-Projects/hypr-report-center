@@ -100,10 +100,14 @@ export default function VideoV2({
     (t0Video[`bonus_${frente}_video_completions`] || 0) > 0;
   // Gate do Groundflow (espelha backend): sem contrato, line é dark test → O2O.
   const hasGfContract = hasContract("groundflow");
+  // Override de core products (curadoria admin): esconde frentes fora do set
+  // mesmo com entrega. Backend já zerou o contrato delas; isto gateia a entrega.
+  const activeCP = camp.active_core_products;
+  const isActiveCP = (frente) => !activeCP || activeCP.includes(frente);
   const showByTactic = {
-    O2O:        hasContract("o2o")        || hasDelivery("O2O"),
-    OOH:        hasContract("ooh")        || hasDelivery("OOH"),
-    GROUNDFLOW: hasGfContract,  // contract-only (≠ O2O/OOH): dark test não vira frente
+    O2O:        isActiveCP("O2O")        && (hasContract("o2o")        || hasDelivery("O2O")),
+    OOH:        isActiveCP("OOH")        && (hasContract("ooh")        || hasDelivery("OOH")),
+    GROUNDFLOW: isActiveCP("GROUNDFLOW") && hasGfContract,  // contract-only (≠ O2O/OOH): dark test não vira frente
   };
   const availableTactics = TACTIC_OPTIONS.filter((opt) => showByTactic[opt.value]);
   const effectiveTactic =
