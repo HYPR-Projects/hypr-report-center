@@ -452,9 +452,9 @@ function BestRateStar({ label = "CTR" }) {
       <TooltipTrigger asChild>
         <span className="inline-flex cursor-help" tabIndex={0} aria-label={`Melhor ${label}`}>
           <svg
-            width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"
-            className="shrink-0"
-            style={{ color: "var(--color-gold)", filter: "drop-shadow(0 0 2px var(--color-gold))" }}
+            width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"
+            className="shrink-0 text-signature"
+            style={{ filter: "drop-shadow(0 0 2px var(--color-signature-glow))" }}
             aria-hidden="true"
           >
             <path d="M12 2l2.94 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l7.06-1.01z" />
