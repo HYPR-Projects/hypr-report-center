@@ -3761,32 +3761,13 @@ def fetch_campaign_data(short_token, src=None):
             default = None if nullable else []
         result[key] = _safe_future_result(future, key, default=default)
     # Achatamos alcance_frequencia em chaves de topo (`alcance`, `frequencia`,
-    # `alcance_updated_at`) — frontend lê direto, sem aninhamento.
-    af = result.pop("alcance_frequencia", None) or {}
-    # Fallback merge-scoped: se o token pertence a um grupo merge e o par
-    # (token, short_token) está vazio, lê de (merge, merge_id). Cobre o caso
-    # em que o admin salvou na "Visão agregada" (escopo merge) e o cliente
-    # abre a URL default — que cai em fetch_campaign_data(active_token) e
-    # antes via vazio mesmo com valor salvo no banco. Per-month edits
-    # (admin salva num pill de mês específico) seguem prevalecendo porque
-    # o par (token, X) tem prioridade.
-    if not (af.get("alcance") or af.get("frequencia")):
-        try:
-            merges_lookup = _safe_get_merges()
-            merge_info = (
-                merges_lookup.get(short_token)
-                or merges_lookup.get(short_token.upper())
-            )
-            if merge_info and merge_info.get("merge_id"):
-                af_merge = query_alcance_frequencia("merge", merge_info["merge_id"])
-                if af_merge.get("alcance") or af_merge.get("frequencia"):
-                    af = af_merge
-        except Exception as e:
-            logger.warning(f"[WARN fetch_campaign_data af_merge_fallback {short_token}] {e}")
-    result["alcance"]            = af.get("alcance", "")    or ""
-    result["frequencia"]         = af.get("frequencia", "") or ""
-    result["auto_alcance"]       = bool(af.get("auto_alcance"))
-    result["alcance_updated_at"] = af.get("updated_at", "") or ""
+    # `auto_alcance`, `alcance_updated_at`) — frontend lê direto, sem
+    # aninhamento. _resolve_alcance_frequencia aplica o fallback merge-scoped
+    # (par (token, X) vazio → lê do grupo merge, cobrindo o save na "Visão
+    # agregada") e é a MESMA função usada no overlay de report congelado.
+    # Reaproveita o `af_token` já consultado em paralelo pelo _query_pool.
+    af_token = result.pop("alcance_frequencia", None)
+    result.update(_resolve_alcance_frequencia(short_token, af_token=af_token))
     return result
 
 
@@ -5566,6 +5547,16 @@ def _overlay_frozen_live_fields(short_token, payload):
             payload[key] = fn(short_token)
         except Exception as e:
             logger.warning(f"[WARN frozen overlay {key} {short_token}] {e}")
+    # Alcance & Frequência: 4 chaves de TOPO (não objeto aninhado como
+    # survey/loom). O snapshot guarda o valor do momento do freeze; uma edição
+    # posterior — inclusive o toggle auto_alcance, que grava alcance vazio de
+    # propósito — precisa sobrepor o congelado, senão o reload mostra o valor
+    # velho (ou perde o cálculo automático). save_af já invalida o
+    # _report_cache do token, então isto roda no cache miss seguinte.
+    try:
+        payload.update(_resolve_alcance_frequencia(short_token))
+    except Exception as e:
+        logger.warning(f"[WARN frozen overlay alcance_frequencia {short_token}] {e}")
     return payload
 
 
@@ -6509,6 +6500,41 @@ def query_alcance_frequencia(scope_type: str, scope_id: str):
     except Exception as e:
         logger.warning(f"[WARN query_alcance_frequencia {scope_type}:{scope_id}] {e}")
     return {"alcance": "", "frequencia": "", "auto_alcance": False, "updated_at": ""}
+
+
+def _resolve_alcance_frequencia(short_token, af_token=None):
+    """Resolve os 4 campos de topo de Alcance & Frequência de um token, já com
+    o fallback merge-scoped (par (token, X) vazio → lê do grupo merge).
+
+    Fonte ÚNICA usada tanto pelo serve ao vivo (fetch_campaign_data) quanto pelo
+    overlay de report congelado (_overlay_frozen_live_fields). Sem o overlay, um
+    valor salvo APÓS o freeze some no reload — o snapshot é servido verbatim e
+    no modo auto_alcance o alcance é gravado vazio de propósito, então o report
+    voltava pro modo manual com alcance em branco (o cálculo "sumia").
+
+    Aceita `af_token` já consultado pra reaproveitar a query paralela do
+    _query_pool no caminho ao vivo."""
+    af = (af_token if af_token is not None
+          else query_alcance_frequencia("token", short_token)) or {}
+    if not (af.get("alcance") or af.get("frequencia")):
+        try:
+            merges_lookup = _safe_get_merges()
+            merge_info = (
+                merges_lookup.get(short_token)
+                or merges_lookup.get(short_token.upper())
+            )
+            if merge_info and merge_info.get("merge_id"):
+                af_merge = query_alcance_frequencia("merge", merge_info["merge_id"])
+                if af_merge.get("alcance") or af_merge.get("frequencia"):
+                    af = af_merge
+        except Exception as e:
+            logger.warning(f"[WARN _resolve_alcance_frequencia merge_fallback {short_token}] {e}")
+    return {
+        "alcance":            af.get("alcance", "")    or "",
+        "frequencia":         af.get("frequencia", "") or "",
+        "auto_alcance":       bool(af.get("auto_alcance")),
+        "alcance_updated_at": af.get("updated_at", "") or "",
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
