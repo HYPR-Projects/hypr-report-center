@@ -45,6 +45,7 @@ import { useMemo, useRef, useState } from "react";
 import { fmt, fmtR } from "../../shared/format";
 import { Card } from "../../ui/Card";
 import { cn } from "../../ui/cn";
+import { Tooltip, TooltipTrigger, TooltipContent } from "../../ui/Tooltip";
 import { DownloadPngButtonV2 } from "./DownloadPngButtonV2";
 
 const ROW_LIMIT = 10;
@@ -232,7 +233,7 @@ export function FormatBreakdownTableV2({
                 <Td>{fmt(r[numeratorKey])}</Td>
                 <Td>
                   <span className="inline-flex items-center justify-end gap-1">
-                    {bestRate > 0 && (Number(r[rateKey]) || 0) === bestRate && <BestRateStar />}
+                    {bestRate > 0 && (Number(r[rateKey]) || 0) === bestRate && <BestRateStar label={rateLabel} />}
                     {rateFormatter(r[rateKey])}
                   </span>
                 </Td>
@@ -443,17 +444,25 @@ function XIcon() {
 }
 
 // Estrelinha dourada minimalista — marca a linha de melhor taxa (CTR/VTR).
-function BestRateStar() {
+// Tooltip ao passar o mouse (Radix; o report já tem TooltipProvider no
+// ClientDashboardV2). `label` = "CTR" (Display) ou "VTR" (Video).
+function BestRateStar({ label = "CTR" }) {
   return (
-    <svg
-      width="12" height="12" viewBox="0 0 24 24" fill="#fbbf24" stroke="none"
-      className="shrink-0"
-      style={{ filter: "drop-shadow(0 0 2.5px rgba(251,191,36,0.55))" }}
-      aria-label="Melhor CTR"
-    >
-      <title>Melhor CTR</title>
-      <path d="M12 2l2.94 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l7.06-1.01z" />
-    </svg>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex cursor-help" tabIndex={0} aria-label={`Melhor ${label}`}>
+          <svg
+            width="12" height="12" viewBox="0 0 24 24" fill="#fbbf24" stroke="none"
+            className="shrink-0"
+            style={{ filter: "drop-shadow(0 0 2.5px rgba(251,191,36,0.55))" }}
+            aria-hidden="true"
+          >
+            <path d="M12 2l2.94 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l7.06-1.01z" />
+          </svg>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>Melhor {label} deste recorte</TooltipContent>
+    </Tooltip>
   );
 }
 
