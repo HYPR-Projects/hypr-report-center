@@ -56,6 +56,7 @@
   /* Semânticas (avisos, sucesso, erro) */
   --color-warning: #EDD900;              /* atenção, pacing, alertas leves */
   --color-warning-soft: rgba(237, 217, 0, 0.15);
+  --color-gold: #F5B301;                 /* estrela "melhor taxa" (CTR/VTR) — dourado vivo no dark */
   --color-success: #4CB050;              /* completou, dentro do alvo */
   --color-success-soft: rgba(76, 176, 80, 0.15);
   --color-danger: #F5272B;               /* erro, pacing crítico */
@@ -265,6 +266,7 @@
   /* Semânticas — todas escurecem pra contrastar */
   --color-warning: #B8A500;
   --color-warning-soft: rgba(184, 165, 0, 0.18);
+  --color-gold: #A8780A;                 /* estrela "melhor taxa" — escurece p/ contraste no claro */
   --color-success: #3D9842;
   --color-success-soft: rgba(61, 152, 66, 0.18);
   --color-danger: #D8201E;
