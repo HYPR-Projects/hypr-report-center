@@ -41,6 +41,11 @@ import {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const num = (v) => Number(v) || 0;
+
+// Meta de entrega de margem (régua do time: margem ÷ PI ≥ 85% = verde).
+// Marcada como referência nas barras do card "Realizado vs. contratado"
+// quando a métrica é Margem. Ver pctDeliveryClass em pmpFormat.
+const MARGIN_TARGET = 0.85;
 const MONTH_ABBR = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
 
 // "DD/MM" pra eixo diário (a partir de "YYYY-MM-DD").
@@ -635,6 +640,8 @@ function ContractProgress({ rows, metric, accent }) {
   const totVal = sorted.reduce((s, r) => s + (isRevenue ? r.revenue : r.margin), 0);
   const totPct = totPi > 0 ? totVal / totPi : null;
   const metricLabel = isRevenue ? "Receita gerada" : "Margem gerada";
+  // Marca a meta de 85% nas barras só no modo Margem (régua de % entrega).
+  const showTarget = !isRevenue;
 
   return (
     <div className="pt-1">
@@ -649,6 +656,14 @@ function ContractProgress({ rows, metric, accent }) {
           {totPct != null && <span className="text-fg-subtle"> · {formatRatioPct(totPct, 1)}</span>}
         </span>
       </div>
+
+      {/* Legenda da meta — só no modo Margem, alinhada ao tracinho das barras. */}
+      {showTarget && (
+        <div className="flex items-center gap-1.5 -mt-1 mb-3 text-[11px] text-fg-subtle">
+          <span className="inline-block w-px h-3 bg-fg/50 shrink-0" aria-hidden />
+          Mínimo ideal · {formatRatioPct(MARGIN_TARGET, 0)} da margem contratada
+        </div>
+      )}
 
       <div className="max-h-[420px] overflow-y-auto scrollbar-thin pr-1 -mr-1 space-y-3.5">
         {sorted.map((r) => {
@@ -667,9 +682,18 @@ function ContractProgress({ rows, metric, accent }) {
                   {over && <span aria-hidden>▲ </span>}{formatRatioPct(ratio, 1)}
                 </span>
               </div>
-              <div className="h-2 rounded-full bg-track overflow-hidden">
-                <div className="h-full rounded-full transition-[width] duration-500"
-                     style={{ width: `${width}%`, background: over ? "var(--color-emerald-500, #10b981)" : accent }} />
+              <div className="relative">
+                <div className="h-2 rounded-full bg-track overflow-hidden">
+                  <div className="h-full rounded-full transition-[width] duration-500"
+                       style={{ width: `${width}%`, background: over ? "var(--color-emerald-500, #10b981)" : accent }} />
+                </div>
+                {/* Tracinho da meta de 85% (margem). Fica por cima da barra,
+                    fora do overflow-hidden pra cruzar o trilho inteiro. */}
+                {showTarget && (
+                  <span className="absolute top-1/2 -translate-y-1/2 w-px h-3.5 bg-fg/50 rounded-full pointer-events-none"
+                        style={{ left: `${MARGIN_TARGET * 100}%` }}
+                        aria-hidden title="Mínimo ideal: 85%" />
+                )}
               </div>
               <div className="mt-1 text-[11.5px] tabular-nums text-fg-subtle"
                    title={`${formatBRL(value)} de ${formatBRL(r.pi)}`}>
