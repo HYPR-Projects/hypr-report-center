@@ -123,9 +123,21 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   const startSaving = (id) => setSavingLineIds(prev => { const n = new Set(prev); n.add(id); return n; });
   const finishSaving = (id) => setSavingLineIds(prev => { const n = new Set(prev); n.delete(id); return n; });
 
+  // Layout
+  const [layout, setLayout] = useState(() => {
+    try {
+      const saved = localStorage.getItem("hypr.pmp.layout");
+      // "worklist" foi removida; migra storage antigo pra default.
+      if (saved && saved !== "worklist") return saved;
+      return "client";
+    } catch { return "client"; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("hypr.pmp.layout", layout); } catch { /* ignore */ }
+  }, [layout]);
+
   // Série diária pro Analytics — fetch lazy (só ao abrir a aba). Estado:
-  // idle|loading|ready|error. Janela: do delivery mais antigo das lines até
-  // hoje, com teto de ~18 meses pra limitar o payload.
+  // idle|loading|ready|error. Declarado APÓS `layout` (o effect depende dele).
   const [timeseries, setTimeseries] = useState([]);
   const [tsStatus, setTsStatus] = useState("idle");
   const loadTimeseries = useCallback(async () => {
@@ -147,19 +159,6 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   useEffect(() => {
     if (layout === "analytics" && tsStatus === "idle" && lines.length > 0) loadTimeseries();
   }, [layout, tsStatus, lines.length, loadTimeseries]);
-
-  // Layout
-  const [layout, setLayout] = useState(() => {
-    try {
-      const saved = localStorage.getItem("hypr.pmp.layout");
-      // "worklist" foi removida; migra storage antigo pra default.
-      if (saved && saved !== "worklist") return saved;
-      return "client";
-    } catch { return "client"; }
-  });
-  useEffect(() => {
-    try { localStorage.setItem("hypr.pmp.layout", layout); } catch { /* ignore */ }
-  }, [layout]);
 
   // Filtros transversais
   const [search, setSearch]   = useState("");
