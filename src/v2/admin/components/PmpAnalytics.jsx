@@ -243,27 +243,30 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
   }, [tsFiltered, filteredLines]);
 
   // Mix por status (receita no período; fatias por status workflow efetivo).
+  // count = nº de deals que ENTREGARAM no período naquele status (consistente
+  // com a receita, que também é do período).
   const byStatus = useMemo(() => {
     const lineToStatus = new Map(filteredLines.map((l) => [l.line_id, effectiveStatus(l)]));
-    const rev = new Map(), cnt = new Map();
-    for (const l of filteredLines) {
-      const s = effectiveStatus(l);
-      cnt.set(s, (cnt.get(s) || 0) + 1);
-    }
+    const rev = new Map(), ids = new Map();
     for (const r of tsFiltered) {
       const s = lineToStatus.get(r.line_id);
       if (!s) continue;
       rev.set(s, (rev.get(s) || 0) + num(r.curator_revenue));
+      if (!ids.has(s)) ids.set(s, new Set());
+      ids.get(s).add(r.line_id);
     }
-    const rows = [...cnt.keys()]
-      .map((s) => ({ status: s, revenue: rev.get(s) || 0, count: cnt.get(s) || 0 }))
+    const rows = [...rev.entries()]
+      .map(([status, revenue]) => ({ status, revenue, count: ids.get(status)?.size || 0 }))
       .filter((r) => r.revenue > 0)
       .sort((a, b) => b.revenue - a.revenue);
     const total = rows.reduce((s, r) => s + r.revenue, 0);
     return { rows, total };
   }, [tsFiltered, filteredLines]);
 
-  // Tabela: por deal, com métricas do período + status + % entregue acumulada.
+  // Tabela: por deal, métricas do período + status + % entregue acumulada.
+  // Só deals que ENTREGARAM no período (revenue ou imps > 0) — alinhado aos
+  // gráficos/big numbers, que também são por período. Lines sem entrega na
+  // janela viram ruído de zeros e contradizem o "deals entregando".
   const tableRows = useMemo(() => {
     const per = new Map();
     for (const r of tsFiltered) {
@@ -286,6 +289,7 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
           pctEntregue: pctEntrega(l),
         };
       })
+      .filter((r) => r.revenue > 0 || r.imps > 0)
       .sort((a, b) => b.revenue - a.revenue);
   }, [tsFiltered, filteredLines]);
 
@@ -341,7 +345,7 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
           <MultiFilter label="Status" allLabel="Todos os status" options={statusOpts} selected={statuses} onChange={setStatuses} accent={accent} />
         )}
         {bidOpts.length > 1 && (
-          <MultiFilter label="Bid / DSP" allLabel="Todos os tipos" options={bidOpts} selected={bidTypes} onChange={setBidTypes} accent={accent} />
+          <MultiFilter label="Bid" allLabel="Todos os tipos" options={bidOpts} selected={bidTypes} onChange={setBidTypes} accent={accent} />
         )}
         {filtersActive ? (
           <button type="button" onClick={clearFilters}
@@ -397,12 +401,14 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
           </div>
 
           {/* ── Mix por cliente + status ───────────────────────────────────── */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* items-start: cada card abraça seu conteúdo (donut não estica e fica
+              com vazio interno quando há poucos status). */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 lg:items-start gap-4">
             <ChartCardV2 title="Receita por cliente · período">
               <CustomerBars rows={byCustomer} accent={accent} />
             </ChartCardV2>
             <ChartCardV2 title="Receita por status · período">
-              <StatusDonut data={byStatus} accent={accent} />
+              <StatusDonut data={byStatus} />
             </ChartCardV2>
           </div>
 
@@ -521,6 +527,9 @@ function EvolutionChart({ data, accent, mode }) {
   if (!data.length) return <EmptyChart />;
   const barSize = Math.min(isMobile ? 18 : 34, Math.max(4, Math.floor((isMobile ? 320 : 600) / data.length)));
   const money = mode === "money";
+  // Cliques só ganham eixo/linha quando existem no período — deals de display
+  // PMP costumam ter 0 clique, e uma linha achatada em zero é peso morto.
+  const hasClicks = !money && data.some((d) => num(d.clicks) > 0);
 
   return (
     <ResponsiveContainer width="100%" height={252}>
@@ -534,8 +543,10 @@ function EvolutionChart({ data, accent, mode }) {
           <>
             <YAxis yAxisId="left" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false}
                    width={44} tickFormatter={formatIntCompact} padding={{ top: 8 }} />
-            <YAxis yAxisId="right" orientation="right" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false}
-                   axisLine={false} width={40} tickFormatter={formatIntCompact} padding={{ top: 8 }} />
+            {hasClicks && (
+              <YAxis yAxisId="right" orientation="right" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false}
+                     axisLine={false} width={40} tickFormatter={formatIntCompact} padding={{ top: 8 }} />
+            )}
           </>
         )}
         <RTooltip cursor={{ fill: hypr.surfaceStrong }} content={(p) => (
@@ -552,7 +563,9 @@ function EvolutionChart({ data, accent, mode }) {
         ) : (
           <>
             <Bar yAxisId="left" dataKey="imps" fill={accent} radius={[3, 3, 0, 0]} opacity={0.9} barSize={barSize} isAnimationActive={false} />
-            <Line yAxisId="right" dataKey="clicks" type="monotone" stroke={hypr.fg} strokeWidth={2} dot={false} activeDot={{ r: 4 }} isAnimationActive={false} />
+            {hasClicks && (
+              <Line yAxisId="right" dataKey="clicks" type="monotone" stroke={hypr.fg} strokeWidth={2} dot={false} activeDot={{ r: 4 }} isAnimationActive={false} />
+            )}
           </>
         )}
       </ComposedChart>
@@ -588,16 +601,16 @@ function CustomerBars({ rows, accent }) {
 }
 
 // ── Receita por status (donut) ────────────────────────────────────────────────
-function StatusDonut({ data, accent }) {
+function StatusDonut({ data }) {
   if (!data.rows.length) return <EmptyChart />;
-  const colorOf = (s) => STATUS_COLOR[s] || accent;
+  const colorOf = (s) => STATUS_COLOR[s] || "#94a3b8";
   return (
-    <div className="flex flex-col sm:flex-row items-center gap-5">
-      <div className="relative shrink-0" style={{ width: 168, height: 168 }}>
+    <div className="flex flex-col sm:flex-row items-center gap-6 sm:gap-8 py-1">
+      <div className="relative shrink-0" style={{ width: 188, height: 188 }}>
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie data={data.rows} dataKey="revenue" nameKey="status" cx="50%" cy="50%"
-                 innerRadius={54} outerRadius={80} paddingAngle={2} stroke="none" isAnimationActive={false}>
+                 innerRadius={62} outerRadius={92} paddingAngle={2} stroke="none" isAnimationActive={false}>
               {data.rows.map((r) => <Cell key={r.status} fill={colorOf(r.status)} />)}
             </Pie>
             <RTooltip content={(p) => (
@@ -610,18 +623,22 @@ function StatusDonut({ data, accent }) {
         </ResponsiveContainer>
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
           <span className="text-[10px] uppercase tracking-wider text-fg-subtle">Receita</span>
-          <span className="text-[15px] font-bold text-fg tabular-nums">{formatBRLCompact(data.total)}</span>
+          <span className="text-[17px] font-bold text-fg tabular-nums">{formatBRLCompact(data.total)}</span>
+          <span className="text-[10px] text-fg-subtle mt-0.5">{data.rows.length} {data.rows.length === 1 ? "status" : "status"}</span>
         </div>
       </div>
-      <div className="flex-1 w-full space-y-2.5">
+      <div className="flex-1 w-full self-center divide-y divide-border/70">
         {data.rows.map((r) => {
           const pct = data.total > 0 ? (r.revenue / data.total) * 100 : 0;
           return (
-            <div key={r.status} className="flex items-center gap-2.5">
+            <div key={r.status} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
               <span className="size-2.5 rounded-sm shrink-0" style={{ background: colorOf(r.status) }} aria-hidden />
-              <span className="text-[13px] text-fg flex-1 truncate">{r.status} <span className="text-fg-subtle">· {r.count}</span></span>
-              <span className="text-[13px] text-fg-muted tabular-nums">{pct.toFixed(0)}%</span>
-              <span className="text-[13px] font-semibold text-fg tabular-nums w-[84px] text-right">{formatBRLCompact(r.revenue)}</span>
+              <span className="text-[13px] text-fg flex-1 min-w-0 truncate">
+                {r.status}
+                <span className="text-fg-subtle"> · {r.count} {r.count === 1 ? "deal" : "deals"}</span>
+              </span>
+              <span className="text-[13px] text-fg-muted tabular-nums w-10 text-right">{pct.toFixed(0)}%</span>
+              <span className="text-[13px] font-semibold text-fg tabular-nums w-[92px] text-right">{formatBRLCompact(r.revenue)}</span>
             </div>
           );
         })}
@@ -671,8 +688,8 @@ function DealsTable({ rows, accent }) {
   return (
     <div className="rounded-xl border border-border bg-surface overflow-hidden">
       <div className="px-4 md:px-5 py-3.5 border-b border-border flex items-center justify-between gap-3">
-        <h3 className="text-[11px] font-bold uppercase tracking-widest text-signature">Desempenho por deal</h3>
-        <span className="text-[11px] text-fg-subtle tabular-nums">{rows.length} deals</span>
+        <h3 className="text-[11px] font-bold uppercase tracking-widest text-signature">Desempenho por deal · período</h3>
+        <span className="text-[11px] text-fg-subtle tabular-nums">{rows.length} {rows.length === 1 ? "deal" : "deals"} com entrega</span>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-[13px]">
