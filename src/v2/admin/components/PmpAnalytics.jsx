@@ -64,8 +64,6 @@ const STATUS_COLOR = {
   Pendente:   "#94a3b8",
 };
 
-const TOP_CUSTOMERS = 8;
-
 export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "idle", onRetry }) {
   const hypr = useThemeColors();
   const accent = hypr.signature || "#22d3ee";
@@ -83,6 +81,10 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
   const [statuses, setStatuses] = useState([]);
   const [bidTypes, setBidTypes] = useState([]);
   const [granularity, setGranularity] = useState("day"); // "day" | "month"
+
+  // Card "Realizado vs. contratado": métrica exibida e dimensão de agrupamento.
+  const [cmpMetric, setCmpMetric] = useState("revenue"); // "revenue" | "margin"
+  const [cmpDim, setCmpDim] = useState("customer");      // "customer" | "campaign"
 
   // Opções de filtro derivadas das lines.
   const { customerOpts, campaignOpts, statusOpts, bidOpts } = useMemo(() => {
@@ -222,26 +224,6 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
       .map((e) => ({ ...e, label: granularity === "month" ? formatMonthLabel(e.key, "short") : dayLabel(e.key) }));
   }, [tsFiltered, granularity]);
 
-  // Mix por cliente (receita no período, ranqueado).
-  const byCustomer = useMemo(() => {
-    const lineToCust = new Map(filteredLines.map((l) => [l.line_id, l.customer || "—"]));
-    const map = new Map();
-    for (const r of tsFiltered) {
-      const c = lineToCust.get(r.line_id);
-      if (c == null) continue;
-      map.set(c, (map.get(c) || 0) + num(r.curator_revenue));
-    }
-    const all = [...map.entries()].map(([customer, revenue]) => ({ customer, revenue }))
-      .filter((r) => r.revenue > 0)
-      .sort((a, b) => b.revenue - a.revenue);
-    const top = all.slice(0, TOP_CUSTOMERS);
-    const rest = all.slice(TOP_CUSTOMERS);
-    const rows = [...top];
-    if (rest.length) rows.push({ customer: `Outras (${rest.length})`, revenue: rest.reduce((s, r) => s + r.revenue, 0), isRest: true });
-    const max = rows.reduce((m, r) => Math.max(m, r.revenue), 0);
-    return rows.map((r) => ({ ...r, pct: max > 0 ? (r.revenue / max) * 100 : 0 }));
-  }, [tsFiltered, filteredLines]);
-
   // Mix por status (receita no período; fatias por status workflow efetivo).
   // count = nº de deals que ENTREGARAM no período naquele status (consistente
   // com a receita, que também é do período).
@@ -262,6 +244,42 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
     const total = rows.reduce((s, r) => s + r.revenue, 0);
     return { rows, total };
   }, [tsFiltered, filteredLines]);
+
+  // Realizado vs. contratado (acumulado): por cliente OU por campanha, compara
+  // o que já foi gerado (lifetime) contra o PI total contratado. PI é valor de
+  // contrato — não tem janela —, então este card é SEMPRE acumulado e ignora o
+  // filtro de período (os filtros de dimensão continuam valendo). Régua de
+  // dedupe igual ao resto do PMP: lines do mesmo group_id compartilham o mesmo
+  // PI (conta 1×) e usam group_curator_* já agregado; solos usam curator_*.
+  const contractRows = useMemo(() => {
+    const seenKey = new Set();      // (bucket, group-key) já contabilizado
+    const buckets = new Map();      // nome → { pi, revenue, margin }
+    for (const l of filteredLines) {
+      const name = (cmpDim === "campaign"
+        ? (l.campaign_name || l.line_name)
+        : l.customer) || "—";
+      const groupKey = l.group_id ? `g:${l.group_id}` : `l:${l.line_id}`;
+      const dedupKey = `${name}|${groupKey}`;
+      if (seenKey.has(dedupKey)) continue;  // membro do mesmo grupo já somado
+      seenKey.add(dedupKey);
+
+      const pi = num(l.pi_brl);
+      if (pi <= 0) continue;                // sem PI não há "contratado" a comparar
+      const revenue = l.group_id ? num(l.group_curator_revenue) : num(l.curator_revenue);
+      const margin  = l.group_id ? num(l.group_curator_margin)  : num(l.curator_margin);
+
+      let b = buckets.get(name);
+      if (!b) { b = { name, pi: 0, revenue: 0, margin: 0 }; buckets.set(name, b); }
+      b.pi += pi;
+      b.revenue += revenue;
+      b.margin += margin;
+    }
+    return [...buckets.values()].map((b) => ({
+      ...b,
+      pctRevenue: b.pi > 0 ? b.revenue / b.pi : null,
+      pctMargin:  b.pi > 0 ? b.margin  / b.pi : null,
+    }));
+  }, [filteredLines, cmpDim]);
 
   // Tabela: por deal, métricas do período + status + % entregue acumulada.
   // Só deals que ENTREGARAM no período (revenue ou imps > 0) — alinhado aos
@@ -404,8 +422,24 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
           {/* items-start: cada card abraça seu conteúdo (donut não estica e fica
               com vazio interno quando há poucos status). */}
           <div className="grid grid-cols-1 lg:grid-cols-2 lg:items-start gap-4">
-            <ChartCardV2 title="Receita por cliente · período">
-              <CustomerBars rows={byCustomer} accent={accent} />
+            <ChartCardV2
+              title={`Realizado vs. contratado · ${cmpDim === "campaign" ? "campanha" : "cliente"}`}
+              actions={
+                <div className="flex items-center gap-2 flex-wrap justify-start sm:justify-end w-full sm:w-auto">
+                  <Segmented
+                    value={cmpMetric}
+                    onChange={setCmpMetric}
+                    options={[{ value: "revenue", label: "Receita" }, { value: "margin", label: "Margem" }]}
+                  />
+                  <Segmented
+                    value={cmpDim}
+                    onChange={setCmpDim}
+                    options={[{ value: "customer", label: "Cliente" }, { value: "campaign", label: "Campanha" }]}
+                  />
+                </div>
+              }
+            >
+              <ContractProgress rows={contractRows} metric={cmpMetric} accent={accent} />
             </ChartCardV2>
             <ChartCardV2 title="Receita por status · período">
               <StatusDonut data={byStatus} />
@@ -417,7 +451,9 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
 
           <p className="text-[11px] text-fg-subtle">
             Métricas de entrega (receita, margem, impressões, eCPM) refletem o período selecionado.
-            PI é o valor de contrato e a % entregue é acumulada (margem ÷ PI), independente do período.
+            PI é o valor de contrato e a % entregue é acumulada (gerado ÷ PI), independente do período —
+            por isso o card “Realizado vs. contratado” soma o gerado lifetime e ignora o filtro de período
+            (os filtros de cliente, campanha, status e bid continuam valendo).
             {prev && <> Variações comparam com o período anterior de mesma duração.</>}
           </p>
         </>
@@ -573,29 +609,77 @@ function EvolutionChart({ data, accent, mode }) {
   );
 }
 
-// ── Receita por cliente (barras ranqueadas) ──────────────────────────────────
-function CustomerBars({ rows, accent }) {
-  if (!rows.length) return <EmptyChart />;
-  const total = rows.reduce((s, r) => s + r.revenue, 0);
+// ── Realizado vs. contratado (barras de progresso, com scroll interno) ───────
+// Compara o gerado lifetime (receita ou margem) contra o PI contratado, por
+// cliente ou campanha. A barra representa o % atingido do PI; over-delivery
+// (≥ 100%) é sinalizado em verde, com a barra cheia. Lista rola por dentro do
+// card pra caber todos os itens sem esticar a tela.
+function ContractProgress({ rows, metric, accent }) {
+  const isRevenue = metric === "revenue";
+  const sorted = useMemo(() => {
+    const val = (r) => (isRevenue ? r.revenue : r.margin);
+    return [...rows].sort((a, b) => val(b) - val(a));
+  }, [rows, isRevenue]);
+
+  if (!sorted.length) {
+    return (
+      <div className="h-[200px] flex flex-col items-center justify-center gap-1 text-center">
+        <p className="text-[12px] text-fg-subtle">Nenhum item com PI contratado nos filtros atuais.</p>
+        <p className="text-[11px] text-fg-subtle/70">A comparação precisa de um PI vinculado.</p>
+      </div>
+    );
+  }
+
+  // Consolidado do conjunto exibido (linha-resumo no topo).
+  const totPi = sorted.reduce((s, r) => s + r.pi, 0);
+  const totVal = sorted.reduce((s, r) => s + (isRevenue ? r.revenue : r.margin), 0);
+  const totPct = totPi > 0 ? totVal / totPi : null;
+  const metricLabel = isRevenue ? "Receita gerada" : "Margem gerada";
+
   return (
-    <div className="space-y-3 pt-1">
-      {rows.map((r) => {
-        const share = total > 0 ? (r.revenue / total) * 100 : 0;
-        return (
-          <div key={r.customer}>
-            <div className="flex items-baseline justify-between gap-3 mb-1.5">
-              <span className={cn("text-[13px] truncate", r.isRest ? "text-fg-muted italic" : "font-medium text-fg")}>{r.customer}</span>
-              <span className="text-[13px] font-semibold text-fg tabular-nums shrink-0">
-                {formatBRLCompact(r.revenue)} <span className="text-fg-subtle font-normal">· {share.toFixed(0)}%</span>
-              </span>
+    <div className="pt-1">
+      {/* Resumo consolidado — empilha em telas estreitas (flex-wrap). */}
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 pb-2.5 mb-2.5 border-b border-border/70">
+        <span className="text-[11px] uppercase tracking-wider text-fg-muted">
+          {metricLabel} · {sorted.length} {sorted.length === 1 ? "item" : "itens"}
+        </span>
+        <span className="text-[12px] tabular-nums text-fg-muted">
+          <span className="font-semibold text-fg">{formatBRLCompact(totVal)}</span>
+          {" de "}{formatBRLCompact(totPi)}
+          {totPct != null && <span className="text-fg-subtle"> · {formatRatioPct(totPct, 1)}</span>}
+        </span>
+      </div>
+
+      <div className="max-h-[420px] overflow-y-auto scrollbar-thin pr-1 -mr-1 space-y-3.5">
+        {sorted.map((r) => {
+          const value = isRevenue ? r.revenue : r.margin;
+          const pct = isRevenue ? r.pctRevenue : r.pctMargin;
+          const ratio = pct ?? 0;
+          const over = ratio >= 1;
+          const width = Math.max(2, Math.min(100, ratio * 100));
+          return (
+            <div key={r.name}>
+              {/* Linha 1: nome + % (só o % à direita pra nunca espremer o nome
+                  no mobile). O detalhe em R$ vai pra linha própria abaixo. */}
+              <div className="flex items-baseline justify-between gap-2 mb-1.5">
+                <span className="text-[13px] font-medium text-fg truncate min-w-0" title={r.name}>{r.name}</span>
+                <span className={cn("text-[13px] font-semibold tabular-nums shrink-0", over ? "text-emerald-400" : "text-fg")}>
+                  {over && <span aria-hidden>▲ </span>}{formatRatioPct(ratio, 1)}
+                </span>
+              </div>
+              <div className="h-2 rounded-full bg-track overflow-hidden">
+                <div className="h-full rounded-full transition-[width] duration-500"
+                     style={{ width: `${width}%`, background: over ? "var(--color-emerald-500, #10b981)" : accent }} />
+              </div>
+              <div className="mt-1 text-[11.5px] tabular-nums text-fg-subtle"
+                   title={`${formatBRL(value)} de ${formatBRL(r.pi)}`}>
+                <span className="text-fg-muted font-medium">{formatBRLCompact(value)}</span>
+                {" de "}{formatBRLCompact(r.pi)}
+              </div>
             </div>
-            <div className="h-2 rounded-full bg-track overflow-hidden">
-              <div className="h-full rounded-full transition-[width] duration-500"
-                   style={{ width: `${Math.max(2, r.pct)}%`, background: r.isRest ? "var(--color-fg-subtle)" : accent, opacity: r.isRest ? 0.5 : 1 }} />
-            </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }

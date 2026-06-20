@@ -149,3 +149,18 @@
     display: none;                /* Chromium, Safari */
   }
 }
+
+/* Scrollbar fina e discreta pra áreas com scroll INTERNO (listas dentro de
+ * cards) onde queremos navegar sem que a barra suje o visual minimalista.
+ * Trilho transparente + thumb sutil que ganha contraste no hover. */
+@utility scrollbar-thin {
+  scrollbar-width: thin;                                   /* Firefox */
+  scrollbar-color: var(--color-border) transparent;
+  &::-webkit-scrollbar { width: 6px; height: 6px; }
+  &::-webkit-scrollbar-track { background: transparent; }
+  &::-webkit-scrollbar-thumb {
+    background: var(--color-border);
+    border-radius: 9999px;
+  }
+  &:hover::-webkit-scrollbar-thumb { background: var(--color-fg-subtle); }
+}
