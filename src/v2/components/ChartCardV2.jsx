@@ -22,6 +22,10 @@ export function ChartCardV2({
   filename,
   className,
   children,
+  // Slot opcional de controles no header (ex.: toggles de métrica/dimensão),
+  // alinhado à direita ao lado do título. Quando presente junto de
+  // `downloadable`, ambos convivem no canto direito.
+  actions,
   // Largura-alvo da imagem exportada. Gráficos no report ocupam a largura
   // cheia (~1500px) e saem "esticados" pra slide — na exportação o card é
   // estreitado pra cá (o recharts reflua) e a imagem fica mais PPT-friendly.
@@ -36,16 +40,21 @@ export function ChartCardV2({
         className,
       )}
     >
-      <div className="flex items-center justify-between gap-3 mb-3">
+      <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
         <div className="text-[11px] font-bold uppercase tracking-widest text-signature">
           {title}
         </div>
-        {downloadable && (
-          <DownloadPngButtonV2
-            targetRef={ref}
-            filename={filename}
-            exportMaxWidth={exportMaxWidth}
-          />
+        {(actions || downloadable) && (
+          <div className="flex items-center gap-2 ml-auto">
+            {actions}
+            {downloadable && (
+              <DownloadPngButtonV2
+                targetRef={ref}
+                filename={filename}
+                exportMaxWidth={exportMaxWidth}
+              />
+            )}
+          </div>
         )}
       </div>
       {children}
