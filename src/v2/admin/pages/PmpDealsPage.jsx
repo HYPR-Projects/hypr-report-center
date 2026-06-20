@@ -12,7 +12,7 @@
 //
 // Mutations preservadas: drawer de edição, popup de auto-vinculação.
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, lazy, Suspense } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { DayPicker } from "react-day-picker";
 import { ptBR } from "date-fns/locale";
@@ -23,7 +23,12 @@ import "../../v2.css";
 import {
   listPmpLines, savePmpLineOverrides, syncPmpV2,
   suggestPmpLinks, linkPmpCommand, getPmpLine, pmpLineWindowMetrics,
+  pmpLinesTimeseries,
 } from "../../../lib/api";
+
+// Analytics carrega recharts — lazy pra não pesar o chunk da Lista pra quem
+// nunca abre a aba.
+const PmpAnalytics = lazy(() => import("../components/PmpAnalytics"));
 import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
 import {
@@ -117,6 +122,31 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   const [savingLineIds, setSavingLineIds] = useState(() => new Set());
   const startSaving = (id) => setSavingLineIds(prev => { const n = new Set(prev); n.add(id); return n; });
   const finishSaving = (id) => setSavingLineIds(prev => { const n = new Set(prev); n.delete(id); return n; });
+
+  // Série diária pro Analytics — fetch lazy (só ao abrir a aba). Estado:
+  // idle|loading|ready|error. Janela: do delivery mais antigo das lines até
+  // hoje, com teto de ~18 meses pra limitar o payload.
+  const [timeseries, setTimeseries] = useState([]);
+  const [tsStatus, setTsStatus] = useState("idle");
+  const loadTimeseries = useCallback(async () => {
+    setTsStatus("loading");
+    try {
+      // Teto de ~18 meses → hoje. O backend só devolve dias com delivery, então
+      // o Analytics deriva os bounds reais (e o filtro de período) das rows.
+      const today = new Date();
+      const floor = new Date(today); floor.setDate(floor.getDate() - 548);
+      const rows = await pmpLinesTimeseries({ dateFrom: ymd(floor), dateTo: ymd(today) });
+      setTimeseries(rows);
+      setTsStatus("ready");
+    } catch (e) {
+      console.error("[pmp] timeseries", e);
+      setTsStatus("error");
+    }
+  }, []);
+  // Dispara o fetch quando a aba Analytics abre pela 1ª vez.
+  useEffect(() => {
+    if (layout === "analytics" && tsStatus === "idle" && lines.length > 0) loadTimeseries();
+  }, [layout, tsStatus, lines.length, loadTimeseries]);
 
   // Layout
   const [layout, setLayout] = useState(() => {
@@ -731,8 +761,8 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
           </div>
         </div>
 
-        {/* KPIs */}
-        {lines.length > 0 && (
+        {/* KPIs — a aba Analytics tem seus próprios big numbers. */}
+        {lines.length > 0 && layout !== "analytics" && (
           <div className="mb-6">
             <PmpKpiStrip kpis={kpis} livesCount={partitions.live.length} totalCount={lines.length}
                          showExtra={layout === "history" || layout === "client"}
@@ -791,19 +821,21 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
           </div>
         )}
 
-        {/* Filtros sticky */}
-        <div className="mb-6 flex flex-wrap items-center gap-2">
-          <SearchInput value={search} onChange={setSearch} />
-          <FilterMultiSelect label="Cliente" values={customer} onChange={setCustomer} options={customersAll} />
-          <FilterSelect label="Bid"     value={bidType}  onChange={setBidType}  options={["flex","fixed"]} />
-          <FilterMultiSelect label="Status" values={status} onChange={setStatus} options={PMP_STATUSES} />
-          {(search || customer.length > 0 || bidType !== ALL || status.length > 0) && (
-            <button onClick={() => { setSearch(""); setCustomer([]); setBidType(ALL); setStatus([]); }}
-                    className="text-xs text-fg-muted hover:text-fg underline-offset-2 hover:underline ml-1">
-              Limpar
-            </button>
-          )}
-        </div>
+        {/* Filtros sticky — a aba Analytics tem sua própria barra de filtros. */}
+        {layout !== "analytics" && (
+          <div className="mb-6 flex flex-wrap items-center gap-2">
+            <SearchInput value={search} onChange={setSearch} />
+            <FilterMultiSelect label="Cliente" values={customer} onChange={setCustomer} options={customersAll} />
+            <FilterSelect label="Bid"     value={bidType}  onChange={setBidType}  options={["flex","fixed"]} />
+            <FilterMultiSelect label="Status" values={status} onChange={setStatus} options={PMP_STATUSES} />
+            {(search || customer.length > 0 || bidType !== ALL || status.length > 0) && (
+              <button onClick={() => { setSearch(""); setCustomer([]); setBidType(ALL); setStatus([]); }}
+                      className="text-xs text-fg-muted hover:text-fg underline-offset-2 hover:underline ml-1">
+                Limpar
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Views — skeleton só no load inicial; reload em background mantém a grid visível */}
         {(loading && lines.length === 0) ? <LinesSkeleton />
@@ -829,6 +861,15 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
                                                          else { setHistSortBy(HIST_DEFAULT_SORT.by); setHistSortDir(HIST_DEFAULT_SORT.dir); }
                                                        }}
                                                        onLineClick={setEditing} onLinkClick={canEdit ? setLinking : undefined} />}
+              {layout === "analytics" && (
+                <Suspense fallback={
+                  <div className="rounded-2xl border border-border bg-canvas-elevated p-12 flex items-center justify-center">
+                    <span className="size-5 rounded-full border-2 border-current border-t-transparent animate-spin text-signature" aria-hidden />
+                  </div>
+                }>
+                  <PmpAnalytics lines={lines} timeseries={timeseries} tsStatus={tsStatus} onRetry={loadTimeseries} />
+                </Suspense>
+              )}
             </>
           )
         }

@@ -3123,6 +3123,7 @@ def report_data(request):
     #
     #   GET  ?action=pmp_lines_list                    → lista enriquecida
     #   GET  ?action=pmp_lines_window&date_from&date_to → métricas agregadas na janela
+    #   GET  ?action=pmp_lines_timeseries&date_from&date_to → série diária por line (Analytics)
     #   GET  ?action=pmp_line_get&line_id=...          → drill-down + daily
     #   POST ?action=pmp_save_line_overrides           → campos manuais
     #   GET  ?action=pmp_suggest_links&line_id=...     → fuzzy match Command
@@ -3159,6 +3160,24 @@ def report_data(request):
             return (jsonify({"metrics": metrics}), 200, headers)
         except Exception as e:
             logger.exception(f"[ERROR pmp_lines_window] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    # Série diária de delivery por line dentro de [date_from, date_to]. Uma row
+    # por (line_id, day) — alimenta o Analytics do PMP, que fatia por dia/mês e
+    # aplica filtros de line client-side. Difere do window (que soma a janela
+    # inteira). Scan barato graças à partição por `day`.
+    if request.method == "GET" and request.args.get("action") == "pmp_lines_timeseries":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            date_from = (request.args.get("date_from") or "").strip()
+            date_to   = (request.args.get("date_to")   or "").strip()
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_from) or not re.match(r"^\d{4}-\d{2}-\d{2}$", date_to):
+                return (jsonify({"error": "date_from/date_to obrigatórios (YYYY-MM-DD)"}), 400, headers)
+            rows = pmp_lines.timeseries(date_from, date_to)
+            return (jsonify({"rows": rows}), 200, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_lines_timeseries] {e}")
             return (jsonify({"error": str(e)}), 500, headers)
 
     if request.method == "GET" and request.args.get("action") == "pmp_line_get":

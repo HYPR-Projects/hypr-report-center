@@ -1360,6 +1360,26 @@ export async function pmpLineWindowMetrics({ dateFrom, dateTo }) {
   return d?.metrics || {};
 }
 
+/** Série diária de delivery por line dentro de [dateFrom, dateTo].
+ *  Retorna lista achatada [{ line_id, day, imps, viewable_imps, clicks,
+ *  curator_total_cost, curator_revenue, curator_margin }] — uma row por
+ *  (line, dia). Usado pelo Analytics do PMP pra fatiar por dia/mês e aplicar
+ *  os filtros de line client-side. Difere do window (que soma a janela inteira
+ *  num total por line). */
+export async function pmpLinesTimeseries({ dateFrom, dateTo }) {
+  const jwt = await getOrIssueAdminJwt();
+  const qs = new URLSearchParams({ action: "pmp_lines_timeseries", date_from: dateFrom, date_to: dateTo });
+  const r = await fetch(`${API_URL}?${qs}`, { headers: { ...adminAuthHeaders(jwt) } });
+  if (r.status === 401 || r.status === 403) {
+    try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
+    window.location.reload();
+    throw new Error("admin session expired");
+  }
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  return Array.isArray(d?.rows) ? d.rows : [];
+}
+
 /** Detalhe + timeseries diária de uma line. */
 export async function getPmpLine(lineId) {
   if (!lineId) return null;

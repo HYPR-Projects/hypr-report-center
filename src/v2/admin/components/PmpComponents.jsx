@@ -139,6 +139,7 @@ const LAYOUT_OPTIONS = [
   { value: "live",      label: "No ar",       icon: <DotIcon /> },
   { value: "client",    label: "Por cliente", icon: <UsersIcon /> },
   { value: "history",   label: "Histórico",   icon: <ArchiveIcon /> },
+  { value: "analytics", label: "Analytics",   icon: <AnalyticsIcon /> },
 ];
 
 export function PmpLayoutToggle({ value, onChange, counts = {} }) {
@@ -1305,3 +1306,4 @@ function UsersIcon() { return <svg width="13" height="13" viewBox="0 0 24 24" fi
 function ListIcon() { return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" /></svg>; }
 function TargetIcon() { return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="5" /><circle cx="12" cy="12" r="1" /></svg>; }
 function ArchiveIcon() { return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="5" rx="1"/><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9"/><path d="M10 13h4"/></svg>; }
+function AnalyticsIcon() { return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="M7 15l3.5-4 3 3L21 7"/></svg>; }

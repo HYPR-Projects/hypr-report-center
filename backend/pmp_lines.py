@@ -131,6 +131,52 @@ def window_metrics(date_from: str, date_to: str) -> Dict[str, dict]:
     return out
 
 
+def timeseries(date_from: str, date_to: str) -> List[dict]:
+    """Série diária de delivery POR LINE dentro de [date_from, date_to].
+
+    Diferente de `window_metrics` (que colapsa a janela inteira num único total
+    por line), aqui devolvemos UMA row por (line_id, day). É o que alimenta o
+    Analytics: o frontend fatia por dia/mês e aplica os filtros de line
+    (cliente, campanha, status, bid) client-side, somando só as rows das lines
+    sobreviventes. A partição por `day` da tabela faz o scan ser barato mesmo
+    em janelas largas.
+
+    Retorna lista achatada [{line_id, day, imps, viewable_imps, clicks,
+    curator_total_cost, curator_revenue, curator_margin}], ordenada por dia.
+    """
+    sql = f"""
+        SELECT
+          line_id,
+          day,
+          imps,
+          viewable_imps,
+          clicks,
+          curator_total_cost,
+          curator_revenue,
+          curator_margin
+        FROM {_full(TABLE_DELIVERY)}
+        WHERE day BETWEEN @date_from AND @date_to
+        ORDER BY day
+    """
+    job = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("date_from", "DATE", date_from),
+        bigquery.ScalarQueryParameter("date_to",   "DATE", date_to),
+    ])
+    out: List[dict] = []
+    for r in bq.query(sql, job_config=job).result():
+        out.append({
+            "line_id":              int(r["line_id"]),
+            "day":                  r["day"].isoformat(),
+            "imps":                 int(r["imps"] or 0),
+            "viewable_imps":        int(r["viewable_imps"] or 0),
+            "clicks":               int(r["clicks"] or 0),
+            "curator_total_cost":   float(r["curator_total_cost"] or 0),
+            "curator_revenue":      float(r["curator_revenue"]    or 0),
+            "curator_margin":       float(r["curator_margin"]     or 0),
+        })
+    return out
+
+
 def get_line(line_id: int) -> Optional[dict]:
     """Detalhe da line + timeseries diária."""
     sql_master = f"SELECT * FROM {_full(TABLE_LINES_ENRICHED)} WHERE line_id = @lid"
