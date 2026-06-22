@@ -428,7 +428,21 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
               com vazio interno quando há poucos status). */}
           <div className="grid grid-cols-1 lg:grid-cols-2 lg:items-start gap-4">
             <ChartCardV2
-              title={`Realizado vs. contratado · ${cmpDim === "campaign" ? "campanha" : "cliente"}`}
+              title={
+                <span className="inline-flex items-center gap-2 flex-wrap">
+                  {`Realizado vs. contratado · ${cmpDim === "campaign" ? "campanha" : "cliente"}`}
+                  {/* Selo de clareza: este card é SEMPRE lifetime (gerado ÷ PI
+                      contratado). PI é valor de contrato, não tem janela — então
+                      ele não reage ao filtro de período (só aos de dimensão).
+                      Sem o selo, parecia "travado" enquanto se mexe no período. */}
+                  <span
+                    className="normal-case tracking-normal font-medium text-[10px] leading-none px-1.5 py-1 rounded-md bg-surface-strong text-fg-subtle border border-border whitespace-nowrap"
+                    title="Comparação acumulada (gerado lifetime ÷ PI contratado). PI é valor de contrato, por isso este card não filtra por período — só por cliente, campanha, status e bid."
+                  >
+                    acumulado · ignora período
+                  </span>
+                </span>
+              }
               actions={
                 <div className="flex items-center gap-2 flex-wrap justify-start sm:justify-end w-full sm:w-auto">
                   <Segmented
