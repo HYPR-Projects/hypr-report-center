@@ -86,6 +86,20 @@ export const applyAudienceOverride = (rawLabel, overrideMap) => {
 };
 
 /**
+ * Override de rótulo GENÉRICO (formato, linha criativa) — mesma mecânica do de
+ * audiência, só que a chave crua é o próprio valor (creative_size ou a chave de
+ * linha criativa) em vez do penúltimo token do line_name. A normalização é a
+ * mesma (`normAudienceKey` espelha `normalize_key` do backend), então
+ * reaproveitamos. `overrideMap` é {raw_key: display} de UMA dimensão (vem em
+ * data.label_overrides[dimension]). Sem override → devolve o cru intacto.
+ */
+export const normLabelKey = normAudienceKey;
+export const applyLabelOverride = (rawValue, overrideMap) => {
+  if (!overrideMap) return rawValue;
+  return overrideMap[normLabelKey(rawValue)] || rawValue;
+};
+
+/**
  * Agrega rows por data, somando duas métricas, e calcula uma taxa derivada.
  *
  * @param {Array} rows         Linhas com `date`, `numeratorKey`, `denomKey`.
@@ -125,15 +139,23 @@ export const groupByDate = (rows, numeratorKey, denomKey, rateKey) => {
  * exato do código original — viewable_impressions e clicks/views são
  * números no payload do backend, não strings.
  */
-export const groupBySize = (rows, numeratorKey, denomKey, rateKey) =>
+export const groupBySize = (rows, numeratorKey, denomKey, rateKey, overrideMap = null) =>
   Object.values(rows.reduce((acc, r) => {
-    const k = r.creative_size || "N/A";
-    if (!acc[k]) acc[k] = { size: k, [denomKey]: 0, [numeratorKey]: 0 };
-    acc[k][denomKey]      += r[denomKey]      || 0;
-    acc[k][numeratorKey]  += r[numeratorKey]  || 0;
+    const raw = r.creative_size || "N/A";
+    // Agrupa pelo nome RESOLVIDO (override do admin): dois tamanhos crus
+    // renomeados pro mesmo nome FUNDEM aqui (rename = merge). `_rawLabels`
+    // guarda os crus que alimentam o grupo — usados pra salvar/reverter o
+    // override (persistimos por rótulo cru). Sem overrideMap, display == raw
+    // e o comportamento é idêntico ao anterior.
+    const display = applyLabelOverride(raw, overrideMap);
+    if (!acc[display]) acc[display] = { size: display, _rawLabels: new Set(), [denomKey]: 0, [numeratorKey]: 0 };
+    acc[display]._rawLabels.add(raw);
+    acc[display][denomKey]      += r[denomKey]      || 0;
+    acc[display][numeratorKey]  += r[numeratorKey]  || 0;
     return acc;
   }, {})).map(r => ({
     ...r,
+    _rawLabels: [...r._rawLabels],
     [rateKey]: r[denomKey] > 0 ? r[numeratorKey] / r[denomKey] * 100 : 0,
   }));
 
@@ -188,15 +210,22 @@ export const getCreativeLineKey = (row) => {
  * — soma numerador/denominador e calcula a taxa final. Usado na tabela
  * "Distribuição por Linha Criativa" das abas Display/Video.
  */
-export const groupByCreativeName = (rows, numeratorKey, denomKey, rateKey) =>
+export const groupByCreativeName = (rows, numeratorKey, denomKey, rateKey, overrideMap = null) =>
   Object.values(rows.reduce((acc, r) => {
-    const k = getCreativeLineKey(r);
-    if (!acc[k]) acc[k] = { creative_name: k, [denomKey]: 0, [numeratorKey]: 0 };
-    acc[k][denomKey]      += r[denomKey]      || 0;
-    acc[k][numeratorKey]  += r[numeratorKey]  || 0;
+    const raw = getCreativeLineKey(r);
+    // Override do admin: linhas criativas renomeadas pro mesmo nome FUNDEM
+    // (rename = merge). `_rawLabels` guarda as chaves cruas (já UPPERCASE) que
+    // alimentam o grupo, pra persistir/reverter o override por rótulo cru. Sem
+    // overrideMap, display == raw — idêntico ao comportamento anterior.
+    const display = applyLabelOverride(raw, overrideMap);
+    if (!acc[display]) acc[display] = { creative_name: display, _rawLabels: new Set(), [denomKey]: 0, [numeratorKey]: 0 };
+    acc[display]._rawLabels.add(raw);
+    acc[display][denomKey]      += r[denomKey]      || 0;
+    acc[display][numeratorKey]  += r[numeratorKey]  || 0;
     return acc;
   }, {})).map(r => ({
     ...r,
+    _rawLabels: [...r._rawLabels],
     [rateKey]: r[denomKey] > 0 ? r[numeratorKey] / r[denomKey] * 100 : 0,
   }));
 

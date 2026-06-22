@@ -24,6 +24,8 @@ import { CoreProductsOverride } from "./CoreProductsOverride";
 import { TokenChip } from "./TokenChip";
 import { ClosureModal } from "./ClosureModal";
 import { AudienceOverridesModal } from "./AudienceOverridesModal";
+import { LabelOverridesModal } from "./LabelOverridesModal";
+import { getCreativeLineKey } from "../../../shared/aggregations";
 import {
   getNegotiation,
   getCampaign,
@@ -80,6 +82,21 @@ const ICON = {
       <rect x="3" y="3" width="18" height="18" rx="2" />
       <circle cx="8.5" cy="8.5" r="1.5" />
       <path d="m21 15-5-5L5 21" />
+    </svg>
+  ),
+  format: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="11" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <rect x="14" y="18" width="7" height="3" rx="1" />
+    </svg>
+  ),
+  creativeLine: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="12 2 2 7 12 12 22 7 12 2" />
+      <polyline points="2 17 12 22 22 17" />
+      <polyline points="2 12 12 17 22 12" />
     </svg>
   ),
   rmnd: (
@@ -225,6 +242,10 @@ export function CampaignDrawer({
   // encerrada" (edit, pré-populado via getClosureDetails).
   const [audienceModalOpen, setAudienceModalOpen] = useState(false);
   useEffect(() => { setAudienceModalOpen(false); }, [drawerToken, open]);
+  // Modais de override de formato / linha criativa (mesma mecânica da audiência).
+  const [formatModalOpen, setFormatModalOpen] = useState(false);
+  const [creativeLineModalOpen, setCreativeLineModalOpen] = useState(false);
+  useEffect(() => { setFormatModalOpen(false); setCreativeLineModalOpen(false); }, [drawerToken, open]);
 
   const [closureModalOpen, setClosureModalOpen] = useState(false);
   const [closureModalMode, setClosureModalMode] = useState("close");
@@ -941,6 +962,8 @@ export function CampaignDrawer({
             <ActionButton icon={ICON.loom}     label="Adicionar/editar Loom"   onClick={() => onLoom?.(short_token)} />
             <ActionButton icon={ICON.survey}   label="Gerenciar Survey"        onClick={() => onSurvey?.(short_token)} />
             <ActionButton icon={ICON.audience} label="Editar nomes de audiência" onClick={() => setAudienceModalOpen(true)} />
+            <ActionButton icon={ICON.format}   label="Editar nomes de formato"  onClick={() => setFormatModalOpen(true)} />
+            <ActionButton icon={ICON.creativeLine} label="Editar linhas criativas" onClick={() => setCreativeLineModalOpen(true)} />
             <ActionButton icon={ICON.logo}     label="Trocar logo"             onClick={() => onLogo?.(short_token)} />
           </ActionGroup>
 
@@ -1021,6 +1044,44 @@ export function CampaignDrawer({
         shortToken={short_token}
         detailRows={reportData?.detail}
         overrideMap={reportData?.audience_overrides}
+      />
+
+      {/* Gestão dos nomes de FORMATO (creative_size) e LINHA CRIATIVA do
+          anunciante — mesma mecânica da audiência, dimensões distintas. */}
+      <LabelOverridesModal
+        key={`fmt-${short_token}-${reportData ? "r" : "n"}`}
+        open={formatModalOpen}
+        onOpenChange={setFormatModalOpen}
+        dimension="format"
+        title="Nomes de formato"
+        description="Renomeie tamanhos de criativo que vieram estranhos da plataforma."
+        rawPlaceholder="Rótulo cru (ex: 320x480)"
+        clientName={client_name}
+        shortToken={short_token}
+        detailRows={reportData?.detail}
+        overrideMap={reportData?.label_overrides?.format}
+        // Espelha a normalização do VideoV2 (creative_size "0x0" → "16x9"): o
+        // DSP entrega 0x0 em vídeo sem dimensão, mas a tabela agrupa como 16x9.
+        // Sem isso, o modal listaria "0x0" e o rename não casaria com o bucket.
+        rawExtractor={(r) => {
+          const s = r.creative_size;
+          if (!s) return null;
+          return s === "0x0" ? "16x9" : s;
+        }}
+      />
+      <LabelOverridesModal
+        key={`cl-${short_token}-${reportData ? "r" : "n"}`}
+        open={creativeLineModalOpen}
+        onOpenChange={setCreativeLineModalOpen}
+        dimension="creative_line"
+        title="Linhas criativas"
+        description="Renomeie ou agrupe linhas criativas que vieram bagunçadas da plataforma."
+        rawPlaceholder="Rótulo cru (ex: BLACK)"
+        clientName={client_name}
+        shortToken={short_token}
+        detailRows={reportData?.detail}
+        overrideMap={reportData?.label_overrides?.creative_line}
+        rawExtractor={getCreativeLineKey}
       />
     </Drawer>
   );

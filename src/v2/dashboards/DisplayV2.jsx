@@ -32,6 +32,7 @@ import { useMemo } from "react";
 import {
   computeDisplayKpis,
   applyAudienceOverride,
+  applyLabelOverride,
   extractAudience,
   getCreativeLineKey,
   groupByDate,
@@ -40,6 +41,7 @@ import {
   groupByAudience,
 } from "../../shared/aggregations";
 import { useAudienceOverrides } from "../hooks/useAudienceOverrides";
+import { useLabelOverrides } from "../hooks/useLabelOverrides";
 import { fmt, fmtP, fmtP2, fmtR } from "../../shared/format";
 
 import { Button } from "../../ui/Button";
@@ -100,6 +102,24 @@ export default function DisplayV2({
     isAdmin,
   });
 
+  // Override de NOME de formato (creative_size) e linha criativa — mesma
+  // mecânica do de audiência, dimensões distintas. Mapa inicial vem em
+  // data.label_overrides[dimension].
+  const fmtOv = useLabelOverrides({
+    dimension: "format",
+    initialMap: data.label_overrides?.format,
+    clientName: camp.client_name,
+    shortToken: camp.short_token,
+    isAdmin,
+  });
+  const clOv = useLabelOverrides({
+    dimension: "creative_line",
+    initialMap: data.label_overrides?.creative_line,
+    clientName: camp.client_name,
+    shortToken: camp.short_token,
+    isAdmin,
+  });
+
   // Tactics disponíveis: O2O e OOH só aparecem se houver contrato (incl.
   // bônus) OU entrega real pra essa frente. Evita mostrar segmento
   // sem dado nem possibilidade de dado. Quando só uma tactic está
@@ -154,12 +174,12 @@ export default function DisplayV2({
     });
 
     const daily = groupByDate(detailAll, "clicks", "viewable_impressions", "ctr");
-    const bySize = groupBySize(detailAll, "clicks", "viewable_impressions", "ctr");
-    const byCreative = groupByCreativeName(detailAll, "clicks", "viewable_impressions", "ctr");
+    const bySize = groupBySize(detailAll, "clicks", "viewable_impressions", "ctr", fmtOv.overrideMap);
+    const byCreative = groupByCreativeName(detailAll, "clicks", "viewable_impressions", "ctr", clOv.overrideMap);
     const byAudience = groupByAudience(detailAll, "clicks", "viewable_impressions", "ctr", aud.overrideMap);
 
     return { totals, detailAll, kpis, daily, bySize, byCreative, byAudience };
-  }, [aggregates, effectiveTactic, camp, t0Display, hasGfContract, aud.overrideMap]);
+  }, [aggregates, effectiveTactic, camp, t0Display, hasGfContract, aud.overrideMap, fmtOv.overrideMap, clOv.overrideMap]);
 
   const { totals, detailAll, kpis, daily, bySize, byCreative, byAudience } = view;
   // Alias mantido pelos consumers internos que esperavam `detailFiltered`.
@@ -297,6 +317,8 @@ export default function DisplayV2({
           notStarted={kpis.notStarted}
           isAdmin={isAdmin}
           aud={aud}
+          fmtOv={fmtOv}
+          clOv={clOv}
         />
       )}
     </div>
@@ -326,6 +348,8 @@ function DisplayContent({
   notStarted,
   isAdmin = false,
   aud,
+  fmtOv,
+  clOv,
 }) {
   const campName = camp.campaign_name || "campanha";
   return (
@@ -480,9 +504,15 @@ function DisplayContent({
           rateLabel="CTR"
           rateFormatter={fmtP2}
           extraRows={detailFiltered}
+          getDetailGroupKey={(r) => applyLabelOverride(r.creative_size || "N/A", fmtOv?.overrideMap)}
           mediaType="DISPLAY"
           downloadable={isAdmin}
           filename={`${campName} - Display ${tactic} - Por Tamanho`}
+          editable={isAdmin}
+          busyAudience={fmtOv?.busyLabel}
+          isRowOverridden={(row) => fmtOv?.isOverridden?.(row._rawLabels)}
+          onRenameGroup={(row, name, scope) => fmtOv?.renameLabel(row._rawLabels, name, row.size, scope)}
+          onResetGroup={(row) => fmtOv?.resetLabel(row._rawLabels, row.size)}
         />
       )}
 
@@ -502,10 +532,15 @@ function DisplayContent({
           rateLabel="CTR"
           rateFormatter={fmtP2}
           extraRows={detailFiltered}
-          getDetailGroupKey={getCreativeLineKey}
+          getDetailGroupKey={(r) => applyLabelOverride(getCreativeLineKey(r), clOv?.overrideMap)}
           mediaType="DISPLAY"
           downloadable={isAdmin}
           filename={`${campName} - Display ${tactic} - Por Linha Criativa`}
+          editable={isAdmin}
+          busyAudience={clOv?.busyLabel}
+          isRowOverridden={(row) => clOv?.isOverridden?.(row._rawLabels)}
+          onRenameGroup={(row, name, scope) => clOv?.renameLabel(row._rawLabels, name, row.creative_name, scope)}
+          onResetGroup={(row) => clOv?.resetLabel(row._rawLabels, row.creative_name)}
         />
       )}
 

@@ -1989,6 +1989,112 @@ def report_data(request):
             logger.error(f"[ERROR list_audience_overrides] {e}")
             return (jsonify({"error": "Erro ao listar overrides de audiência"}), 500, headers)
 
+    # ── Endpoint: salvar override de RÓTULO genérico (admin) ─────────────────
+    # Dimensões: 'format' (creative_size) | 'creative_line' (linha criativa).
+    # Mesma mecânica do override de audiência (relabel/merge no Report Center),
+    # mas NÃO alimenta a IA do hub. Body: {client_name, dimension, raw_value,
+    # display_name, scope?, short_token?}. raw_value pode vir como ARRAY.
+    if request.method == "POST" and request.args.get("action") == "save_label_override":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            slug = clients.normalize_client_slug(body.get("client_name") or "")
+            dimension = (body.get("dimension") or "").strip().lower()
+            display_name = (body.get("display_name") or "").strip()
+            raw = body.get("raw_value")
+            raws = raw if isinstance(raw, list) else [raw]
+            raws = [str(r).strip() for r in raws if r and str(r).strip()]
+            scope = (body.get("scope") or "advertiser").strip().lower()
+            short_token = (body.get("short_token") or "").strip()
+            if not slug:
+                return (jsonify({"error": "client_name é obrigatório"}), 400, headers)
+            if dimension not in _LABEL_OVERRIDE_DIMENSIONS:
+                return (jsonify({"error": "dimension inválida"}), 400, headers)
+            if not raws:
+                return (jsonify({"error": "raw_value é obrigatório"}), 400, headers)
+            if not display_name:
+                return (jsonify({"error": "display_name é obrigatório"}), 400, headers)
+            if len(display_name) > 120:
+                return (jsonify({"error": "display_name muito longo (máx 120)"}), 400, headers)
+            if scope == "campaign" and not short_token:
+                return (jsonify({"error": "short_token é obrigatório p/ escopo de campanha"}), 400, headers)
+            scope_token = short_token if scope == "campaign" else ""
+            for raw_value in raws:
+                save_label_override(slug, dimension, raw_value, display_name,
+                                    scope_token=scope_token, edited_by=admin.get("email"))
+            audit_log.safe_write_event(
+                short_token=short_token or None,
+                event_type="label_override_saved",
+                actor_email=admin.get("email"),
+                message=f"renomeou {dimension} {raws} → \"{display_name}\" ({slug}, escopo={scope})",
+                payload={"client_slug": slug, "dimension": dimension, "raw_value": raws,
+                         "display_name": display_name, "scope": scope, "scope_token": scope_token},
+            )
+            return (jsonify({"ok": True}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR save_label_override] {e}")
+            return (jsonify({"error": "Erro ao salvar o nome"}), 500, headers)
+
+    # ── Endpoint: remover override de RÓTULO genérico (admin) ────────────────
+    # Body: {client_name, dimension, raw_value, scope?, short_token?}. raw_value
+    # pode ser ARRAY. scope: "all" (default) | "advertiser" | "campaign".
+    if request.method == "POST" and request.args.get("action") == "delete_label_override":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            slug = clients.normalize_client_slug(body.get("client_name") or "")
+            dimension = (body.get("dimension") or "").strip().lower()
+            raw = body.get("raw_value")
+            raws = raw if isinstance(raw, list) else [raw]
+            raws = [str(r).strip() for r in raws if r and str(r).strip()]
+            scope = (body.get("scope") or "all").strip().lower()
+            short_token = (body.get("short_token") or "").strip()
+            if not slug or not raws:
+                return (jsonify({"error": "client_name e raw_value são obrigatórios"}), 400, headers)
+            if dimension not in _LABEL_OVERRIDE_DIMENSIONS:
+                return (jsonify({"error": "dimension inválida"}), 400, headers)
+            if scope == "advertiser":
+                scope_tokens = [""]
+            elif scope == "campaign":
+                if not short_token:
+                    return (jsonify({"error": "short_token é obrigatório p/ escopo de campanha"}), 400, headers)
+                scope_tokens = [short_token]
+            else:  # all — limpa anunciante + esta campanha
+                scope_tokens = ["", short_token] if short_token else None
+            for raw_value in raws:
+                delete_label_override(slug, dimension, raw_value, scope_tokens=scope_tokens)
+            audit_log.safe_write_event(
+                short_token=short_token or None,
+                event_type="label_override_deleted",
+                actor_email=admin.get("email"),
+                message=f"reverteu override de {dimension} {raws} ({slug}, escopo={scope})",
+                payload={"client_slug": slug, "dimension": dimension, "raw_value": raws, "scope": scope},
+            )
+            return (jsonify({"ok": True}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR delete_label_override] {e}")
+            return (jsonify({"error": "Erro ao reverter o nome"}), 500, headers)
+
+    # ── Endpoint: listar overrides de RÓTULO de um anunciante (admin) ────────
+    # GET ?action=list_label_overrides&client_name=<nome> — retorna todas as
+    # dimensões; o front filtra por dimension. Alimenta os selos de escopo dos
+    # modais "Editar formatos" / "Editar linhas criativas".
+    if request.method == "GET" and request.args.get("action") == "list_label_overrides":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            slug = clients.normalize_client_slug(request.args.get("client_name") or "")
+            if not slug:
+                return (jsonify({"error": "client_name é obrigatório"}), 400, headers)
+            return (jsonify({"overrides": query_label_overrides(slug)}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR list_label_overrides] {e}")
+            return (jsonify({"error": "Erro ao listar overrides"}), 500, headers)
+
     # ── Endpoint: salvar Alcance & Frequência (admin) ────────────────────────
     # Body: {target_type: "token"|"merge", target_id: <short_token|merge_id>,
     #        alcance, frequencia}
@@ -3591,6 +3697,7 @@ def report_data(request):
             except Exception as e:
                 logger.warning(f"[WARN attach pos_venda to merged view] {e}")
             data = _attach_audience_overrides(data)
+            data = _attach_label_overrides(data)
             total_ms = int((time.time() - t0) * 1000)
             resp_headers = {
                 **headers,
@@ -3657,6 +3764,7 @@ def report_data(request):
             data = {**data, "pos_venda": pv}
 
         data = _attach_audience_overrides(data)
+        data = _attach_label_overrides(data)
 
         total_ms = int((time.time() - t0) * 1000)
         resp_headers = {
@@ -6354,6 +6462,198 @@ def _attach_audience_overrides(data: dict) -> dict:
             return {**data, "audience_overrides": ov}
     except Exception as e:
         logger.warning(f"[WARN _attach_audience_overrides] {e}")
+    return data
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Override genérico de RÓTULO por dimensão (Report Center) — formato e linha
+# criativa. Mesma mecânica do override de audiência (relabel/merge da quebra
+# crua), generalizada por uma coluna `dimension` numa ÚNICA tabela:
+#
+#   • 'format'        → renomeia/funde `creative_size`  (tabela "Por Tamanho")
+#   • 'creative_line' → renomeia/funde a linha criativa (getCreativeLineKey)
+#
+# DIFERENÇA pro override de audiência: este NÃO alimenta a IA do Client Hub
+# (formato/linha não fazem parte da quebra agregada de audiência do portal).
+# É puramente relabel/merge no Report Center — por isso não há "advertiser_map"
+# de seed nem clear de `_audiences_cache`. Audiência continua na sua própria
+# tabela `audience_overrides`, intocada.
+#
+# Chave lógica: (client_slug, dimension, scope_token, raw_key) com
+# raw_key = normalize_key(raw_value). Precedência ao servir: override DA
+# CAMPANHA (scope_token == short_token) vence o do anunciante (scope_token='').
+# ─────────────────────────────────────────────────────────────────────────────
+_LABEL_OVERRIDE_DIMENSIONS = {"format", "creative_line"}
+_label_overrides_table_ensured = False
+_label_overrides_ensure_lock = threading.Lock()
+_LABEL_OVERRIDES_TTL = 300  # 5min — escrita admin limpa o slug afetado na hora
+_label_overrides_cache = {}  # client_slug -> [rows]  (lista crua, resolução é por report)
+
+
+def _label_overrides_table_id() -> str:
+    return f"{PROJECT_ID}.{DATASET_ASSETS}.label_overrides"
+
+
+def _ensure_label_overrides_table() -> None:
+    """Cria a tabela `label_overrides` se não existir. Idempotente."""
+    global _label_overrides_table_ensured
+    if _label_overrides_table_ensured:
+        return
+    with _label_overrides_ensure_lock:
+        if _label_overrides_table_ensured:
+            return
+        sql = f"""
+            CREATE TABLE IF NOT EXISTS `{_label_overrides_table_id()}` (
+                client_slug  STRING NOT NULL,
+                dimension    STRING NOT NULL,
+                raw_key      STRING NOT NULL,
+                raw_value    STRING,
+                display_name STRING NOT NULL,
+                scope_token  STRING,
+                edited_by    STRING,
+                updated_at   TIMESTAMP NOT NULL
+            )
+        """
+        bq.query(sql).result()
+        _label_overrides_table_ensured = True
+
+
+def save_label_override(client_slug: str, dimension: str, raw_value: str, display_name: str,
+                        scope_token: str = "", edited_by: str | None = None):
+    """UPSERT por (client_slug, dimension, scope_token, raw_key). scope_token=''
+    = anunciante; =short_token = só aquela campanha. raw_key vem de normalize_key
+    (mesma normalização do front)."""
+    _ensure_label_overrides_table()
+    raw_key = audience_normalize.normalize_key(raw_value)
+    scope = scope_token or ""
+    sql = f"""
+        MERGE `{_label_overrides_table_id()}` T
+        USING (SELECT @slug AS client_slug, @dimension AS dimension,
+                      @scope AS scope_token, @raw_key AS raw_key) S
+        ON T.client_slug = S.client_slug
+           AND T.dimension = S.dimension
+           AND IFNULL(T.scope_token, '') = S.scope_token
+           AND T.raw_key = S.raw_key
+        WHEN MATCHED THEN
+            UPDATE SET raw_value = @raw_value, display_name = @display_name,
+                       edited_by = @edited_by, updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+            INSERT (client_slug, dimension, scope_token, raw_key, raw_value, display_name, edited_by, updated_at)
+            VALUES (@slug, @dimension, @scope, @raw_key, @raw_value, @display_name, @edited_by, CURRENT_TIMESTAMP())
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("slug",         "STRING", client_slug),
+            bigquery.ScalarQueryParameter("dimension",    "STRING", dimension),
+            bigquery.ScalarQueryParameter("scope",        "STRING", scope),
+            bigquery.ScalarQueryParameter("raw_key",      "STRING", raw_key),
+            bigquery.ScalarQueryParameter("raw_value",    "STRING", raw_value),
+            bigquery.ScalarQueryParameter("display_name", "STRING", display_name),
+            bigquery.ScalarQueryParameter("edited_by",    "STRING", edited_by),
+        ]
+    )
+    bq.query(sql, job_config=job_config).result()
+    _label_overrides_cache.pop(client_slug, None)
+
+
+def delete_label_override(client_slug: str, dimension: str, raw_value: str,
+                          scope_tokens: list | None = None):
+    """Remove override(s) de um rótulo numa dimensão. `scope_tokens` = lista de
+    escopos a apagar ('' = anunciante, token = campanha). Default: apaga AMBOS
+    os níveis do rótulo (revert total)."""
+    _ensure_label_overrides_table()
+    raw_key = audience_normalize.normalize_key(raw_value)
+    scopes = [s or "" for s in scope_tokens] if scope_tokens else None
+    base = "client_slug = @slug AND dimension = @dimension AND raw_key = @raw_key"
+    params = [
+        bigquery.ScalarQueryParameter("slug",      "STRING", client_slug),
+        bigquery.ScalarQueryParameter("dimension", "STRING", dimension),
+        bigquery.ScalarQueryParameter("raw_key",   "STRING", raw_key),
+    ]
+    if scopes is None:
+        where = base
+    else:
+        where = base + " AND IFNULL(scope_token, '') IN UNNEST(@scopes)"
+        params.append(bigquery.ArrayQueryParameter("scopes", "STRING", scopes))
+    bq.query(
+        f"DELETE FROM `{_label_overrides_table_id()}` WHERE {where}",
+        job_config=bigquery.QueryJobConfig(query_parameters=params),
+    ).result()
+    _label_overrides_cache.pop(client_slug, None)
+
+
+def query_label_overrides(client_slug: str) -> list:
+    """Linhas cruas de override de um anunciante (todas as dimensões e escopos),
+    cacheadas (TTL 5min). Cada linha: {dimension, raw_key, raw_value,
+    display_name, scope_token, edited_by, updated_at}."""
+    if not client_slug:
+        return []
+    cached = _cache_get(_label_overrides_cache, client_slug, _LABEL_OVERRIDES_TTL)
+    if cached is not None:
+        return cached
+    _ensure_label_overrides_table()
+    sql = f"""
+        SELECT dimension, raw_key, raw_value, display_name,
+               IFNULL(scope_token, '') AS scope_token, edited_by, updated_at
+        FROM `{_label_overrides_table_id()}`
+        WHERE client_slug = @slug
+        ORDER BY dimension, display_name
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("slug", "STRING", client_slug)]
+    )
+    out = []
+    try:
+        for row in bq.query(sql, job_config=job_config).result():
+            ts = row["updated_at"]
+            out.append({
+                "dimension":    row["dimension"],
+                "raw_key":      row["raw_key"],
+                "raw_value":    row["raw_value"] or "",
+                "display_name": row["display_name"] or "",
+                "scope_token":  row["scope_token"] or "",
+                "edited_by":    row["edited_by"] or "",
+                "updated_at":   ts.isoformat() if ts else "",
+            })
+    except Exception as e:
+        logger.warning(f"[WARN query_label_overrides] {e}")
+    _cache_set(_label_overrides_cache, client_slug, out)
+    return out
+
+
+def label_overrides_maps_for_report(client_slug: str, short_token: str | None) -> dict:
+    """{dimension: {raw_key: display}} EFETIVO pra um report: nível anunciante
+    ('') sobreposto pelo nível da campanha (scope_token == short_token, que
+    VENCE), por dimensão."""
+    if not client_slug:
+        return {}
+    rows = query_label_overrides(client_slug)
+    out = {}
+    for dim in _LABEL_OVERRIDE_DIMENSIONS:
+        adv = {r["raw_key"]: r["display_name"] for r in rows
+               if r["dimension"] == dim and r["scope_token"] == ""}
+        camp = {r["raw_key"]: r["display_name"] for r in rows
+                if r["dimension"] == dim and short_token and r["scope_token"] == short_token}
+        merged = {**adv, **camp}
+        if merged:
+            out[dim] = merged
+    return out
+
+
+def _attach_label_overrides(data: dict) -> dict:
+    """Anexa `label_overrides` ({dimension: {raw_key: display}} EFETIVO) ao
+    payload do report, na camada de serving — vale também pra reports congelados
+    (relabel de exibição, não mexe nos dados). Front (DisplayV2/VideoV2) aplica
+    via shared/aggregations.js."""
+    try:
+        camp = (data or {}).get("campaign") or {}
+        slug = clients.normalize_client_slug(camp.get("client_name") or "")
+        token = camp.get("short_token")
+        maps = label_overrides_maps_for_report(slug, token) if slug else {}
+        if maps:
+            return {**data, "label_overrides": maps}
+    except Exception as e:
+        logger.warning(f"[WARN _attach_label_overrides] {e}")
     return data
 
 
