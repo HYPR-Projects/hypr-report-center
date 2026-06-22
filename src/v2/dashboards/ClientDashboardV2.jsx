@@ -528,7 +528,8 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     }
     const noSurvey = (r) =>
       !/survey/i.test(r.line_name || "") &&
-      !/survey/i.test(r.creative_name || "");
+      !/survey/i.test(r.creative_name || "") &&
+      !/dark[ _-]?test/i.test(r.line_name || "");
     const aud = new Set();
     const lin = new Set();
     const cre = new Set();

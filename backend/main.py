@@ -5997,7 +5997,7 @@ def _stability_ok(short_token, viewable_now) -> tuple:
             FROM `{PROJECT_ID}.{DATASET_ASSETS}.unified_daily_performance_metrics`
               FOR SYSTEM_TIME AS OF TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 3 DAY)
             WHERE short_token = @token
-              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
         """
         jc = bigquery.QueryJobConfig(query_parameters=[
@@ -7125,7 +7125,7 @@ def query_totals(token, campaign_info, unified_src=None, win_from=None, win_to=N
                 END AS viewable_completions
             FROM {UNIFIED}
             WHERE short_token = @token
-              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'{win_sql}
         )
         SELECT
@@ -7468,7 +7468,7 @@ def query_daily(token, cr_src=None, win_from=None, win_to=None):
             MAX(effective_total_cost)               AS effective_total_cost
         FROM {cr_src or table_ref()}
         WHERE short_token = @token
-          AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+          AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
           AND UPPER(creative_name) NOT LIKE '%SURVEY%'{win_sql}
         GROUP BY date, media_type, 3
         ORDER BY date ASC
@@ -7532,7 +7532,7 @@ def query_campaign_lines(token):
         FROM {table_ref()}
         WHERE short_token = @token
           AND media_type IN ('DISPLAY', 'VIDEO')
-          AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+          AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
           AND UPPER(creative_name) NOT LIKE '%SURVEY%'
         GROUP BY line_name, media_type
         ORDER BY impressions DESC
@@ -7545,7 +7545,7 @@ def query_campaign_lines(token):
         FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
         WHERE short_token = @token
           AND media_type IN ('DISPLAY', 'VIDEO')
-          AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+          AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
           AND UPPER(creative_name) NOT LIKE '%SURVEY%'
         GROUP BY line_name, media_type
     """
@@ -7608,7 +7608,7 @@ def query_detail(token, cr_src=None, win_from=None, win_to=None):
             MAX(effective_total_cost)               AS effective_total_cost
         FROM {cr_src or table_ref()}
         WHERE short_token = @token
-          AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+          AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
           AND UPPER(creative_name) NOT LIKE '%SURVEY%'{win_sql}
         GROUP BY
             date, campaign_name, line_name,
@@ -7854,7 +7854,7 @@ def query_campaigns_list():
             FROM {table_ref()}
             LEFT JOIN checklist USING(short_token)
             WHERE media_type IN ('DISPLAY', 'VIDEO')
-              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
               {win}
             GROUP BY short_token, media_type, date, line_name, creative_name
@@ -7936,7 +7936,7 @@ def query_campaigns_list():
             FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
             LEFT JOIN checklist USING(short_token)
             WHERE media_type IN ('DISPLAY', 'VIDEO')
-              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
               {win}
             GROUP BY short_token
@@ -7966,7 +7966,7 @@ def query_campaigns_list():
             FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
             WHERE date = DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY)
               AND media_type IN ('DISPLAY', 'VIDEO')
-              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
             GROUP BY short_token
         ),
@@ -7995,7 +7995,7 @@ def query_campaigns_list():
             WHERE date BETWEEN DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 7 DAY)
                            AND DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY)
               AND media_type IN ('DISPLAY', 'VIDEO')
-              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
             GROUP BY short_token
         ),
@@ -8794,7 +8794,7 @@ def query_performers_for_period(window_from: date, window_to: date):
             FROM {table_ref()}
             WHERE date BETWEEN @from_date AND @to_date
               AND media_type IN ('DISPLAY', 'VIDEO')
-              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
             GROUP BY short_token, media_type, date, line_name, creative_name
         ),
@@ -8830,7 +8830,7 @@ def query_performers_for_period(window_from: date, window_to: date):
             FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
             WHERE date BETWEEN @from_date AND @to_date
               AND media_type IN ('DISPLAY', 'VIDEO')
-              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)')
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
             GROUP BY short_token
         ),
