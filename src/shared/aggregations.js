@@ -609,7 +609,8 @@ export function computeAggregates(data, mainRange, mainTactic = "ALL", creativeF
   // de versões anteriores ainda em vôo).
   const noSurvey = (r) =>
     !/survey/i.test(r.line_name || "") &&
-    !/survey/i.test(r.creative_name || "");
+    !/survey/i.test(r.creative_name || "") &&
+    !/dark[ _-]?test/i.test(r.line_name || "");
   // mainTactic = "O2O" | "OOH" | "ALL". Filtro do "core product" da Visão
   // Geral. Aplicado na entrada (totals/daily/detail) pra que toda a árvore
   // de cálculo abaixo (proporção por membro, charts, sumários) trabalhe
@@ -1078,7 +1079,8 @@ function recomputeTotalsByMember(members, detail0, totalsRaw, mainRange) {
   // comentário em computeAggregates.
   const noSurvey = (r) =>
     !/survey/i.test(r.line_name || "") &&
-    !/survey/i.test(r.creative_name || "");
+    !/survey/i.test(r.creative_name || "") &&
+    !/dark[ _-]?test/i.test(r.line_name || "");
 
   // Pré-classifica cada membro:
   //   • fullCoverage: filtro engloba toda a janela do membro → contribui

@@ -434,6 +434,7 @@ def query_client_timeseries(weeks=12):
             WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL {int(weeks) * 7} DAY)
               AND UPPER(line_name) NOT LIKE '%SURVEY%'
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'DARK[ _-]?TEST')
             GROUP BY client_name, week_start
         )
         SELECT client_name, week_start, vi
