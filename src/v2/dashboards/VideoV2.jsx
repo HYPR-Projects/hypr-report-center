@@ -31,9 +31,11 @@
 
 import { useMemo } from "react";
 import { useAudienceOverrides } from "../hooks/useAudienceOverrides";
+import { useLabelOverrides } from "../hooks/useLabelOverrides";
 import {
   computeVideoKpis,
   applyAudienceOverride,
+  applyLabelOverride,
   extractAudience,
   getCreativeLineKey,
   groupByDate,
@@ -101,6 +103,22 @@ export default function VideoV2({
     isAdmin,
   });
 
+  // Override de NOME de formato e linha criativa — igual ao DisplayV2.
+  const fmtOv = useLabelOverrides({
+    dimension: "format",
+    initialMap: data.label_overrides?.format,
+    clientName: camp.client_name,
+    shortToken: camp.short_token,
+    isAdmin,
+  });
+  const clOv = useLabelOverrides({
+    dimension: "creative_line",
+    initialMap: data.label_overrides?.creative_line,
+    clientName: camp.client_name,
+    shortToken: camp.short_token,
+    isAdmin,
+  });
+
   // Tactics disponíveis: ver comentário equivalente em DisplayV2.
   const t0Video = (data.totals || [])[0] || {};
   const hasDelivery = (tac) => aggregates.totals.some(
@@ -153,12 +171,12 @@ export default function VideoV2({
     );
 
     const daily = groupByDate(detailAll, "video_view_100", "viewable_impressions", "vtr");
-    const bySize = groupBySize(detailNormalized, "video_view_100", "viewable_impressions", "vtr");
-    const byCreative = groupByCreativeName(detailAll, "video_view_100", "viewable_impressions", "vtr");
+    const bySize = groupBySize(detailNormalized, "video_view_100", "viewable_impressions", "vtr", fmtOv.overrideMap);
+    const byCreative = groupByCreativeName(detailAll, "video_view_100", "viewable_impressions", "vtr", clOv.overrideMap);
     const byAudience = groupByAudience(detailAll, "video_view_100", "viewable_impressions", "vtr", aud.overrideMap);
 
     return { totals, detailAll, detailNormalized, kpis, daily, bySize, byCreative, byAudience };
-  }, [aggregates, effectiveTactic, t0Video, hasGfContract, aud.overrideMap]);
+  }, [aggregates, effectiveTactic, t0Video, hasGfContract, aud.overrideMap, fmtOv.overrideMap, clOv.overrideMap]);
 
   const { totals, detailAll, detailNormalized, kpis, daily, bySize, byCreative, byAudience } = view;
   // Alias mantido pelos consumers internos (`detailFiltered`). Pós-refactor
@@ -271,6 +289,8 @@ export default function VideoV2({
           notStarted={kpis.notStarted}
           isAdmin={isAdmin}
           aud={aud}
+          fmtOv={fmtOv}
+          clOv={clOv}
         />
       )}
     </div>
@@ -300,6 +320,8 @@ function VideoContent({
   notStarted,
   isAdmin = false,
   aud,
+  fmtOv,
+  clOv,
 }) {
   const campName = camp.campaign_name || "campanha";
   return (
@@ -448,9 +470,15 @@ function VideoContent({
           rateLabel="VTR"
           rateFormatter={fmtP2}
           extraRows={detailNormalized}
+          getDetailGroupKey={(r) => applyLabelOverride(r.creative_size || "N/A", fmtOv?.overrideMap)}
           mediaType="VIDEO"
           downloadable={isAdmin}
           filename={`${campName} - Video ${tactic} - Por Tamanho`}
+          editable={isAdmin}
+          busyAudience={fmtOv?.busyLabel}
+          isRowOverridden={(row) => fmtOv?.isOverridden?.(row._rawLabels)}
+          onRenameGroup={(row, name, scope) => fmtOv?.renameLabel(row._rawLabels, name, row.size, scope)}
+          onResetGroup={(row) => fmtOv?.resetLabel(row._rawLabels, row.size)}
         />
       )}
 
@@ -470,10 +498,15 @@ function VideoContent({
           rateLabel="VTR"
           rateFormatter={fmtP2}
           extraRows={detailFiltered}
-          getDetailGroupKey={getCreativeLineKey}
+          getDetailGroupKey={(r) => applyLabelOverride(getCreativeLineKey(r), clOv?.overrideMap)}
           mediaType="VIDEO"
           downloadable={isAdmin}
           filename={`${campName} - Video ${tactic} - Por Linha Criativa`}
+          editable={isAdmin}
+          busyAudience={clOv?.busyLabel}
+          isRowOverridden={(row) => clOv?.isOverridden?.(row._rawLabels)}
+          onRenameGroup={(row, name, scope) => clOv?.renameLabel(row._rawLabels, name, row.creative_name, scope)}
+          onResetGroup={(row) => clOv?.resetLabel(row._rawLabels, row.creative_name)}
         />
       )}
 

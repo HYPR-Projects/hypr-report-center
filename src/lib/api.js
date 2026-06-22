@@ -547,6 +547,59 @@ export async function listAudienceOverrides(client_name) {
   return r.json();
 }
 
+// ── Override de RÓTULO genérico (formato · linha criativa) ──────────────────
+//
+// Mesma mecânica do override de audiência (relabel/merge no Report Center),
+// generalizada por `dimension` ("format" | "creative_line"). Não alimenta a IA
+// do hub — é puramente Report Center. Ver backend save_/delete_/query_label_override.
+
+/**
+ * Admin: salva o override de NOME de um rótulo (`dimension`). `raw_value` pode
+ * ser string ou array (renomear um grupo já mesclado aplica o mesmo nome a
+ * todos os crus). `scope`: "advertiser" | "campaign". Lança em falha.
+ */
+export async function saveLabelOverride({ client_name, dimension, raw_value, display_name, short_token, scope }) {
+  const jwt = await getOrIssueAdminJwt();
+  const res = await postJson(
+    `${API_URL}?action=save_label_override`,
+    { client_name, dimension, raw_value, display_name, short_token, scope },
+    adminAuthHeaders(jwt),
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return true;
+}
+
+/**
+ * Admin: remove o override de um rótulo (reverte pro cru). `raw_value` string
+ * ou array. `scope`: "all" (default) | "advertiser" | "campaign". Lança em falha.
+ */
+export async function deleteLabelOverride({ client_name, dimension, raw_value, short_token, scope }) {
+  const jwt = await getOrIssueAdminJwt();
+  const res = await postJson(
+    `${API_URL}?action=delete_label_override`,
+    { client_name, dimension, raw_value, short_token, scope },
+    adminAuthHeaders(jwt),
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return true;
+}
+
+/**
+ * Admin: lista os overrides de rótulo de um anunciante (TODAS as dimensões; o
+ * caller filtra por `dimension`). Retorna { overrides: [{dimension, raw_key,
+ * raw_value, display_name, scope_token, edited_by, updated_at}] } ou lança.
+ */
+export async function listLabelOverrides(client_name) {
+  const jwt = await getOrIssueAdminJwt();
+  if (!jwt) throw new Error("no admin jwt");
+  const r = await fetch(
+    `${API_URL}?action=list_label_overrides&client_name=${encodeURIComponent(client_name)}`,
+    { headers: { ...adminAuthHeaders(jwt) } },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
 /**
  * Admin: config do portal de um cliente + mapa de publicação por token.
  * Leve (2 lookups, sem a query pesada de campanhas — o caller já tem a lista

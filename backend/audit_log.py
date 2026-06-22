@@ -108,6 +108,8 @@ ALLOWED_EVENT_TYPES = frozenset({
     "alcance_frequencia_saved",
     "comment_saved",
     "alias_saved",
+    "audience_override_saved", "audience_override_deleted",
+    "label_override_saved", "label_override_deleted",
 })
 
 
