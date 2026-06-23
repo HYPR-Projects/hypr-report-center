@@ -1171,6 +1171,7 @@ function FormPicker({
       <button
         onClick={() => !disabled && setOpen((o) => !o)}
         disabled={disabled}
+        title={selected ? selected.title : ""}
         style={{
           width: "100%",
           background: inputBg,
@@ -1189,14 +1190,42 @@ function FormPicker({
           opacity: disabled ? 0.5 : 1,
         }}
       >
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {selected ? (
-            selected.title
-          ) : (
-            <span style={{ color: muted }}>
-              {disabled ? "Nenhum form disponível" : "Selecionar form…"}
-            </span>
-          )}
+        <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
+          {(() => {
+            const selGroup = selected ? parseGroupFromName(selected.title) : null;
+            if (!selGroup) return null;
+            return (
+              <span
+                style={{
+                  flexShrink: 0,
+                  width: 18,
+                  height: 18,
+                  borderRadius: 4,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: selGroup === "controle" ? "#27AE6020" : `${C.blue}20`,
+                  color: selGroup === "controle" ? "#27AE60" : C.blue,
+                  border: `1px solid ${selGroup === "controle" ? "#27AE60" : C.blue}40`,
+                }}
+                aria-label={groupLabel(selGroup)}
+                title={groupLabel(selGroup)}
+              >
+                {selGroup === "controle" ? "C" : "E"}
+              </span>
+            );
+          })()}
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {selected ? (
+              selected.title
+            ) : (
+              <span style={{ color: muted }}>
+                {disabled ? "Nenhum form disponível" : "Selecionar form…"}
+              </span>
+            )}
+          </span>
         </span>
         <span style={{ color: muted, fontSize: 10, flexShrink: 0 }}>
           {selected ? relativeTime(selected.last_updated_at) : "▾"}
@@ -1324,6 +1353,7 @@ function FormPicker({
                         <span style={{ flexShrink: 0, width: 18 }} aria-hidden />
                       )}
                       <span
+                        title={f.title}
                         style={{
                           fontSize: 13,
                           overflow: "hidden",
