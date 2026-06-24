@@ -367,6 +367,16 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
     );
   }, []);
 
+  // Check-ups semanais salvos no drawer — patch otimista do chip do card
+  // (espelha CampaignMenuV2.handleCheckupsSaved). Sem refetch: BQ tem
+  // read-after-write lag e o chip regrediria.
+  const handleCheckupsSaved = useCallback((short_token, count) => {
+    const applyTo = (c) =>
+      c.short_token === short_token ? { ...c, weekly_checkups: count } : c;
+    setCampaigns((prev) => prev.map(applyTo));
+    setDrawerCampaign((prev) => (prev ? applyTo(prev) : prev));
+  }, []);
+
   // Pausa/retomada otimista — espelha CampaignMenuV2.handlePauseSaved.
   // Atualiza array local + drawerCampaign aberto pra refletir Pausar↔Retomar
   // sem esperar refresh do BQ (read-after-write delay).
@@ -622,6 +632,7 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
         }}
         onAbsChange={handleAbsSaved}
         onClosureChange={handleClosureSaved}
+        onCheckupsSaved={handleCheckupsSaved}
         onPauseChange={handlePauseSaved}
         onEarlyEndChange={handleEarlyEndSaved}
         onOpenReport={onOpenReport}

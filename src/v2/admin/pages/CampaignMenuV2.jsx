@@ -642,6 +642,21 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
     });
   }, []);
 
+  // Check-ups semanais salvos no drawer — patch otimista do chip "check-ups
+  // N/M" do card. Não refazemos a lista (BQ tem read-after-write lag de
+  // segundos; o MERGE pode não estar visível ainda e o chip regrediria).
+  // Atualiza também o drawerCampaign aberto pra o chip ficar consistente.
+  const handleCheckupsSaved = useCallback((short_token, count) => {
+    const applyTo = (c) =>
+      c.short_token === short_token ? { ...c, weekly_checkups: count } : c;
+    setCampaigns((prev) => {
+      const next = prev.map(applyTo);
+      writeCache("menu.campaigns", next);
+      return next;
+    });
+    setDrawerCampaign((prev) => (prev ? applyTo(prev) : prev));
+  }, []);
+
   // Pausa/retomada da campanha — update otimista similar ao closure.
   // Quando `paused=true`, grava paused_at=now; quando false, remove o campo.
   // Atualiza também o drawerCampaign aberto pra o botão refletir o novo
@@ -1099,6 +1114,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
         }}
         onAbsChange={handleAbsSaved}
         onClosureChange={handleClosureSaved}
+        onCheckupsSaved={handleCheckupsSaved}
         onPauseChange={handlePauseSaved}
         onEarlyEndChange={handleEarlyEndSaved}
         onOpenReport={onOpenReport}

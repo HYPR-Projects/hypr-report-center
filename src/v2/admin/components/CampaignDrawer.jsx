@@ -23,6 +23,7 @@ import { AbsToggle } from "./AbsToggle";
 import { CoreProductsOverride } from "./CoreProductsOverride";
 import { TokenChip } from "./TokenChip";
 import { ClosureModal } from "./ClosureModal";
+import { WeeklyCheckupTracker } from "./WeeklyCheckupTracker";
 import { AudienceOverridesModal } from "./AudienceOverridesModal";
 import { LabelOverridesModal } from "./LabelOverridesModal";
 import { getCreativeLineKey } from "../../../shared/aggregations";
@@ -211,6 +212,7 @@ export function CampaignDrawer({
   onNegotiation,       // chamado quando admin clica em "Negociado" — recebe (campaign, negotiation)
   onAbsChange,         // chamado após admin salvar override de ABS — pai refaz lista
   onClosureChange,     // chamado após admin marcar campanha como encerrada — pai refaz lista
+  onCheckupsSaved,     // chamado após salvar check-ups semanais — (short_token, count) — pai atualiza o chip do card otimisticamente
   onPauseChange,       // chamado após admin pausar/retomar campanha — pai atualiza otimisticamente
   onEarlyEndChange,    // chamado após admin setar/reverter encerramento antecipado
   onOpenReport,
@@ -259,20 +261,34 @@ export function CampaignDrawer({
     setClosureInitialDetails(null);
     setEditClosureBusy("idle");
   }, [drawerToken, open]);
-  // Resumo do fechamento (pós-venda + checkups) — exibido no topo do drawer
-  // de campanha encerrada. Fetch lazy quando o drawer abre; depois de um
-  // save no popup, atualiza direto do payload salvo (sem refetch).
-  const drawerClosedAt = campaign?.closed_at;
+  // Detalhes do fechamento (pós-venda + check-ups semanais). Buscados SEMPRE
+  // que o drawer abre — não só em campanha encerrada — porque o tracker de
+  // check-ups acompanha a campanha durante a veiculação e precisa do log
+  // salvo. O resumo de fechamento (pós-venda) só é exibido em campanha
+  // encerrada; o tracker, em qualquer estado. Depois de um save, atualiza
+  // direto do payload (sem refetch).
   const [closureSummary, setClosureSummary] = useState(null);
   useEffect(() => {
     setClosureSummary(null);
-    if (!open || !drawerToken || !drawerClosedAt) return;
+    if (!open || !drawerToken) return;
     let cancelled = false;
     getClosureDetails({ short_token: drawerToken })
       .then((d) => { if (!cancelled) setClosureSummary(d); })
-      .catch(() => { /* sem resumo — drawer segue normal */ });
+      .catch(() => { /* sem dados — drawer segue normal */ });
     return () => { cancelled = true; };
-  }, [open, drawerToken, drawerClosedAt]);
+  }, [open, drawerToken]);
+  // Sincroniza o resumo após um save do tracker (sem refetch): atualiza o log
+  // e a contagem derivada que o backend computa (len do log).
+  const handleCheckupsSaved = (log) => {
+    setClosureSummary((prev) => ({
+      ...(prev || {}),
+      weekly_checkup_log: log,
+      weekly_checkups: log.length,
+    }));
+    // Propaga pro pai patchar o chip "check-ups N/M" do card sem refetch
+    // (BQ tem read-after-write lag; refazer a lista traria valor stale).
+    onCheckupsSaved?.(drawerToken, log.length);
+  };
   // Mesmo padrão pro toggle de pausa — resetado quando o drawer abre/troca.
   const [pauseBusy, setPauseBusy] = useState("idle");
   useEffect(() => { setPauseBusy("idle"); }, [drawerToken, open]);
@@ -754,6 +770,18 @@ export function CampaignDrawer({
               <SetupPendingNote setup={setup} />
             </div>
           )}
+
+          {/* Check-ups semanais — acompanhamento AO VIVO durante a veiculação.
+              1 slot por semana (derivado das datas da campanha); o CS marca
+              cada check-up enviado. Substitui o preenchimento agregado que
+              antes só acontecia no fechamento. */}
+          <div className="drawer-section-rise drawer-stagger-3">
+            <WeeklyCheckupTracker
+              campaign={{ short_token, start_date, end_date, early_end_date, closed_at }}
+              initialLog={closureSummary?.weekly_checkup_log}
+              onSaved={handleCheckupsSaved}
+            />
+          </div>
 
           {/* Owners — agora em duas colunas side-by-side. Email completo
               fica no tooltip (title) pra não comer largura, e cada pill
@@ -1396,11 +1424,11 @@ function ClosureSummaryNote({ details }) {
           href={details.extra_url}
         />
         <ClosureSummaryRow
-          label="Checkups semanais"
-          ok={details.weekly_checkups != null}
+          label="Check-ups semanais"
+          ok={(details.weekly_checkups ?? 0) > 0}
           detail={
-            details.weekly_checkups != null
-              ? `${details.weekly_checkups} checkup${details.weekly_checkups === 1 ? "" : "s"}`
+            (details.weekly_checkups ?? 0) > 0
+              ? `${details.weekly_checkups} check-up${details.weekly_checkups === 1 ? "" : "s"} enviado${details.weekly_checkups === 1 ? "" : "s"}`
               : null
           }
         />

@@ -9,13 +9,15 @@
 //     enviado ao cliente. Quando presente, vira o chip "Pós-venda" no header
 //     do report do cliente, com preview embutido do deck (iframe /embed).
 //   • Link de material adicional (opcional) + mesma pergunta.
-//   • Quantidade de checkups semanais (obrigatório) — e-mails de fup/resumo
-//     mandados ao cliente. Métrica interna, NÃO aparece no report.
+//
+// Os check-ups semanais NÃO são mais coletados aqui — viraram acompanhamento
+// AO VIVO durante a veiculação (WeeklyCheckupTracker, no corpo do drawer), em
+// vez de um preenchimento agregado no fechamento.
 //
 // Nested dialog sobre o Drawer (ambos Radix) — o DismissableLayer só fecha a
 // camada do topo, então interagir aqui não derruba o drawer por baixo.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { cn } from "../../../ui/cn";
 import { saveCampaignClosure, saveClosureDetails } from "../../../lib/api";
@@ -36,7 +38,6 @@ export function ClosureModal({
   const [extraUrl, setExtraUrl]         = useState("");
   const [extraMode, setExtraMode]       = useState(null);
   const [extraDate, setExtraDate]       = useState("");
-  const [checkups, setCheckups]         = useState("");
   const [busy, setBusy]                 = useState(false);
   const [error, setError]               = useState(null);
 
@@ -50,11 +51,6 @@ export function ClosureModal({
     setExtraUrl(initialDetails?.extra_url || "");
     setExtraMode(initialDetails?.extra_mode || null);
     setExtraDate(initialDetails?.extra_date || "");
-    setCheckups(
-      initialDetails?.weekly_checkups != null
-        ? String(initialDetails.weekly_checkups)
-        : "",
-    );
     setBusy(false);
     setError(null);
   }, [open, initialDetails]);
@@ -63,37 +59,12 @@ export function ClosureModal({
   const posVendaIsSlides = posVendaFilled && isGoogleSlidesUrl(posVendaUrl);
   const extraFilled = extraUrl.trim().length > 0;
 
-  const checkupsNum = useMemo(() => {
-    if (checkups.trim() === "") return null;
-    const n = Number(checkups);
-    return Number.isInteger(n) && n >= 0 ? n : null;
-  }, [checkups]);
-
-  // Teto de checkups derivado do período REAL da campanha (early_end_date
-  // vence o end_date contratual): 1 checkup por semana + onboarding +
-  // fechamento. 4 semanas → 6; 2 semanas → 4. Sem datas (payload velho /
-  // edge), o teto desliga e vale só o ≥ 0.
-  const weeks = useMemo(() => {
-    const s = campaign?.start_date;
-    const e = campaign?.early_end_date || campaign?.end_date;
-    if (!s || !e) return null;
-    const [sy, sm, sd] = s.split("-").map(Number);
-    const [ey, em, ed] = e.split("-").map(Number);
-    const days = Math.round((new Date(ey, em - 1, ed) - new Date(sy, sm - 1, sd)) / 86400000) + 1;
-    if (!Number.isFinite(days) || days <= 0) return null;
-    return Math.ceil(days / 7);
-  }, [campaign]);
-  const maxCheckups = weeks != null ? weeks + 2 : null;
-  const checkupsOverMax =
-    checkupsNum != null && maxCheckups != null && checkupsNum > maxCheckups;
-
   // Data da apresentação: não faz sentido antes do início da campanha nem
   // no futuro ("foi apresentado" é passado).
   const todayISO = new Date().toISOString().slice(0, 10);
 
   const canSave =
     !busy &&
-    checkupsNum != null && !checkupsOverMax &&   // obrigatório, dentro do teto
     (!posVendaFilled || (posVendaIsSlides && posVendaMode)) &&
     (!extraFilled || extraMode);
 
@@ -114,7 +85,6 @@ export function ClosureModal({
         extraFilled && extraMode === "apresentado" && extraDate
           ? extraDate
           : null,
-      weekly_checkups: checkupsNum,
     };
     try {
       if (mode === "close") {
@@ -297,64 +267,9 @@ export function ClosureModal({
               )}
             </section>
 
-            {/* Checkups semanais */}
-            <section>
-              <SectionLabel
-                icon={<MailCheckIcon className="size-3.5" />}
-                title="Checkups semanais"
-                hint="E-mails de fup/resumo enviados ao cliente · obrigatório"
-              />
-              <div className="flex items-center gap-1.5">
-                <StepperButton
-                  label="Diminuir"
-                  disabled={busy || (checkupsNum ?? 0) <= 0}
-                  onClick={() => setCheckups(String(Math.max(0, (checkupsNum ?? 0) - 1)))}
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M5 12h14" /></svg>
-                </StepperButton>
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  step={1}
-                  value={checkups}
-                  onChange={(e) => setCheckups(e.target.value)}
-                  disabled={busy}
-                  placeholder="Ex: 4"
-                  className={cn(
-                    fieldClass((checkups.trim() !== "" && checkupsNum == null) || checkupsOverMax),
-                    "w-20 text-center tabular-nums",
-                    // Esconde os spinners nativos — o stepper custom já cobre
-                    "[appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none",
-                  )}
-                />
-                <StepperButton
-                  label="Aumentar"
-                  disabled={busy || (maxCheckups != null && (checkupsNum ?? 0) >= maxCheckups)}
-                  onClick={() => setCheckups(String((checkupsNum ?? 0) + 1))}
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
-                </StepperButton>
-              </div>
-              {checkups.trim() !== "" && checkupsNum == null && (
-                <FieldNote tone="danger">Use um número inteiro (0 ou mais).</FieldNote>
-              )}
-              {checkupsOverMax && (
-                <FieldNote tone="danger">
-                  Máximo pra esta campanha: {maxCheckups} checkups.
-                </FieldNote>
-              )}
-              {maxCheckups != null && (
-                <p className="mt-1.5 text-[10.5px] text-fg-subtle leading-snug">
-                  Campanha de {weeks} semana{weeks === 1 ? "" : "s"} → até{" "}
-                  <span className="font-semibold text-fg-muted">{maxCheckups} checkups</span>{" "}
-                  (onboarding + 1 por semana + fechamento).
-                </p>
-              )}
-              <p className="mt-1.5 text-[10.5px] text-fg-subtle italic">
-                Métrica interna — não aparece no report do cliente.
-              </p>
-            </section>
+            {/* Check-ups semanais: agora vivem no tracker do drawer
+                (acompanhamento ao vivo durante a veiculação) — não são mais
+                coletados aqui no fechamento. */}
 
             {error && (
               <div className="rounded-lg border border-danger/40 bg-danger-soft px-3 py-2.5 text-xs text-danger font-medium">
@@ -511,26 +426,6 @@ function PresentedDateField({ value, onChange, min, max, disabled }) {
   );
 }
 
-function StepperButton({ label, disabled, onClick, children }) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        "inline-flex items-center justify-center w-9 h-[38px] rounded-md shrink-0",
-        "border border-border bg-surface text-fg-muted",
-        "hover:text-fg hover:bg-surface-strong transition-colors cursor-pointer",
-        "disabled:opacity-40 disabled:cursor-not-allowed",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature/50",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
 function BusySpinner() {
   return (
     <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none">
@@ -555,16 +450,6 @@ function PaperclipIcon({ className }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-    </svg>
-  );
-}
-
-function MailCheckIcon({ className }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M22 13V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v12c0 1.1.9 2 2 2h8" />
-      <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
-      <path d="m16 19 2 2 4-4" />
     </svg>
   );
 }

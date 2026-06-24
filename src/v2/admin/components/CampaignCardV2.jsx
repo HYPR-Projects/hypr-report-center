@@ -183,6 +183,9 @@ function CampaignCardV2Inner({
     // Setup pendente ({done, total, missing}) — o backend só emite quando
     // falta ativar algo do esperado (Loom + condicionais negociados).
     setup,
+    // Contagem de check-ups semanais enviados (métrica interna admin). O total
+    // de semanas é derivado das datas; alimenta o chip "check-ups N/M".
+    weekly_checkups,
   } = campaign;
   const has_abs = display_has_abs || video_has_abs;
 
@@ -232,6 +235,10 @@ function CampaignCardV2Inner({
   // Pacing math (PacingRow) continua usando end_date implícito do payload.
   const effectiveEndDate = early_end_date || end_date;
   const earlyEnded = isEarlyEnded(early_end_date);
+
+  // Progresso de check-ups semanais pro chip do card. null = sem datas ou
+  // campanha ainda não começada (nada pra acompanhar). Ver computeCheckupProgress.
+  const checkupProgress = computeCheckupProgress(start_date, effectiveEndDate, weekly_checkups);
 
   const status  = getCampaignStatus(end_date, closed_at, paused_at, early_end_date);
   const ended   = status === "ended";
@@ -371,7 +378,15 @@ function CampaignCardV2Inner({
             {campaign_name}
           </p>
           <DateRangeLine startISO={start_date} endISO={effectiveEndDate} />
-          {(ended || awaiting) && <FechamentoDots fechamento={fechamento} />}
+          {/* Indicadores discretos abaixo das datas: fechamento (encerrada/
+              aguardando) e check-ups semanais (sempre que há o que acompanhar),
+              lado a lado, no mesmo estilo minimalista (dots + label). */}
+          {((ended || awaiting) || checkupProgress) && (
+            <div className="flex items-center gap-3.5 flex-wrap">
+              {(ended || awaiting) && <FechamentoDots fechamento={fechamento} />}
+              {checkupProgress && <CheckupDots progress={checkupProgress} />}
+            </div>
+          )}
         </div>
 
         {/* ── KPIs mobile (visível só <md) ──────────────────────────────
@@ -926,6 +941,113 @@ function SetupChip({ setup }) {
               <span className="text-fg-muted">{SETUP_LABEL[key] || key}</span>
             </div>
           ))}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * Progresso de check-ups semanais derivado das datas + contagem enviada
+ * (weekly_checkups, vinda do backend). Não precisa do log completo: "atrasado"
+ * é aproximado por (semanas já vencidas − enviados) — suficiente pro glance do
+ * card; a quebra exata por semana mora no drawer. Retorna null quando faltam
+ * datas ou a campanha ainda não começou (nada a acompanhar).
+ */
+function computeCheckupProgress(startISO, endISO, count) {
+  const parse = (s) => {
+    if (!s || typeof s !== "string") return null;
+    const [y, m, d] = s.split("-").map(Number);
+    return y && m && d ? new Date(y, m - 1, d) : null;
+  };
+  const s = parse(startISO);
+  const e = parse(endISO);
+  if (!s || !e) return null;
+  const days = Math.round((e - s) / 86400000) + 1;
+  if (!Number.isFinite(days) || days <= 0) return null;
+  const total = Math.min(104, Math.ceil(days / 7));
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (s > today && (Number(count) || 0) === 0) return null; // ainda não começou
+  // Semanas já vencidas (fim < hoje) — quantas "deveriam" ter check-up.
+  let due = 0;
+  for (let i = 1; i <= total; i++) {
+    let wEnd = new Date(s.getFullYear(), s.getMonth(), s.getDate() + i * 7 - 1);
+    if (wEnd > e) wEnd = e;
+    if (wEnd < today) due++;
+  }
+  const done = Math.max(0, Math.min(Number(count) || 0, total));
+  const overdue = Math.max(0, Math.min(due, total) - done);
+  return { total, done, overdue, complete: done >= total };
+}
+
+/**
+ * "CHECK-UPS N/M" — indicador discreto dos check-ups semanais, no MESMO
+ * estilo minimalista do FechamentoDots: 1 dot por semana (verde=enviada,
+ * âmbar=vencida sem envio, cinza=a vir) + label cinza uppercase, sem pílula
+ * nem cor de fundo. Acima de 8 semanas mostra só o N/M (dots virariam ruído).
+ * Tooltip traz a quebra enviados / atrasados / a vir.
+ */
+function CheckupDots({ progress }) {
+  const { total, done, overdue, complete } = progress;
+  const showDots = total <= 8;
+  const remaining = Math.max(0, total - done - overdue);
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div
+          className="flex items-center gap-1 mt-1.5 w-fit cursor-default"
+          aria-label={`Check-ups semanais: ${done} de ${total}${overdue > 0 ? `, ${overdue} atrasado(s)` : ""}`}
+        >
+          {showDots ? (
+            Array.from({ length: total }).map((_, i) => {
+              const filled = i < done;
+              const isOverdue = !filled && i < done + overdue;
+              return (
+                <span
+                  key={i}
+                  aria-hidden
+                  className={cn(
+                    "size-1.5 rounded-full",
+                    filled ? "bg-success" : isOverdue ? "bg-warning/70" : "bg-fg-subtle/25",
+                  )}
+                />
+              );
+            })
+          ) : (
+            <span
+              aria-hidden
+              className={cn(
+                "size-1.5 rounded-full",
+                complete ? "bg-success" : overdue > 0 ? "bg-warning/70" : "bg-fg-subtle/25",
+              )}
+            />
+          )}
+          <span className="text-[9px] uppercase tracking-wider text-fg-subtle ml-0.5 leading-none">
+            check-ups {done}/{total}
+          </span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" align="start">
+        <div className="space-y-1 leading-snug text-[11px]">
+          <p className="font-semibold text-fg">Check-ups semanais</p>
+          <div className="flex items-center gap-1.5">
+            <span aria-hidden className="size-1.5 rounded-full shrink-0 bg-success" />
+            <span className="text-fg-muted">{done} enviado{done === 1 ? "" : "s"}</span>
+          </div>
+          {overdue > 0 && (
+            <div className="flex items-center gap-1.5">
+              <span aria-hidden className="size-1.5 rounded-full shrink-0 bg-warning" />
+              <span className="text-fg-muted">{overdue} atrasado{overdue === 1 ? "" : "s"}</span>
+            </div>
+          )}
+          {remaining > 0 && (
+            <div className="flex items-center gap-1.5">
+              <span aria-hidden className="size-1.5 rounded-full shrink-0 bg-fg-subtle/40" />
+              <span className="text-fg-muted">{remaining} a vir</span>
+            </div>
+          )}
+          <p className="text-[10px] text-fg-subtle pt-0.5">Detalhe por semana no relatório.</p>
         </div>
       </TooltipContent>
     </Tooltip>
