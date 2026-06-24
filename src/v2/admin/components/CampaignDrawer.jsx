@@ -285,9 +285,10 @@ export function CampaignDrawer({
       weekly_checkup_log: log,
       weekly_checkups: log.length,
     }));
-    // Propaga pro pai patchar o chip "check-ups N/M" do card sem refetch
-    // (BQ tem read-after-write lag; refazer a lista traria valor stale).
-    onCheckupsSaved?.(drawerToken, log.length);
+    // Propaga o LOG pro pai patchar a lista (chip do card + seed do drawer ao
+    // reabrir) sem refetch — o fetch do servidor pode vir stale (cache por
+    // instância + read-after-write do BQ). A memória local é a verdade da sessão.
+    onCheckupsSaved?.(drawerToken, log);
   };
   // Mesmo padrão pro toggle de pausa — resetado quando o drawer abre/troca.
   const [pauseBusy, setPauseBusy] = useState("idle");
@@ -778,7 +779,10 @@ export function CampaignDrawer({
           <div className="drawer-section-rise drawer-stagger-3">
             <WeeklyCheckupTracker
               campaign={{ short_token, start_date, end_date, early_end_date, closed_at }}
-              initialLog={closureSummary?.weekly_checkup_log}
+              /* Semeia pela campanha (memória local, patchada otimista a cada
+                 save → sempre atual na sessão); cai pro fetch do servidor só
+                 quando a lista não trouxe o log. Evita o stale ao reabrir. */
+              initialLog={campaign?.weekly_checkup_log ?? closureSummary?.weekly_checkup_log}
               onSaved={handleCheckupsSaved}
             />
           </div>

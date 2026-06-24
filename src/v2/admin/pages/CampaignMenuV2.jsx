@@ -646,9 +646,12 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   // N/M" do card. Não refazemos a lista (BQ tem read-after-write lag de
   // segundos; o MERGE pode não estar visível ainda e o chip regrediria).
   // Atualiza também o drawerCampaign aberto pra o chip ficar consistente.
-  const handleCheckupsSaved = useCallback((short_token, count) => {
+  const handleCheckupsSaved = useCallback((short_token, log) => {
+    const arr = Array.isArray(log) ? log : [];
     const applyTo = (c) =>
-      c.short_token === short_token ? { ...c, weekly_checkups: count } : c;
+      c.short_token === short_token
+        ? { ...c, weekly_checkup_log: arr, weekly_checkups: arr.length }
+        : c;
     setCampaigns((prev) => {
       const next = prev.map(applyTo);
       writeCache("menu.campaigns", next);

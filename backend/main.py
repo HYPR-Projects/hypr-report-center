@@ -5584,11 +5584,17 @@ def query_all_campaign_elements() -> dict:
         SELECT short_token, 'closure', 'checkups' FROM `{_closure_details_table_id()}`
         WHERE weekly_checkups IS NOT NULL
         UNION ALL
-        -- Contagem de check-ups enviados — alimenta o chip "check-ups N/M" do
-        -- card (progresso ao vivo). `item` carrega o número como STRING.
+        -- Contagem de check-ups enviados (fallback p/ closures legados sem log).
         SELECT short_token, 'checkup_count', CAST(weekly_checkups AS STRING)
         FROM `{_closure_details_table_id()}`
         WHERE weekly_checkups IS NOT NULL
+        UNION ALL
+        -- Log POR SEMANA dos check-ups — `item` carrega o JSON. O card precisa
+        -- saber QUAIS semanas foram enviadas (não só quantas) pra pintar semana
+        -- pulada como atrasada e pro drawer semear estado fresco sem refetch.
+        SELECT short_token, 'checkup_log', weekly_checkup_log
+        FROM `{_closure_details_table_id()}`
+        WHERE weekly_checkup_log IS NOT NULL
     """
     sql_negotiated = f"""
         SELECT DISTINCT short_token, 'negotiated' AS kind, 'survey' AS item
@@ -5626,6 +5632,12 @@ def query_all_campaign_elements() -> dict:
             if kind == "checkup_count":
                 try:
                     bucket["checkup_count"] = int(row["item"])
+                except (TypeError, ValueError):
+                    pass
+                continue
+            if kind == "checkup_log":
+                try:
+                    bucket["checkup_log"] = _sanitize_weekly_checkup_log(json.loads(row["item"])) if row["item"] else []
                 except (TypeError, ValueError):
                     pass
                 continue
@@ -8823,12 +8835,16 @@ def query_campaigns_list():
             closure_items = info.get("closure") or []
             if closure_items:
                 entry["fechamento"] = closure_items
-            # Contagem de check-ups enviados — alimenta o chip "check-ups N/M"
-            # do card (progresso ao vivo). O total de semanas é derivado das
-            # datas no frontend. Admin-only (mesma régua do fechamento).
-            cc = info.get("checkup_count")
-            if cc is not None:
-                entry["weekly_checkups"] = cc
+            # Check-ups semanais — alimenta o chip "check-ups N/M" do card. O log
+            # (quais semanas) é a fonte da verdade: o card pinta semana pulada
+            # como atrasada e o drawer semeia estado fresco sem refetch. Cai pra
+            # contagem crua só em closure legado (sem log). Admin-only.
+            log = info.get("checkup_log")
+            if log is not None:
+                entry["weekly_checkup_log"] = log
+                entry["weekly_checkups"] = len(log)
+            elif info.get("checkup_count") is not None:
+                entry["weekly_checkups"] = info["checkup_count"]
             expected = {"loom"} | (set(info.get("negotiated") or []) & {"survey", "pdooh", "rmnd"})
             missing = sorted(expected - set(info.get("assets") or []))
             if missing:

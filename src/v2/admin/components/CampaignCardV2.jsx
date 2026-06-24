@@ -183,9 +183,11 @@ function CampaignCardV2Inner({
     // Setup pendente ({done, total, missing}) — o backend só emite quando
     // falta ativar algo do esperado (Loom + condicionais negociados).
     setup,
-    // Contagem de check-ups semanais enviados (métrica interna admin). O total
-    // de semanas é derivado das datas; alimenta o chip "check-ups N/M".
+    // Check-ups semanais enviados (métrica interna admin). `weekly_checkup_log`
+    // (quais semanas) é a fonte da verdade pro chip — pinta semana pulada como
+    // atrasada; `weekly_checkups` (contagem) é fallback de closure legado.
     weekly_checkups,
+    weekly_checkup_log,
   } = campaign;
   const has_abs = display_has_abs || video_has_abs;
 
@@ -238,7 +240,10 @@ function CampaignCardV2Inner({
 
   // Progresso de check-ups semanais pro chip do card. null = sem datas ou
   // campanha ainda não começada (nada pra acompanhar). Ver computeCheckupProgress.
-  const checkupProgress = computeCheckupProgress(start_date, effectiveEndDate, weekly_checkups);
+  const checkupProgress = computeCheckupProgress(start_date, effectiveEndDate, {
+    log: weekly_checkup_log,
+    count: weekly_checkups,
+  });
 
   const status  = getCampaignStatus(end_date, closed_at, paused_at, early_end_date);
   const ended   = status === "ended";
@@ -948,13 +953,18 @@ function SetupChip({ setup }) {
 }
 
 /**
- * Progresso de check-ups semanais derivado das datas + contagem enviada
- * (weekly_checkups, vinda do backend). Não precisa do log completo: "atrasado"
- * é aproximado por (semanas já vencidas − enviados) — suficiente pro glance do
- * card; a quebra exata por semana mora no drawer. Retorna null quando faltam
- * datas ou a campanha ainda não começou (nada a acompanhar).
+ * Progresso de check-ups semanais pro chip do card, com estado POR semana.
+ *
+ * Fonte da verdade é `log` (quais semanas foram enviadas) — assim o card pinta
+ * corretamente uma semana PULADA como atrasada (verde fora de ordem não
+ * "tampa" uma semana vencida anterior). `count` é fallback p/ closure legado
+ * sem log: aproxima "as N primeiras feitas". Retorna null sem datas ou se a
+ * campanha ainda não começou e nada foi enviado.
+ *
+ * weekStates[i]: 'done' (enviada) | 'overdue' (vencida sem envio) | 'future'
+ * (a vir, inclui a semana corrente ainda em curso).
  */
-function computeCheckupProgress(startISO, endISO, count) {
+function computeCheckupProgress(startISO, endISO, { log, count } = {}) {
   const parse = (s) => {
     if (!s || typeof s !== "string") return null;
     const [y, m, d] = s.split("-").map(Number);
@@ -968,17 +978,28 @@ function computeCheckupProgress(startISO, endISO, count) {
   const total = Math.min(104, Math.ceil(days / 7));
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  if (s > today && (Number(count) || 0) === 0) return null; // ainda não começou
-  // Semanas já vencidas (fim < hoje) — quantas "deveriam" ter check-up.
-  let due = 0;
+
+  const hasLog = Array.isArray(log);
+  const doneSet = hasLog
+    ? new Set(log.map((it) => Number(it?.week)).filter((w) => Number.isInteger(w)))
+    : null;
+  const effCount = hasLog ? doneSet.size : Math.max(0, Number(count) || 0);
+  if (s > today && effCount === 0) return null; // ainda não começou
+
+  const weekStates = [];
+  let done = 0;
+  let overdue = 0;
   for (let i = 1; i <= total; i++) {
     let wEnd = new Date(s.getFullYear(), s.getMonth(), s.getDate() + i * 7 - 1);
     if (wEnd > e) wEnd = e;
-    if (wEnd < today) due++;
+    const isDone = hasLog ? doneSet.has(i) : i <= Math.min(effCount, total);
+    let state;
+    if (isDone) { state = "done"; done++; }
+    else if (wEnd < today) { state = "overdue"; overdue++; }
+    else state = "future";
+    weekStates.push(state);
   }
-  const done = Math.max(0, Math.min(Number(count) || 0, total));
-  const overdue = Math.max(0, Math.min(due, total) - done);
-  return { total, done, overdue, complete: done >= total };
+  return { total, done, overdue, complete: done >= total, weekStates };
 }
 
 /**
@@ -989,9 +1010,11 @@ function computeCheckupProgress(startISO, endISO, count) {
  * Tooltip traz a quebra enviados / atrasados / a vir.
  */
 function CheckupDots({ progress }) {
-  const { total, done, overdue, complete } = progress;
+  const { total, done, overdue, complete, weekStates } = progress;
   const showDots = total <= 8;
   const remaining = Math.max(0, total - done - overdue);
+  const dotClass = (state) =>
+    state === "done" ? "bg-success" : state === "overdue" ? "bg-warning/70" : "bg-fg-subtle/25";
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -1000,20 +1023,9 @@ function CheckupDots({ progress }) {
           aria-label={`Check-ups semanais: ${done} de ${total}${overdue > 0 ? `, ${overdue} atrasado(s)` : ""}`}
         >
           {showDots ? (
-            Array.from({ length: total }).map((_, i) => {
-              const filled = i < done;
-              const isOverdue = !filled && i < done + overdue;
-              return (
-                <span
-                  key={i}
-                  aria-hidden
-                  className={cn(
-                    "size-1.5 rounded-full",
-                    filled ? "bg-success" : isOverdue ? "bg-warning/70" : "bg-fg-subtle/25",
-                  )}
-                />
-              );
-            })
+            weekStates.map((state, i) => (
+              <span key={i} aria-hidden className={cn("size-1.5 rounded-full", dotClass(state))} />
+            ))
           ) : (
             <span
               aria-hidden
