@@ -370,9 +370,12 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
   // Check-ups semanais salvos no drawer — patch otimista do chip do card
   // (espelha CampaignMenuV2.handleCheckupsSaved). Sem refetch: BQ tem
   // read-after-write lag e o chip regrediria.
-  const handleCheckupsSaved = useCallback((short_token, count) => {
+  const handleCheckupsSaved = useCallback((short_token, log) => {
+    const arr = Array.isArray(log) ? log : [];
     const applyTo = (c) =>
-      c.short_token === short_token ? { ...c, weekly_checkups: count } : c;
+      c.short_token === short_token
+        ? { ...c, weekly_checkup_log: arr, weekly_checkups: arr.length }
+        : c;
     setCampaigns((prev) => prev.map(applyTo));
     setDrawerCampaign((prev) => (prev ? applyTo(prev) : prev));
   }, []);
