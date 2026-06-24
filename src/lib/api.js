@@ -923,6 +923,22 @@ export async function saveClosureDetails({ short_token, details }) {
 }
 
 /**
+ * Salva os check-ups semanais (tracker do drawer). `log` é a lista das
+ * semanas MARCADAS como enviadas: `[{week:int, sent_at:"YYYY-MM-DD"|null}]`.
+ * Toca só o log de check-ups — não mexe em pós-venda/material. Usado durante
+ * a veiculação pra acompanhar quantos check-ups o CS já mandou ao cliente.
+ */
+export async function saveWeeklyCheckups({ short_token, log }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=save_weekly_checkups`,
+    { short_token, log: log || [] },
+    adminAuthHeaders(jwt),
+  );
+  return throwIfNotOk(r);
+}
+
+/**
  * Lê os detalhes do fechamento (pré-popula o popup de edição).
  * Retorna null quando nunca foram salvos.
  */

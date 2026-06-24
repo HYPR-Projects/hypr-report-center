@@ -1681,6 +1681,35 @@ def report_data(request):
             logger.error(f"[ERROR get_closure_details] {e}")
             return (jsonify({"error": "Erro ao buscar dados do fechamento"}), 500, headers)
 
+    # ── Endpoint: salvar check-ups semanais (tracker do drawer) ─────────────
+    # Body: {short_token, log: [{week:int, sent_at:"YYYY-MM-DD"|null}, ...]}
+    # Atualização SEMANAL durante a veiculação — o CS marca cada semana que
+    # mandou o check-up ao cliente. Toca só weekly_checkup_log + a contagem
+    # derivada; não mexe em pós-venda. Métrica interna, admin-only.
+    if request.method == "POST" and request.args.get("action") == "save_weekly_checkups":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            log = _sanitize_weekly_checkup_log(body.get("log"))
+            save_weekly_checkups(short_token, log, updated_by=admin.get("email"))
+            _cache_invalidate_token(short_token)
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="weekly_checkups_updated",
+                actor_email=admin.get("email"),
+                message=f"atualizou os check-ups semanais ({len(log)} enviado(s))",
+                payload={"log": log},
+            )
+            return (jsonify({"ok": True, "log": log, "count": len(log)}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR save_weekly_checkups] {e}")
+            return (jsonify({"error": "Erro ao salvar check-ups semanais"}), 500, headers)
+
     # ── Endpoint: congelar report (snapshot) ────────────────────────────────
     # Body: {short_token, note?, src?: {unified, campaign_results}}
     # Persiste o payload computado e passa a servi-lo verbatim (imune a
@@ -5294,10 +5323,19 @@ def _ensure_closure_details_table() -> None:
         # Migração leve: as colunas de data ("apresentado em") entraram depois
         # do launch — tabelas criadas pela versão anterior não as têm. ADD
         # COLUMN IF NOT EXISTS é idempotente e no-op quando já existem.
+        #
+        # weekly_checkup_log: JSON (como STRING) com o registro POR SEMANA dos
+        # check-ups enviados — `[{"week": 1, "sent_at": "2026-06-03"}, ...]`.
+        # Substitui a semântica antiga de `weekly_checkups` (contagem agregada
+        # que misturava onboarding + semanais + fechamento). Agora o CS marca
+        # cada semana de veiculação durante a campanha; `weekly_checkups` passa
+        # a ser só a CONTAGEM derivada (len do log) — mantida pra não quebrar o
+        # marcador de fechamento do card e o resumo do drawer.
         bq.query(f"""
             ALTER TABLE `{_closure_details_table_id()}`
             ADD COLUMN IF NOT EXISTS pos_venda_date DATE,
-            ADD COLUMN IF NOT EXISTS extra_date DATE
+            ADD COLUMN IF NOT EXISTS extra_date DATE,
+            ADD COLUMN IF NOT EXISTS weekly_checkup_log STRING
         """).result()
         _closure_details_table_ensured = True
 
@@ -5350,8 +5388,82 @@ def _sanitize_closure_details(body: dict) -> dict:
     }
 
 
+def _sanitize_weekly_checkup_log(raw) -> list[dict]:
+    """Normaliza o log de check-ups semanais vindo do frontend.
+
+    Entrada: lista de `{"week": int, "sent_at": "YYYY-MM-DD"|null}` (só as
+    semanas MARCADAS como enviadas entram). Saída: lista limpa, deduplicada
+    por semana e ordenada por semana. `week` precisa ser inteiro >= 1; datas
+    inválidas viram None (a semana segue marcada, só sem data registrada)."""
+    if not isinstance(raw, list):
+        return []
+
+    def _date(v):
+        v = (v or "").strip()[:10]
+        if not v:
+            return None
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+            return v
+        except (ValueError, TypeError):
+            return None
+
+    by_week: dict[int, dict] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            week = int(item.get("week"))
+        except (TypeError, ValueError):
+            continue
+        if week < 1 or week > 104:  # teto defensivo (~2 anos de campanha)
+            continue
+        by_week[week] = {"week": week, "sent_at": _date(item.get("sent_at"))}
+    return [by_week[w] for w in sorted(by_week)]
+
+
+def save_weekly_checkups(short_token: str, log: list[dict], updated_by: str | None = None):
+    """UPSERT só dos check-ups semanais (atômico via MERGE).
+
+    Toca APENAS weekly_checkup_log + weekly_checkups (contagem derivada) +
+    auditoria — não mexe em pós-venda/material, que são donos do popup de
+    fechamento. Assim o tracker do drawer (durante a campanha) e o popup de
+    fechamento gravam no mesmo registro sem se sobrescrever."""
+    _ensure_closure_details_table()
+    log_json = json.dumps(log, ensure_ascii=False)
+    count = len(log)
+    sql = f"""
+        MERGE `{_closure_details_table_id()}` T
+        USING (SELECT @token AS short_token) S
+        ON T.short_token = S.short_token
+        WHEN MATCHED THEN
+            UPDATE SET
+                weekly_checkup_log = @log,
+                weekly_checkups    = @count,
+                updated_at         = CURRENT_TIMESTAMP(),
+                updated_by         = @updated_by
+        WHEN NOT MATCHED THEN
+            INSERT (short_token, weekly_checkup_log, weekly_checkups,
+                    updated_at, updated_by)
+            VALUES (@token, @log, @count, CURRENT_TIMESTAMP(), @updated_by)
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("token",      "STRING", short_token),
+            bigquery.ScalarQueryParameter("log",        "STRING", log_json),
+            bigquery.ScalarQueryParameter("count",      "INT64",  count),
+            bigquery.ScalarQueryParameter("updated_by", "STRING", updated_by),
+        ]
+    )
+    bq.query(sql, job_config=job_config).result()
+
+
 def save_closure_details(short_token: str, details: dict, updated_by: str | None = None):
-    """UPSERT dos detalhes do fechamento (atômico via MERGE)."""
+    """UPSERT dos detalhes do fechamento (atômico via MERGE).
+
+    NÃO toca em weekly_checkup_log/weekly_checkups — esses são donos do tracker
+    de check-ups semanais (save_weekly_checkups). Numa campanha que já tem
+    check-ups registrados, salvar o fechamento aqui preserva o log."""
     _ensure_closure_details_table()
     sql = f"""
         MERGE `{_closure_details_table_id()}` T
@@ -5363,17 +5475,16 @@ def save_closure_details(short_token: str, details: dict, updated_by: str | None
                 pos_venda_mode  = @pos_venda_mode,
                 extra_url       = @extra_url,
                 extra_mode      = @extra_mode,
-                weekly_checkups = @weekly_checkups,
                 pos_venda_date  = @pos_venda_date,
                 extra_date      = @extra_date,
                 updated_at      = CURRENT_TIMESTAMP(),
                 updated_by      = @updated_by
         WHEN NOT MATCHED THEN
             INSERT (short_token, pos_venda_url, pos_venda_mode, extra_url,
-                    extra_mode, weekly_checkups, pos_venda_date, extra_date,
+                    extra_mode, pos_venda_date, extra_date,
                     updated_at, updated_by)
             VALUES (@token, @pos_venda_url, @pos_venda_mode, @extra_url,
-                    @extra_mode, @weekly_checkups, @pos_venda_date, @extra_date,
+                    @extra_mode, @pos_venda_date, @extra_date,
                     CURRENT_TIMESTAMP(), @updated_by)
     """
     job_config = bigquery.QueryJobConfig(
@@ -5383,7 +5494,6 @@ def save_closure_details(short_token: str, details: dict, updated_by: str | None
             bigquery.ScalarQueryParameter("pos_venda_mode",  "STRING", details.get("pos_venda_mode")),
             bigquery.ScalarQueryParameter("extra_url",       "STRING", details.get("extra_url")),
             bigquery.ScalarQueryParameter("extra_mode",      "STRING", details.get("extra_mode")),
-            bigquery.ScalarQueryParameter("weekly_checkups", "INT64",  details.get("weekly_checkups")),
             bigquery.ScalarQueryParameter("pos_venda_date",  "DATE",   details.get("pos_venda_date")),
             bigquery.ScalarQueryParameter("extra_date",      "DATE",   details.get("extra_date")),
             bigquery.ScalarQueryParameter("updated_by",      "STRING", updated_by),
@@ -5397,7 +5507,8 @@ def query_closure_details(short_token: str) -> dict | None:
     _ensure_closure_details_table()
     sql = f"""
         SELECT pos_venda_url, pos_venda_mode, extra_url, extra_mode,
-               weekly_checkups, pos_venda_date, extra_date, updated_at, updated_by
+               weekly_checkups, weekly_checkup_log, pos_venda_date, extra_date,
+               updated_at, updated_by
         FROM `{_closure_details_table_id()}`
         WHERE short_token = @token
         LIMIT 1
@@ -5409,16 +5520,24 @@ def query_closure_details(short_token: str) -> dict | None:
     if not rows:
         return None
     r = rows[0]
+    # weekly_checkup_log é JSON guardado como STRING; sanitiza na leitura pra
+    # blindar contra lixo/payload de versão antiga.
+    try:
+        log = _sanitize_weekly_checkup_log(json.loads(r["weekly_checkup_log"])) \
+            if r["weekly_checkup_log"] else []
+    except (ValueError, TypeError):
+        log = []
     return {
-        "pos_venda_url":   r["pos_venda_url"],
-        "pos_venda_mode":  r["pos_venda_mode"],
-        "extra_url":       r["extra_url"],
-        "extra_mode":      r["extra_mode"],
-        "weekly_checkups": r["weekly_checkups"],
-        "pos_venda_date":  r["pos_venda_date"].isoformat() if r["pos_venda_date"] else None,
-        "extra_date":      r["extra_date"].isoformat() if r["extra_date"] else None,
-        "updated_at":      r["updated_at"].isoformat() if r["updated_at"] else None,
-        "updated_by":      r["updated_by"],
+        "pos_venda_url":      r["pos_venda_url"],
+        "pos_venda_mode":     r["pos_venda_mode"],
+        "extra_url":          r["extra_url"],
+        "extra_mode":         r["extra_mode"],
+        "weekly_checkups":    r["weekly_checkups"],
+        "weekly_checkup_log": log,
+        "pos_venda_date":     r["pos_venda_date"].isoformat() if r["pos_venda_date"] else None,
+        "extra_date":         r["extra_date"].isoformat() if r["extra_date"] else None,
+        "updated_at":         r["updated_at"].isoformat() if r["updated_at"] else None,
+        "updated_by":         r["updated_by"],
     }
 
 
@@ -5464,6 +5583,12 @@ def query_all_campaign_elements() -> dict:
         UNION ALL
         SELECT short_token, 'closure', 'checkups' FROM `{_closure_details_table_id()}`
         WHERE weekly_checkups IS NOT NULL
+        UNION ALL
+        -- Contagem de check-ups enviados — alimenta o chip "check-ups N/M" do
+        -- card (progresso ao vivo). `item` carrega o número como STRING.
+        SELECT short_token, 'checkup_count', CAST(weekly_checkups AS STRING)
+        FROM `{_closure_details_table_id()}`
+        WHERE weekly_checkups IS NOT NULL
     """
     sql_negotiated = f"""
         SELECT DISTINCT short_token, 'negotiated' AS kind, 'survey' AS item
@@ -5497,7 +5622,14 @@ def query_all_campaign_elements() -> dict:
     for sql in (sql_assets, sql_negotiated):
         for row in bq.query(sql).result():
             bucket = out.setdefault(row["short_token"], {"assets": [], "negotiated": [], "closure": [], "neg_features": []})
-            key = {"asset": "assets", "negotiated": "negotiated", "closure": "closure", "negfeat": "neg_features"}[row["kind"]]
+            kind = row["kind"]
+            if kind == "checkup_count":
+                try:
+                    bucket["checkup_count"] = int(row["item"])
+                except (TypeError, ValueError):
+                    pass
+                continue
+            key = {"asset": "assets", "negotiated": "negotiated", "closure": "closure", "negfeat": "neg_features"}[kind]
             if row["item"] not in bucket[key]:
                 bucket[key].append(row["item"])
     return out
@@ -8691,6 +8823,12 @@ def query_campaigns_list():
             closure_items = info.get("closure") or []
             if closure_items:
                 entry["fechamento"] = closure_items
+            # Contagem de check-ups enviados — alimenta o chip "check-ups N/M"
+            # do card (progresso ao vivo). O total de semanas é derivado das
+            # datas no frontend. Admin-only (mesma régua do fechamento).
+            cc = info.get("checkup_count")
+            if cc is not None:
+                entry["weekly_checkups"] = cc
             expected = {"loom"} | (set(info.get("negotiated") or []) & {"survey", "pdooh", "rmnd"})
             missing = sorted(expected - set(info.get("assets") or []))
             if missing:
