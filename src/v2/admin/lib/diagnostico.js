@@ -238,6 +238,7 @@ export function deriveMediaMetrics({
   impressions,       // display_impressions OU video_impressions (denom. da viewability)
   lastDayDelivered,  // display_yesterday_viewable OU video_yesterday_completions (D-1)
   last7dDelivered,   // display_last7d_viewable OU video_last7d_completions (soma D-7..D-1)
+  negotiatedTotal,   // display_negotiated OU video_negotiated — Σ contratado+bônus (fonte de verdade do backend)
 }) {
   // Sem mídia? retorna sentinel "vazio".
   if (pacing == null && !delivered && !expectedToDate) return null;
@@ -262,10 +263,22 @@ export function deriveMediaMetrics({
 
   const elapsedRatio = elapsedDays / totalDays;
 
-  // Contrato total — reconstruído a partir do expected_to_date (que é
-  // pro-rata calendar). Fallback: usa pacing/delivered se expected ausente.
+  // Contrato total. Preferência ABSOLUTA pelo negociado real emitido pelo
+  // backend (Σ contratado+bônus por frente) — é a fonte de verdade e não
+  // sofre da reconstrução frágil abaixo.
+  //
+  // A reconstrução `expectedToDate / elapsedRatio` (fallback p/ backend antigo)
+  // INFLAVA o negociado no último dia do voo: o backend calcula expected com
+  // `today >= end` (no fim, expected = negociado cheio), mas aqui elapsedRatio
+  // usa `today > end` estrito → ratio < 1 → negociado superestimado por
+  // total/(total-1). Resultado: projeção rebaixada e Under falso em campanhas
+  // que estavam no alvo (sintoma reportado em Itaú/Mondelez/Cielo, todas no
+  // último dia). Também resolve o multi-frente com starts escalonados, onde a
+  // soma de expected por frente não é reconstruível por um elapsedRatio único.
   let negotiated = null;
-  if (expectedToDate && expectedToDate > 0) {
+  if (negotiatedTotal != null && negotiatedTotal > 0) {
+    negotiated = negotiatedTotal;
+  } else if (expectedToDate && expectedToDate > 0) {
     negotiated = expectedToDate / elapsedRatio;
   } else if (pacing && delivered && pacing > 0) {
     // pacing = delivered / expected → expected = delivered / (pacing/100)
@@ -472,8 +485,24 @@ function computeFrontImbalance(fronts) {
   const worst  = present.reduce((a, b) => (b.pacing < a.pacing ? b : a));
   const status = classifyStatus(worst.pacing);
   if (!status) return null;
+  // Tolerância pra NÃO rebaixar a Under uma frente que está praticamente no
+  // alvo. O pacing per-frente é uma razão pontual com cliff RÍGIDO em 100% —
+  // uma frente em 99,8% (ex.: OOH no último dia, ruído de arredondamento /
+  // fechamento) disparava classifyStatus = Under e arrastava o combinado
+  // saudável (108%) pra Under falso (sintoma reportado em Cielo). Só
+  // rebaixamos pra Under quando a frente está MATERIALMENTE atrás — abaixo de
+  // IMBALANCE_UNDER_FLOOR. Alinhado com a régua "crítico < 90%" de clients.py:
+  // frente em 90–100% é "atenção", não subentrega que justifique alarme
+  // campaign-level. Preserva o sinal real (ex.: OOH vendido não iniciado, 0%).
+  // Imbalance pra Over/Super Over (frente muito acima) segue intacto.
+  if (status === STATUS.UNDER && worst.pacing >= IMBALANCE_UNDER_FLOOR) return null;
   return { worstLabel: worst.label, worstPacing: worst.pacing, status };
 }
+
+// Piso de pacing abaixo do qual uma frente atrasada rebaixa o status combinado
+// pra Under. Acima disso (90–100%) a frente é tratada como "no alvo com ruído"
+// e não dispara o imbalance — evita Under falso por arredondamento de fim de voo.
+const IMBALANCE_UNDER_FLOOR = 90;
 
 // ────────────────────────────────────────────────────────────────────────
 // Filtro principal: monta linhas de Display + Video pras tabelas
@@ -531,6 +560,7 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
       impressions:      c.d_admin_impressions,
       lastDayDelivered: c.display_yesterday_viewable,
       last7dDelivered:  c.display_last7d_viewable,
+      negotiatedTotal:  c.display_negotiated,
     });
     if (displayMetrics && displayMetrics.status) {
       const displayFin = computeFinancials(c, "display");
@@ -589,6 +619,7 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
       impressions:      c.v_admin_impressions,
       lastDayDelivered: c.video_yesterday_completions,
       last7dDelivered:  c.video_last7d_completions,
+      negotiatedTotal:  c.video_negotiated,
     });
     if (videoMetrics && videoMetrics.status) {
       const videoFin = computeFinancials(c, "video");
