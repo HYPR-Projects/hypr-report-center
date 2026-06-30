@@ -8612,12 +8612,29 @@ def query_campaigns_list():
         if d_clicks          > 0: entry["display_clicks"]                 = int(d_clicks)
         if d_vi              > 0: entry["display_viewable_impressions"]   = int(d_vi)
         if d_expected and d_expected > 0: entry["display_expected_impressions"] = int(d_expected)
+        # Negociado REAL por mídia = Σ (contratado + bônus) das frentes presentes.
+        # O diagnóstico (front) usa ISSO direto como denominador da projeção em
+        # vez de reconstruir negotiated via expected_to_date / elapsed_ratio.
+        #
+        # Por que: a reconstrução do front quebrava no ÚLTIMO DIA. O backend usa
+        # `today >= end` em pacing_expected_to_date → no fim, expected = negociado
+        # CHEIO. Mas o front reconstruía `negotiated = expected / (elapsed/total)`
+        # com `today > end` (estrito) → elapsed = total-1 → ratio < 1 → negociado
+        # INFLADO por total/(total-1). Numa campanha de 19 dias isso é +5,6%,
+        # suficiente pra rebaixar uma projeção de 105% pra 99,8% e marcar Under
+        # falso (ex.: Itaú/Mondelez no último dia do voo). Também corrige o caso
+        # multi-frente com starts escalonados (a soma de expected por frente não
+        # é reconstruível por um único elapsed_ratio agregado).
+        d_negotiated = (d_o2o_neg + d_ooh_neg + d_groundflow_neg) or None
+        if d_negotiated and d_negotiated > 0: entry["display_negotiated"] = int(d_negotiated)
         # VTR usa viewable/viewable (não total), ambos CR: v_comp / v_vi.
         if v_vi              > 0: entry["video_impressions"]               = int(v_vi)
         if v_clicks          > 0: entry["video_clicks"]                    = int(v_clicks)
         if v_vi              > 0: entry["video_viewable_impressions"]     = int(v_vi)
         if v_comp            > 0: entry["video_viewable_completions"]     = int(v_comp)
         if v_expected and v_expected > 0: entry["video_expected_completions"]  = int(v_expected)
+        v_negotiated = (v_o2o_neg + v_ooh_neg + v_groundflow_neg) or None
+        if v_negotiated and v_negotiated > 0: entry["video_negotiated"] = int(v_negotiated)
 
         # Entrega de ontem (D-1, BRT) por mídia — alimenta a aba Diagnóstico
         # do menu admin. Quando o rollup das 6h ainda não rodou OU a campanha
