@@ -14,6 +14,7 @@ import BarChart from "../components/BarChart";
 import KpiCard from "../components/KpiCard";
 import DateRangeFilter from "../components/DateRangeFilter";
 import PdoohMap from "./PdoohMap";
+import PdoohSiteTable from "./PdoohSiteTable";
 
 const PdoohDashboard = ({ data, onClear, isDark = true }) => {
   const [mapMetric, setMapMetric] = useState("impressions");
@@ -237,6 +238,9 @@ const PdoohDashboard = ({ data, onClear, isDark = true }) => {
           </table>
         </div>
       </div>
+
+      {/* Performance por Endereço (SITE) */}
+      <PdoohSiteTable rows={rows} theme={theme}/>
       </>)}
     </div>
   );
