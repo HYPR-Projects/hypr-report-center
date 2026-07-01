@@ -256,3 +256,44 @@ export function daysBetween(startStr, endStr) {
   if (!s || !e) return 0;
   return differenceInCalendarDays(e, s) + 1;
 }
+
+/**
+ * Recorta um range aos limites da janela [start, end]. Devolve null quando
+ * não há interseção nenhuma.
+ *
+ * Usado ao trocar de membro num report agrupado: um range escolhido num mês
+ * não deve vazar pro mês destino. Sem interseção → o caller cai pra "Todo o
+ * período" em vez de manter um filtro fora da janela (que zera o detail e
+ * deixa os KPIs de entrega num fallback enganoso).
+ */
+export function clampRangeToWindow(range, startStr, endStr) {
+  if (!range?.from || !range?.to) return null;
+  const s = parseYmd(startStr);
+  const e = parseYmd(endStr);
+  if (!s || !e) return range;
+  const from = isAfter(range.from, s) ? range.from : s;
+  const to   = isBefore(range.to, e) ? range.to : e;
+  if (isAfter(from, to)) return null;
+  return { from, to };
+}
+
+/**
+ * Dias inclusivos de INTERSEÇÃO entre um range e a janela [start, end].
+ * Zero quando não há overlap.
+ *
+ * Diferente de `daysInRange` (tamanho bruto do range): usado no cálculo de
+ * budget/pacing proporcional, onde só os dias do filtro que realmente caem
+ * dentro da janela da campanha/membro contam. Sem esse clamp, um filtro fora
+ * da janela produz proporção absurda (ex: 30 dias de filtro / 18 dias de
+ * campanha = 166% → budget pro-rata maior que o contratado).
+ */
+export function rangeOverlapDays(range, startStr, endStr) {
+  if (!range?.from || !range?.to) return 0;
+  const s = parseYmd(startStr);
+  const e = parseYmd(endStr);
+  if (!s || !e) return daysInRange(range);
+  const from = isAfter(range.from, s) ? range.from : s;
+  const to   = isBefore(range.to, e) ? range.to : e;
+  if (isAfter(from, to)) return 0;
+  return differenceInCalendarDays(to, from) + 1;
+}
