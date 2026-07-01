@@ -21,8 +21,8 @@
 import { enrichDetailCosts, distributeLargestRemainder } from "./enrichDetail";
 import {
   inRange,
-  daysInRange,
   daysBetween,
+  rangeOverlapDays,
   formatRangeShort,
   parseYmd,
   ymd,
@@ -676,15 +676,45 @@ export function computeAggregates(data, mainRange, mainTactic = "ALL", creativeF
   // membro com o mesmo filtro. Aqui calculamos cost por-membro (cada um
   // proporciona contra seu próprio totals) e somamos. Sem merge_meta ou
   // sem filtro, segue o caminho single-token original.
+  // Drill-down single-member × visão agregada.
+  //
+  // O backend anexa `merge_meta.members` (cada um com seu `totals`) em AMBOS
+  // os payloads de um report agrupado — no drill-down single-member isso
+  // serve SÓ pros pills do switcher de mês. A distinção real está na janela:
+  // a visão agregada tem `campaign.window` = UNIÃO de todos os membros; o
+  // drill-down tem `campaign.window` == a janela de UM membro específico.
+  //
+  // Sem distinguir, um drill-down COM filtro de data ativo caía no caminho
+  // "merged" e somava TODOS os meses via recomputeTotalsByMember. Ao trocar
+  // de mês num report agrupado (ex: filtro em Junho persistindo ao abrir o
+  // membro de Maio), o detail filtrado ficava vazio e os KPIs de entrega
+  // caíam num fallback que exibia o blend de todos os meses — números
+  // "congelados"/repetidos entre meses (bug reportado).
+  // Um drill-down single-member tem campaign.short_token == o token do
+  // membro E a mesma janela. A visão agregada tem short_token = active_token
+  // mas janela = união (≠ janela de qualquer membro). Exigir os dois casa o
+  // single-member com precisão e é robusto mesmo no caso patológico de dois
+  // membros com janelas idênticas (só o short_token os distingue).
+  const mergeMembers = data.merge_meta?.members;
+  const campToken = data.campaign?.short_token;
+  const isSingleMemberView =
+    Array.isArray(mergeMembers) &&
+    mergeMembers.some(
+      (m) =>
+        m.short_token === campToken &&
+        m.start_date === data.campaign?.start_date &&
+        m.end_date === data.campaign?.end_date,
+    );
   const isMergedAgg = isFiltered
-    && Array.isArray(data.merge_meta?.members)
-    && data.merge_meta.members.length > 1
-    && data.merge_meta.members.every(m => Array.isArray(m.totals));
+    && Array.isArray(mergeMembers)
+    && mergeMembers.length > 1
+    && mergeMembers.every(m => Array.isArray(m.totals))
+    && !isSingleMemberView;
 
   let totals = totalsRaw;
   if (isFiltered) {
     totals = isMergedAgg
-      ? recomputeTotalsByMember(data.merge_meta.members, detail0, totalsRaw, mainRange)
+      ? recomputeTotalsByMember(mergeMembers, detail0, totalsRaw, mainRange)
       : recomputeTotalsProportional(detail0, totalsRaw, data.campaign, mainRange);
   }
 
@@ -919,7 +949,15 @@ export function computeAggregates(data, mainRange, mainTactic = "ALL", creativeF
   const camp = data.campaign;
   const budgetTotal = camp?.budget_contracted || 0;
   const campaignDays = daysBetween(camp?.start_date, camp?.end_date) || 1;
-  const filterDays = isFiltered ? daysInRange(mainRange) : campaignDays;
+  // filterDays = dias do filtro que REALMENTE caem dentro da janela da
+  // campanha/membro (interseção), não o tamanho bruto do range. Sem o clamp,
+  // um filtro fora da janela — comum ao trocar de mês num report agrupado,
+  // ex: filtro de Junho aberto no membro de Abril — gerava pro-rata absurdo:
+  // 200k × (30 dias de Junho / 18 dias de Abril) = R$333k sobre um
+  // contratado de R$200k. Com o clamp, sem overlap → filterDays 0 → R$0.
+  const filterDays = isFiltered
+    ? rangeOverlapDays(mainRange, camp?.start_date, camp?.end_date)
+    : campaignDays;
   const budgetProRata = isFiltered
     ? Math.round(budgetTotal * (filterDays / campaignDays) * 100) / 100
     : budgetTotal;

@@ -38,6 +38,7 @@ import {
   readPresetFromUrl,
   writePresetToUrl,
   buildPresets,
+  clampRangeToWindow,
 } from "../../shared/dateFilter";
 
 import { Skeleton } from "../../ui/Skeleton";
@@ -440,41 +441,72 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  // Quando a view muda e o usuário tinha um preset escolhido, recalcula
-  // o range no contexto do novo membro/campanha. Ex: "Mês passado" no
-  // agregado vira "Mês passado" no Abril (recomputado contra os limites
-  // do Abril) — sem isso, o range numérico antigo poderia bater com
-  // outro preset.
+  // Reconcilia o range de data quando a view muda (troca de membro num
+  // report agrupado) ou a campanha carrega. Dois casos:
   //
-  // Se o preset não existe mais no novo contexto (ex: "Este mês" num
-  // membro que terminou no mês passado), cai pra "Todo o período" em vez
-  // de manter um range incoerente. Custom (presetId=null) e "all" não
-  // disparam recompute.
+  //  A) Preset ativo ("Mês passado" etc.): recalcula o range do preset no
+  //     contexto do novo membro. Se o preset não existe mais nesse contexto
+  //     (ex: "Este mês" num membro que terminou no mês passado), cai pra
+  //     "Todo o período".
+  //  B) Range custom (presetId null/"all"): re-clampa aos limites do novo
+  //     membro; sem interseção, cai pra "Todo o período". Isso impede que um
+  //     range de outro mês vaze pro mês destino (causa do bug de números
+  //     "congelados").
   useEffect(() => {
-    if (!data || !mainPresetId || mainPresetId === "all") return;
+    if (!data) return;
     const camp = data.campaign;
     if (!camp?.start_date || !camp?.end_date) return;
     // Presets como "Toda a campanha" devem respeitar early_end_date quando
     // admin marcou encerramento antecipado — sem isso o usuário escolheria
     // datas depois do fim real (sem dados, visual confuso).
     const effEnd = camp.early_end_date || camp.end_date;
-    const presets = buildPresets(new Date(), camp.start_date, effEnd);
-    const p = presets.find(x => x.id === mainPresetId);
-    if (p && p.range) {
-      const newRange = p.range;
-      const cur = mainRange;
-      const sameRange = cur && cur.from?.getTime() === newRange.from.getTime()
-        && cur.to?.getTime() === newRange.to.getTime();
-      if (!sameRange) {
-        setMainRangeState(newRange);
-        writeRangeToUrl(newRange);
+
+    // Caso A — preset ativo: recomputa o range do preset no contexto do
+    // novo membro/campanha. Ex: "Mês passado" no agregado vira "Mês passado"
+    // recomputado contra os limites do Abril.
+    if (mainPresetId && mainPresetId !== "all") {
+      const presets = buildPresets(new Date(), camp.start_date, effEnd);
+      const p = presets.find(x => x.id === mainPresetId);
+      if (p && p.range) {
+        const newRange = p.range;
+        const cur = mainRange;
+        const sameRange = cur && cur.from?.getTime() === newRange.from.getTime()
+          && cur.to?.getTime() === newRange.to.getTime();
+        if (!sameRange) {
+          setMainRangeState(newRange);
+          writeRangeToUrl(newRange);
+        }
+      } else {
+        // Preset não aplica neste contexto — fallback "Todo o período".
+        setMainRangeState(null);
+        setMainPresetIdState("all");
+        writeRangeToUrl(null);
+        writePresetToUrl("all");
       }
-    } else {
-      // Preset não aplica neste contexto — fallback "Todo o período".
-      setMainRangeState(null);
-      setMainPresetIdState("all");
-      writeRangeToUrl(null);
-      writePresetToUrl("all");
+      return;
+    }
+
+    // Caso B — range custom (sem preset): re-clampa aos limites do novo
+    // membro. Ao trocar de mês num report agrupado, um range escolhido em
+    // outro mês persistia e não intersectava a janela do membro destino:
+    // o detail filtrado ficava vazio e os KPIs de entrega caíam num
+    // fallback que somava todos os meses (números "congelados"/repetidos —
+    // bug reportado). Sem interseção, cai pra "Todo o período" (mês inteiro
+    // do membro); com interseção parcial, recorta pro overlap.
+    if (mainRange) {
+      const clamped = clampRangeToWindow(mainRange, camp.start_date, effEnd);
+      if (!clamped) {
+        setMainRangeState(null);
+        writeRangeToUrl(null);
+      } else {
+        const changed =
+          clamped.from.getTime() !== mainRange.from?.getTime() ||
+          clamped.to.getTime()   !== mainRange.to?.getTime();
+        if (changed) {
+          setMainRangeState(clamped);
+          writeRangeToUrl(clamped);
+        }
+      }
     }
     // Dependemos só dos limites da campanha + presetId. mainRange muda
     // como efeito da própria recomputação — incluí-lo aqui causaria loop.
