@@ -56,6 +56,7 @@ import {
   PmpLineRow, PmpLineRowHeader, PmpLineGroupCard,
 } from "../components/PmpComponents";
 import { GroupLinesModal } from "../components/GroupLinesModal";
+import { buildCompplanRows, applyCompplanFormats } from "../lib/compplanExport";
 import { PmpFreshnessIndicator } from "../components/PmpFreshnessIndicator";
 import { isFeatureAdmin } from "../../../shared/auth";
 
@@ -654,6 +655,12 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
+    // Aba Compplan primeiro — modelo da planilha HYPR_PMP_Deals_All-Time
+    // (1 row por deal, all-time, independente da aba/filtros ativos).
+    const compRows = buildCompplanRows(lines);
+    const wsComp = XLSX.utils.json_to_sheet(compRows);
+    applyCompplanFormats(XLSX, wsComp, compRows.length);
+    XLSX.utils.book_append_sheet(wb, wsComp, "Compplan");
     XLSX.utils.book_append_sheet(wb, ws, "PMP Lines");
     XLSX.writeFile(wb, `pmp-lines-${layout}-${new Date().toISOString().slice(0,10)}.xlsx`);
   };
