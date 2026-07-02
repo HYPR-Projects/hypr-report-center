@@ -94,35 +94,73 @@ PERCENT_COLS  = [10, 11, 12]
 INT_COLS      = [6]
 
 # ─── Colunas calculadas como FÓRMULA na sheet ────────────────────────────────
-# Pedido do João: Client PI Net e Compp precisam ficar auditáveis — célula
+# Pedido do João: as colunas derivadas precisam ficar auditáveis — célula
 # com a conta visível, não número pronto. O write principal (RAW) já deixa
-# os valores estáticos corretos; um overlay reescreve F e P como fórmulas
-# equivalentes (mesmos números após recálculo). Se o overlay falhar, os
-# valores estáticos permanecem — por isso é best-effort.
+# os valores estáticos corretos; um overlay reescreve as colunas abaixo com
+# fórmulas equivalentes (mesmos números após recálculo). Se o overlay
+# falhar, os valores estáticos permanecem — por isso é best-effort.
+#
+# IMPORTANTE (pedido explícito dele): o corte de 99% do Compp é sobre
+# Curator Revenue ÷ Client PI NEGOTIATION (I/E) — o PI líquido (F) entra
+# só como base do 0,75%. A fórmula referencia I/E diretamente (não a
+# coluna M) pra conta ficar legível na própria célula.
 #
 # Letras das colunas (ordem de COMPPLAN_COLUMNS):
-#   E = Client PI Negotiation · F = Client PI Net · I = Curator Revenue
-#   M = % Delivery Rev. · P = Compp
-PI_COL      = "E"
-PI_NET_COL  = "F"
-REV_COL     = "I"
-PCT_REV_COL = "M"
-COMPP_COL   = "P"
+#   E = Client PI Negotiation · F = Client PI Net · G = Impressions
+#   I = Curator Revenue · J = Curator Margin · K = Margin %
+#   L = % Delivery Margin · M = % Delivery Rev. · N = eCPM · P = Compp
+PI_COL     = "E"
+PI_NET_COL = "F"
+IMPS_COL   = "G"
+REV_COL    = "I"
+MARGIN_COL = "J"
+COMPP_COL  = "P"
 
 
 def pi_net_formula(n: int) -> str:
-    """Fórmula do PI líquido na linha `n` (1-based da sheet)."""
+    """PI líquido = PI negociado × fator."""
     return f'=IF({PI_COL}{n}="","",ROUND({PI_COL}{n}*{PI_NET_FACTOR},2))'
 
 
+def margin_pct_formula(n: int) -> str:
+    """Margin % = margem ÷ revenue."""
+    return f'=IF({REV_COL}{n}<=0,"",{MARGIN_COL}{n}/{REV_COL}{n})'
+
+
+def pct_margin_formula(n: int) -> str:
+    """% Delivery Margin = margem ÷ PI negociado."""
+    return f'=IF({PI_COL}{n}="","",{MARGIN_COL}{n}/{PI_COL}{n})'
+
+
+def pct_rev_formula(n: int) -> str:
+    """% Delivery Rev. = revenue ÷ PI negociado."""
+    return f'=IF({PI_COL}{n}="","",{REV_COL}{n}/{PI_COL}{n})'
+
+
+def ecpm_formula(n: int) -> str:
+    """eCPM = revenue × 1000 ÷ impressões."""
+    return f'=IF({IMPS_COL}{n}<=0,"",ROUND({REV_COL}{n}*1000/{IMPS_COL}{n},2))'
+
+
 def compp_formula(n: int) -> str:
-    """Fórmula do Compp na linha `n`: 0,75% do PI líquido SE %Delivery Rev
-    ≥ 99%; abaixo disso (ou sem PI/sem delivery) fica em branco."""
+    """Compp: 0,75% do PI líquido SE revenue ÷ PI negociado (I/E) ≥ 99%;
+    abaixo disso (ou sem PI/sem delivery) fica em branco."""
     return (
-        f'=IF(OR({PI_NET_COL}{n}="",{REV_COL}{n}<=0,'
-        f'{PCT_REV_COL}{n}<{COMPP_DELIVERY_THRESHOLD}),"",'
-        f'ROUND({PI_NET_COL}{n}*{COMPP_FULL_RATE},2))'
+        f'=IF(OR({PI_COL}{n}="",{REV_COL}{n}<=0),"",'
+        f'IF({REV_COL}{n}/{PI_COL}{n}>={COMPP_DELIVERY_THRESHOLD},'
+        f'ROUND({PI_NET_COL}{n}*{COMPP_FULL_RATE},2),""))'
     )
+
+
+# Coluna → gerador de fórmula. Ordem irrelevante (ranges independentes).
+FORMULA_COLUMNS = {
+    "F": pi_net_formula,      # Client PI Net
+    "K": margin_pct_formula,  # Margin %
+    "L": pct_margin_formula,  # % Delivery Margin
+    "M": pct_rev_formula,     # % Delivery Rev.
+    "N": ecpm_formula,        # eCPM
+    "P": compp_formula,       # Compp
+}
 
 README_TEXT = [
     ["HYPR — Compplan PMP Deals (All-Time)"],
@@ -310,7 +348,7 @@ def fetch_lines() -> List[Dict]:
 
 
 def _write_formula_columns(sheets_svc, spreadsheet_id: str, n_data_rows: int) -> None:
-    """Sobrepõe as colunas F (Client PI Net) e P (Compp) com fórmulas.
+    """Sobrepõe as colunas derivadas (FORMULA_COLUMNS) com fórmulas.
 
     USER_ENTERED faz o Sheets parsear a string como fórmula — mas o parse
     depende do LOCALE do spreadsheet (pt_BR usa ';' como separador e ','
@@ -337,13 +375,10 @@ def _write_formula_columns(sheets_svc, spreadsheet_id: str, n_data_rows: int) ->
             "valueInputOption": "USER_ENTERED",
             "data": [
                 {
-                    "range": f"'{TAB_NAME}'!{PI_NET_COL}2:{PI_NET_COL}{end}",
-                    "values": [[pi_net_formula(i + 2)] for i in range(n_data_rows)],
-                },
-                {
-                    "range": f"'{TAB_NAME}'!{COMPP_COL}2:{COMPP_COL}{end}",
-                    "values": [[compp_formula(i + 2)] for i in range(n_data_rows)],
-                },
+                    "range": f"'{TAB_NAME}'!{col}2:{col}{end}",
+                    "values": [[fn(i + 2)] for i in range(n_data_rows)],
+                }
+                for col, fn in FORMULA_COLUMNS.items()
             ],
         },
     ).execute(num_retries=_SHEETS_NUM_RETRIES)

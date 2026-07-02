@@ -141,14 +141,21 @@ def test_coercao_numeric_decimal_do_bq():
     assert row["Curator Revenue"] == 99500.5
 
 
-def test_formulas_auditaveis_f_e_p():
+def test_formulas_auditaveis():
     # Client PI Net referencia o PI da própria linha com o fator
     assert cs.pi_net_formula(13) == '=IF(E13="","",ROUND(E13*0.8347,2))'
-    # Compp: só paga 0,75% com %Delivery Rev ≥ 0.99; abaixo (ou sem PI/
-    # delivery) fica em branco
+    # Compp: o corte de 99% é revenue ÷ PI NEGOCIADO (I/E), explícito na
+    # célula — não referencia a coluna M. Base do 0,75% é o PI líquido (F).
     assert cs.compp_formula(13) == (
-        '=IF(OR(F13="",I13<=0,M13<0.99),"",ROUND(F13*0.0075,2))'
+        '=IF(OR(E13="",I13<=0),"",IF(I13/E13>=0.99,ROUND(F13*0.0075,2),""))'
     )
+    # Percentuais e eCPM também são fórmulas (auditáveis na célula)
+    assert cs.pct_rev_formula(13)    == '=IF(E13="","",I13/E13)'
+    assert cs.pct_margin_formula(13) == '=IF(E13="","",J13/E13)'
+    assert cs.margin_pct_formula(13) == '=IF(I13<=0,"",J13/I13)'
+    assert cs.ecpm_formula(13)       == '=IF(G13<=0,"",ROUND(I13*1000/G13,2))'
+    # Mapa coluna→fórmula cobre exatamente as derivadas
+    assert set(cs.FORMULA_COLUMNS) == {"F", "K", "L", "M", "N", "P"}
 
 
 def test_payload_header_e_vazios():
