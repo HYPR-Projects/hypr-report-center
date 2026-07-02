@@ -44,9 +44,10 @@ import {
   LIVE_STATUSES, HISTORY_STATUSES, effectiveDeliveryMeta,
   bidTypeLabel,
   formatBRL, formatBRLCompact, formatInt, formatIntCompact, formatRatioPct,
-  comparePmpLines, formatLastDelivery,
+  comparePmpLines, compareSortValues, formatLastDelivery,
   pctEntrega, groupPctEntrega,
   pctEntregaRev, groupPctEntregaRev,
+  resolveGroupPi,
   effectiveStatus, isPmpEditor,
 } from "../lib/pmpFormat";
 import {
@@ -424,16 +425,25 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
 
   const allFiltered = useMemo(() => applyFilters([...partitions.live, ...partitions.other]), [partitions, search, customer, bidType, status]);
 
+  // Dataset da aba Por cliente: lifetime SEM arquivadas (testes/seeds só no
+  // Histórico) e SEM o filtro de período do Histórico (que sobrevive no
+  // allLinesFiltered mesmo fora da aba). É o que os accordions agrupam —
+  // KPIs e badge da aba leem este MESMO conjunto pra nunca divergirem do
+  // que está exposto abaixo.
+  const clientLines = useMemo(
+    () => applyFilters(lines.filter(l => !l.is_archived)),
+    [lines, search, customer, bidType, status],
+  );
+
   // Conjunto exibido na aba atual — KPIs e contagens refletem isso.
   // Por cliente é uma view LIFETIME (mostra todas as lines do cliente,
-  // incluindo encerradas) — usa o mesmo dataset do Histórico pra que os
-  // big numbers no topo somem tudo que está exposto abaixo, não só ativas.
+  // incluindo encerradas).
   const visibleLines = useMemo(() => {
     if (layout === "live")     return liveFiltered;
     if (layout === "history")  return histLines;
-    if (layout === "client")   return allLinesFiltered;
+    if (layout === "client")   return clientLines;
     return allFiltered;
-  }, [layout, liveFiltered, histLines, allLinesFiltered, allFiltered]);
+  }, [layout, liveFiltered, histLines, clientLines, allFiltered]);
 
   // ── KPIs ──────────────────────────────────────────────────────────────────
   // Big numbers refletem o dataset visível na aba ativa (com filtros).
@@ -511,10 +521,12 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   // se você clicasse na aba agora. Histórico vira "lifetime" (tudo).
   const counts = useMemo(() => ({
     live:     liveFiltered.length,
-    client:   new Set(allFiltered.map(l => l.customer || "(sem)")).size,
+    // Mesmo dataset que a aba renderiza (byCustomer agrupa clientLines) —
+    // antes contava só clientes com lines ativas e divergia dos accordions.
+    client:   new Set(clientLines.map(l => l.customer || "(sem cliente)")).size,
     list:     allFiltered.length,
     history:  allLinesFiltered.length,
-  }), [liveFiltered, allFiltered, allLinesFiltered]);
+  }), [liveFiltered, clientLines, allFiltered, allLinesFiltered]);
 
   const customersAll = useMemo(() => {
     const s = new Set();
@@ -659,7 +671,15 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   const liveOrdered = useMemo(() => sortByLastDelivery(liveFiltered), [liveFiltered]);
   const allSorted   = useMemo(() => {
     const arr = [...allFiltered];
-    arr.sort((a, b) => comparePmpLines(a, b, sortBy, sortDir));
+    // % entrega: ordena pelo MESMO valor que a coluna exibe (helpers do
+    // front) — pct_a_receber_rev nem existe na line fora do caminho
+    // janelado, e os helpers garantem a mesma fórmula em qualquer overlay.
+    if (sortBy === "pct_a_receber" || sortBy === "pct_a_receber_rev") {
+      const getter = sortBy === "pct_a_receber" ? pctEntrega : pctEntregaRev;
+      arr.sort((a, b) => compareSortValues(getter(a), getter(b), sortDir));
+    } else {
+      arr.sort((a, b) => comparePmpLines(a, b, sortBy, sortDir));
+    }
     return arr;
   }, [allFiltered, sortBy, sortDir]);
 
@@ -669,11 +689,9 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   // contexto completo: "quanto a HYPR já faturou com esse cliente?".
   const byCustomer = useMemo(() => {
     const map = new Map();
-    for (const l of lines) {
-      if (l.is_archived) continue;  // testes/seeds arquivadas: só no Histórico
-      if (search || customer.length > 0 || bidType !== ALL || status.length > 0) {
-        if (!applyFilters([l]).length) continue;
-      }
+    // clientLines = lifetime sem arquivadas + filtros — mesmo conjunto dos
+    // KPIs e do badge da aba (contagem de clientes).
+    for (const l of clientLines) {
       const key = l.customer || "(sem cliente)";
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(l);
@@ -688,7 +706,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
       if (revA !== revB) return revB - revA;
       return ka.localeCompare(kb);
     });
-  }, [lines, search, customer, bidType, status]);
+  }, [clientLines]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -1033,16 +1051,6 @@ function ListView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLinkCl
   );
 }
 
-// Grupo compartilha 1 PI. No backend o `group_pi_brl` ainda não é exposto,
-// então resolvemos no frontend: pegamos o primeiro PI não-nulo entre os
-// membros (todos deveriam compartilhar o mesmo, por definição do agrupamento).
-function resolveGroupPi(members) {
-  for (const m of members) {
-    if (m.pi_brl != null && m.pi_brl > 0) return m.pi_brl;
-  }
-  return null;
-}
-
 // Mapa de campo per-line → campo agregado do grupo. Pro sort de grupos
 // pegar o valor "real" do grupo (PI compartilhado, revenue/margin/cost
 // somados) em vez do membro arbitrário no índice 0.
@@ -1051,13 +1059,17 @@ const GROUP_FIELD_MAP = {
   curator_revenue:      "group_curator_revenue",
   curator_margin:       "group_curator_margin",
   effective_margin_pct: "group_effective_margin_pct",
-  pct_a_receber:        "group_pct_a_receber",
-  pct_a_receber_rev:    "group_pct_a_receber_rev",
 };
 
 function itemSortValue(item, field) {
-  // % Entr Rev (revenue ÷ PI): computa na hora pra não depender do campo
-  // derivado existir na line (só é setado no caminho janelado).
+  // % entrega (Mgm e Rev): computa na hora com os MESMOS helpers que a
+  // coluna exibe — pct_a_receber_rev nem existe na line fora do caminho
+  // janelado, e os helpers garantem a mesma fórmula em qualquer overlay.
+  if (field === "pct_a_receber") {
+    if (item.kind === "single") return pctEntrega(item.line);
+    const groupPi = resolveGroupPi(item.members);
+    return groupPctEntrega(item.members[0], groupPi);
+  }
   if (field === "pct_a_receber_rev") {
     if (item.kind === "single") return pctEntregaRev(item.line);
     const groupPi = resolveGroupPi(item.members);
@@ -1070,8 +1082,10 @@ function itemSortValue(item, field) {
     // Grupo herda o MAIS RECENTE (menor hours) entre os membros.
     let min = Infinity;
     for (const m of members) {
-      const v = m.hours_since_last_delivery;
-      if (v != null && v < min) min = v;
+      const raw = m.hours_since_last_delivery;
+      if (raw == null || raw === "") continue;
+      const v = Number(raw);
+      if (Number.isFinite(v) && v < min) min = v;
     }
     return min === Infinity ? null : min;
   }
@@ -1093,22 +1107,7 @@ function itemSortValue(item, field) {
 function sortItems(items, field, dir) {
   if (!field) return items;
   const out = [...items];
-  out.sort((a, b) => {
-    const va = itemSortValue(a, field);
-    const vb = itemSortValue(b, field);
-    const aN = va == null || va === "";
-    const bN = vb == null || vb === "";
-    if (aN && bN) return 0;
-    if (aN) return 1;
-    if (bN) return -1;
-    if (typeof va === "number" && typeof vb === "number") {
-      return dir === "asc" ? va - vb : vb - va;
-    }
-    const sa = String(va).toLowerCase(), sb = String(vb).toLowerCase();
-    if (sa < sb) return dir === "asc" ? -1 : 1;
-    if (sa > sb) return dir === "asc" ? 1 : -1;
-    return 0;
-  });
+  out.sort((a, b) => compareSortValues(itemSortValue(a, field), itemSortValue(b, field), dir));
   return out;
 }
 

@@ -158,9 +158,20 @@ export function healthLabel(h) {
 // Régua de negócio: "% entrega" = margem HYPR (curator_margin) ÷ PI.
 // É o que efetivamente entra no caixa da HYPR comparado ao valor contratado.
 //
-// O campo `pct_a_receber` que vem do BQ ainda calcula `curator_revenue / pi`
-// até a próxima refresh do enriched table com a SQL nova — por isso usamos
-// estes helpers no frontend pra garantir consistência imediata.
+// A SQL do enriched (pmp_lines_enriched.sql) já calcula pct_a_receber como
+// margem÷PI, mas mantemos estes helpers como fonte de verdade no front:
+// cobrem o caminho janelado (Histórico com período) e garantem a mesma
+// fórmula em qualquer overlay local.
+
+/** PI compartilhado de um grupo: primeiro membro com pi_brl > 0 (nem todo
+ *  membro tem PI setado — só os com Command vinculado — então NÃO dá pra
+ *  ler cegamente members[0].pi_brl). */
+export function resolveGroupPi(members) {
+  for (const m of members || []) {
+    if (m.pi_brl != null && m.pi_brl > 0) return m.pi_brl;
+  }
+  return null;
+}
 export function pctEntrega(line) {
   if (!line) return null;
   const pi = line.pi_brl;
@@ -294,20 +305,39 @@ export function isNewLine(line, windowHours = 72) {
   return (Date.now() - created) < windowHours * 3600 * 1000;
 }
 
-/** Compara duas lines pelo campo escolhido. Nulls sempre no fim. */
-export function comparePmpLines(a, b, field, dir = "desc") {
-  const va = a?.[field], vb = b?.[field];
+// O backend serializa NUMERIC do BQ com json.dumps(default=str), então
+// campos monetários chegam como string ("353107.24") e comparação direta
+// vira lexicográfica ("800" > "353107"). Coage pra número quando a string
+// inteira é numérica; datas ("2026-06-01") e nomes viram NaN e seguem no
+// compare de string.
+function toSortNumber(v) {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/** Compara dois valores de sort. Nulls/vazios sempre no fim, em qualquer dir. */
+export function compareSortValues(va, vb, dir = "desc") {
   const aN = va == null || va === "", bN = vb == null || vb === "";
   if (aN && bN) return 0;
   if (aN) return 1;
   if (bN) return -1;
-  if (typeof va === "number" && typeof vb === "number") {
-    return dir === "asc" ? va - vb : vb - va;
+  const na = toSortNumber(va), nb = toSortNumber(vb);
+  if (na != null && nb != null) {
+    return dir === "asc" ? na - nb : nb - na;
   }
   const sa = String(va).toLowerCase(), sb = String(vb).toLowerCase();
   if (sa < sb) return dir === "asc" ? -1 : 1;
   if (sa > sb) return dir === "asc" ? 1 : -1;
   return 0;
+}
+
+/** Compara duas lines pelo campo escolhido. Nulls sempre no fim. */
+export function comparePmpLines(a, b, field, dir = "desc") {
+  return compareSortValues(a?.[field], b?.[field], dir);
 }
 
 /** Inicial do email pra avatar. */
