@@ -93,6 +93,37 @@ CURRENCY_COLS = [4, 5, 7, 8, 9, 13, 15]
 PERCENT_COLS  = [10, 11, 12]
 INT_COLS      = [6]
 
+# ─── Colunas calculadas como FÓRMULA na sheet ────────────────────────────────
+# Pedido do João: Client PI Net e Compp precisam ficar auditáveis — célula
+# com a conta visível, não número pronto. O write principal (RAW) já deixa
+# os valores estáticos corretos; um overlay reescreve F e P como fórmulas
+# equivalentes (mesmos números após recálculo). Se o overlay falhar, os
+# valores estáticos permanecem — por isso é best-effort.
+#
+# Letras das colunas (ordem de COMPPLAN_COLUMNS):
+#   E = Client PI Negotiation · F = Client PI Net · I = Curator Revenue
+#   M = % Delivery Rev. · P = Compp
+PI_COL      = "E"
+PI_NET_COL  = "F"
+REV_COL     = "I"
+PCT_REV_COL = "M"
+COMPP_COL   = "P"
+
+
+def pi_net_formula(n: int) -> str:
+    """Fórmula do PI líquido na linha `n` (1-based da sheet)."""
+    return f'=IF({PI_COL}{n}="","",ROUND({PI_COL}{n}*{PI_NET_FACTOR},2))'
+
+
+def compp_formula(n: int) -> str:
+    """Fórmula do Compp na linha `n`: 0,75% do PI líquido se %Delivery Rev
+    ≥ 99%, senão 0,25%; em branco sem PI ou sem delivery."""
+    return (
+        f'=IF(OR({PI_NET_COL}{n}="",{REV_COL}{n}<=0),"",'
+        f'ROUND({PI_NET_COL}{n}*IF({PCT_REV_COL}{n}>={COMPP_DELIVERY_THRESHOLD},'
+        f'{COMPP_FULL_RATE},{COMPP_PARTIAL_RATE}),2))'
+    )
+
 README_TEXT = [
     ["HYPR — Compplan PMP Deals (All-Time)"],
     [""],
@@ -279,6 +310,46 @@ def fetch_lines() -> List[Dict]:
     return out
 
 
+def _write_formula_columns(sheets_svc, spreadsheet_id: str, n_data_rows: int) -> None:
+    """Sobrepõe as colunas F (Client PI Net) e P (Compp) com fórmulas.
+
+    USER_ENTERED faz o Sheets parsear a string como fórmula — mas o parse
+    depende do LOCALE do spreadsheet (pt_BR usa ';' como separador e ','
+    decimal, o que quebraria '0.0075'). Normalizamos o locale pra en_US
+    antes — mesmo formato da planilha manual original do compplan
+    (números R$1,234.56), então zero mudança visual pro João.
+    """
+    if n_data_rows <= 0:
+        return
+    sheets_svc.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": [{
+            "updateSpreadsheetProperties": {
+                "properties": {"locale": "en_US"},
+                "fields": "locale",
+            }
+        }]},
+    ).execute(num_retries=_SHEETS_NUM_RETRIES)
+
+    end = n_data_rows + 1  # +1 pelo header (dados começam na linha 2)
+    sheets_svc.spreadsheets().values().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={
+            "valueInputOption": "USER_ENTERED",
+            "data": [
+                {
+                    "range": f"'{TAB_NAME}'!{PI_NET_COL}2:{PI_NET_COL}{end}",
+                    "values": [[pi_net_formula(i + 2)] for i in range(n_data_rows)],
+                },
+                {
+                    "range": f"'{TAB_NAME}'!{COMPP_COL}2:{COMPP_COL}{end}",
+                    "values": [[compp_formula(i + 2)] for i in range(n_data_rows)],
+                },
+            ],
+        },
+    ).execute(num_retries=_SHEETS_NUM_RETRIES)
+
+
 # ─── Criação da sheet ────────────────────────────────────────────────────────
 def _format_requests(tab_sheet_id: int) -> List[Dict]:
     """batchUpdate requests: header bold + frozen + numberFormat por coluna
@@ -394,6 +465,13 @@ def create_compplan_sheet(refresh_token: str, member_email: str) -> Dict:
         sheets_integration._try_delete_spreadsheet(spreadsheet_id, access_token)
         raise
 
+    # Overlay de fórmulas (F/P). Best-effort: os valores estáticos já
+    # escritos acima são idênticos — falha aqui não invalida a sheet.
+    try:
+        _write_formula_columns(sheets_svc, spreadsheet_id, len(payload) - 1)
+    except Exception as e:
+        logger.warning(f"[compplan create formulas] {e} (valores estáticos permanecem)")
+
     now = datetime.now(timezone.utc)
     sheets_integration._upsert_integration({
         "target_id":         COMPPLAN_TARGET_ID,
@@ -441,6 +519,14 @@ def sync_compplan_sheet() -> Dict:
         sheets_svc, integ["spreadsheet_id"], payload,
         COMPPLAN_TARGET_ID, TARGET_COMPPLAN, tab_name=TAB_NAME,
     )
+
+    # Overlay de fórmulas (F/P) por cima dos valores estáticos recém-escritos.
+    # Best-effort: se falhar, a sheet fica com os mesmos números (só sem a
+    # conta visível na célula) — não derruba o sync.
+    try:
+        _write_formula_columns(sheets_svc, integ["spreadsheet_id"], len(payload) - 1)
+    except Exception as e:
+        logger.warning(f"[compplan sync formulas] {e} (valores estáticos permanecem)")
 
     sheets_integration._update_status(
         COMPPLAN_TARGET_ID, target_type=TARGET_COMPPLAN,
