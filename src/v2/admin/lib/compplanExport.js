@@ -19,10 +19,11 @@ import { resolveGroupPi, effectiveStatus } from "./pmpFormat";
 // própria planilha de compplan (constante em todas as rows históricas).
 export const PI_NET_FACTOR = 0.8347;
 
-// Regra do comp: entrega total (% Delivery Rev ≥ 99%) paga 0,75% do PI
-// líquido; abaixo de 99% paga 0,25%.
+// Regra do comp: SÓ paga com entrega total (% Delivery Rev ≥ 99%) — 0,75%
+// do PI líquido. Abaixo de 99% não há comp (regra confirmada pelo João em
+// 2026-07-02; a faixa parcial de 0,25% deixou de existir).
+// Manter em sincronia com backend/compplan_sheet.py (planilha automática).
 export const COMPP_FULL_RATE = 0.0075;
-export const COMPP_PARTIAL_RATE = 0.0025;
 export const COMPP_DELIVERY_THRESHOLD = 0.99;
 
 const STATUS_EN = {
@@ -77,10 +78,10 @@ export function buildCompplanRows(lines) {
 
     const pctMargin = (pi && pi > 0) ? margin / pi : null;
     const pctRev    = (pi && pi > 0) ? revenue / pi : null;
-    // Comp só calculado quando já houve delivery — deal Not Started fica em
-    // branco (não dá pra saber a faixa ainda).
-    const compp = (piNet != null && revenue > 0)
-      ? round2(piNet * (pctRev >= COMPP_DELIVERY_THRESHOLD ? COMPP_FULL_RATE : COMPP_PARTIAL_RATE))
+    // Comp SÓ existe com entrega total (≥ 99% do PI em revenue). Sem PI,
+    // sem delivery ou abaixo do corte → em branco.
+    const compp = (piNet != null && revenue > 0 && pctRev >= COMPP_DELIVERY_THRESHOLD)
+      ? round2(piNet * COMPP_FULL_RATE)
       : null;
 
     rows.push({
