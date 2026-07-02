@@ -101,7 +101,7 @@ const COL_WIDTHS = [
   18, 8, 32, 10, 18, 6, 11, 11, 22, 22, 11, 12, 16, 18, 22, 14, 14, 14, 18, 10, 10, 10, 12, 14, 12, 14,
 ];
 
-function rowAoA(r, teamMap) {
+function rowAoA(r, teamMap, historical) {
   const isVideo = r.media === "video";
 
   // CTR — clicks / impressões totais. Faz sentido nas duas mídias (video
@@ -137,7 +137,10 @@ function rowAoA(r, teamMap) {
     STATUS_LABELS[r.status] || "",
     STATUS_LABELS[r.tech_status] || "",
     cell(r.totalEntreguePct,    NUM_PCT1),
-    cell(r.projetadaPct,        NUM_PCT1),
+    // Modo histórico: no lugar da projeção (que não existe em janela
+    // fechada) vai o contrato pro-rata da janela — r.negotiated das rows
+    // de buildDiagnosticoRowsForPeriod.
+    ...(historical ? [cell(r.negotiated, NUM_INT)] : [cell(r.projetadaPct, NUM_PCT1)]),
     cell(r.totalImpressions,    NUM_INT),
     cell(viewable,              NUM_INT),
     cell(completions,           NUM_INT),
@@ -175,23 +178,34 @@ function buildSheet(utils, headers, dataAoa, colWidths) {
 // ────────────────────────────────────────────────────────────────────────
 // API principal
 // ────────────────────────────────────────────────────────────────────────
-export async function downloadDiagnosticoXlsx({ displayRows, videoRows, teamMap }) {
+export async function downloadDiagnosticoXlsx({ displayRows, videoRows, teamMap, period = null }) {
   const { utils, writeFile } = await import("xlsx");
   const wb = utils.book_new();
+
+  // Modo histórico (period = {from, to}): rows vêm de
+  // buildDiagnosticoRowsForPeriod — sem projeção/D-1/mínima (colunas ficam
+  // vazias) e com "Contratado (Janela)" no lugar de "Projetada %".
+  const historical = Boolean(period?.from && period?.to);
+  const headers = historical
+    ? HEADERS.map((h) => (h === "Projetada %" ? "Contratado (Janela)" : h))
+    : HEADERS;
 
   // Display primeiro (operação mais comum), Video em sequência. A coluna
   // "Mídia" deixa a separação explícita no filter dropdown.
   const aoa = [
-    ...displayRows.map((r) => rowAoA(r, teamMap)),
-    ...videoRows.map((r) => rowAoA(r, teamMap)),
+    ...displayRows.map((r) => rowAoA(r, teamMap, historical)),
+    ...videoRows.map((r) => rowAoA(r, teamMap, historical)),
   ];
 
-  const sheet = buildSheet(utils, HEADERS, aoa, COL_WIDTHS);
+  const sheet = buildSheet(utils, headers, aoa, COL_WIDTHS);
   utils.book_append_sheet(wb, sheet, "Diagnóstico");
 
   const now = new Date();
   const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}-${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
-  const filename = `diagnostico-hypr-${ts}.xlsx`;
+  // Sufixo do período no filename — deixa claro que o arquivo é a foto de
+  // uma janela, não o diagnóstico corrente.
+  const periodSuffix = historical ? `-${period.from}_${period.to}` : "";
+  const filename = `diagnostico-hypr${periodSuffix}-${ts}.xlsx`;
 
   writeFile(wb, filename, { bookType: "xlsx" });
 }

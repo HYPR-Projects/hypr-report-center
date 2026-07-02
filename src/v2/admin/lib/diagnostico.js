@@ -662,6 +662,178 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// Modo histórico: linhas de diagnóstico pra uma janela [from, to] fechada
+// ────────────────────────────────────────────────────────────────────────
+/**
+ * Constrói displayRows/videoRows a partir do payload de
+ * listPerformersForPeriod (action=performers) — que já vem JANELADO do
+ * backend: entrega (CR), custo (unified, com e sem survey), expected
+ * pro-rata (contrato/dia × dias de overlap janela×contrato) e eCPM.
+ *
+ * Diferenças semânticas vs buildDiagnosticoRows (modo "Agora"):
+ *   • SEM filtro in_flight — o ponto é justamente enxergar meses passados.
+ *     O driver de inclusão é "teve entrega na janela" (feito no backend).
+ *   • Status classifica o REALIZADO da janela (entregue ÷ esperado pro-rata),
+ *     não uma projeção — janela fechada não tem futuro pra projetar.
+ *     Under < 100% aqui significa "entregou menos que o contrato previa
+ *     pra esse período", assumindo distribuição linear do contrato.
+ *   • Tech Cost = custo real DSP na janela ÷ PI cliente PRO-RATA
+ *     (d_client_budget × overlap/total_days) — orçamento ajustado à fração
+ *     do contrato que cabe na janela, senão campanha longa com janela curta
+ *     sairia com tech cost artificialmente baixo.
+ *   • Sem D-1 / 7d / Falta-Dia / projeção — campos ficam null e a tabela
+ *     esconde as colunas no modo histórico.
+ *   • Sem front imbalance (payload de performers não abre pacing por
+ *     frente O2O/OOH/GF).
+ *
+ * Campanha sem contrato sobrepondo a janela (expected ausente) não gera
+ * linha — sem denominador não há diagnóstico, igual ao modo Agora que
+ * exige status classificável.
+ */
+export function buildDiagnosticoRowsForPeriod(campaigns, { from, to }) {
+  const displayRows = [];
+  const videoRows   = [];
+
+  const wf = parseDateUTC(from);
+  const wt = parseDateUTC(to);
+  if (!wf || !wt || wf > wt) return { displayRows, videoRows };
+
+  // Dias do contrato que caem dentro da janela — denominador dos ritmos
+  // (Média/Dia, Ideal/Dia) e numerador do pro-rata de budget. Espelha o
+  // expected_in_window do backend (main.py) pra manter os ritmos coerentes
+  // com o expected que o pacing usou.
+  const overlapInfo = (startISO, endISO) => {
+    const s = parseDateUTC(startISO);
+    const e = parseDateUTC(endISO);
+    if (!s || !e) return null;
+    const totalDays = daysBetween(s, e) + 1;
+    if (totalDays <= 0) return null;
+    const ovS = s > wf ? s : wf;
+    const ovE = e < wt ? e : wt;
+    if (ovS > ovE) return null;
+    return { totalDays, overlapDays: daysBetween(ovS, ovE) + 1 };
+  };
+
+  const buildRow = (c, media) => {
+    const isDisplay = media === "display";
+    const delivered = isDisplay
+      ? (c.display_viewable_impressions ?? null)   // d_vi janelado (CR)
+      : (c.video_viewable_completions   ?? null);  // v100 janelado (CR)
+    const expected = isDisplay
+      ? (c.display_expected_impressions ?? null)
+      : (c.video_expected_completions   ?? null);
+    // Sem expected = contrato não sobrepõe a janela ou checklist vazio —
+    // não tem como diagnosticar.
+    if (!expected || expected <= 0) return null;
+
+    // Guard defensivo: voo sem overlap com a janela (ou datas inválidas)
+    // não gera linha, mesmo que o payload traga expected — sem overlap não
+    // há ritmo nem pro-rata calculável.
+    const ov = overlapInfo(c.start_date, c.end_date);
+    if (!ov) return null;
+
+    // Realizado da janela — recalcula com os brutos (mais precisão que o
+    // pacing arredondado do backend); fallback pro pacing emitido.
+    const del = delivered ?? 0;
+    const realizadoPct = expected > 0
+      ? (del / expected) * 100
+      : (isDisplay ? c.display_pacing : c.video_pacing) ?? null;
+
+    const status = classifyStatus(realizadoPct);
+    if (!status) return null;
+
+    // Ritmos dentro da janela.
+    const overlapDays      = ov?.overlapDays ?? null;
+    const mediaDiariaAtual = del > 0 && overlapDays ? del / overlapDays : null;
+    const idealDiaria      = overlapDays ? expected / overlapDays : null;
+
+    // Viewability: viewable (CR) ÷ impressões totais (unified) — mesmas
+    // fontes do modo Agora, ambas janeladas. Video usa viewable imps (não
+    // completions) no numerador, igual ao conceito do report.
+    const adminImps = isDisplay ? (c.d_admin_impressions ?? null) : (c.v_admin_impressions ?? null);
+    const viewableForView = isDisplay ? del : (c.video_viewable_impressions ?? null);
+    let viewability = adminImps && adminImps > 0 && viewableForView > 0
+      ? (viewableForView / adminImps) * 100
+      : null;
+    if (viewability != null && viewability > 100) viewability = 100;
+
+    // CTR: clicks (CR) ÷ impressões totais (unified). O payload de
+    // performers não traz impressões TOTAIS do CR (display_impressions ali
+    // é viewable), então o denominador é o unified janelado — mesmo denom
+    // do eCPM, mantém as razões da linha na mesma base.
+    const clicks = isDisplay ? (c.display_clicks ?? null) : (c.video_clicks ?? null);
+    const ctr = clicks && adminImps && adminImps > 0
+      ? (clicks / adminImps) * 100
+      : null;
+
+    // Financeiro janelado. Custo real COM survey (fallback sem survey,
+    // backend antigo). Budget cliente PRO-RATA pela fração do contrato
+    // dentro da janela — é o ajuste de orçamento do modo histórico.
+    const realTotalCost = isDisplay
+      ? (c.d_admin_total_cost_full ?? c.d_admin_total_cost ?? null)
+      : (c.v_admin_total_cost_full ?? c.v_admin_total_cost ?? null);
+    const fullBudget = isDisplay ? (c.d_client_budget ?? null) : (c.v_client_budget ?? null);
+    const budgetWindow = fullBudget != null && fullBudget > 0 && ov
+      ? fullBudget * (ov.overlapDays / ov.totalDays)
+      : null;
+    const techCostPct = realTotalCost != null && budgetWindow != null && budgetWindow > 0
+      ? (realTotalCost / budgetWindow) * 100
+      : null;
+    const hasAbs = isDisplay ? !!c.display_has_abs : !!c.video_has_abs;
+
+    return {
+      short_token:   c.short_token,
+      client_name:   c.client_name,
+      campaign_name: c.campaign_name,
+      cs_email:      c.cs_email,
+      cp_email:      c.cp_email,
+      start_date:    c.start_date,
+      end_date:      c.end_date,
+      media,
+      status,
+      // Colunas da tabela (modo histórico)
+      totalEntreguePct: realizadoPct,       // realizado ÷ esperado NA JANELA
+      negotiated:       expected,           // "contratado" pro-rata da janela
+      delivered:        delivered ?? null,
+      mediaDiariaAtual,
+      idealDiaria,
+      viewability,
+      ctr,
+      clicks: clicks ?? null,
+      // Financeiro
+      realEcpm:      isDisplay ? (c.display_ecpm ?? null) : (c.video_ecpm ?? null),
+      realTotalCost,
+      clientBudgetWindow: budgetWindow,
+      techCostPct,
+      // Sem projeção em janela fechada — classifica só o realizado.
+      tech_status: classifyTechCostStatus(techCostPct, hasAbs, null),
+      has_abs: hasAbs,
+      front_imbalance: null,
+      // Campos do modo Agora que não existem em janela fechada — null
+      // explícito pra tabela/export renderizarem "—"/vazio sem sujeira.
+      projetadaPct: null,
+      deliveredD1: null,
+      delivered7d: null,
+      minDiariaContratada: null,
+      // Brutos pro export
+      totalImpressions:    adminImps,
+      viewableImpressions: isDisplay ? null : (c.video_viewable_impressions ?? null),
+      totalDays:   ov?.totalDays ?? null,
+      elapsedDays: overlapDays,
+    };
+  };
+
+  for (const c of campaigns || []) {
+    const d = buildRow(c, "display");
+    if (d) displayRows.push(d);
+    const v = buildRow(c, "video");
+    if (v) videoRows.push(v);
+  }
+
+  return { displayRows, videoRows };
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // Financials por mídia (admin-only) — eCPM real, impressões totais, custo
 // real e Tech Cost (% do PI cliente consumido em custo real HYPR).
 // ────────────────────────────────────────────────────────────────────────

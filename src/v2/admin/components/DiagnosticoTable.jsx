@@ -177,6 +177,11 @@ function EmptyState({ message }) {
  *   onOpenReport   — (short_token) => void  (fallback se onOpenCampaign ausente)
  *   onOpenCampaign — (short_token) => void  (clicar row abre sheet de análise)
  *   activeStatuses — Set<status> de filtros ativos (vindo do parent)
+ *   historical     — modo janela fechada (rows de buildDiagnosticoRowsForPeriod):
+ *                    esconde Projetada/Falta-Dia/D-1 (não existem sem futuro) e
+ *                    mostra Entregue abs + Contratado pro-rata + Ideal/Dia.
+ *                    O parent troca a `key` ao alternar o modo, então o sort
+ *                    default abaixo é recalculado no remount.
  */
 export function DiagnosticoTable({
   title,
@@ -185,10 +190,12 @@ export function DiagnosticoTable({
   onOpenReport,
   onOpenCampaign,
   activeStatuses,
+  historical = false,
 }) {
   // Sort state local (cada tabela tem o seu).
-  // Default: por projetada desc (problema mais visível primeiro).
-  const [sortKey, setSortKey] = useState("projetadaPct");
+  // Default: por projetada desc (problema mais visível primeiro). No modo
+  // histórico não há projeção — ordena pelo realizado da janela.
+  const [sortKey, setSortKey] = useState(historical ? "totalEntreguePct" : "projetadaPct");
   const [sortDir, setSortDir] = useState("desc");
 
   const filteredRows = useMemo(() => {
@@ -267,7 +274,11 @@ export function DiagnosticoTable({
           <h3 className="text-base font-bold text-fg">{title}</h3>
           <span className="text-xs text-fg-muted">0 campanhas</span>
         </header>
-        <EmptyState message={`Nenhuma campanha ativa de ${title.toLowerCase()} no momento.`} />
+        <EmptyState
+          message={historical
+            ? `Nenhuma campanha de ${title.toLowerCase()} com entrega e contrato no período.`
+            : `Nenhuma campanha ativa de ${title.toLowerCase()} no momento.`}
+        />
       </section>
     );
   }
@@ -323,10 +334,23 @@ export function DiagnosticoTable({
                 <Th align="left"  {...headerProps("cs_name")}           className="w-[5%]">CS</Th>
                 <Th align="left"  {...headerProps("start_date")}        className="w-[7%]">Período</Th>
                 <Th align="right" {...headerProps("totalEntreguePct")}  className="w-[5%]">Entregue</Th>
-                <Th align="right" {...headerProps("projetadaPct")}      className="w-[6%]">Projetada</Th>
-                <Th align="right" {...headerProps("minDiariaContratada")} className="w-[6%]">Falta/Dia</Th>
-                <Th align="right" {...headerProps("mediaDiariaAtual")}  className="w-[6%]">Média/Dia</Th>
-                <Th align="right" {...headerProps("deliveredD1")}       className="w-[7%]">Ontem (D-1)</Th>
+                {historical ? (
+                  <>
+                    {/* Janela fechada: volumes absolutos no lugar de projeção/
+                        falta-dia/D-1 — o que aconteceu, não o que vai acontecer. */}
+                    <Th align="right" {...headerProps("delivered")}        className="w-[7%]">Entregue #</Th>
+                    <Th align="right" {...headerProps("negotiated")}       className="w-[7%]">Contratado ⌛</Th>
+                    <Th align="right" {...headerProps("mediaDiariaAtual")} className="w-[6%]">Média/Dia</Th>
+                    <Th align="right" {...headerProps("idealDiaria")}      className="w-[5%]">Ideal/Dia</Th>
+                  </>
+                ) : (
+                  <>
+                    <Th align="right" {...headerProps("projetadaPct")}      className="w-[6%]">Projetada</Th>
+                    <Th align="right" {...headerProps("minDiariaContratada")} className="w-[6%]">Falta/Dia</Th>
+                    <Th align="right" {...headerProps("mediaDiariaAtual")}  className="w-[6%]">Média/Dia</Th>
+                    <Th align="right" {...headerProps("deliveredD1")}       className="w-[7%]">Ontem (D-1)</Th>
+                  </>
+                )}
                 <Th align="right" {...headerProps("realEcpm")}          className="w-[5%]">CPM</Th>
                 <Th align="right" {...headerProps("realTotalCost")}     className="w-[8%]">Custo</Th>
                 <Th align="right" {...headerProps("techCostPct")}       className="w-[4%]">Tech</Th>
@@ -438,68 +462,113 @@ export function DiagnosticoTable({
                     >
                       {formatDateRange(r.start_date, r.end_date) || "—"}
                     </Td>
-                    <Td align="right" tabular>
+                    <Td
+                      align="right"
+                      tabular
+                      className={cn(historical && cn("font-semibold", projTone))}
+                      title={historical
+                        ? "Entregue na janela ÷ contrato pro-rata da janela (contrato/dia × dias do período dentro do voo). É o realizado final do período — o Status classifica este número."
+                        : undefined}
+                    >
                       {formatPctRow(r.totalEntreguePct, 1)}
                     </Td>
-                    <Td
-                      align="right"
-                      tabular
-                      className={cn("font-semibold", projTone)}
-                      title="% que vai bater no final mantendo o ritmo médio da última semana (7 dias). Fallback pra D-1 ou pacing histórico quando não tem dado recente."
-                    >
-                      {formatPctRow(r.projetadaPct, 1)}
-                    </Td>
-                    <Td
-                      align="right"
-                      tabular
-                      className="text-fg-muted"
-                      title="Ritmo diário NECESSÁRIO daqui pra frente pra fechar 100% do contrato — recalculado todo dia: (contrato − entregue) ÷ dias restantes. Se a campanha tá under, esse número sobe; se tá over, vira '—' (não precisa de mínima)."
-                    >
-                      {formatIntRow(r.minDiariaContratada)}
-                    </Td>
-                    <Td
-                      align="right"
-                      tabular
-                      className={cn("font-semibold", mediaDiariaToneClass(r.mediaDiariaAtual, r.minDiariaContratada))}
-                      title="Média real de entrega por dia (entregue até hoje ÷ dias decorridos). Régua de proximidade à Falta/Dia: |delta| ≤ 15% verde · ≤ 30% amarelo · > 30% vermelho. Verde = no ritmo de catch-up; vermelho = falta entregar mais (under) ou tá entregando demais (over)."
-                    >
-                      {formatIntRow(r.mediaDiariaAtual)}
-                    </Td>
-                    {(() => {
-                      // Indicador principal: D-1 deu conta do necessário (Falta/Dia)?
-                      // Mais útil que comparar com a média histórica — responde
-                      // direto a pergunta "ontem foi suficiente pra fechar?".
-                      const d1Verdict = d1VsFaltaInfo(r.deliveredD1, r.minDiariaContratada);
-                      return (
+                    {historical ? (
+                      <>
                         <Td
                           align="right"
                           tabular
-                          title={
-                            r.deliveredD1 == null || r.deliveredD1 <= 0
-                              ? "Sem entrega registrada ontem (D-1)"
-                              : d1Verdict
-                                ? `Ontem entregou ${formatIntRow(r.deliveredD1)} vs ${formatIntRow(r.minDiariaContratada)} necessário/dia. ` +
-                                  (d1Verdict.ok
-                                    ? `${formatIntRow(Math.abs(d1Verdict.gap))} acima do necessário — se mantiver, vai fechar 100%.`
-                                    : `Faltaram ${formatIntRow(Math.abs(d1Verdict.gap))}/dia — abaixo do ritmo de catch-up.`)
-                                : `Ontem entregou ${formatIntRow(r.deliveredD1)}. Sem Falta/Dia pra comparar (campanha já bateu 100%).`
-                          }
+                          title="Viewable impressions (Display) / completions 100% (Video) entregues dentro da janela"
                         >
-                          {r.deliveredD1 != null && r.deliveredD1 > 0 ? (
-                            <span className="inline-flex items-baseline gap-1.5">
-                              <span>{formatIntRow(r.deliveredD1)}</span>
-                              {d1Verdict && (
-                                <span className={cn("text-[11px] font-bold", d1Verdict.tone)}>
-                                  {d1Verdict.icon}
-                                </span>
-                              )}
-                            </span>
-                          ) : (
-                            <span className="text-fg-subtle">—</span>
-                          )}
+                          {formatIntRow(r.delivered)}
                         </Td>
-                      );
-                    })()}
+                        <Td
+                          align="right"
+                          tabular
+                          className="text-fg-muted"
+                          title="Contrato pro-rata da janela: (contratado+bônus) ÷ dias do voo × dias do período que sobrepõem o voo — assume distribuição linear"
+                        >
+                          {formatIntRow(r.negotiated)}
+                        </Td>
+                        <Td
+                          align="right"
+                          tabular
+                          className={cn("font-semibold", mediaDiariaToneClass(r.mediaDiariaAtual, r.idealDiaria))}
+                          title="Média real de entrega por dia dentro da janela (entregue ÷ dias do período no voo). Régua de proximidade ao Ideal/Dia: |delta| ≤ 15% verde · ≤ 30% amarelo · > 30% vermelho."
+                        >
+                          {formatIntRow(r.mediaDiariaAtual)}
+                        </Td>
+                        <Td
+                          align="right"
+                          tabular
+                          className="text-fg-muted"
+                          title="Ritmo diário que o contrato previa (contrato ÷ dias do voo)"
+                        >
+                          {formatIntRow(r.idealDiaria)}
+                        </Td>
+                      </>
+                    ) : (
+                      <>
+                        <Td
+                          align="right"
+                          tabular
+                          className={cn("font-semibold", projTone)}
+                          title="% que vai bater no final mantendo o ritmo médio da última semana (7 dias). Fallback pra D-1 ou pacing histórico quando não tem dado recente."
+                        >
+                          {formatPctRow(r.projetadaPct, 1)}
+                        </Td>
+                        <Td
+                          align="right"
+                          tabular
+                          className="text-fg-muted"
+                          title="Ritmo diário NECESSÁRIO daqui pra frente pra fechar 100% do contrato — recalculado todo dia: (contrato − entregue) ÷ dias restantes. Se a campanha tá under, esse número sobe; se tá over, vira '—' (não precisa de mínima)."
+                        >
+                          {formatIntRow(r.minDiariaContratada)}
+                        </Td>
+                        <Td
+                          align="right"
+                          tabular
+                          className={cn("font-semibold", mediaDiariaToneClass(r.mediaDiariaAtual, r.minDiariaContratada))}
+                          title="Média real de entrega por dia (entregue até hoje ÷ dias decorridos). Régua de proximidade à Falta/Dia: |delta| ≤ 15% verde · ≤ 30% amarelo · > 30% vermelho. Verde = no ritmo de catch-up; vermelho = falta entregar mais (under) ou tá entregando demais (over)."
+                        >
+                          {formatIntRow(r.mediaDiariaAtual)}
+                        </Td>
+                        {(() => {
+                          // Indicador principal: D-1 deu conta do necessário (Falta/Dia)?
+                          // Mais útil que comparar com a média histórica — responde
+                          // direto a pergunta "ontem foi suficiente pra fechar?".
+                          const d1Verdict = d1VsFaltaInfo(r.deliveredD1, r.minDiariaContratada);
+                          return (
+                            <Td
+                              align="right"
+                              tabular
+                              title={
+                                r.deliveredD1 == null || r.deliveredD1 <= 0
+                                  ? "Sem entrega registrada ontem (D-1)"
+                                  : d1Verdict
+                                    ? `Ontem entregou ${formatIntRow(r.deliveredD1)} vs ${formatIntRow(r.minDiariaContratada)} necessário/dia. ` +
+                                      (d1Verdict.ok
+                                        ? `${formatIntRow(Math.abs(d1Verdict.gap))} acima do necessário — se mantiver, vai fechar 100%.`
+                                        : `Faltaram ${formatIntRow(Math.abs(d1Verdict.gap))}/dia — abaixo do ritmo de catch-up.`)
+                                    : `Ontem entregou ${formatIntRow(r.deliveredD1)}. Sem Falta/Dia pra comparar (campanha já bateu 100%).`
+                              }
+                            >
+                              {r.deliveredD1 != null && r.deliveredD1 > 0 ? (
+                                <span className="inline-flex items-baseline gap-1.5">
+                                  <span>{formatIntRow(r.deliveredD1)}</span>
+                                  {d1Verdict && (
+                                    <span className={cn("text-[11px] font-bold", d1Verdict.tone)}>
+                                      {d1Verdict.icon}
+                                    </span>
+                                  )}
+                                </span>
+                              ) : (
+                                <span className="text-fg-subtle">—</span>
+                              )}
+                            </Td>
+                          );
+                        })()}
+                      </>
+                    )}
                     <Td
                       align="right"
                       tabular
@@ -525,11 +594,13 @@ export function DiagnosticoTable({
                       align="right"
                       tabular
                       className={cn("font-semibold", techCostTone)}
-                      title={
+                      title={(historical
+                        ? "Custo real HYPR na janela ÷ PI cliente PRO-RATA da janela (sem bônus). "
+                        : "Custo real HYPR ÷ PI cliente (sem bônus). ") + (
                         r.has_abs
-                          ? "Custo real HYPR ÷ PI cliente (sem bônus). Com ABS — Régua: ≤10% verde · 10–12% amarelo · >12% vermelho"
-                          : "Custo real HYPR ÷ PI cliente (sem bônus). Sem ABS — Régua: ≤8% verde · 8–10% amarelo · >10% vermelho"
-                      }
+                          ? "Com ABS — Régua: ≤10% verde · 10–12% amarelo · >12% vermelho"
+                          : "Sem ABS — Régua: ≤8% verde · 8–10% amarelo · >10% vermelho"
+                      )}
                     >
                       {formatPctRow(r.techCostPct, 1)}
                     </Td>
