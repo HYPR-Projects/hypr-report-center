@@ -158,9 +158,20 @@ export function healthLabel(h) {
 // Régua de negócio: "% entrega" = margem HYPR (curator_margin) ÷ PI.
 // É o que efetivamente entra no caixa da HYPR comparado ao valor contratado.
 //
-// O campo `pct_a_receber` que vem do BQ ainda calcula `curator_revenue / pi`
-// até a próxima refresh do enriched table com a SQL nova — por isso usamos
-// estes helpers no frontend pra garantir consistência imediata.
+// A SQL do enriched (pmp_lines_enriched.sql) já calcula pct_a_receber como
+// margem÷PI, mas mantemos estes helpers como fonte de verdade no front:
+// cobrem o caminho janelado (Histórico com período) e garantem a mesma
+// fórmula em qualquer overlay local.
+
+/** PI compartilhado de um grupo: primeiro membro com pi_brl > 0 (nem todo
+ *  membro tem PI setado — só os com Command vinculado — então NÃO dá pra
+ *  ler cegamente members[0].pi_brl). */
+export function resolveGroupPi(members) {
+  for (const m of members || []) {
+    if (m.pi_brl != null && m.pi_brl > 0) return m.pi_brl;
+  }
+  return null;
+}
 export function pctEntrega(line) {
   if (!line) return null;
   const pi = line.pi_brl;

@@ -36,7 +36,7 @@ import { cn } from "../../../ui/cn";
 import { formatMonthLabel } from "../lib/format";
 import {
   formatBRL, formatBRLCompact, formatInt, formatIntCompact, formatRatioPct,
-  effectiveStatus, statusPillClass, bidTypeLabel, pctEntrega,
+  effectiveStatus, statusPillClass, bidTypeLabel, pctEntrega, resolveGroupPi,
 } from "../lib/pmpFormat";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -257,21 +257,30 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
   // dedupe igual ao resto do PMP: lines do mesmo group_id compartilham o mesmo
   // PI (conta 1×) e usam group_curator_* já agregado; solos usam curator_*.
   const contractRows = useMemo(() => {
-    const seenKey = new Set();      // (bucket, group-key) já contabilizado
-    const buckets = new Map();      // nome → { pi, revenue, margin }
+    // 1ª passada: junta membros por unidade-de-conta (grupo ou line solta)
+    // dentro de cada bucket. O PI do grupo pode morar em QUALQUER membro
+    // (só quem tem Command vinculado tem pi_brl), então não dá pra decidir
+    // "tem PI?" olhando só o primeiro membro encontrado.
+    const units = new Map();  // dedupKey → { name, members: [] }
     for (const l of filteredLines) {
       const name = (cmpDim === "campaign"
         ? (l.campaign_name || l.line_name)
         : l.customer) || "—";
       const groupKey = l.group_id ? `g:${l.group_id}` : `l:${l.line_id}`;
       const dedupKey = `${name}|${groupKey}`;
-      if (seenKey.has(dedupKey)) continue;  // membro do mesmo grupo já somado
-      seenKey.add(dedupKey);
-
-      const pi = num(l.pi_brl);
+      let u = units.get(dedupKey);
+      if (!u) { u = { name, members: [] }; units.set(dedupKey, u); }
+      u.members.push(l);
+    }
+    // 2ª passada: 1 contribuição por unidade — PI do primeiro membro com PI,
+    // gerado do group_curator_* (grupo, já agregado) ou curator_* (solo).
+    const buckets = new Map();      // nome → { pi, revenue, margin }
+    for (const { name, members } of units.values()) {
+      const first = members[0];
+      const pi = num(first.group_id ? resolveGroupPi(members) : first.pi_brl);
       if (pi <= 0) continue;                // sem PI não há "contratado" a comparar
-      const revenue = l.group_id ? num(l.group_curator_revenue) : num(l.curator_revenue);
-      const margin  = l.group_id ? num(l.group_curator_margin)  : num(l.curator_margin);
+      const revenue = first.group_id ? num(first.group_curator_revenue) : num(first.curator_revenue);
+      const margin  = first.group_id ? num(first.group_curator_margin)  : num(first.curator_margin);
 
       let b = buckets.get(name);
       if (!b) { b = { name, pi: 0, revenue: 0, margin: 0 }; buckets.set(name, b); }

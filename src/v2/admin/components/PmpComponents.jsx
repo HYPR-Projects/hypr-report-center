@@ -18,6 +18,7 @@ import {
   formatRatioPct, formatLastDelivery, emailInitial,
   pctEntrega, groupPctEntrega,
   pctEntregaRev, groupPctEntregaRev,
+  resolveGroupPi,
   effectiveStatus, formatLineStartPeriod,
   isNewLine,
 } from "../lib/pmpFormat";
@@ -40,7 +41,8 @@ export function PmpLineGroupCard({ lines, onLineClick, onLinkClick, variant = "d
   const first = lines[0];
   const groupName = first.group_name
     || (first.customer ? `${first.customer} · ${first.campaign_name || "—"}` : "Grupo");
-  const pi = first.pi_brl;
+  // PI compartilhado: primeiro membro COM PI — nem todos têm pi_brl setado.
+  const pi = resolveGroupPi(lines);
   const groupRev = first.group_curator_revenue || 0;
   const groupMgn = first.group_curator_margin || 0;
   // % entrega = margem HYPR ÷ PI (não revenue)
@@ -456,10 +458,7 @@ export function PmpLiveGroupCard({ members, onLineClick }) {
 
   // PI compartilhado: primeiro membro com pi_brl > 0 (todos do mesmo grupo
   // apontam pro mesmo checklist por definição).
-  let groupPi = null;
-  for (const m of members) {
-    if (m.pi_brl != null && m.pi_brl > 0) { groupPi = m.pi_brl; break; }
-  }
+  const groupPi = resolveGroupPi(members);
   const groupRev = hero.group_curator_revenue || 0;
   const groupMargin = hero.group_curator_margin || 0;
   const groupImps = hero.group_imps || 0;
@@ -649,7 +648,7 @@ export function PmpCustomerAccordion({ customer, lines, onLineClick, onLinkClick
     const groupsArr = [...groupsMap.values()];
 
     // Totais sem dupla-contagem de PI:
-    //   • PI de grupo = pi_brl da primeira line (todas têm o mesmo) — conta 1x
+    //   • PI de grupo = primeiro membro COM pi_brl (nem todos têm) — conta 1x
     //   • PI de solo = pi_brl da line
     //   • Revenue/Margin/Imps de grupo = group_curator_* (já agregado)
     //   • Revenue/Margin/Imps de solo = curator_*
@@ -657,7 +656,8 @@ export function PmpCustomerAccordion({ customer, lines, onLineClick, onLinkClick
     let live = 0, stopped = 0;
     for (const grp of groupsArr) {
       const first = grp[0];
-      if (first.pi_brl != null) pi += Number(first.pi_brl);
+      const grpPi = resolveGroupPi(grp);
+      if (grpPi != null) pi += Number(grpPi);
       revenue += Number(first.group_curator_revenue || 0);
       margin  += Number(first.group_curator_margin  || 0);
       imps    += Number(first.group_imps            || 0);
