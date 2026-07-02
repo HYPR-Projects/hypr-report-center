@@ -333,12 +333,19 @@ def _build_sheets_client(access_token: str):
 # ─── BigQuery row ops ────────────────────────────────────────────────────────
 TARGET_TOKEN = "token"
 TARGET_MERGE = "merge"
-_VALID_TARGETS = (TARGET_TOKEN, TARGET_MERGE)
+# Integração singleton do compplan PMP (ver compplan_sheet.py). Vive na
+# mesma tabela mas o sync dela é disparado pelo pmp_sync_v2, não pelo
+# cron sheets_sync_all — sync_until fica NULL de propósito pra ficar de
+# fora de list_active_integrations/list_expired_integrations.
+TARGET_COMPPLAN = "compplan"
+_VALID_TARGETS = (TARGET_TOKEN, TARGET_MERGE, TARGET_COMPPLAN)
 
 
 def _validate_target_type(target_type: str) -> str:
     if target_type not in _VALID_TARGETS:
-        raise ValueError(f"target_type inválido: {target_type!r}. Use 'token' ou 'merge'.")
+        raise ValueError(
+            f"target_type inválido: {target_type!r}. Use 'token', 'merge' ou 'compplan'."
+        )
     return target_type
 
 
@@ -764,6 +771,15 @@ def sync_all_due(token_loader, merge_loader=None) -> Dict:
                     continue
                 members = merge_loader(target_id) or []
                 sync_merge_sheet(target_id, members)
+            elif target_type != TARGET_TOKEN:
+                # compplan (e futuros tipos) têm ciclo de sync próprio —
+                # não devem nem ser selecionados aqui (sync_until NULL),
+                # mas se aparecerem, pular em vez de tratar como token.
+                logger.info(
+                    f"[sheets sync_all_due] {target_type}/{target_id} tem sync "
+                    f"próprio — pulando no cron genérico"
+                )
+                continue
             else:
                 loaded = token_loader(target_id)
                 # Retrocompat: token_loader pode retornar tupla de 2 ou 3 elementos
@@ -1501,8 +1517,10 @@ def _exchange_or_mark(refresh_token: str, target_id: str, target_type: str) -> s
 def _write_base_de_dados(
     sheets_svc, spreadsheet_id: str, payload: List[List],
     target_id: str, target_type: str,
+    tab_name: str = "Base de Dados",
 ) -> None:
-    """Reescreve a aba 'Base de Dados' SEM esvaziá-la em caso de falha.
+    """Reescreve a aba `tab_name` (default 'Base de Dados') SEM esvaziá-la
+    em caso de falha.
 
     Ordem importante: ESCREVE primeiro (overwrite a partir de A1), DEPOIS limpa
     só o rabo (linhas antigas além do novo payload). O padrão antigo (clear →
@@ -1524,7 +1542,7 @@ def _write_base_de_dados(
     try:
         sheets_svc.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range="Base de Dados!A1",
+            range=f"'{tab_name}'!A1",
             valueInputOption="RAW",
             body={"values": payload},
         ).execute(num_retries=_SHEETS_NUM_RETRIES)
@@ -1558,7 +1576,7 @@ def _write_base_de_dados(
     try:
         sheets_svc.spreadsheets().values().clear(
             spreadsheetId=spreadsheet_id,
-            range=f"Base de Dados!A{n_rows + 1}:Z",
+            range=f"'{tab_name}'!A{n_rows + 1}:Z",
         ).execute(num_retries=_SHEETS_NUM_RETRIES)
     except HttpError as e:
         logger.warning(

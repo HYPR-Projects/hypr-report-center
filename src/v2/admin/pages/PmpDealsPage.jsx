@@ -57,6 +57,7 @@ import {
 } from "../components/PmpComponents";
 import { GroupLinesModal } from "../components/GroupLinesModal";
 import { buildCompplanRows, applyCompplanFormats } from "../lib/compplanExport";
+import CompplanSheetCard from "../components/CompplanSheetCard";
 import { PmpFreshnessIndicator } from "../components/PmpFreshnessIndicator";
 import { isFeatureAdmin } from "../../../shared/auth";
 
@@ -120,6 +121,9 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   const [lines, setLines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // Card da planilha Google do compplan — fechado por default pra não
+  // ocupar o hero; toggle no botão ao lado do Exportar (só editores).
+  const [showCompplan, setShowCompplan] = useState(false);
   // Saves em voo (multi-save paralelo). Set de line_ids com save pendente.
   const [savingLineIds, setSavingLineIds] = useState(() => new Set());
   const startSaving = (id) => setSavingLineIds(prev => { const n = new Set(prev); n.add(id); return n; });
@@ -779,11 +783,23 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
                 Salvando {savingLineIds.size > 1 ? `${savingLineIds.size} alterações` : "alteração"}…
               </span>
             )}
+            {canEdit && (
+              <Button variant="secondary" size="md" onClick={() => setShowCompplan(v => !v)}>
+                Compplan Sheet
+              </Button>
+            )}
             <Button variant="primary" size="md" onClick={onExport} disabled={!allFiltered.length}>
               Exportar
             </Button>
           </div>
         </div>
+
+        {/* Planilha Google auto-atualizada do compplan (só editores) */}
+        {canEdit && showCompplan && (
+          <div className="mb-6">
+            <CompplanSheetCard />
+          </div>
+        )}
 
         {/* KPIs — a aba Analytics tem seus próprios big numbers. */}
         {lines.length > 0 && layout !== "analytics" && (
