@@ -44,7 +44,7 @@ import {
   LIVE_STATUSES, HISTORY_STATUSES, effectiveDeliveryMeta,
   bidTypeLabel,
   formatBRL, formatBRLCompact, formatInt, formatIntCompact, formatRatioPct,
-  comparePmpLines, formatLastDelivery,
+  comparePmpLines, compareSortValues, formatLastDelivery,
   pctEntrega, groupPctEntrega,
   pctEntregaRev, groupPctEntregaRev,
   effectiveStatus, isPmpEditor,
@@ -659,7 +659,15 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   const liveOrdered = useMemo(() => sortByLastDelivery(liveFiltered), [liveFiltered]);
   const allSorted   = useMemo(() => {
     const arr = [...allFiltered];
-    arr.sort((a, b) => comparePmpLines(a, b, sortBy, sortDir));
+    // % entrega: ordena pelo MESMO valor que a coluna exibe (helpers do
+    // front), não pelo campo cru do BQ — pct_a_receber lá ainda é
+    // revenue÷PI e pct_a_receber_rev só existe no caminho janelado.
+    if (sortBy === "pct_a_receber" || sortBy === "pct_a_receber_rev") {
+      const getter = sortBy === "pct_a_receber" ? pctEntrega : pctEntregaRev;
+      arr.sort((a, b) => compareSortValues(getter(a), getter(b), sortDir));
+    } else {
+      arr.sort((a, b) => comparePmpLines(a, b, sortBy, sortDir));
+    }
     return arr;
   }, [allFiltered, sortBy, sortDir]);
 
@@ -1051,13 +1059,17 @@ const GROUP_FIELD_MAP = {
   curator_revenue:      "group_curator_revenue",
   curator_margin:       "group_curator_margin",
   effective_margin_pct: "group_effective_margin_pct",
-  pct_a_receber:        "group_pct_a_receber",
-  pct_a_receber_rev:    "group_pct_a_receber_rev",
 };
 
 function itemSortValue(item, field) {
-  // % Entr Rev (revenue ÷ PI): computa na hora pra não depender do campo
-  // derivado existir na line (só é setado no caminho janelado).
+  // % entrega (Mgm e Rev): computa na hora com os MESMOS helpers que a
+  // coluna exibe — o pct_a_receber cru do BQ ainda é revenue÷PI e o
+  // pct_a_receber_rev só é setado no caminho janelado.
+  if (field === "pct_a_receber") {
+    if (item.kind === "single") return pctEntrega(item.line);
+    const groupPi = resolveGroupPi(item.members);
+    return groupPctEntrega(item.members[0], groupPi);
+  }
   if (field === "pct_a_receber_rev") {
     if (item.kind === "single") return pctEntregaRev(item.line);
     const groupPi = resolveGroupPi(item.members);
@@ -1070,8 +1082,10 @@ function itemSortValue(item, field) {
     // Grupo herda o MAIS RECENTE (menor hours) entre os membros.
     let min = Infinity;
     for (const m of members) {
-      const v = m.hours_since_last_delivery;
-      if (v != null && v < min) min = v;
+      const raw = m.hours_since_last_delivery;
+      if (raw == null || raw === "") continue;
+      const v = Number(raw);
+      if (Number.isFinite(v) && v < min) min = v;
     }
     return min === Infinity ? null : min;
   }
@@ -1093,22 +1107,7 @@ function itemSortValue(item, field) {
 function sortItems(items, field, dir) {
   if (!field) return items;
   const out = [...items];
-  out.sort((a, b) => {
-    const va = itemSortValue(a, field);
-    const vb = itemSortValue(b, field);
-    const aN = va == null || va === "";
-    const bN = vb == null || vb === "";
-    if (aN && bN) return 0;
-    if (aN) return 1;
-    if (bN) return -1;
-    if (typeof va === "number" && typeof vb === "number") {
-      return dir === "asc" ? va - vb : vb - va;
-    }
-    const sa = String(va).toLowerCase(), sb = String(vb).toLowerCase();
-    if (sa < sb) return dir === "asc" ? -1 : 1;
-    if (sa > sb) return dir === "asc" ? 1 : -1;
-    return 0;
-  });
+  out.sort((a, b) => compareSortValues(itemSortValue(a, field), itemSortValue(b, field), dir));
   return out;
 }
 
