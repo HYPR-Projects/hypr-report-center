@@ -68,9 +68,11 @@ def test_row_basica_calculos():
     assert row["eCPM"] == round(99500 * 1000 / 1_000_000, 2)
 
 
-def test_compp_faixa_parcial_abaixo_de_99():
+def test_compp_zerado_abaixo_de_99():
+    # Regra 2026-07-02: abaixo de 99% de %Delivery Rev não há comp nenhum
+    # (a faixa parcial de 0,25% deixou de existir) → célula em branco.
     [row] = cs.build_compplan_rows([_line(curator_revenue=90000)])
-    assert row["Compp"] == round(83470.0 * cs.COMPP_PARTIAL_RATE, 2)
+    assert row["Compp"] == ""
 
 
 def test_compp_em_branco_sem_delivery_ou_sem_pi():
@@ -142,12 +144,11 @@ def test_coercao_numeric_decimal_do_bq():
 def test_formulas_auditaveis_f_e_p():
     # Client PI Net referencia o PI da própria linha com o fator
     assert cs.pi_net_formula(13) == '=IF(E13="","",ROUND(E13*0.8347,2))'
-    # Compp: faixa cheia/parcial keyed em %Delivery Rev ≥ 0.99, branco sem
-    # PI líquido ou sem delivery
-    f = cs.compp_formula(13)
-    assert f.startswith('=IF(OR(F13="",I13<=0),"",')
-    assert "M13>=0.99" in f
-    assert "0.0075" in f and "0.0025" in f
+    # Compp: só paga 0,75% com %Delivery Rev ≥ 0.99; abaixo (ou sem PI/
+    # delivery) fica em branco
+    assert cs.compp_formula(13) == (
+        '=IF(OR(F13="",I13<=0,M13<0.99),"",ROUND(F13*0.0075,2))'
+    )
 
 
 def test_payload_header_e_vazios():

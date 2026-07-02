@@ -61,10 +61,10 @@ TAB_NAME    = "Compplan"
 # PI líquido = PI negociado × fator (comissão/impostos).
 PI_NET_FACTOR = 0.8347
 
-# Comp: entrega total (% Delivery Rev ≥ 99%) paga 0,75% do PI líquido;
-# abaixo disso paga 0,25%.
+# Comp: SÓ paga com entrega total (% Delivery Rev ≥ 99%) — 0,75% do PI
+# líquido. Abaixo de 99% não há comp (regra confirmada pelo João em
+# 2026-07-02; a faixa parcial de 0,25% deixou de existir).
 COMPP_FULL_RATE          = 0.0075
-COMPP_PARTIAL_RATE       = 0.0025
 COMPP_DELIVERY_THRESHOLD = 0.99
 
 STATUS_EN = {
@@ -116,12 +116,12 @@ def pi_net_formula(n: int) -> str:
 
 
 def compp_formula(n: int) -> str:
-    """Fórmula do Compp na linha `n`: 0,75% do PI líquido se %Delivery Rev
-    ≥ 99%, senão 0,25%; em branco sem PI ou sem delivery."""
+    """Fórmula do Compp na linha `n`: 0,75% do PI líquido SE %Delivery Rev
+    ≥ 99%; abaixo disso (ou sem PI/sem delivery) fica em branco."""
     return (
-        f'=IF(OR({PI_NET_COL}{n}="",{REV_COL}{n}<=0),"",'
-        f'ROUND({PI_NET_COL}{n}*IF({PCT_REV_COL}{n}>={COMPP_DELIVERY_THRESHOLD},'
-        f'{COMPP_FULL_RATE},{COMPP_PARTIAL_RATE}),2))'
+        f'=IF(OR({PI_NET_COL}{n}="",{REV_COL}{n}<=0,'
+        f'{PCT_REV_COL}{n}<{COMPP_DELIVERY_THRESHOLD}),"",'
+        f'ROUND({PI_NET_COL}{n}*{COMPP_FULL_RATE},2))'
     )
 
 README_TEXT = [
@@ -248,12 +248,11 @@ def build_compplan_rows(lines: List[Dict]) -> List[Dict]:
 
         pct_margin = (margin / pi) if pi and pi > 0 else None
         pct_rev    = (revenue / pi) if pi and pi > 0 else None
-        # Comp só calculado quando já houve delivery — deal Not Started
-        # fica em branco (não dá pra saber a faixa ainda).
+        # Comp SÓ existe com entrega total (≥ 99% do PI em revenue). Sem PI,
+        # sem delivery ou abaixo do corte → em branco.
         compp = None
-        if pi_net is not None and revenue > 0:
-            rate = COMPP_FULL_RATE if pct_rev >= COMPP_DELIVERY_THRESHOLD else COMPP_PARTIAL_RATE
-            compp = _round2(pi_net * rate)
+        if pi_net is not None and revenue > 0 and pct_rev >= COMPP_DELIVERY_THRESHOLD:
+            compp = _round2(pi_net * COMPP_FULL_RATE)
 
         rows.append({
             "_sort": start_date or "9999-99-99",
