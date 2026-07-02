@@ -139,6 +139,17 @@ def test_coercao_numeric_decimal_do_bq():
     assert row["Curator Revenue"] == 99500.5
 
 
+def test_formulas_auditaveis_f_e_p():
+    # Client PI Net referencia o PI da própria linha com o fator
+    assert cs.pi_net_formula(13) == '=IF(E13="","",ROUND(E13*0.8347,2))'
+    # Compp: faixa cheia/parcial keyed em %Delivery Rev ≥ 0.99, branco sem
+    # PI líquido ou sem delivery
+    f = cs.compp_formula(13)
+    assert f.startswith('=IF(OR(F13="",I13<=0),"",')
+    assert "M13>=0.99" in f
+    assert "0.0075" in f and "0.0025" in f
+
+
 def test_payload_header_e_vazios():
     payload = cs.build_payload(cs.build_compplan_rows([_line(pi_brl=None)]))
     assert payload[0] == cs.COMPPLAN_COLUMNS
