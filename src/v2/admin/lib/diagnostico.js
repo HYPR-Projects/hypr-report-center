@@ -747,13 +747,14 @@ export function buildDiagnosticoRowsForPeriod(campaigns, { from, to }) {
     const mediaDiariaAtual = del > 0 && overlapDays ? del / overlapDays : null;
     const idealDiaria      = overlapDays ? expected / overlapDays : null;
 
-    // Viewability: viewable (CR) ÷ impressões totais (unified) — mesmas
-    // fontes do modo Agora, ambas janeladas. Video usa viewable imps (não
-    // completions) no numerador, igual ao conceito do report.
+    // View %: delivered (CR) ÷ impressões totais (unified) — mesmas fontes
+    // e MESMO numerador do modo Agora (deriveMediaMetrics recebe delivered
+    // e divide por *_admin_impressions): viewable imps pra Display,
+    // completions pra Video. Usar viewable imps no Video aqui daria um
+    // número diferente do que a aba mostra no modo Agora pra mesma campanha.
     const adminImps = isDisplay ? (c.d_admin_impressions ?? null) : (c.v_admin_impressions ?? null);
-    const viewableForView = isDisplay ? del : (c.video_viewable_impressions ?? null);
-    let viewability = adminImps && adminImps > 0 && viewableForView > 0
-      ? (viewableForView / adminImps) * 100
+    let viewability = adminImps && adminImps > 0 && del > 0
+      ? (del / adminImps) * 100
       : null;
     if (viewability != null && viewability > 100) viewability = 100;
 
@@ -823,7 +824,29 @@ export function buildDiagnosticoRowsForPeriod(campaigns, { from, to }) {
     };
   };
 
+  // Dedup por token ANTES de construir linhas. Rename de cliente/campanha
+  // no meio do voo faz o payload do backend vir com o MESMO token 2×
+  // (CTE `base` agrupa por token+nomes; ex. real: PEPSICO/PepsiCo,
+  // HYPERAPHARMA/HYPERA_PHARMA — visto na janela de jun/2026). As métricas
+  // são idênticas entre as duplicatas (agg/unified agregam só por token);
+  // apenas nomes e, às vezes, datas divergem (variante órfã vem com datas
+  // null). Sem dedupe: 2 linhas pro mesmo token+mídia → chave React
+  // duplicada e contagem dobrada nos pills. Preferimos a variante com
+  // datas parseáveis (a de datas null não gera linha de qualquer forma).
+  const byToken = new Map();
   for (const c of campaigns || []) {
+    if (!c?.short_token) continue;
+    const prev = byToken.get(c.short_token);
+    if (!prev) {
+      byToken.set(c.short_token, c);
+      continue;
+    }
+    const prevValid = parseDateUTC(prev.start_date) && parseDateUTC(prev.end_date);
+    const currValid = parseDateUTC(c.start_date) && parseDateUTC(c.end_date);
+    if (!prevValid && currValid) byToken.set(c.short_token, c);
+  }
+
+  for (const c of byToken.values()) {
     const d = buildRow(c, "display");
     if (d) displayRows.push(d);
     const v = buildRow(c, "video");
