@@ -5,45 +5,17 @@ import { fmt } from "../shared/format";
 const PAGE_SIZE = 15;
 
 // Tabela de performance por endereço (SITE do HYPR_PDOOH_REPORT — shopping,
-// condomínio, terminal etc). Um SITE agrega N SCREENs, então mostramos também
-// a contagem de telas. Como uma campanha pode ter milhares de locais, a tabela
-// tem busca + ordenação + paginação client-side.
-const PdoohSiteTable = ({ rows, theme }) => {
+// condomínio, terminal etc). Recebe os sites já agregados (pdoohSites.js,
+// compartilhado com o mapa). Como uma campanha pode ter milhares de locais,
+// a tabela tem busca + ordenação + paginação client-side. Linhas com
+// geolocalização são clicáveis → onSiteClick(site) foca o ponto no mapa.
+const PdoohSiteTable = ({ sites, theme, onSiteClick }) => {
   const { bg2, bg3, bdr, text, muted } = theme;
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("impressions");
   const [sortDir, setSortDir] = useState(-1);
   const [page, setPage] = useState(0);
-
-  const sites = useMemo(() => {
-    const bySite = new Map();
-    rows.forEach(r => {
-      // Fallback pra SCREEN em bases que não trazem SITE
-      const name = r["SITE"] || r["Site"] || r["site"] || r["SCREEN"] || null;
-      if (!name) return;
-      const city = r["CITY"] || "—";
-      const key = `${name}||${city}`;
-      let s = bySite.get(key);
-      if (!s) {
-        s = { name, city, owners: new Set(), types: new Set(), screens: new Set(), impressions: 0, plays: 0 };
-        bySite.set(key, s);
-      }
-      if (r["MEDIA_OWNER"]) s.owners.add(r["MEDIA_OWNER"]);
-      if (r["MEDIA_TYPE"]) s.types.add(String(r["MEDIA_TYPE"]).split(">")[0].trim());
-      if (r["SCREEN"]) s.screens.add(r["SCREEN"]);
-      s.impressions += Number(r["IMPRESSIONS"]) || 0;
-      s.plays += Number(r["PLAYS"]) || 0;
-    });
-    return [...bySite.values()].map(s => ({
-      name: s.name,
-      city: s.city,
-      owner: [...s.owners].join(", ") || "—",
-      type: [...s.types].join(", ") || "—",
-      screens: s.screens.size || 1,
-      impressions: Math.round(s.impressions),
-      plays: s.plays,
-    }));
-  }, [rows]);
+  const [hoverKey, setHoverKey] = useState(null);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -58,6 +30,7 @@ const PdoohSiteTable = ({ rows, theme }) => {
 
   if (sites.length === 0) return null;
 
+  const hasGeo = sites.some(s => s.lat !== 0 && s.lng !== 0);
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
   const pageRows = filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
@@ -88,7 +61,10 @@ const PdoohSiteTable = ({ rows, theme }) => {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
         <div>
           <div style={{ fontSize: 13, fontWeight: 700, color: muted, textTransform: "uppercase", letterSpacing: 1 }}>Performance por Endereço</div>
-          <div style={{ fontSize: 11, color: muted, marginTop: 4 }}>{fmt(sites.length)} locais · {fmt(sites.reduce((s, x) => s + x.screens, 0))} telas</div>
+          <div style={{ fontSize: 11, color: muted, marginTop: 4 }}>
+            {fmt(sites.length)} locais · {fmt(sites.reduce((s, x) => s + x.screens, 0))} telas
+            {hasGeo && onSiteClick ? " · clique numa linha para ver no mapa" : ""}
+          </div>
         </div>
         <input
           value={search}
@@ -112,19 +88,33 @@ const PdoohSiteTable = ({ rows, theme }) => {
             {th("Plays", "plays", "right")}
           </tr></thead>
           <tbody>
-            {pageRows.map((s, i) => (
-              <tr key={i} style={{ borderTop: `1px solid ${bdr}` }}>
-                <td style={{ fontWeight: 600, padding: "10px 8px 10px 0", color: text, maxWidth: 340 }}>
-                  {s.name}
-                  <div style={{ fontSize: 11, fontWeight: 400, color: muted, marginTop: 2 }}>{s.type}</div>
-                </td>
-                <td style={{ padding: "10px 8px 10px 0", color: text, whiteSpace: "nowrap" }}>{s.city}</td>
-                <td style={{ padding: "10px 8px 10px 0", color: text, whiteSpace: "nowrap" }}>{s.owner}</td>
-                <td style={{ padding: "10px 8px 10px 0", color: text, textAlign: "right" }}>{fmt(s.screens)}</td>
-                <td style={{ padding: "10px 8px 10px 0", color: text, textAlign: "right" }}>{fmt(s.impressions)}</td>
-                <td style={{ padding: "10px 0", color: text, textAlign: "right" }}>{fmt(s.plays)}</td>
-              </tr>
-            ))}
+            {pageRows.map((s) => {
+              const clickable = onSiteClick && s.lat !== 0 && s.lng !== 0;
+              return (
+                <tr key={s.key}
+                  onClick={clickable ? () => onSiteClick(s) : undefined}
+                  onMouseEnter={clickable ? () => setHoverKey(s.key) : undefined}
+                  onMouseLeave={clickable ? () => setHoverKey(null) : undefined}
+                  title={clickable ? "Ver no mapa" : undefined}
+                  style={{
+                    borderTop: `1px solid ${bdr}`,
+                    cursor: clickable ? "pointer" : "default",
+                    background: hoverKey === s.key ? bg3 : "transparent",
+                    transition: "background 0.15s",
+                  }}>
+                  <td style={{ fontWeight: 600, padding: "10px 8px 10px 0", color: text, maxWidth: 340 }}>
+                    {clickable && <span aria-hidden="true" style={{ fontSize: 11, marginRight: 6, opacity: hoverKey === s.key ? 1 : 0.45 }}>📍</span>}
+                    {s.name}
+                    <div style={{ fontSize: 11, fontWeight: 400, color: muted, marginTop: 2 }}>{s.type}</div>
+                  </td>
+                  <td style={{ padding: "10px 8px 10px 0", color: text, whiteSpace: "nowrap" }}>{s.city}</td>
+                  <td style={{ padding: "10px 8px 10px 0", color: text, whiteSpace: "nowrap" }}>{s.owner}</td>
+                  <td style={{ padding: "10px 8px 10px 0", color: text, textAlign: "right" }}>{fmt(s.screens)}</td>
+                  <td style={{ padding: "10px 8px 10px 0", color: text, textAlign: "right" }}>{fmt(s.impressions)}</td>
+                  <td style={{ padding: "10px 0", color: text, textAlign: "right" }}>{fmt(s.plays)}</td>
+                </tr>
+              );
+            })}
             {pageRows.length === 0 && (
               <tr><td colSpan={6} style={{ padding: 24, textAlign: "center", color: muted, fontSize: 13 }}>Nenhum local encontrado para "{search}".</td></tr>
             )}
