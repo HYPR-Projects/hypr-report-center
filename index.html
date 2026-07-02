@@ -24,7 +24,26 @@
        * containers). width:100% + min-height:100vh é suficiente pra
        * garantir que #root preencha a viewport. */
       html, body, #root { width: 100%; min-height: 100vh; }
-      body { overflow-x: hidden; }
+      body { overflow-x: hidden; margin: 0; }
+      /* Fundo no <html> desde o primeiro paint — sem ele, o branco default
+       * do navegador (+ margin default do body) vaza como borda no topo/
+       * esquerda até o React pintar o canvas, visível ao abrir link de
+       * report em aba nova. O data-theme já foi aplicado pelo script
+       * anti-FOUC (síncrono no <head>, antes do primeiro paint).
+       * Cores = --color-canvas de src/ui/theme.css (sync manual). */
+      html { background: #F8F9FA; }
+      html[data-theme="dark"] { background: #1C262F; }
+      /* Spinner estático pré-React (o primeiro render substitui o #root).
+       * Mesmo visual do <Spinner/> (src/components/Spinner.jsx) e do
+       * fallback do RouteSuspense — a transição fica contínua. */
+      @keyframes boot-spin { to { transform: rotate(360deg); } }
+      #boot-loader { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+      #boot-loader .boot-ring {
+        width: 36px; height: 36px; border-radius: 50%;
+        border: 2px solid rgba(51, 151, 185, 0.19);
+        border-top-color: #3397B9;
+        animation: boot-spin 0.8s linear infinite;
+      }
     </style>
     <!-- Google Analytics -->
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-GL9LXQVMT4"></script>
@@ -59,7 +78,9 @@
     </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot-loader"><div class="boot-ring"></div></div>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
