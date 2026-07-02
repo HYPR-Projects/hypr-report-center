@@ -1548,6 +1548,59 @@ export async function syncPmpV2({ interval = "last_7_days" } = {}) {
   return r.json();
 }
 
+// ── Compplan Sheet (admin) ───────────────────────────────────────────────────
+// Planilha Google auto-atualizada com o compplan do PMP (1 row por deal,
+// all-time, modelo HYPR_PMP_Deals_All-Time). Integração singleton — push
+// automático após cada pmp_sync_v2.
+
+/** Status da integração compplan (null se nunca conectada). */
+export async function compplanSheetStatus() {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(`${API_URL}?action=compplan_sheet_status`,
+    { headers: { ...adminAuthHeaders(jwt) } });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  return d.integration || null;
+}
+
+/** Troca o authorization code (OAuth popup) e cria a planilha no Drive. */
+export async function compplanSheetConnect({ code, redirectUri = "postmessage" }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(`${API_URL}?action=compplan_sheet_connect`,
+    { code, redirect_uri: redirectUri }, adminAuthHeaders(jwt));
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+/** Reescreve a aba Compplan agora. Retorna { ok, integration }. */
+export async function compplanSheetSyncNow() {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(`${API_URL}?action=compplan_sheet_sync_now`, {}, adminAuthHeaders(jwt));
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+/** Desativa a integração (opcionalmente deletando o arquivo do Drive). */
+export async function compplanSheetDelete({ deleteSheet = false } = {}) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(`${API_URL}?action=compplan_sheet_delete`,
+    { delete_sheet: deleteSheet }, adminAuthHeaders(jwt));
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
 /**
  * Frescor da base de dados unified_daily_performance_metrics, por DSP.
  * Cada item tem { source, max_date, days_in_window }. O backend também

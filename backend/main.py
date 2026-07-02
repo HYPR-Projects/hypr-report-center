@@ -55,6 +55,7 @@ import access_tracking
 import pmp_deals
 import pmp_lines
 import pmp_groups
+import compplan_sheet
 import xandr_curate
 import audience_normalize
 import audience_ai
@@ -3511,6 +3512,14 @@ def report_data(request):
             # checklists novos nunca chegam ao espelho e a auto-vinculação fica cega.
             mirror_res = pmp_lines.sync_checklists_mirror()
             pmp_lines.refresh_enriched_table()
+            # Push do compplan pra planilha Google (se conectada). Best-effort:
+            # falha aqui não pode derrubar o sync do Xandr — o erro fica em
+            # last_error da integração (alerta de stale cobre o resto).
+            try:
+                compplan_res = compplan_sheet.sync_if_connected()
+            except Exception as ce:
+                logger.warning(f"[pmp_sync_v2 compplan push] {ce}")
+                compplan_res = {"error": str(ce)}
             return (jsonify({
                 "actor": actor,
                 "insertion_orders": io_res,
@@ -3518,12 +3527,92 @@ def report_data(request):
                 "delivery":         deliv_res,
                 "checklists_mirror": mirror_res,
                 "view_refreshed":   True,
+                "compplan_sheet":   compplan_res,
             }), 200, headers)
         except xandr_curate.XandrError as xe:
             return (jsonify({"error": str(xe)}), 502, headers)
         except Exception as e:
             logger.exception(f"[ERROR pmp_sync_v2] {e}")
             return (jsonify({"error": str(e)}), 500, headers)
+
+    # ── Endpoints: Compplan Sheet (admin) ────────────────────────────────────
+    # Planilha Google auto-atualizada com o compplan do PMP (1 row por deal,
+    # all-time, modelo HYPR_PMP_Deals_All-Time). Integração singleton na
+    # sheets_integrations (target_type='compplan'); push automático no fim
+    # de cada pmp_sync_v2. Ver compplan_sheet.py.
+    if request.method == "POST" and request.args.get("action") == "compplan_sheet_connect":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            code         = (body.get("code") or "").strip()
+            redirect_uri = (body.get("redirect_uri") or "postmessage").strip()
+            if not code:
+                return (jsonify({"error": "code é obrigatório"}), 400, headers)
+            tokens = sheets_integration.exchange_code_for_tokens(code, redirect_uri)
+            refresh_token = tokens.get("refresh_token")
+            if not refresh_token:
+                return (
+                    jsonify({"error": "refresh_token ausente. Tente novamente — pode ser preciso revogar e reautorizar o app."}),
+                    400, headers,
+                )
+            result = compplan_sheet.create_compplan_sheet(
+                refresh_token=refresh_token,
+                member_email=admin.get("email") or "unknown",
+            )
+            return (jsonify({
+                "status":          "active",
+                "spreadsheet_id":  result["spreadsheet_id"],
+                "spreadsheet_url": result["spreadsheet_url"],
+            }), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR compplan_sheet_connect] {e}")
+            return (jsonify({"error": f"Erro ao criar sheet do compplan: {e}"}), 500, headers)
+
+    if request.method == "GET" and request.args.get("action") == "compplan_sheet_status":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            status = sheets_integration.status_for_response(
+                compplan_sheet.COMPPLAN_TARGET_ID,
+                is_admin=True,
+                target_type=sheets_integration.TARGET_COMPPLAN,
+            )
+            return (jsonify({"integration": status}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR compplan_sheet_status] {e}")
+            return (jsonify({"error": "Erro ao buscar status"}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "compplan_sheet_sync_now":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            compplan_sheet.sync_compplan_sheet()
+            status = sheets_integration.status_for_response(
+                compplan_sheet.COMPPLAN_TARGET_ID,
+                is_admin=True,
+                target_type=sheets_integration.TARGET_COMPPLAN,
+            )
+            return (jsonify({"ok": True, "integration": status}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR compplan_sheet_sync_now] {e}")
+            return (jsonify({"error": f"Erro ao sincronizar: {e}"}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "compplan_sheet_delete":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            result = sheets_integration.delete_integration(
+                compplan_sheet.COMPPLAN_TARGET_ID,
+                delete_sheet=bool(body.get("delete_sheet")),
+                target_type=sheets_integration.TARGET_COMPPLAN,
+            )
+            return (jsonify({"ok": True, **result}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR compplan_sheet_delete] {e}")
+            return (jsonify({"error": f"Erro ao excluir: {e}"}), 500, headers)
 
     # ── Endpoint: lista de clientes agregada (admin) ─────────────────────────
     # View "Por cliente" do menu admin V2. Agrega campanhas em memória pelo

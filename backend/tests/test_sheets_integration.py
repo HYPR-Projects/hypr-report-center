@@ -65,11 +65,11 @@ def test_update_writes_from_a1_and_clear_below_payload(update_status):
     si._write_base_de_dados(svc, "SID", [["h"], ["1"], ["2"]], "tok", si.TARGET_TOKEN)
 
     _, ukwargs = values.update.call_args
-    assert ukwargs["range"] == "Base de Dados!A1"
+    assert ukwargs["range"] == "'Base de Dados'!A1"
     assert ukwargs["valueInputOption"] == "RAW"
 
     _, ckwargs = values.clear.call_args
-    assert ckwargs["range"] == "Base de Dados!A4:Z"
+    assert ckwargs["range"] == "'Base de Dados'!A4:Z"
 
 
 # ─── Tail-clear best-effort ──────────────────────────────────────────────────

@@ -26,60 +26,15 @@
 // troca por tokens server-side (o client_secret não pode vir pro front).
 
 import { useEffect, useState, useCallback } from "react";
-import { API_URL, GOOGLE_CLIENT_ID } from "../../shared/config";
+import { API_URL } from "../../shared/config";
 import { adminAuthHeaders } from "../../shared/auth";
 import { fmtDateTimeBR, fmtDateBR } from "../../shared/format";
+// loadGisScript/requestOAuthCode extraídos pra shared/googleOAuthCode.js
+// (reusados pelo CompplanSheetCard) — comportamento idêntico ao original.
+import { loadGisScript, requestOAuthCode } from "../../shared/googleOAuthCode";
 import { useReportTrackingContext } from "../contexts/ReportTrackingContext";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-function loadGisScript() {
-  return new Promise((resolve, reject) => {
-    if (window.google?.accounts?.oauth2) return resolve();
-    let s = document.querySelector('script[src="https://accounts.google.com/gsi/client"]');
-    if (!s) {
-      s = document.createElement("script");
-      s.src   = "https://accounts.google.com/gsi/client";
-      s.async = true;
-      document.body.appendChild(s);
-    }
-    s.addEventListener("load",  () => resolve());
-    s.addEventListener("error", () => reject(new Error("Falha ao carregar GIS")));
-    // Already loaded?
-    if (window.google?.accounts?.oauth2) resolve();
-  });
-}
-
-// Inicia OAuth code flow, retorna o `code` quando o usuário autoriza.
-function requestOAuthCode() {
-  return new Promise((resolve, reject) => {
-    if (!window.google?.accounts?.oauth2) {
-      return reject(new Error("Google Identity Services não disponível"));
-    }
-    const client = window.google.accounts.oauth2.initCodeClient({
-      client_id: GOOGLE_CLIENT_ID,
-      scope:     "https://www.googleapis.com/auth/drive.file",
-      ux_mode:   "popup",
-      // prompt='consent' força o re-consent screen, garantindo que o
-      // refresh_token vem mesmo se o usuário já autorizou antes
-      // (ver gotcha no top do arquivo).
-      prompt:    "consent",
-      // access_type='offline' é o que pede o refresh_token. Sem isso,
-      // só access_token (1h) — sync diário quebra.
-      access_type: "offline",
-      callback: (resp) => {
-        if (resp.error) return reject(new Error(resp.error_description || resp.error));
-        if (!resp.code) return reject(new Error("Code ausente na resposta"));
-        resolve(resp.code);
-      },
-      error_callback: (err) => {
-        // Usuário fechou popup, popup bloqueado, etc.
-        reject(new Error(err?.message || err?.type || "Autorização cancelada"));
-      },
-    });
-    client.requestCode();
-  });
-}
-
 async function postAdmin(action, body, adminJwt) {
   const res = await fetch(`${API_URL}?action=${action}`, {
     method: "POST",
