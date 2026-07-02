@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { Bar } from "recharts";
 import { C } from "../shared/theme";
 import { fmt, fmtDateTimeBR } from "../shared/format";
@@ -13,11 +13,15 @@ import {
 import BarChart from "../components/BarChart";
 import KpiCard from "../components/KpiCard";
 import DateRangeFilter from "../components/DateRangeFilter";
-import PdoohMap from "./PdoohMap";
+import PdoohMapLibre from "./PdoohMapLibre";
 import PdoohSiteTable from "./PdoohSiteTable";
+import { aggregateSites } from "./pdoohSites";
 
 const PdoohDashboard = ({ data, onClear, isDark = true }) => {
   const [mapMetric, setMapMetric] = useState("impressions");
+  const [mapMode, setMapMode] = useState("heat");
+  const [mapFocus, setMapFocus] = useState(null);
+  const mapCardRef = useRef(null);
   const allRows = data.rows;
 
   const dateInfo = useMemo(() => {
@@ -65,42 +69,27 @@ const PdoohDashboard = ({ data, onClear, isDark = true }) => {
   });
   // Arredonda impressões agregadas pra inteiro antes de mandar pro chart.
   const chartData=Object.values(byDate).map(d=>({...d, impressions: Math.round(d.impressions)})).sort((a,b)=>a.date>b.date?1:-1);
-  // Aliases pra lat/lng — o HYPR_PDOOH_REPORT usa SCREEN_LATITUDE/SCREEN_LONGITUDE,
-  // bases legadas usavam LATITUDE/LONGITUDE ou LAT/LNG.
-  const getLat = (r) => {
-    const v = r["LATITUDE"] ?? r["SCREEN_LATITUDE"] ?? r["LAT"] ?? r["Lat"] ?? r["lat"];
-    const n = Number(v);
-    return Number.isFinite(n) ? n : 0;
-  };
-  const getLng = (r) => {
-    const v = r["LONGITUDE"] ?? r["SCREEN_LONGITUDE"] ?? r["LNG"] ?? r["LON"] ?? r["LONG"] ?? r["Lng"] ?? r["lng"];
-    const n = Number(v);
-    return Number.isFinite(n) ? n : 0;
-  };
-  const hasGeo = rows.some(r => getLat(r) !== 0);
   const byCity={};
   rows.forEach(r=>{
     const c=r["CITY"]||"Outras";
-    const lat=getLat(r);
-    const lng=getLng(r);
-    if(!byCity[c])byCity[c]={city:c,impressions:0,plays:0,lat,lng};
+    if(!byCity[c])byCity[c]={city:c,impressions:0,plays:0};
     byCity[c].impressions+=Number(r["IMPRESSIONS"])||0;
     byCity[c].plays+=Number(r["PLAYS"])||0;
   });
   const cityData=Object.values(byCity).map(c=>({...c, impressions: Math.round(c.impressions)})).sort((a,b)=>b.impressions-a.impressions).slice(0,10);
 
-  // Pontos para heatmap — só telas com lat/lng válidos
-  const mapPoints = rows
-  .filter(r=>{
-    const lat=getLat(r);
-    const lng=getLng(r);
-    return lat!==0&&lng!==0;
-  })
-  .map(r=>[
-    getLat(r),
-    getLng(r),
-    mapMetric==="impressions"?Number(r["IMPRESSIONS"]||0):Number(r["PLAYS"]||0)
-  ]);
+  // Agregação por endereço (SITE) — alimenta o mapa E a tabela de performance,
+  // com a mesma chave, pra ligar clique na linha ↔ ponto no mapa.
+  const sites = useMemo(() => aggregateSites(rows), [rows]);
+  const hasGeo = sites.some(s => s.lat !== 0 && s.lng !== 0);
+
+  // Clique numa linha da tabela → muda pra visão de pontos, rola até o mapa
+  // e voa até o endereço (o ts força re-focus em cliques repetidos no mesmo local)
+  const handleSiteClick = (site) => {
+    setMapMode("points");
+    setMapFocus({ key: site.key, ts: Date.now() });
+    mapCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   // Tokens de tema derivados de isDark
   const bg2    = isDark ? C.dark2 : "#FFFFFF";
@@ -187,29 +176,43 @@ const PdoohDashboard = ({ data, onClear, isDark = true }) => {
         );
       })()}
 
-      {/* Mapa Heatmap */}
-      <div style={{background:bg2,border:`1px solid ${bdr}`,borderRadius:12,padding:20,marginBottom:16}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-          <div style={{fontSize:13,fontWeight:700,color:muted,textTransform:"uppercase",letterSpacing:1}}>Mapa de Calor</div>
+      {/* Mapa de Entrega (calor | pontos) */}
+      <div ref={mapCardRef} style={{background:bg2,border:`1px solid ${bdr}`,borderRadius:12,padding:20,marginBottom:16,scrollMarginTop:16}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,gap:12,flexWrap:"wrap"}}>
+          <div style={{fontSize:13,fontWeight:700,color:muted,textTransform:"uppercase",letterSpacing:1}}>Mapa de Entrega</div>
           {hasGeo ? (
-            <div style={{display:"flex",gap:8}}>
-              {["impressions","plays"].map(m=>(
-                <button key={m} onClick={()=>setMapMetric(m)} style={{
-                  background:mapMetric===m?C.blue:bg3,
-                  color:mapMetric===m?"#fff":muted,
-                  border:`1px solid ${mapMetric===m?C.blue:bdr}`,
-                  padding:"6px 14px",borderRadius:8,
-                  cursor:"pointer",fontSize:12,fontWeight:600,
-                  transition:"all 0.2s"
-                }}>{m==="impressions"?"Impressões":"Plays"}</button>
-              ))}
+            <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+              <div style={{display:"flex",gap:8}}>
+                {[["heat","Calor"],["points","Pontos"]].map(([v,label])=>(
+                  <button key={v} onClick={()=>setMapMode(v)} style={{
+                    background:mapMode===v?C.blue:bg3,
+                    color:mapMode===v?"#fff":muted,
+                    border:`1px solid ${mapMode===v?C.blue:bdr}`,
+                    padding:"6px 14px",borderRadius:8,
+                    cursor:"pointer",fontSize:12,fontWeight:600,
+                    transition:"all 0.2s"
+                  }}>{label}</button>
+                ))}
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                {["impressions","plays"].map(m=>(
+                  <button key={m} onClick={()=>setMapMetric(m)} style={{
+                    background:mapMetric===m?C.blue:bg3,
+                    color:mapMetric===m?"#fff":muted,
+                    border:`1px solid ${mapMetric===m?C.blue:bdr}`,
+                    padding:"6px 14px",borderRadius:8,
+                    cursor:"pointer",fontSize:12,fontWeight:600,
+                    transition:"all 0.2s"
+                  }}>{m==="impressions"?"Impressões":"Plays"}</button>
+                ))}
+              </div>
             </div>
           ) : (
             <span style={{fontSize:11,color:muted}}>⚠️ Adicione colunas LATITUDE e LONGITUDE no arquivo para ativar o mapa</span>
           )}
         </div>
         {hasGeo
-          ? <PdoohMap points={mapPoints} isDark={isDark}/>
+          ? <PdoohMapLibre sites={sites} metric={mapMetric} mode={mapMode} isDark={isDark} focus={mapFocus}/>
           : <div style={{height:200,display:"flex",alignItems:"center",justifyContent:"center",color:muted,fontSize:13,flexDirection:"column",gap:8}}>
               <span aria-hidden="true" style={{fontSize:32}}>🗺️</span>
               <span>O arquivo não possui colunas de geolocalização</span>
@@ -240,7 +243,7 @@ const PdoohDashboard = ({ data, onClear, isDark = true }) => {
       </div>
 
       {/* Performance por Endereço (SITE) */}
-      <PdoohSiteTable rows={rows} theme={theme}/>
+      <PdoohSiteTable sites={sites} theme={theme} onSiteClick={hasGeo ? handleSiteClick : undefined}/>
       </>)}
     </div>
   );
