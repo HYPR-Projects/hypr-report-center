@@ -842,6 +842,37 @@ export async function saveAbsOverride({ short_token, has_abs }) {
   );
 }
 
+// ── Agência do cliente (admin) ───────────────────────────────────────────────
+
+/**
+ * Lê o override manual de agência de uma campanha. Retorna { agency, updated_by }
+ * se admin definiu explicitamente, ou null (= sem override — o header cai pra
+ * agency do Sales Center quando existir).
+ */
+export async function getAgencyOverride({ short_token }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=get_agency_override&short_token=${encodeURIComponent(short_token)}`,
+    { headers: adminAuthHeaders(jwt) },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json().catch(() => ({}));
+  return d?.override ?? null;
+}
+
+/**
+ * Salva o override de agência. `agency` vazia limpa o override — o header
+ * volta ao fallback do Sales Center.
+ */
+export async function saveAgencyOverride({ short_token, agency }) {
+  const jwt = await getOrIssueAdminJwt();
+  return postJson(
+    `${API_URL}?action=save_agency_override`,
+    { short_token, agency },
+    adminAuthHeaders(jwt),
+  );
+}
+
 // ── Core products override (admin) ───────────────────────────────────────────
 
 /**
