@@ -68,11 +68,11 @@ def test_row_basica_calculos():
     assert row["eCPM"] == round(99500 * 1000 / 1_000_000, 2)
 
 
-def test_compp_zerado_abaixo_de_99():
-    # Regra 2026-07-02: abaixo de 99% de %Delivery Rev não há comp nenhum
-    # (a faixa parcial de 0,25% deixou de existir) → célula em branco.
+def test_compp_faixa_parcial_abaixo_de_99():
+    # Fórmula do João (versão final 2026-07-02): abaixo de 99% de %Delivery
+    # Rev, tendo entregado algo, paga 0,5% do PI líquido.
     [row] = cs.build_compplan_rows([_line(curator_revenue=90000)])
-    assert row["Compp"] == ""
+    assert row["Compp"] == round(83470.0 * cs.COMPP_PARTIAL_RATE, 2)
 
 
 def test_compp_em_branco_sem_delivery_ou_sem_pi():
@@ -144,10 +144,11 @@ def test_coercao_numeric_decimal_do_bq():
 def test_formulas_auditaveis():
     # Client PI Net referencia o PI da própria linha com o fator
     assert cs.pi_net_formula(13) == '=IF(E13="","",ROUND(E13*0.8347,2))'
-    # Compp: o corte de 99% é revenue ÷ PI NEGOCIADO (I/E), explícito na
-    # célula — não referencia a coluna M. Base do 0,75% é o PI líquido (F).
+    # Compp: mesma shape da fórmula manual do João — IF(M>=0.99, F*0.0075,
+    # F*0.005) — com guard de sem PI/sem delivery → branco. M é auditável
+    # por ser ela mesma =I/E (revenue ÷ PI negociado).
     assert cs.compp_formula(13) == (
-        '=IF(OR(E13="",I13<=0),"",IF(I13/E13>=0.99,ROUND(F13*0.0075,2),""))'
+        '=IF(OR(E13="",I13<=0),"",IF(M13>=0.99,F13*0.0075,F13*0.005))'
     )
     # Percentuais e eCPM também são fórmulas (auditáveis na célula)
     assert cs.pct_rev_formula(13)    == '=IF(E13="","",I13/E13)'
