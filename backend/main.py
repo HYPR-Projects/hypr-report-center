@@ -126,14 +126,18 @@ clients.set_bq_client(bq)
 # o que é aceitável: a próxima request reidrata e as subsequentes pegam o hit.
 #
 # TTLs:
-#   - report (token):    3h    — payload pesado; a base consolidada só muda
-#                                1x/dia (~06h via pipeline)
-#   - campaigns list:    15min — admin abre/fecha o tempo todo
+#   - report (token):    3h — payload pesado; a base consolidada só muda
+#                             1x/dia (~06h via pipeline)
+#   - campaigns list:    3h — warm via cron de warmup; ver nota em
+#                             _LIST_CACHE_TTL abaixo
 #
 # Invalidação manual:
 #   - mutações (save_logo, save_loom, save_survey, save_upload,
 #     save_report_owner) limpam o cache do token afetado
 #   - ?refresh=true força bypass de cache na request atual
+#   - "Reconstruir agora" (?action=rebuild_unified): quando a run do Dagster
+#     TERMINA, _check_pending_rebuild derruba os caches derivados da base
+#     unificada (lista, clientes, reports…) — ver seção do Dagster
 # ─────────────────────────────────────────────────────────────────────────────
 # Report: era 600s, conservador demais pra um dado que só muda 1x/dia. 3h
 # alinha com o cron de warmup (deploy.sh: a cada 3h, 06h30–18h30 BRT), que
@@ -147,8 +151,11 @@ _REPORT_CACHE_TTL  = 3 * 3600
 # 3 full scans de tabelas não particionadas) custa 15-65s fria, e o dado de
 # delivery só muda 1x/dia (~06h). Com 900s o cache vencia entre os warmups (3/3h)
 # e o time pagava a query fria; a 3h casa com a cadência do warmup e fica warm o
-# dia todo. Mutações de admin já invalidam via _cache_invalidate_token, então
-# "stale" só ocorre em mudança externa da base (coberta pelo warmup/?refresh).
+# dia todo. Mutações de admin já invalidam via _cache_invalidate_token; o
+# rebuild diário (~06h) é coberto pelo warmup 06h30; e o "Reconstruir agora"
+# invalida automaticamente ao terminar (_check_pending_rebuild) — incidente
+# 2026-07-03: sem isso a lista ficava stale por até 3h após o rebuild manual
+# e o botão parecia não funcionar.
 _LIST_CACHE_TTL    = 3 * 3600
 # View "Por cliente" do menu admin — agregação derivada de query_campaigns_list
 # + 1 query temporal pra sparklines. Mesmo raciocínio (e TTL) da lista.
@@ -301,6 +308,9 @@ def _get_campaigns_list_cached(force_refresh=False):
     popula o cache. Garante que, se múltiplas threads pedem ao mesmo tempo,
     apenas uma faz o trabalho real. As outras esperam e leem do cache.
     """
+    # Rebuild manual pendente que já terminou invalida o cache ANTES da
+    # leitura — sem isso a lista fica stale por até 3h pós-rebuild (TTL).
+    _check_pending_rebuild()
     if not force_refresh:
         cached = _cache_get(_list_cache, "all", _LIST_CACHE_TTL)
         if cached is not None:
@@ -3057,6 +3067,10 @@ def report_data(request):
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
+            # Poll natural da UI (intervalo + 90s/240s após "Reconstruir
+            # agora") — ponto quente pra detectar o fim do rebuild e
+            # invalidar os caches sem depender de interação com a lista.
+            _check_pending_rebuild()
             # `sources` = aterrissagem REAL por fonte (tabelas tratadas) — verdade
             # por-DSP, não contamina nem esconde. `unified_max` = frescor do OUTPUT
             # consolidado que os reports consomem (headline "reports atualizados?").
@@ -3091,6 +3105,10 @@ def report_data(request):
                 logger.info(f"[rebuild_unified] clique deduplicado — run {res['run_id']} já em andamento (solicitante: {admin.get('email','?')})")
             else:
                 logger.info(f"[rebuild_unified] run {res['run_id']} disparada por {admin.get('email','?')}")
+            # Registra a run pra invalidar os caches quando ela TERMINAR
+            # (ver _check_pending_rebuild) — também no caso deduplicado,
+            # onde a run em andamento é de outro clique/admin.
+            _note_pending_rebuild(res["run_id"])
             return (jsonify({"ok": True, **res}), 200, headers)
         except RuntimeError as e:
             # Falha esperada (config ausente / Dagster recusou) — mensagem amigável.
@@ -4943,7 +4961,7 @@ query($job: String!) {
 """
 
 
-def _dagster_graphql(graphql_url, token, query, variables):
+def _dagster_graphql(graphql_url, token, query, variables, timeout=30):
     """POST GraphQL no Dagster+; devolve `data` ou lança RuntimeError amigável."""
     import urllib.error
 
@@ -4957,7 +4975,7 @@ def _dagster_graphql(graphql_url, token, query, variables):
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             body = json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "ignore")[:200] if hasattr(e, "read") else ""
@@ -5020,6 +5038,135 @@ def trigger_dagster_rebuild():
 
     run_id = res["run"]["runId"]
     return {"run_id": run_id, "run_url": f"{base}/runs/{run_id}", "already_running": False}
+
+
+# ── Invalidação automática de cache quando o rebuild manual termina ──────────
+# Incidente 2026-07-03: "Reconstruir agora" materializava a base nova no BQ,
+# mas _list_cache/_clients_cache (TTL 3h) seguiam servindo a lista velha — o
+# botão parecia não funcionar (na época foi "resolvido" reiniciando a instância
+# via gcloud run update).
+#
+# Estratégia: check LAZY na leitura, sem thread em background — Cloud Run sem
+# --no-cpu-throttling congela a CPU fora de request, então polling em thread
+# própria não é confiável, e um op no fim do job exigiria deploy no hyprster.
+# Ao disparar (ou deduplicar) o rebuild, registramos a run pendente; requests
+# que tocam os pontos quentes (poll de ?action=data_freshness, que a UI já
+# refaz a cada minuto e 90s/240s após o clique, e leitura da lista) chamam
+# _check_pending_rebuild, que no máx. 1x/60s pergunta ao Dagster o status da
+# run. Terminou com SUCCESS → derruba os caches derivados da base unificada;
+# a próxima leitura reidrata (a lista fria custa 15-65s — mesmo preço do
+# ?refresh=true que o time fazia na mão; o cron de warmup re-aquece depois).
+#
+# Escopo: cache é por instância, e o check só invalida a instância que o
+# executa — mesmo trade-off do resto da invalidação (concurrency=10 +
+# min-instances=1 ⇒ na prática uma instância serve quase todo o admin).
+# O rebuild diário das 06h NÃO é rastreado: o warmup 06h30 já o cobre.
+_DAGSTER_RUN_STATUS_QUERY = """
+query($runId: ID!) {
+  runOrError(runId: $runId) {
+    __typename
+    ... on Run { status }
+    ... on RunNotFoundError { message }
+  }
+}
+"""
+
+_REBUILD_CHECK_INTERVAL_S  = 60        # throttle do check (HTTP no Dagster)
+_REBUILD_PENDING_MAX_AGE_S = 2 * 3600  # job leva ~15min; 2h = run travada/perdida
+
+_pending_rebuild_lock = threading.Lock()
+_pending_rebuild = None  # {"run_id", "noted_at", "checked_at"} | None
+
+
+def _note_pending_rebuild(run_id):
+    """Registra a run do Dagster cujo término deve invalidar os caches.
+
+    Chamada pelo handler de rebuild_unified tanto pra run nova quanto pra
+    deduplicada (already_running) — nos dois casos há materialização em
+    andamento que vai tornar os caches stale.
+    """
+    global _pending_rebuild
+    with _pending_rebuild_lock:
+        _pending_rebuild = {
+            "run_id":     run_id,
+            "noted_at":   time.time(),
+            # checked_at=agora pula o primeiro ciclo — o job leva ~15min,
+            # não faz sentido perguntar o status logo após disparar.
+            "checked_at": time.time(),
+        }
+
+
+def _invalidate_unified_caches():
+    """Derruba os caches derivados da base unificada (pós-rebuild).
+
+    Só os que servem DADO de delivery — os caches de tabelas de admin
+    (overrides, shares, closures…) não mudam com o rebuild.
+    """
+    with _cache_lock:
+        _report_cache.clear()
+        _merged_report_cache.clear()
+        _list_cache.pop("all", None)
+        _clients_cache.pop("all", None)
+        _portal_cache.clear()
+        _performers_period_cache.clear()
+        # Freshness: limpa pra o indicador da UI refletir a base nova no
+        # próximo poll, sem esperar os 5min de TTL.
+        _data_freshness_cache.pop("all", None)
+        _source_landings_cache.pop("all", None)
+
+
+def _check_pending_rebuild():
+    """Se há rebuild pendente, checa (throttled) se terminou e invalida.
+
+    Best-effort e barato: no máximo 1 request GraphQL ao Dagster por minuto
+    por instância, apenas enquanto existe run pendente (~15min por rebuild).
+    Qualquer erro é engolido com warning — o pior caso é voltar ao
+    comportamento antigo (stale até o TTL/warmup).
+    """
+    global _pending_rebuild
+    with _pending_rebuild_lock:
+        p = _pending_rebuild
+        now = time.time()
+        if not p or now - p["checked_at"] < _REBUILD_CHECK_INTERVAL_S:
+            return
+        if now - p["noted_at"] > _REBUILD_PENDING_MAX_AGE_S:
+            logger.warning(f"[rebuild-watch] run {p['run_id']} pendente há >2h — desistindo do watch")
+            _pending_rebuild = None
+            return
+        # Reserva o slot antes de soltar o lock — outra thread concorrente
+        # não dispara um segundo HTTP no mesmo ciclo.
+        p["checked_at"] = now
+        run_id = p["run_id"]
+
+    token = os.environ.get("DAGSTER_API_TOKEN", "").strip()
+    if not token:
+        return
+    graphql_url = os.environ.get("DAGSTER_GRAPHQL_URL", "https://hypr.dagster.cloud/prod/graphql")
+    try:
+        data = _dagster_graphql(graphql_url, token, _DAGSTER_RUN_STATUS_QUERY,
+                                {"runId": run_id}, timeout=8)
+    except Exception as e:
+        logger.warning(f"[rebuild-watch] falha ao checar run {run_id}: {e}")
+        return
+
+    res = data.get("runOrError") or {}
+    typename = res.get("__typename")
+    if typename == "Run":
+        status = res.get("status")
+        if status == "SUCCESS":
+            _invalidate_unified_caches()
+            logger.warning(f"[rebuild-watch] run {run_id} concluída — caches da base unificada invalidados")
+        elif status in ("FAILURE", "CANCELED"):
+            logger.warning(f"[rebuild-watch] run {run_id} terminou como {status} — caches mantidos")
+        else:
+            return  # QUEUED/STARTED/CANCELING… — segue pendente
+    else:
+        # RunNotFoundError ou resposta inesperada — não insiste.
+        logger.warning(f"[rebuild-watch] run {run_id} não encontrada no Dagster ({typename}) — desistindo do watch")
+
+    with _pending_rebuild_lock:
+        if _pending_rebuild and _pending_rebuild["run_id"] == run_id:
+            _pending_rebuild = None
 
 
 def query_loom(short_token: str):
