@@ -1558,6 +1558,48 @@ def report_data(request):
             logger.error(f"[ERROR save_abs_override] {e}")
             return (jsonify({"error": "Erro ao salvar override de ABS"}), 500, headers)
 
+    # ── Endpoint: ler override de agência ────────────────────────────────────
+    if request.method == "GET" and request.args.get("action") == "get_agency_override":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        short_token = request.args.get("short_token", "").strip()
+        if not short_token:
+            return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+        try:
+            override = query_agency_override(short_token)
+            return (jsonify({"override": override}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR get_agency_override] {e}")
+            return (jsonify({"error": "Erro ao buscar override de agência"}), 500, headers)
+
+    # ── Endpoint: salvar override de agência ─────────────────────────────────
+    # `agency` vazia limpa o override (header volta ao fallback Sales Center).
+    if request.method == "POST" and request.args.get("action") == "save_agency_override":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            short_token = (body.get("short_token") or "").strip()
+            agency      = (body.get("agency") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            save_agency_override(short_token, agency, updated_by=admin.get("email"))
+            # Invalida o payload do report — o campaign.agency injetado em
+            # fetch_campaign_data reflete na próxima request.
+            _cache_invalidate_token(short_token)
+            audit_log.safe_write_event(
+                short_token=short_token,
+                event_type="agency_set",
+                actor_email=admin.get("email"),
+                message=(f"definiu a agência como \"{agency}\"" if agency else "limpou a agência (volta ao Sales Center)"),
+                payload={"agency": agency or None},
+            )
+            return (jsonify({"ok": True}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR save_agency_override] {e}")
+            return (jsonify({"error": "Erro ao salvar override de agência"}), 500, headers)
+
     # ── Endpoint: ler override de core products ─────────────────────────────
     # Devolve {override: {products, updated_by, updated_at}} ou {override: null}
     # (= automático, frentes derivadas do checklist). Admin-only.
@@ -3944,6 +3986,7 @@ def fetch_campaign_data(short_token, src=None):
 
     # Dispara campaign_info + auxiliares simultaneamente
     fut_campaign = _query_pool.submit(query_campaign_info, short_token, _cr_src)
+    fut_agency   = _query_pool.submit(query_agency_override, short_token)
     aux_tasks = {
         "daily":  _query_pool.submit(query_daily,  short_token, _cr_src, _win_from, _win_to),
         "detail": _query_pool.submit(query_detail, short_token, _cr_src, _win_from, _win_to),
@@ -3988,6 +4031,16 @@ def fetch_campaign_data(short_token, src=None):
             campaign_info["active_core_products"] = sorted(_cp_active)
     except Exception as e:
         logger.warning(f"[WARN active_core_products {short_token}] {e}")
+
+    # Agência (override admin) — exibida no eyebrow do header do report.
+    # Sem override, o campo fica ausente e o front cai pra agency do Sales
+    # Center (negociação que o header já busca via get_negotiation).
+    try:
+        _agency_ov = fut_agency.result()
+        if _agency_ov and _agency_ov.get("agency"):
+            campaign_info["agency"] = _agency_ov["agency"]
+    except Exception as e:
+        logger.warning(f"[WARN agency_override {short_token}] {e}")
 
     # totals é o único que depende de campaign_info — dispara agora
     fut_totals = _query_pool.submit(query_totals, short_token, campaign_info, _unified_src, _win_from, _win_to)
@@ -4450,6 +4503,16 @@ def compose_merged_report(group, force_refresh=False):
         # Mantém o short_token do ativo — comments/loom/logo apontam pra ele
         "short_token":       active_camp.get("short_token") or active_token,
         "client_name":       active_camp.get("client_name"),
+        # Agência: prefere o ativo; fallback membro mais recente com valor
+        # (mesma régua do logo/loom via first_non_null, mas campo aninhado).
+        "agency":            active_camp.get("agency") or next(
+            (
+                (per_token[t].get("campaign") or {}).get("agency")
+                for t in reversed(members_sorted)
+                if (per_token[t].get("campaign") or {}).get("agency")
+            ),
+            None,
+        ),
         "campaign_name":     active_camp.get("campaign_name"),
         "start_date":        earliest_start.isoformat() if earliest_start else active_camp.get("start_date"),
         "end_date":          latest_end.isoformat()     if latest_end     else active_camp.get("end_date"),
@@ -5090,6 +5153,89 @@ def query_abs_override(short_token: str):
             return {"has_abs": bool(rows[0]["has_abs"]), "updated_by": rows[0]["updated_by"]}
     except Exception as e:
         logger.warning(f"[WARN query_abs_override] {e}")
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agency override — agência do cliente exibida no eyebrow do header do report
+# (ex: "OBOTICÁRIO · ALMAPBBDO"). Fonte primária é o Sales Center
+# (checklists.agency, que o front já busca via get_negotiation); este override
+# cobre campanhas pré-Sales Center e correções. Precedência no front:
+# override > Sales Center > nada. Salvar agency vazia LIMPA o override
+# (volta ao fallback do Sales Center).
+# ─────────────────────────────────────────────────────────────────────────────
+def _agency_override_table_id() -> str:
+    return f"{PROJECT_ID}.{DATASET_ASSETS}.campaign_agency_overrides"
+
+
+_agency_override_table_ensured = False
+_agency_override_ensure_lock = threading.Lock()
+
+
+def _ensure_agency_override_table() -> None:
+    """Cria a tabela `campaign_agency_overrides` se não existir. Idempotente."""
+    global _agency_override_table_ensured
+    if _agency_override_table_ensured:
+        return
+    with _agency_override_ensure_lock:
+        if _agency_override_table_ensured:
+            return
+        sql = f"""
+            CREATE TABLE IF NOT EXISTS `{_agency_override_table_id()}` (
+                short_token STRING NOT NULL,
+                agency      STRING,
+                updated_by  STRING,
+                updated_at  TIMESTAMP
+            )
+        """
+        bq.query(sql).result()
+        _agency_override_table_ensured = True
+
+
+def save_agency_override(short_token: str, agency: str | None, updated_by: str | None = None):
+    """UPSERT da agência na tabela campaign_agency_overrides (atômico via MERGE).
+    `agency` vazia/None grava NULL — semanticamente "override limpo"."""
+    _ensure_agency_override_table()
+    agency_clean = (agency or "").strip() or None
+    sql = f"""
+        MERGE `{_agency_override_table_id()}` T
+        USING (SELECT @token AS short_token) S
+        ON T.short_token = S.short_token
+        WHEN MATCHED THEN
+            UPDATE SET agency = @agency, updated_at = CURRENT_TIMESTAMP(), updated_by = @updated_by
+        WHEN NOT MATCHED THEN
+            INSERT (short_token, agency, updated_at, updated_by)
+            VALUES (@token, @agency, CURRENT_TIMESTAMP(), @updated_by)
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("token",      "STRING", short_token),
+            bigquery.ScalarQueryParameter("agency",     "STRING", agency_clean),
+            bigquery.ScalarQueryParameter("updated_by", "STRING", updated_by),
+        ]
+    )
+    bq.query(sql, job_config=job_config).result()
+
+
+def query_agency_override(short_token: str):
+    """Retorna {agency, updated_by} do override do token, ou None se não existe
+    (linha ausente OU agency NULL — ambos significam "sem override")."""
+    _ensure_agency_override_table()
+    sql = f"""
+        SELECT agency, updated_by
+        FROM `{_agency_override_table_id()}`
+        WHERE short_token = @token AND agency IS NOT NULL
+        LIMIT 1
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("token", "STRING", short_token)]
+    )
+    try:
+        rows = list(bq.query(sql, job_config=job_config).result())
+        if rows:
+            return {"agency": rows[0]["agency"], "updated_by": rows[0]["updated_by"]}
+    except Exception as e:
+        logger.warning(f"[WARN query_agency_override] {e}")
     return None
 
 
@@ -5917,6 +6063,19 @@ def _overlay_frozen_live_fields(short_token, payload):
         payload.update(_resolve_alcance_frequencia(short_token))
     except Exception as e:
         logger.warning(f"[WARN frozen overlay alcance_frequencia {short_token}] {e}")
+    # Agência: metadado de header editável pós-freeze — segue o override
+    # atual, não o do momento do snapshot. Limpar o override também remove
+    # do payload congelado (front volta ao fallback Sales Center).
+    try:
+        camp = payload.get("campaign")
+        if isinstance(camp, dict):
+            _ag = query_agency_override(short_token)
+            if _ag and _ag.get("agency"):
+                camp["agency"] = _ag["agency"]
+            else:
+                camp.pop("agency", None)
+    except Exception as e:
+        logger.warning(f"[WARN frozen overlay agency {short_token}] {e}")
     return payload
 
 

@@ -58,6 +58,10 @@ function deriveStatus(startStr, endStr) {
 export function CampaignHeaderV2({
   campaignName,
   clientName,
+  // Agência do cliente (override admin, vem no payload como campaign.agency).
+  // Quando ausente, cai na agency do Sales Center (negociação já buscada
+  // abaixo pro chip "Negociado"). Sem nenhuma das duas, o eyebrow não muda.
+  agency = null,
   logo, // data URL base64 (PNG/JPG/SVG) — opcional. Se ausente, cai no placeholder de texto
   startDate,
   endDate,
@@ -162,6 +166,19 @@ export function CampaignHeaderV2({
   }, [memberTokensKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const hasAnyNegotiation = Object.values(negotiationsByToken).some(Boolean);
 
+  // Agência exibida no eyebrow: override do admin (prop) vence; senão a
+  // primeira agency não-vazia entre as negociações do Sales Center (em
+  // campanha merged pode haver várias — são o mesmo cliente, qualquer uma
+  // serve). Chega async junto com o "Negociado", sem fetch extra.
+  const salesAgency = useMemo(
+    () =>
+      Object.values(negotiationsByToken)
+        .map((n) => (n?.agency || "").trim())
+        .find(Boolean) || null,
+    [negotiationsByToken],
+  );
+  const displayAgency = (agency || "").trim() || salesAgency;
+
   // Logo dinâmica entre temas com UMA única imagem
   // ──────────────────────────────────────────────
   // O sistema analisa a logo (canvas API) e classifica em 4 buckets:
@@ -215,6 +232,20 @@ export function CampaignHeaderV2({
             <span className="text-[11px] font-bold uppercase tracking-[1.5px] text-signature">
               {clientName || "Campanha"}
             </span>
+            {/* Agência — mesma régua tipográfica do cliente, mas em fg-muted:
+                hierarquia clara (cliente em signature puxa o olhar, agência
+                acompanha discreta) sem custo de espaço. */}
+            {displayAgency && (
+              <>
+                <span className="text-fg-subtle text-xs" aria-hidden>·</span>
+                <span
+                  className="text-[11px] font-bold uppercase tracking-[1.2px] text-fg-muted truncate max-w-[220px]"
+                  title={`Agência: ${displayAgency}`}
+                >
+                  {displayAgency}
+                </span>
+              </>
+            )}
             {status.label && (
               <>
                 <span className="text-fg-subtle text-xs" aria-hidden>·</span>

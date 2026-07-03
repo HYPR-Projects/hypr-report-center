@@ -20,6 +20,7 @@ import { Button } from "../../../ui/Button";
 import { cn } from "../../../ui/cn";
 import { Avatar } from "../../../ui/Avatar";
 import { AbsToggle } from "./AbsToggle";
+import { AgencyField } from "./AgencyField";
 import { CoreProductsOverride } from "./CoreProductsOverride";
 import { TokenChip } from "./TokenChip";
 import { ClosureModal } from "./ClosureModal";
@@ -730,6 +731,16 @@ export function CampaignDrawer({
             <CoreProductsOverride
               shortToken={short_token}
               onChange={onAbsChange}
+            />
+          </div>
+
+          {/* Agência do cliente — override do que aparece no eyebrow do header
+              do report. Placeholder mostra a agency do Sales Center (quando o
+              fetch da negociação já resolveu) pra deixar claro o fallback. */}
+          <div className="drawer-section-rise drawer-stagger-2 mb-5">
+            <AgencyField
+              shortToken={short_token}
+              salesAgency={negotiation?.agency || null}
             />
           </div>
 
