@@ -61,10 +61,12 @@ TAB_NAME    = "Compplan"
 # PI líquido = PI negociado × fator (comissão/impostos).
 PI_NET_FACTOR = 0.8347
 
-# Comp: SÓ paga com entrega total (% Delivery Rev ≥ 99%) — 0,75% do PI
-# líquido. Abaixo de 99% não há comp (regra confirmada pelo João em
-# 2026-07-02; a faixa parcial de 0,25% deixou de existir).
+# Comp (fórmula do João, versão final 2026-07-02): % Delivery Rev ≥ 99%
+# paga 0,75% do PI líquido; abaixo (desde que TENHA entregado algo) paga
+# 0,5%. Sem gate de status — deal Running conta igual. Sem PI ou sem
+# delivery → em branco.
 COMPP_FULL_RATE          = 0.0075
+COMPP_PARTIAL_RATE       = 0.005
 COMPP_DELIVERY_THRESHOLD = 0.99
 
 STATUS_EN = {
@@ -100,21 +102,24 @@ INT_COLS      = [6]
 # fórmulas equivalentes (mesmos números após recálculo). Se o overlay
 # falhar, os valores estáticos permanecem — por isso é best-effort.
 #
-# IMPORTANTE (pedido explícito dele): o corte de 99% do Compp é sobre
-# Curator Revenue ÷ Client PI NEGOTIATION (I/E) — o PI líquido (F) entra
-# só como base do 0,75%. A fórmula referencia I/E diretamente (não a
-# coluna M) pra conta ficar legível na própria célula.
+# IMPORTANTE: o Compp segue a fórmula do João (mesma shape da planilha
+# manual dele): IF(M>=0.99, F*0.0075, F*0.005). M (% Delivery Rev) é ela
+# mesma uma fórmula =I/E (revenue ÷ PI NEGOCIADO), então a cadeia inteira
+# é auditável célula a célula. Guard extra nosso: sem PI ou sem delivery
+# → em branco (a versão manual dele gateava por Finished, que ele
+# descartou — sem o guard, deal sem entrega ganharia 0,5%).
 #
 # Letras das colunas (ordem de COMPPLAN_COLUMNS):
 #   E = Client PI Negotiation · F = Client PI Net · G = Impressions
 #   I = Curator Revenue · J = Curator Margin · K = Margin %
 #   L = % Delivery Margin · M = % Delivery Rev. · N = eCPM · P = Compp
-PI_COL     = "E"
-PI_NET_COL = "F"
-IMPS_COL   = "G"
-REV_COL    = "I"
-MARGIN_COL = "J"
-COMPP_COL  = "P"
+PI_COL      = "E"
+PI_NET_COL  = "F"
+IMPS_COL    = "G"
+REV_COL     = "I"
+MARGIN_COL  = "J"
+PCT_REV_COL = "M"
+COMPP_COL   = "P"
 
 
 def pi_net_formula(n: int) -> str:
@@ -143,12 +148,13 @@ def ecpm_formula(n: int) -> str:
 
 
 def compp_formula(n: int) -> str:
-    """Compp: 0,75% do PI líquido SE revenue ÷ PI negociado (I/E) ≥ 99%;
-    abaixo disso (ou sem PI/sem delivery) fica em branco."""
+    """Compp (fórmula do João): M ≥ 99% → F×0,75%; abaixo → F×0,5%.
+    Sem PI ou sem delivery → em branco."""
     return (
         f'=IF(OR({PI_COL}{n}="",{REV_COL}{n}<=0),"",'
-        f'IF({REV_COL}{n}/{PI_COL}{n}>={COMPP_DELIVERY_THRESHOLD},'
-        f'ROUND({PI_NET_COL}{n}*{COMPP_FULL_RATE},2),""))'
+        f'IF({PCT_REV_COL}{n}>={COMPP_DELIVERY_THRESHOLD},'
+        f'{PI_NET_COL}{n}*{COMPP_FULL_RATE},'
+        f'{PI_NET_COL}{n}*{COMPP_PARTIAL_RATE}))'
     )
 
 
@@ -286,11 +292,13 @@ def build_compplan_rows(lines: List[Dict]) -> List[Dict]:
 
         pct_margin = (margin / pi) if pi and pi > 0 else None
         pct_rev    = (revenue / pi) if pi and pi > 0 else None
-        # Comp SÓ existe com entrega total (≥ 99% do PI em revenue). Sem PI,
-        # sem delivery ou abaixo do corte → em branco.
+        # Comp (fórmula do João): ≥ 99% de %Delivery Rev → 0,75% do PI
+        # líquido; abaixo (tendo entregado) → 0,5%. Sem PI/sem delivery
+        # → em branco.
         compp = None
-        if pi_net is not None and revenue > 0 and pct_rev >= COMPP_DELIVERY_THRESHOLD:
-            compp = _round2(pi_net * COMPP_FULL_RATE)
+        if pi_net is not None and revenue > 0:
+            rate = COMPP_FULL_RATE if pct_rev >= COMPP_DELIVERY_THRESHOLD else COMPP_PARTIAL_RATE
+            compp = _round2(pi_net * rate)
 
         rows.append({
             "_sort": start_date or "9999-99-99",
