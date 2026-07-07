@@ -7838,6 +7838,58 @@ def _compute_totals(perf_rows, c, campaign_info):
         })
     return result
 
+
+def effective_cost_front(
+    is_video, delivered, budget, neg, cpm_neg, cpcv_neg,
+    actual_start, days_with_delivery, start, end, today,
+):
+    """Custo efetivo (faturável consumido) de UMA frente×mídia.
+
+    Fonte ÚNICA da fórmula de `effective_total_cost` que hoje vive inline em
+    `_compute_totals` (report). Extraída pra que o CARD do menu admin
+    (`query_campaigns_list` → `client_delivered_value`) produza o MESMO número
+    que a Visão Geral do report — antes o card usava `min(entrega×neg, contrato
+    CHEIO)` por mídia, que não trava o over no pró-rata como o report faz, então
+    no meio do voo uma frente adiantada mostrava a MAIS (ex.: Diageo I4U4HR card
+    256k vs report 248k — gap 100% no vídeo, que entrega acima do esperado).
+
+    Regra (idêntica ao report):
+      • `budget` = contratado (SEM bônus) × CPM/CPCV negociado.
+      • over-delivery (entregou mais que o esperado pró-rata) → custo travado no
+        `budget_prop` (budget proporcional aos dias decorridos; budget cheio se
+        encerrada). No meio do voo isso é MENOR que entrega×neg.
+      • sub-delivery → entrega × negociado (valor do que rodou).
+    `neg` = contratado + bônus (limiar do over/esperado); `delivered` = viewable
+    impressions (display) ou viewable completions (video), sempre do UNIFIED —
+    mesma fonte do report. Espelha `_compute_totals` linhas ~7695-7806 (mantém
+    a paridade coberta por test_effective_cost.py)."""
+    if not (start and end):
+        return 0.0
+    total_days   = (end - start).days + 1
+    elapsed_days = max(0, (today - start).days)
+    is_ended     = end < today
+    row_start = max(actual_start, start) if actual_start else start
+    row_total_days = (end - row_start).days + 1 if (row_start and end) else total_days
+    if is_ended:
+        budget_prop = budget
+    elif is_video:
+        budget_prop = (budget / row_total_days * days_with_delivery) if (row_total_days > 0 and days_with_delivery > 0) else 0.0
+    elif total_days > 0 and elapsed_days > 0:
+        budget_prop = budget / total_days * elapsed_days
+    else:
+        budget_prop = 0.0
+    if is_video:
+        expected  = (neg / row_total_days * days_with_delivery) if (row_total_days > 0 and days_with_delivery > 0) else 0
+        views_esp = expected if not is_ended else neg
+        over = delivered > views_esp
+        return budget_prop if over else cpcv_neg * delivered
+    else:
+        expected  = (neg / total_days * elapsed_days) if (total_days > 0 and elapsed_days > 0) else 0
+        impr_esp  = expected if not is_ended else neg
+        over = delivered > impr_esp
+        return budget_prop if over else cpm_neg * delivered / 1000
+
+
 def query_daily(token, cr_src=None, win_from=None, win_to=None):
     """Daily aggregated by date + media_type + tactic_type for charts.
 
@@ -8161,6 +8213,15 @@ def _apply_frozen_delivery_override(r: dict, payload: dict) -> None:
     r["v_o2o_actual_start_date"]    = _astart(V, "O2O")
     r["v_ooh_actual_start_date"]    = _astart(V, "OOH")
 
+    # ── Faturável consumido (client_delivered_value) ──
+    # Report congelado serve o snapshot VERBATIM (entrega + custo travados),
+    # então o "consumido" do card = Σ effective_total_cost gravado nas rows de
+    # totals — exatamente o Custo Efetivo que a Visão Geral do report exibe.
+    # Sinaliza pro loop pular o recálculo live (effective_cost_front) e usar
+    # estes valores congelados. Chave privada (prefixo _) — não sai no payload.
+    r["_frozen_d_delivered_value"] = _sum(D, "effective_total_cost")
+    r["_frozen_v_delivered_value"] = _sum(V, "effective_total_cost")
+
 
 def query_campaigns_list():
     # Query principal: agregações de delivery por short_token. Owners NÃO
@@ -8305,11 +8366,28 @@ def query_campaigns_list():
                 SUM(IF(media_type='VIDEO', viewable_impressions, 0)) AS v_viewable_impressions,
                 COUNT(DISTINCT IF(media_type='DISPLAY', date, NULL)) AS d_days_with_delivery,
                 SUM(IF(media_type='DISPLAY', viewable_impressions, 0)) AS d_viewable_impressions,
-                -- NOTA: a entrega por frente (d_o2o_viewable_impressions etc.)
-                -- saiu daqui e passou a vir do CR (CTE `agg`), pra o pacing
-                -- per-frente do card bater 1:1 com o report (query_detail). O
-                -- unified só fica com os TOTAIS (d_viewable_impressions /
-                -- v_viewable_completions) que alimentam o FATURÁVEL
+                -- Entrega UNIFIED por FRENTE (viewable display / viewable
+                -- completions video) + dias de entrega do vídeo por frente.
+                -- Alimentam o FATURÁVEL per-frente (client_delivered_value via
+                -- effective_cost_front), que precisa decidir over/under POR
+                -- FRENTE — o report (_compute_totals) faz exatamente isso lendo
+                -- o UNIFIED. O pacing per-frente continua vindo do CR (`agg`);
+                -- só o faturável usa estes campos unified. Mesmo regex/gate de
+                -- Groundflow das demais frentes (GF vence O2O/OOH).
+                SUM(IF(media_type='DISPLAY' AND NOT (gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)')) AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), viewable_impressions, 0)) AS d_o2o_uview,
+                SUM(IF(media_type='DISPLAY' AND NOT (gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)')) AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), viewable_impressions, 0)) AS d_ooh_uview,
+                SUM(IF(media_type='DISPLAY' AND gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)'), viewable_impressions, 0)) AS d_groundflow_uview,
+                SUM(IF(media_type='VIDEO' AND impressions > 0 AND NOT (gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)')) AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), video_view_100_complete * (viewable_impressions / impressions), 0)) AS v_o2o_ucomp,
+                SUM(IF(media_type='VIDEO' AND impressions > 0 AND NOT (gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)')) AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), video_view_100_complete * (viewable_impressions / impressions), 0)) AS v_ooh_ucomp,
+                SUM(IF(media_type='VIDEO' AND impressions > 0 AND gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)'), video_view_100_complete * (viewable_impressions / impressions), 0)) AS v_groundflow_ucomp,
+                COUNT(DISTINCT IF(media_type='VIDEO' AND NOT (gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)')) AND REGEXP_CONTAINS(line_name, r'(?i)[_-]O2O([_-]|$)'), date, NULL)) AS v_o2o_udays,
+                COUNT(DISTINCT IF(media_type='VIDEO' AND NOT (gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)')) AND REGEXP_CONTAINS(line_name, r'(?i)[_-]OOH([_-]|$)'), date, NULL)) AS v_ooh_udays,
+                COUNT(DISTINCT IF(media_type='VIDEO' AND gf_on AND REGEXP_CONTAINS(line_name, r'(?i)[_-](RMNF|GROUNDFLOW)([_-]|$)'), date, NULL)) AS v_groundflow_udays,
+                -- NOTA: a entrega por frente pra PACING (d_o2o_viewable_impressions
+                -- etc.) vem do CR (CTE `agg`), pra o pacing per-frente do card
+                -- bater 1:1 com o report (query_detail). Os totais unified
+                -- (d_viewable_impressions / v_viewable_completions) e os splits
+                -- *_uview/*_ucomp acima alimentam o FATURÁVEL
                 -- (client_delivered_value), que espelha o effective_total_cost
                 -- do report — esse, sim, é unified.
                 -- ADMIN-ONLY: custo cru do DSP (sem margem/over) + impressions
@@ -8557,6 +8635,10 @@ def query_campaigns_list():
             u.v_o2o_actual_start_date, u.v_ooh_actual_start_date,
             u.v_groundflow_actual_start_date,
             u.d_days_with_delivery,   u.d_viewable_impressions,
+            -- Entrega UNIFIED por frente (faturável per-frente = effective_cost_front)
+            u.d_o2o_uview,   u.d_ooh_uview,   u.d_groundflow_uview,
+            u.v_o2o_ucomp,   u.v_ooh_ucomp,   u.v_groundflow_ucomp,
+            u.v_o2o_udays,   u.v_ooh_udays,   u.v_groundflow_udays,
             u.admin_total_cost,       u.admin_impressions,
             u.d_admin_total_cost,     u.d_admin_impressions,
             u.v_admin_total_cost,     u.v_admin_impressions,
@@ -8731,8 +8813,6 @@ def query_campaigns_list():
         v_comp            = float(r["v_completions"]          or 0)
         v_cost            = float(r["v_cost"]                 or 0)
         v_days_delivery   = int(r["v_days_with_delivery"]     or 0)
-        v_viewable_comp   = float(r["v_viewable_completions"] or 0)
-        v_viewable_impr   = float(r["v_viewable_impressions"] or 0)
         v_actual_start    = _coerce_date(r["v_actual_start_date"])
         d_actual_start    = _coerce_date(r["d_actual_start_date"])
         d_o2o_actual_start = _coerce_date(r["d_o2o_actual_start_date"])
@@ -8742,7 +8822,6 @@ def query_campaigns_list():
         v_ooh_actual_start = _coerce_date(r["v_ooh_actual_start_date"])
         v_groundflow_actual_start = _coerce_date(r["v_groundflow_actual_start_date"])
         d_days_delivery   = int(r["d_days_with_delivery"]     or 0)
-        d_viewable_impr   = float(r["d_viewable_impressions"] or 0)
 
         cpm_amount  = float(r["cpm_amount"]  or 0)
         cpcv_amount = float(r["cpcv_amount"] or 0)
@@ -9001,21 +9080,56 @@ def query_campaigns_list():
         if v_client_budget > 0:
             entry["v_client_budget"] = round(v_client_budget, 2)
 
-        # Valor entregue ao cliente (faturável consumido) — espelha o
-        # `effective_total_cost` do report: entrega valorada ao CPM/CPCV
-        # NEGOCIADO, capada no budget contratado da mídia (over-delivery não
-        # fatura além do PI). Alimenta o par "investido total vs consumido" no
-        # card do menu admin. Em campanha encerrada antes do previsto é,
-        # naturalmente, o novo faturável (entrega < contrato). Capa por mídia
-        # pra não deixar over de uma frente cobrir under da outra. Só emite
-        # quando há PI cliente (>0) — bonificada / sem CPM-CPCV fica sem campo.
-        d_delivered_value = min(d_viewable_impr * cpm_amount / 1000, d_client_budget) if d_client_budget > 0 else 0.0
-        v_delivered_value = min(v_viewable_comp * cpcv_amount,       v_client_budget) if v_client_budget > 0 else 0.0
+        # Valor entregue ao cliente (faturável consumido) = MESMO número que o
+        # "Custo Efetivo · Total" da Visão Geral do report. Calculado POR FRENTE
+        # via effective_cost_front (fonte única compartilhada com o report):
+        # entrega UNIFIED valorada ao CPM/CPCV negociado, com over-delivery
+        # travada no budget PRÓ-RATA (não no contrato cheio). O modelo antigo
+        # (`min(entrega×neg, contrato CHEIO)` por mídia) não travava o over no
+        # meio do voo → card mostrava a MAIS que o report (ex.: Diageo I4U4HR
+        # card 256k vs report 248k). Cálculo por frente também impede over de
+        # uma frente cobrir under da outra (o report é per-frente).
+        #
+        # Report congelado: usa o effective_total_cost gravado no snapshot
+        # (servido verbatim), setado por _apply_frozen_delivery_override.
+        _start_dt = _coerce_date(start_date)
+        _end_dt   = _coerce_date(end_date)
+        _today    = date.today()
+        if r.get("_frozen_d_delivered_value") is not None:
+            d_delivered_value = float(r.get("_frozen_d_delivered_value") or 0)
+            v_delivered_value = float(r.get("_frozen_v_delivered_value") or 0)
+        else:
+            # Entrega UNIFIED por frente (mesma fonte do report). budget por
+            # frente = contratado (SEM bônus) × preço; neg (limiar over) já é
+            # contratado + bônus (d_*_neg / v_*_neg acima).
+            _d_fronts = (
+                (float(r["d_o2o_uview"] or 0),        float(r["contracted_o2o_display"] or 0),        d_o2o_neg,        d_o2o_actual_start),
+                (float(r["d_ooh_uview"] or 0),        float(r["contracted_ooh_display"] or 0),        d_ooh_neg,        d_ooh_actual_start),
+                (float(r["d_groundflow_uview"] or 0), float(r["contracted_groundflow_display"] or 0), d_groundflow_neg, d_groundflow_actual_start),
+            )
+            _v_fronts = (
+                (float(r["v_o2o_ucomp"] or 0),        float(r["contracted_o2o_video"] or 0),        v_o2o_neg,        int(r["v_o2o_udays"] or 0),        v_o2o_actual_start),
+                (float(r["v_ooh_ucomp"] or 0),        float(r["contracted_ooh_video"] or 0),        v_ooh_neg,        int(r["v_ooh_udays"] or 0),        v_ooh_actual_start),
+                (float(r["v_groundflow_ucomp"] or 0), float(r["contracted_groundflow_video"] or 0), v_groundflow_neg, int(r["v_groundflow_udays"] or 0), v_groundflow_actual_start),
+            )
+            # Arredonda POR FRENTE antes de somar — o report arredonda cada
+            # effective_total_cost a 2 casas (round em _compute_totals) e o
+            # frontend soma; replicar aqui evita deriva de ±1 centavo.
+            d_delivered_value = sum(
+                round(effective_cost_front(False, view, contr * cpm_amount / 1000, neg, cpm_amount, cpcv_amount, astart, 0, _start_dt, _end_dt, _today), 2)
+                for view, contr, neg, astart in _d_fronts
+            )
+            v_delivered_value = sum(
+                round(effective_cost_front(True, comp, contr * cpcv_amount, neg, cpm_amount, cpcv_amount, astart, days, _start_dt, _end_dt, _today), 2)
+                for comp, contr, neg, days, astart in _v_fronts
+            )
         client_delivered_value = d_delivered_value + v_delivered_value
+        # Emite só quando há PI cliente (>0) — bonificada / sem CPM-CPCV fica
+        # sem campo → UI mostra "—" (semântica honesta de "sem faturável").
         if (d_client_budget > 0 or v_client_budget > 0):
             entry["client_delivered_value"] = round(client_delivered_value, 2)
         # Por mídia — alimenta o refaturamento do Diagnóstico (tech cost por
-        # mídia). Mesma régua, separado por frente.
+        # mídia). Mesma régua, separado por mídia.
         if d_client_budget > 0:
             entry["d_client_delivered_value"] = round(d_delivered_value, 2)
         if v_client_budget > 0:
