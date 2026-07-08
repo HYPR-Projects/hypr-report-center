@@ -114,6 +114,22 @@ if [ -z "$PMP_SCHEDULER_SECRET" ]; then
   echo "     Configure o Cloud Scheduler job com este valor no header X-Scheduler-Secret."
 fi
 
+# NAVI_API_KEY — secret de serviço do chatbot Navi (n8n). Autentica as
+# actions read-only dedicadas ao bot via header X-Navi-Key. Mesmo padrão
+# do PMP_SCHEDULER_SECRET: gera uma vez, persiste no Secret Manager.
+NAVI_API_KEY=$(extract_env "NAVI_API_KEY")
+if [ -z "$NAVI_API_KEY" ]; then
+  NAVI_API_KEY=$(gcloud secrets versions access latest --secret=NAVI_API_KEY --project=site-hypr 2>/dev/null || echo "")
+fi
+if [ -z "$NAVI_API_KEY" ]; then
+  NAVI_API_KEY=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+  gcloud secrets describe NAVI_API_KEY --project=site-hypr >/dev/null 2>&1 || \
+    gcloud secrets create NAVI_API_KEY --replication-policy=automatic --project=site-hypr >/dev/null
+  printf '%s' "$NAVI_API_KEY" | gcloud secrets versions add NAVI_API_KEY --data-file=- --project=site-hypr >/dev/null
+  echo "  ✨ NAVI_API_KEY gerado e armazenado no Secret Manager."
+  echo "     Configure este valor no header X-Navi-Key da tool HTTP do n8n."
+fi
+
 # DAGSTER_API_TOKEN — user token do Dagster+ usado pelo endpoint
 # rebuild_unified (botão "Reconstruir agora" no indicador Estado das bases),
 # que dispara o job dbt via GraphQL launchRun. Mesmo padrão dos demais:
@@ -235,6 +251,9 @@ if [ -n "$XANDR_CURATE_MEMBER_ID" ]; then
 fi
 if [ -n "$PMP_SCHEDULER_SECRET" ]; then
   echo "PMP_SCHEDULER_SECRET: '${PMP_SCHEDULER_SECRET}'" >> "$ENV_FILE"
+fi
+if [ -n "$NAVI_API_KEY" ]; then
+  echo "NAVI_API_KEY: '${NAVI_API_KEY}'" >> "$ENV_FILE"
 fi
 if [ -n "$DAGSTER_API_TOKEN" ]; then
   echo "DAGSTER_API_TOKEN: '${DAGSTER_API_TOKEN}'" >> "$ENV_FILE"

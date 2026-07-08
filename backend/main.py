@@ -42,6 +42,7 @@ from auth import (
     authenticate_admin,
     issue_admin_jwt,
     verify_google_id_token,
+    verify_navi_key,
 )
 import owners
 import shares
@@ -889,6 +890,116 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR lookup_share] {e}")
             return (jsonify({"error": "Erro ao buscar share_id"}), 500, headers)
+
+    # ── Endpoint: métricas de campanha para o Navi (chatbot interno) ─────────
+    # Read-only. Auth via X-Navi-Key (verify_navi_key) OU JWT admin (facilita
+    # teste manual logado no front). Reusa a lista cacheada (?list=true) e o
+    # report cacheado por token (_get_report_cached) — mesma matemática e
+    # mesmo cache do painel; zero risco de drift de fórmula. Payload enxuto:
+    # o consumidor é um LLM agent, contexto é caro.
+    #
+    # Params:
+    #   token=XXXXXX      → uma campanha específica
+    #   client=nome       → campanhas do cliente (match parcial, sem acento/caixa)
+    #   status=active|all → filtro (default active; só se aplica com client=)
+    #   limit=N           → máx de campanhas retornadas (default 5, cap 10)
+    if request.method == "GET" and request.args.get("action") == "navi_metrics":
+        if not (verify_navi_key(request) or authenticate_admin(request)):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            import unicodedata
+
+            def _navi_norm(s):
+                s = unicodedata.normalize("NFD", (s or ""))
+                s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+                return s.casefold().strip()
+
+            q_token  = (request.args.get("token") or "").strip().upper()
+            q_client = _navi_norm(request.args.get("client"))
+            q_status = (request.args.get("status") or "active").strip().lower()
+            try:
+                limit = max(1, min(int(request.args.get("limit") or 5), 10))
+            except ValueError:
+                limit = 5
+
+            if not q_token and not q_client:
+                return (jsonify({"error": "Informe token= ou client="}), 400, headers)
+
+            campaigns, _hit = _get_campaigns_list_cached()
+
+            today = date.today()
+
+            def _is_active(c):
+                sd = _parse_iso_date_safe(c.get("start_date"))
+                ed = _parse_iso_date_safe(c.get("end_date"))
+                return bool(sd and ed and sd <= today <= ed)
+
+            if q_token:
+                selected = [
+                    c for c in campaigns
+                    if (c.get("short_token") or "").upper() == q_token
+                ]
+            else:
+                selected = [
+                    c for c in campaigns
+                    if q_client in _navi_norm(c.get("client_name"))
+                ]
+                if q_status != "all":
+                    selected = [c for c in selected if _is_active(c)]
+                selected.sort(key=lambda c: c.get("end_date") or "", reverse=True)
+
+            out = []
+            for c in selected[:limit]:
+                tok = c.get("short_token")
+                item = {
+                    "short_token":    tok,
+                    "cliente":        c.get("client_name"),
+                    "campanha":       c.get("campaign_name"),
+                    "inicio":         c.get("start_date"),
+                    "fim":            c.get("end_date"),
+                    "ativa":          _is_active(c),
+                    # Pacing canônico por mídia — mesmo número do card admin.
+                    "pacing_display": c.get("display_pacing"),
+                    "pacing_video":   c.get("video_pacing"),
+                    "ctr_display":    c.get("display_ctr"),
+                    "vtr_video":      c.get("video_vtr"),
+                }
+                # Detalhe por frente/mídia com CPM/CPCV efetivo e rentabilidade
+                # — sai do MESMO _compute_totals que alimenta o report.
+                try:
+                    data, _ = _get_report_cached(tok)
+                except Exception as e:
+                    logger.warning(f"[WARN navi_metrics report {tok}] {e}")
+                    data = None
+                fronts = []
+                for row in ((data or {}).get("totals") or []):
+                    is_video = row.get("media_type") == "VIDEO"
+                    fronts.append({
+                        "frente":         row.get("tactic_type"),
+                        "midia":          row.get("media_type"),
+                        "pacing":         row.get("pacing"),
+                        "entregue":       row.get("completions") if is_video
+                                          else row.get("viewable_impressions"),
+                        "cpm_negociado":  None if is_video else row.get("deal_cpm_amount"),
+                        "cpm_efetivo":    None if is_video else row.get("effective_cpm_amount"),
+                        "cpcv_negociado": row.get("deal_cpcv_amount") if is_video else None,
+                        "cpcv_efetivo":   row.get("effective_cpcv_amount") if is_video else None,
+                        "rentabilidade":  row.get("rentabilidade"),
+                        "ctr":            row.get("ctr"),
+                        "vtr":            row.get("vtr") if is_video else None,
+                    })
+                if fronts:
+                    item["frentes"] = fronts
+                out.append(item)
+
+            return (jsonify({
+                "count":     len(out),
+                "campanhas": out,
+                "_fonte":    "report-hub/_compute_totals",
+            }), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR navi_metrics] {e}")
+            return (jsonify({"error": "Erro ao consultar métricas"}), 500, headers)
 
     # ══════════════════════════════════════════════════════════════════════════
     # PORTAL DO CLIENTE — dashboard central client-facing (ver client_portal.py)
