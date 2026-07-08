@@ -10,8 +10,9 @@
 // O Voltar à versão atual é movido aqui também — é uma ação global,
 // não pertence ao header da campanha.
 //
-// Não fixo (não sticky). Decisão: manter scroll comportamento padrão,
-// poupa pixel real estate em mobile.
+// Sticky glass: `sticky top-0` + fundo translúcido (bg-canvas/70) +
+// backdrop-blur. Conteúdo da página desliza por trás com efeito fosco.
+// Mesmo padrão do header do Portal do Cliente (ClientPortalPage).
 
 import { cn } from "../../ui/cn";
 import { ThemeToggleV2 } from "./ThemeToggleV2";
@@ -96,8 +97,9 @@ export function TopBarV2({
   return (
     <header
       className={cn(
+        "sticky top-0 z-30",
         "h-16 px-4 md:px-6 lg:px-8 flex items-center justify-between gap-3",
-        "bg-canvas border-b border-border",
+        "bg-canvas/70 backdrop-blur-md border-b border-border",
         className,
       )}
     >
