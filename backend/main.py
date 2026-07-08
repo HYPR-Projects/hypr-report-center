@@ -917,13 +917,6 @@ def report_data(request):
             q_token  = (request.args.get("token") or "").strip().upper()
             q_client = _navi_norm(request.args.get("client"))
             q_status = (request.args.get("status") or "active").strip().lower()
-            try:
-                limit = max(1, min(int(request.args.get("limit") or 5), 10))
-            except ValueError:
-                limit = 5
-
-            if not q_token and not q_client:
-                return (jsonify({"error": "Informe token= ou client="}), 400, headers)
 
             campaigns, _hit = _get_campaigns_list_cached()
 
@@ -933,6 +926,57 @@ def report_data(request):
                 sd = _parse_iso_date_safe(c.get("start_date"))
                 ed = _parse_iso_date_safe(c.get("end_date"))
                 return bool(sd and ed and sd <= today <= ed)
+
+            # "in_flight" IDÊNTICO ao card ATIVAS do painel (getCampaignStatus em
+            # src/v2/admin/lib/format.js): effective_end = early_end_date||end_date;
+            # ativa ⟺ (sem fim OU fim >= hoje) E não pausada. Usa os campos que o
+            # enrichment do query_campaigns_list já mescla nas entries (early_end_date,
+            # paused_at) — mesma fonte do painel, então a contagem bate. Difere do
+            # _is_active por datas contratadas (que ignora early-end/pausa e inflaria
+            # a conta — é a origem do 62 vs 41).
+            def _in_flight(c):
+                paused = bool(c.get("paused_at"))
+                eff = _parse_iso_date_safe(c.get("early_end_date") or c.get("end_date"))
+                if eff is None or eff >= today:
+                    return not paused
+                return False
+
+            # ── MODO LISTAGEM: sem token nem client → lista as campanhas do painel ──
+            # Campos leves só (sem detalhe por frente): não chama _get_report_cached,
+            # que seriam dezenas de fetches num request só. status=active usa o mesmo
+            # in_flight do card ATIVAS; ordena por effective_end ASC (mais perto de
+            # encerrar primeiro). limit próprio: default 100, cap 200.
+            if not q_token and not q_client:
+                try:
+                    limit = max(1, min(int(request.args.get("limit") or 100), 200))
+                except (TypeError, ValueError):
+                    limit = 100
+                listed = list(campaigns)
+                if q_status != "all":
+                    listed = [c for c in listed if _in_flight(c)]
+                listed.sort(key=lambda c: (c.get("early_end_date")
+                                           or c.get("end_date") or "9999-12-31"))
+                out = [{
+                    "short_token":    c.get("short_token"),
+                    "cliente":        c.get("client_name"),
+                    "campanha":       c.get("campaign_name"),
+                    "inicio":         c.get("start_date"),
+                    "fim":            c.get("end_date"),
+                    "pacing_display": c.get("display_pacing"),
+                    "pacing_video":   c.get("video_pacing"),
+                } for c in listed[:limit]]
+                return (jsonify({
+                    "count":     len(out),
+                    "status":    "all" if q_status == "all" else "active",
+                    "campanhas": out,
+                    "_fonte":    "report-hub/lista",
+                }), 200, headers)
+
+            # ── MODOS token / client (inalterados — detalhe por frente) ──
+            try:
+                limit = max(1, min(int(request.args.get("limit") or 5), 10))
+            except (TypeError, ValueError):
+                limit = 5
 
             if q_token:
                 selected = [
