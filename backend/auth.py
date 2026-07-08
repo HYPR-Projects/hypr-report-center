@@ -206,3 +206,17 @@ def authenticate_admin(request) -> Optional[Dict[str, Any]]:
         }
 
     return None
+
+
+# ── Navi (chatbot interno) ────────────────────────────────────────────────
+# O Navi (n8n) não é um usuário logado — autentica via secret de serviço no
+# header X-Navi-Key, mesmo padrão do CRON_SECRET / PMP_SCHEDULER_SECRET.
+# Deliberadamente FORA do authenticate_admin: a chave não dá acesso admin,
+# só às actions read-only dedicadas ao bot (menor privilégio).
+NAVI_API_KEY = os.environ.get("NAVI_API_KEY", "")
+
+
+def verify_navi_key(request) -> bool:
+    """True se o request traz o X-Navi-Key correto. Timing-safe."""
+    provided = request.headers.get("X-Navi-Key", "")
+    return bool(NAVI_API_KEY) and hmac.compare_digest(provided, NAVI_API_KEY)
