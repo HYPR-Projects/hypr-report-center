@@ -172,6 +172,30 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
 
   return (
     <div className="space-y-6">
+      {/* ─── 0. Guardrail: volumetria contratada incoerente (ADMIN-ONLY) ──
+          O contrato de entrega registrado (Σ volume × tarifa, base da aba
+          Display) supera o investimento da campanha (base da Visão Geral) →
+          volumetria stale no checklist do Command (ex: investimento reduzido
+          sem recomputar o volume). NUNCA mostrar pro cliente — só operador HYPR.
+          Backend: campaign.contract_inconsistency (_emit_contract_consistency). */}
+      {isAdmin && camp?.contract_inconsistency && (
+        <div className="flex items-start gap-2.5 rounded-lg border border-danger/40 bg-danger-soft px-3.5 py-2.5 text-[12px] leading-snug text-fg-muted">
+          <InfoIcon className="size-4 text-danger mt-px shrink-0" />
+          <span>
+            <span className="font-semibold text-fg">
+              Volumetria contratada incoerente com o investimento.
+            </span>{" "}
+            O contrato de entrega registrado ({fmtR(camp.contract_inconsistency.implied_budget)})
+            supera o investimento da campanha ({fmtR(camp.contract_inconsistency.declared_budget)})
+            em {fmt(camp.contract_inconsistency.pct, 0)}% — sinal de volumetria
+            desatualizada no <span className="font-semibold text-fg">Command</span>.
+            A aba Display está exibindo o volume antigo; corrija a volumetria no
+            checklist do Command para os números baterem. (Aviso interno — o
+            cliente não vê esta mensagem.)
+          </span>
+        </div>
+      )}
+
       {/* ─── 1. Hero KPI + auxiliares ────────────────────────────────── */}
       {/* Em bonificada, Hero ocupa 3 cols (em vez de 2) e o grid total
           encurta pra 5 cols — Budget, Custo+Over e Pacing Geral somem
