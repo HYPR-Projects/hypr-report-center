@@ -152,13 +152,45 @@ async function postJson(url, body, extraHeaders = {}) {
  * só fevereiro" dentro do report agregado). Sem `view`, o backend
  * detecta o grupo e devolve o payload merged com `merge_meta`.
  */
+/**
+ * Timeout do fetch de report. Sem ele, uma request pendurada (instância
+ * lenta/envenenada do backend — ver incidente do BQ timeout) deixava o
+ * dashboard em DashboardSkeleton pra sempre, sem erro visível. 30s cobre
+ * com folga o pior caso legítimo (cold start + 8 queries BQ frias ≈ 5-8s).
+ */
+const REPORT_FETCH_TIMEOUT_MS = 30_000;
+
+async function fetchWithTimeout(url, timeoutMs) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function getCampaign(token, options = {}) {
   // Demo report (`/report/DEMO`) — payload sintético gerado client-side.
   // Não toca BigQuery. Ver shared/demoData.js.
   if (isDemoToken(token)) return buildDemoPayload();
   const params = new URLSearchParams({ token });
   if (options.view) params.set("view", options.view);
-  const r = await fetch(`${API_URL}?${params.toString()}`);
+  const url = `${API_URL}?${params.toString()}`;
+  let r;
+  try {
+    r = await fetchWithTimeout(url, REPORT_FETCH_TIMEOUT_MS);
+  } catch {
+    // Timeout ou falha de rede: retry único. O GLB do GCP costuma rotear o
+    // retry pra outra instância, então isso resolve o caso "instância ruim".
+    try {
+      r = await fetchWithTimeout(url, REPORT_FETCH_TIMEOUT_MS);
+    } catch {
+      // Mensagem amigável em vez do "The user aborted a request" do
+      // AbortError — vai direto pro <p> da tela de erro do dashboard.
+      throw new Error("O servidor demorou demais para responder. Tente novamente.");
+    }
+  }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
   if (!d.campaign) throw new Error("Campanha não encontrada");
