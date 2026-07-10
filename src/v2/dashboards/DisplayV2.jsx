@@ -469,7 +469,6 @@ function DisplayContent({
           cost={kpis.cost}
           contracted={contractedImps}
           bonus={bonusImps}
-          isAdmin={isAdmin}
         />
       )}
 

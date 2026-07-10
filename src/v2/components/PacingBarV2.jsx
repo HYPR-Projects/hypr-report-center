@@ -62,7 +62,6 @@ export function PacingBarV2({
   // bônus). Sem bônus → barra simples (comportamento antigo, inalterado).
   contracted = 0,
   bonus = 0,
-  isAdmin = false, // rótulos de faturamento ("fatura cheio/não fatura") só p/ admin
 }) {
   if (pacing == null) return null;
 
@@ -200,13 +199,11 @@ export function PacingBarV2({
               <span className="text-fg font-semibold">
                 {contractDone ? "entregue" : `${fmt(contractPct, 0)}%`}
               </span>
-              {isAdmin && <span className="text-fg-subtle">·&nbsp;fatura&nbsp;cheio</span>}
             </span>
             <span className="inline-flex items-center gap-1.5">
               <span className="size-2 rounded-full" style={{ background: palette.signatureLight }} aria-hidden />
               Bônus:{" "}
               <span className="text-fg font-semibold">{fmt(bonusPct, 0)}%</span>
-              {isAdmin && <span className="text-fg-subtle">·&nbsp;não&nbsp;fatura</span>}
             </span>
           </>
         ) : (

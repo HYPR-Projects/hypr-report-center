@@ -435,7 +435,6 @@ function VideoContent({
           cost={kpis.cost}
           contracted={contractedViews}
           bonus={bonusViews}
-          isAdmin={isAdmin}
         />
       )}
 

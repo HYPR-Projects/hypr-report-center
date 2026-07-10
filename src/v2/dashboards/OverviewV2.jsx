@@ -384,7 +384,6 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
                 - pickBonus(display[0], "display", coreFilter)
               }
               bonus={pickBonus(display[0], "display", coreFilter)}
-              isAdmin={isAdmin}
             />
           )}
           {hasVideo && (
@@ -408,7 +407,6 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
                 - pickBonus(video[0], "video", coreFilter)
               }
               bonus={pickBonus(video[0], "video", coreFilter)}
-              isAdmin={isAdmin}
             />
           )}
         </div>
