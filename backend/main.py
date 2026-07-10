@@ -4099,6 +4099,47 @@ def report_data(request):
         return (jsonify({"error": "Erro interno ao buscar dados"}), 500, headers)
 
 
+def _emit_contract_consistency(campaign_info):
+    """Camada 3 do diagnóstico de volumetria stale (ver memory
+    project_command_volume_stale_derived_ui).
+
+    Compara o BUDGET declarado (campo dinheiro `total_invested` — o que a Visão
+    Geral mostra) com o CONTRATO IMPLÍCITO (Σ volume_contratado × tarifa — o que
+    a aba Display mostra). Quando o implícito EXCEDE o declarado além da
+    tolerância, o checklist do Command está internamente incoerente: o contrato
+    entregável, precificado na tarifa negociada, custa MAIS que o investimento
+    total da campanha — logicamente impossível, marcador inequívoco de
+    volumetria gravada stale (tipicamente investimento reduzido sem recomputar o
+    volume). Emite `campaign.contract_inconsistency` pro front avisar o operador
+    HYPR (admin-only na UI) apontando pro Command.
+
+    Só o EXCESSO importa: implícito < declarado é split multi-produto legítimo
+    (features/survey/RMND/OOH têm budget no investimento mas não nos campos
+    contracted_*), não incoerência. Custo zero de BQ — só números já no payload.
+    """
+    if not isinstance(campaign_info, dict):
+        return
+    implied  = campaign_info.pop("_implied_contract_budget", None)
+    declared = campaign_info.get("budget_contracted")
+    try:
+        implied  = float(implied)  if implied  is not None else None
+        declared = float(declared) if declared is not None else None
+    except (TypeError, ValueError):
+        return
+    if not implied or not declared or declared <= 0:
+        return
+    pct = (implied - declared) / declared * 100.0
+    # Tolerância 2%: derivações volume×cpm/1000 abrem centavos de ruído
+    # (espelha o snap de ±2 centavos em aggregations.js). Só flagra o excesso.
+    if pct <= 2.0:
+        return
+    campaign_info["contract_inconsistency"] = {
+        "declared_budget": round(declared, 2),
+        "implied_budget":  round(implied, 2),
+        "pct":             round(pct, 1),
+    }
+
+
 def fetch_campaign_data(short_token, src=None):
     """
     Busca todos os dados de um report.
@@ -4202,6 +4243,10 @@ def fetch_campaign_data(short_token, src=None):
 
     result = {"campaign": campaign_info}
     result["totals"] = _safe_future_result(fut_totals, "totals", default=[])
+    # Guardrail Camada 3: `totals` já resolveu (bloqueou acima), então
+    # _compute_totals já gravou `_implied_contract_budget` em campaign_info.
+    # Detecta checklist incoerente do Command (volumetria stale) sem tocar no BQ.
+    _emit_contract_consistency(campaign_info)
     for key, future in aux_tasks.items():
         # Falha em uma query auxiliar não deve derrubar o report inteiro.
         # Front sabe lidar com chaves nulas (logo, loom, survey, rmnd, pdooh).
@@ -7794,6 +7839,19 @@ def _compute_totals(perf_rows, c, campaign_info):
     o2o_video_budget    = contracted_o2o_video    * cpcv_neg
     ooh_video_budget    = contracted_ooh_video    * cpcv_neg
     groundflow_video_budget   = contracted_groundflow_video   * cpcv_neg
+
+    # Guardrail de coerência do contrato (Camada 3 — ver memory
+    # project_command_volume_stale_derived_ui): budget contratado IMPLÍCITO
+    # (Σ volume_contratado × tarifa), que é a base que a aba Display exibe.
+    # Comparado em fetch_campaign_data contra o budget DECLARADO (campo dinheiro
+    # `total_invested`, que a Visão Geral usa) pra flagrar checklist incoerente
+    # do Command — volumetria gravada stale (ex: investimento editado sem
+    # recomputar o volume). Stash na campaign_info (dict mutável); consumido e
+    # removido por _emit_contract_consistency. Sem custo de BQ (aritmética pura).
+    if isinstance(campaign_info, dict):
+        campaign_info["_implied_contract_budget"] = round(
+            o2o_display_budget + ooh_display_budget + groundflow_display_budget
+            + o2o_video_budget + ooh_video_budget + groundflow_video_budget, 2)
 
     # Impressões/views negociadas (contratado + bonus)
     neg_o2o_display  = contracted_o2o_display  + bonus_o2o_display
