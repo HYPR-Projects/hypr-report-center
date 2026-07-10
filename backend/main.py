@@ -7963,10 +7963,20 @@ def _compute_totals(perf_rows, c, campaign_info):
         # CPM/CPCV Efetivo e Rentabilidade
         # Regra: se entregou MAIS que o esperado → CPM cai (rentabilidade positiva)
         #        se entregou MENOS → CPM estático no negociado (rentabilidade = 0)
+        # "over" de FATURAMENTO: o custo bruto da entrega (entrega × tarifa
+        # negociada) já passou do budget CONTRATADO pró-rata (`budget_prop`).
+        # O limiar é o `budget_prop` — NÃO o `neg` (contratado + bônus). O bônus
+        # é cortesia e NÃO fatura; usar `neg` como limiar deixava a entrega do
+        # bônus entrar no efetivo quando a entrega caía ENTRE o contratado e o
+        # contratado+bônus (bug Amazon 4WA4TV: R$437k faturados num contrato de
+        # R$225k). SEM bônus, este limiar é IDÊNTICO ao antigo (budget_prop ==
+        # entrega_esperada × tarifa quando neg == contratado) — logo, campanha
+        # sem bônus não muda em nada. Efetivo final = min(custo bruto, budget).
+        # `expected_for_pacing`/`expected_delivered` seguem sendo usados só pro
+        # PACING (meta = contratado+bônus), que é outra coisa.
         if is_video:
-            # Over: compara com entrega esperada baseada em dias reais de entrega
-            views_esperadas = expected_for_pacing if not is_ended else neg
-            over = completions > views_esperadas
+            raw_cost = completions * cpcv_neg  # custo bruto = valor a faturar
+            over = raw_cost > budget_prop
             if over and completions > 0:
                 cpcv_ef    = budget_prop / completions
                 rentab     = (cpcv_neg - cpcv_ef) / cpcv_neg * 100 if cpcv_neg > 0 else 0.0
@@ -7974,10 +7984,10 @@ def _compute_totals(perf_rows, c, campaign_info):
                 cpcv_ef    = cpcv_neg
                 rentab     = 0.0
             cpm_ef         = 0.0
-            cost_with_over = completions * cpcv_neg  # valor a faturar
+            cost_with_over = raw_cost
         else:
-            impr_esperadas = expected_delivered if not is_ended else neg
-            over = viewable > impr_esperadas
+            raw_cost = viewable / 1000 * cpm_neg  # custo bruto = valor a faturar
+            over = raw_cost > budget_prop
             if over and viewable > 0:
                 cpm_ef  = budget_prop / viewable * 1000
                 rentab  = (cpm_neg - cpm_ef) / cpm_neg * 100 if cpm_neg > 0 else 0.0
@@ -7985,7 +7995,7 @@ def _compute_totals(perf_rows, c, campaign_info):
                 cpm_ef  = cpm_neg
                 rentab  = 0.0
             cpcv_ef        = 0.0
-            cost_with_over = viewable / 1000 * cpm_neg  # valor a faturar
+            cost_with_over = raw_cost
 
         ctr = (clicks      / viewable    * 100) if viewable    > 0 else 0.0
         cpc = (cost        / clicks)             if clicks      > 0 else 0.0
@@ -8091,16 +8101,13 @@ def effective_cost_front(
         budget_prop = budget / total_days * elapsed_days
     else:
         budget_prop = 0.0
-    if is_video:
-        expected  = (neg / row_total_days * days_with_delivery) if (row_total_days > 0 and days_with_delivery > 0) else 0
-        views_esp = expected if not is_ended else neg
-        over = delivered > views_esp
-        return budget_prop if over else cpcv_neg * delivered
-    else:
-        expected  = (neg / total_days * elapsed_days) if (total_days > 0 and elapsed_days > 0) else 0
-        impr_esp  = expected if not is_ended else neg
-        over = delivered > impr_esp
-        return budget_prop if over else cpm_neg * delivered / 1000
+    # over de FATURAMENTO = custo bruto da entrega já passou do budget
+    # contratado pró-rata (`budget_prop`). Limiar = budget_prop, NÃO `neg`
+    # (contratado+bônus): bônus é cortesia e não fatura. Espelha _compute_totals
+    # (custo efetivo = min(custo bruto, budget)). SEM bônus é idêntico ao antigo.
+    # `neg` deixa de ser usado no cálculo (mantido na assinatura p/ os callers).
+    raw_cost = (cpcv_neg * delivered) if is_video else (cpm_neg * delivered / 1000)
+    return min(raw_cost, budget_prop)
 
 
 def query_daily(token, cr_src=None, win_from=None, win_to=None):

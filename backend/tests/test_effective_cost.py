@@ -122,6 +122,38 @@ def test_helper_matches_compute_totals_when_over(monkeypatch):
     assert v_cost == round(400000 * 0.5, 2)     # budget cheio, não 470k×0.5
 
 
+def test_bonus_delivery_not_billed(monkeypatch):
+    """Bônus NÃO entra no efetivo. Caso real Amazon 4WA4TV: contratado 15.625.000
+    + bônus 15.625.000, entrega 30.355.085 (todo o contrato + parte do bônus).
+    O efetivo trava no budget contratado (R$225.000), NÃO fatura a entrega do
+    bônus (bug: dava R$437k = 30,3M × CPM). Regressão do fix de limiar do `over`."""
+    monkeypatch.setattr(main, "date", _FrozenDate)
+    perf = [
+        dict(tactic_type="O2O", media_type="DISPLAY", actual_start_date=date(2026, 6, 1),
+             days_with_delivery=30, impressions=31582463, viewable_impressions=30355085,
+             clicks=261470, completions=0, effective_total_cost=0.0),
+    ]
+    check = dict(
+        cpm_amount=14.4, cpcv_amount=0.0,
+        contracted_o2o_display_impressions=15625000, contracted_ooh_display_impressions=0,
+        contracted_o2o_video_completions=0, contracted_ooh_video_completions=0,
+        bonus_o2o_display_impressions=15625000, bonus_ooh_display_impressions=0,
+        bonus_o2o_video_completions=0, bonus_ooh_video_completions=0,
+    )
+    info = dict(_start_date_raw=date(2026, 6, 1), _end_date_raw=date(2026, 6, 30))
+    totals = main._compute_totals(perf, check, info)
+    report_total = _sum_totals_cost(totals, "DISPLAY")
+    card_total = _card_delivered(perf, check, info, _FrozenDate(2026, 7, 7))
+    # efetivo travado no contrato, não na entrega (que inclui bônus)
+    assert report_total == round(15625000 * 14.4 / 1000, 2)   # == 225.000, NÃO 437k
+    assert card_total == report_total                          # card alinhado
+    # CPM efetivo reflete o bônus (cai de 14,40): 225000/30.355.085*1000 ≈ 7,41
+    row = [r for r in totals if r["media_type"] == "DISPLAY"][0]
+    assert abs(row["effective_cpm_amount"] - 7.4123) < 0.01
+    # o valor BUGADO (entrega × CPM, contando o bônus) seria muito maior
+    assert 30355085 * 14.4 / 1000 > report_total * 1.9
+
+
 def test_helper_matches_compute_totals_when_under(monkeypatch):
     """Sub-delivery ended → custo = entrega × negociado (não o budget)."""
     monkeypatch.setattr(main, "date", _FrozenDate)
