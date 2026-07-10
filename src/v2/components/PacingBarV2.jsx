@@ -55,6 +55,14 @@ export function PacingBarV2({
   // nada. Quando este prop está setado, o footer troca pra "Entregue / Meta"
   // em volume (impressões ou views), que é o que importa numa cortesia.
   bonusFooter = null, // { delivered, target, unit: "imp" | "views" } | null
+  // Volumetria CONTRATADA (paga) e BÔNUS (cortesia), em impressões ou views.
+  // Quando bonus > 0, a barra vira DUAS ZONAS: contrato (pago) + bônus. O
+  // divisor marca onde termina o que o cliente pagou. Deixa claro que o
+  // contrato pode estar 100% entregue mesmo com pacing < 100% (o que falta é
+  // bônus). Sem bônus → barra simples (comportamento antigo, inalterado).
+  contracted = 0,
+  bonus = 0,
+  isAdmin = false, // rótulos de faturamento ("fatura cheio/não fatura") só p/ admin
 }) {
   if (pacing == null) return null;
 
@@ -68,6 +76,25 @@ export function PacingBarV2({
   const baseWidth = Math.min(visiblePct, 100);
   const barColor = pickColor(visiblePct);
   const labelColor = realPct > 100 ? palette.signature : barColor;
+
+  // ── Zona de bônus ──────────────────────────────────────────────────
+  // A barra já é normalizada em contratado+bônus (100% = tudo prometido).
+  // `contractedShare` = fração da barra que é contrato PAGO; o resto é bônus.
+  // Ex: Amazon 4WA4TV — contratado 15,6M + bônus 15,6M → divisor em 50%.
+  // Pacing 97,1% cai DENTRO da zona de bônus, então o contrato (0→50%) está
+  // 100% cheio e só faltou um cantinho do bônus. `contractDone` decide a cor
+  // da zona paga: verde se entregue, senão a severidade (amarelo/vermelho) —
+  // aí sim o "under" que importa (do contrato pago) aparece.
+  const hasBonus = bonus > 0 && contracted > 0;
+  const contractedShare = hasBonus ? (contracted / (contracted + bonus)) * 100 : 100;
+  const contractFillW = Math.min(baseWidth, contractedShare);
+  const bonusFillW = Math.max(0, baseWidth - contractedShare);
+  const contractDone = realPct >= contractedShare - 0.1;
+  const contractColor = contractDone ? palette.success : pickColor((realPct / contractedShare) * 100);
+  const contractPct = contractedShare > 0 ? Math.min((realPct / contractedShare) * 100, 100) : 0;
+  const bonusPct = 100 - contractedShare > 0
+    ? Math.max(0, Math.min(((realPct - contractedShare) / (100 - contractedShare)) * 100, 100))
+    : 0;
 
   // Padding mobile-first: px-4/py-4 em mobile (ganha ~8px de chart útil),
   // px-5/py-5 em sm+ (mockup desktop).
@@ -100,10 +127,31 @@ export function PacingBarV2({
       {/* Bar */}
       <div className="relative h-2.5 rounded-full bg-track overflow-visible mt-4">
         <div className="absolute inset-0 rounded-full bg-track overflow-hidden">
-          <div
-            className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-500 ease-out"
-            style={{ width: `${baseWidth}%`, background: barColor }}
-          />
+          {hasBonus ? (
+            <>
+              {/* Contrato (pago) — verde se entregue, senão severidade */}
+              <div
+                className="absolute inset-y-0 left-0 rounded-l-full transition-[width] duration-500 ease-out"
+                style={{ width: `${contractFillW}%`, background: contractColor }}
+              />
+              {/* Bônus (cortesia) — tom claro pra diferenciar do pago */}
+              {bonusFillW > 0 && (
+                <div
+                  className="absolute inset-y-0 transition-[width] duration-500 ease-out"
+                  style={{
+                    left: `${contractedShare}%`,
+                    width: `${bonusFillW}%`,
+                    background: palette.signatureLight,
+                  }}
+                />
+              )}
+            </>
+          ) : (
+            <div
+              className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-500 ease-out"
+              style={{ width: `${baseWidth}%`, background: barColor }}
+            />
+          )}
           {overPct > 0 && (
             <div
               className="absolute inset-y-0 rounded-r-full transition-[width] duration-500 ease-out"
@@ -115,9 +163,19 @@ export function PacingBarV2({
             />
           )}
         </div>
+        {/* Divisor do contratado — marca onde termina o que o cliente pagou */}
+        {hasBonus && (
+          <div
+            className="absolute -top-1 -bottom-1 w-px bg-fg/50"
+            style={{ left: `${contractedShare}%` }}
+            aria-hidden
+          />
+        )}
       </div>
 
-      {/* Footer: investido / budget — ou volume entregue/meta em bonificada */}
+      {/* Footer: investido/budget — ou, em bonificada, a quebra contrato/bônus
+          (que substitui o "Investido/Budget", pois este mostraria 100% ao lado
+          de um pacing < 100%, exatamente a confusão que as duas zonas resolvem). */}
       <div className="flex justify-between mt-3 text-[11px] text-fg-muted tabular-nums">
         {bonusFooter ? (
           <>
@@ -132,6 +190,23 @@ export function PacingBarV2({
               <span className="text-fg font-semibold">
                 {fmt(bonusFooter.target)} {bonusFooter.unit}
               </span>
+            </span>
+          </>
+        ) : hasBonus ? (
+          <>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="size-2 rounded-full" style={{ background: contractColor }} aria-hidden />
+              Contrato:{" "}
+              <span className="text-fg font-semibold">
+                {contractDone ? "entregue" : `${fmt(contractPct, 0)}%`}
+              </span>
+              {isAdmin && <span className="text-fg-subtle">·&nbsp;fatura&nbsp;cheio</span>}
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="size-2 rounded-full" style={{ background: palette.signatureLight }} aria-hidden />
+              Bônus:{" "}
+              <span className="text-fg font-semibold">{fmt(bonusPct, 0)}%</span>
+              {isAdmin && <span className="text-fg-subtle">·&nbsp;não&nbsp;fatura</span>}
             </span>
           </>
         ) : (

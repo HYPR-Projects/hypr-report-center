@@ -467,6 +467,9 @@ function DisplayContent({
           pacing={kpis.pac}
           budget={kpis.budget}
           cost={kpis.cost}
+          contracted={contractedImps}
+          bonus={bonusImps}
+          isAdmin={isAdmin}
         />
       )}
 

@@ -379,6 +379,12 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
                     }
                   : null
               }
+              contracted={
+                pickContracted(display[0], "display", coreFilter)
+                - pickBonus(display[0], "display", coreFilter)
+              }
+              bonus={pickBonus(display[0], "display", coreFilter)}
+              isAdmin={isAdmin}
             />
           )}
           {hasVideo && (
@@ -397,6 +403,12 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
                     }
                   : null
               }
+              contracted={
+                pickContracted(video[0], "video", coreFilter)
+                - pickBonus(video[0], "video", coreFilter)
+              }
+              bonus={pickBonus(video[0], "video", coreFilter)}
+              isAdmin={isAdmin}
             />
           )}
         </div>
@@ -594,6 +606,26 @@ function pickContracted(row, media, tactic) {
   const gf = media === "video"
     ? (row.contracted_groundflow_video_completions   || 0) + (row.bonus_groundflow_video_completions   || 0)
     : (row.contracted_groundflow_display_impressions || 0) + (row.bonus_groundflow_display_impressions || 0);
+  if (tactic === "O2O") return o2o;
+  if (tactic === "OOH") return ooh;
+  if (tactic === "GROUNDFLOW") return gf;
+  return o2o + ooh + gf;
+}
+
+// Bônus (cortesia) somado por mídia×tactic — espelha pickContracted mas SÓ os
+// campos bonus_*. Usado pra posicionar o divisor contrato/bônus na PacingBarV2:
+// contratado_pago = pickContracted (que é contr+bônus) − pickBonus.
+function pickBonus(row, media, tactic) {
+  if (!row) return 0;
+  const o2o = media === "video"
+    ? (row.bonus_o2o_video_completions   || 0)
+    : (row.bonus_o2o_display_impressions || 0);
+  const ooh = media === "video"
+    ? (row.bonus_ooh_video_completions   || 0)
+    : (row.bonus_ooh_display_impressions || 0);
+  const gf = media === "video"
+    ? (row.bonus_groundflow_video_completions   || 0)
+    : (row.bonus_groundflow_display_impressions || 0);
   if (tactic === "O2O") return o2o;
   if (tactic === "OOH") return ooh;
   if (tactic === "GROUNDFLOW") return gf;
