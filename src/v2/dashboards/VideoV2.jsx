@@ -433,6 +433,8 @@ function VideoContent({
           pacing={kpis.pac}
           budget={kpis.budget}
           cost={kpis.cost}
+          contracted={contractedViews}
+          bonus={bonusViews}
         />
       )}
 
