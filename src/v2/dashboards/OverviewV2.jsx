@@ -393,6 +393,7 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
                 - pickBonus(display[0], "display", coreFilter)
               }
               bonus={pickBonus(display[0], "display", coreFilter)}
+              delivered={display.reduce((s, r) => s + (r.viewable_impressions || 0), 0)}
             />
           )}
           {hasVideo && (
@@ -416,6 +417,7 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
                 - pickBonus(video[0], "video", coreFilter)
               }
               bonus={pickBonus(video[0], "video", coreFilter)}
+              delivered={video.reduce((s, r) => s + (r.completions || 0), 0)}
             />
           )}
         </div>

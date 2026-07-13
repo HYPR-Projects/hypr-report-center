@@ -62,6 +62,16 @@ export function PacingBarV2({
   // bônus). Sem bônus → barra simples (comportamento antigo, inalterado).
   contracted = 0,
   bonus = 0,
+  // Volume ENTREGUE (viewable imps ou completions), mesma unidade de
+  // contracted/bonus. Alimenta o preenchimento das duas zonas: entregue ÷
+  // (contratado+bônus). SEM ele, as zonas caíam no eixo do PACING (entregue ÷
+  // esperado-até-hoje) — régua de CALENDÁRIO, não de volume: no meio do voo
+  // (ou early-end antes do término original), pacing > 100% transbordava pra
+  // zona de bônus e clampava em "Bônus: 100%" com o bônus mal iniciado (bug
+  // Minesol NO2015: 119% de pacing → "Bônus: 100%" com 18% entregue). Em
+  // campanha encerrada os dois eixos coincidem (esperado = total prometido) —
+  // por isso o caso de referência do PR #152 (Amazon 4WA4TV) parecia correto.
+  delivered = null,
 }) {
   if (pacing == null) return null;
 
@@ -71,28 +81,43 @@ export function PacingBarV2({
 
   const realPct = Number(pacing) || 0;
   const visiblePct = Math.min(realPct, 150);
-  const overPct = visiblePct > 100 ? visiblePct - 100 : 0;
-  const baseWidth = Math.min(visiblePct, 100);
   const barColor = pickColor(visiblePct);
   const labelColor = realPct > 100 ? palette.signature : barColor;
 
   // ── Zona de bônus ──────────────────────────────────────────────────
-  // A barra já é normalizada em contratado+bônus (100% = tudo prometido).
-  // `contractedShare` = fração da barra que é contrato PAGO; o resto é bônus.
-  // Ex: Amazon 4WA4TV — contratado 15,6M + bônus 15,6M → divisor em 50%.
-  // Pacing 97,1% cai DENTRO da zona de bônus, então o contrato (0→50%) está
-  // 100% cheio e só faltou um cantinho do bônus. `contractDone` decide a cor
-  // da zona paga: verde se entregue, senão a severidade (amarelo/vermelho) —
-  // aí sim o "under" que importa (do contrato pago) aparece.
+  // Na barra de duas zonas, 100% = tudo prometido (contratado+bônus) em
+  // VOLUME. `contractedShare` = fração da barra que é contrato PAGO; o resto
+  // é bônus. Ex: Amazon 4WA4TV — contratado 15,6M + bônus 15,6M → divisor em
+  // 50%. O preenchimento usa `delivered` (eixo de volume — ver comment do
+  // prop); `zonePct` só cai pro pacing como fallback de caller não migrado.
+  // `contractDone` decide a cor da zona paga: verde se entregue, senão a
+  // severidade (amarelo/vermelho) — aí sim o "under" que importa (do contrato
+  // pago) aparece.
   const hasBonus = bonus > 0 && contracted > 0;
-  const contractedShare = hasBonus ? (contracted / (contracted + bonus)) * 100 : 100;
-  const contractFillW = Math.min(baseWidth, contractedShare);
-  const bonusFillW = Math.max(0, baseWidth - contractedShare);
-  const contractDone = realPct >= contractedShare - 0.1;
-  const contractColor = contractDone ? palette.success : pickColor((realPct / contractedShare) * 100);
-  const contractPct = contractedShare > 0 ? Math.min((realPct / contractedShare) * 100, 100) : 0;
+  const volumeMode = hasBonus && delivered != null;
+  const totalNeg = contracted + bonus;
+  const zonePct = volumeMode ? (delivered / totalNeg) * 100 : realPct;
+  // Preenchimento/over da barra: eixo de volume nas duas zonas, pacing na
+  // barra simples. Over (segmento signature além dos 100%) em duas zonas =
+  // entregou ACIMA de tudo que foi prometido, não over de calendário.
+  const fillPct  = volumeMode ? Math.min(zonePct, 150) : visiblePct;
+  const fillBase = Math.min(fillPct, 100);
+  const fillOver = fillPct > 100 ? fillPct - 100 : 0;
+  const contractedShare = hasBonus ? (contracted / totalNeg) * 100 : 100;
+  const contractFillW = Math.min(fillBase, contractedShare);
+  const bonusFillW = Math.max(0, fillBase - contractedShare);
+  const contractDone = zonePct >= contractedShare - 0.1;
+  // Cor da zona paga quando incompleta: severidade de CALENDÁRIO (pacing),
+  // não de volume — no meio do voo, 30% entregue com pacing 100% é on-track
+  // (verde parcial), não "vermelho". Em campanha encerrada pacing == volume,
+  // então o under real continua amarelo/vermelho. Fallback sem `delivered`
+  // mantém a régua antiga.
+  const contractColor = contractDone
+    ? palette.success
+    : pickColor(volumeMode ? realPct : (zonePct / contractedShare) * 100);
+  const contractPct = contractedShare > 0 ? Math.min((zonePct / contractedShare) * 100, 100) : 0;
   const bonusPct = 100 - contractedShare > 0
-    ? Math.max(0, Math.min(((realPct - contractedShare) / (100 - contractedShare)) * 100, 100))
+    ? Math.max(0, Math.min(((zonePct - contractedShare) / (100 - contractedShare)) * 100, 100))
     : 0;
 
   // Padding mobile-first: px-4/py-4 em mobile (ganha ~8px de chart útil),
@@ -148,15 +173,15 @@ export function PacingBarV2({
           ) : (
             <div
               className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-500 ease-out"
-              style={{ width: `${baseWidth}%`, background: barColor }}
+              style={{ width: `${fillBase}%`, background: barColor }}
             />
           )}
-          {overPct > 0 && (
+          {fillOver > 0 && (
             <div
               className="absolute inset-y-0 rounded-r-full transition-[width] duration-500 ease-out"
               style={{
-                left: `${baseWidth}%`,
-                width: `${Math.min(overPct, 50)}%`,
+                left: `${fillBase}%`,
+                width: `${Math.min(fillOver, 50)}%`,
                 background: palette.signature,
               }}
             />
