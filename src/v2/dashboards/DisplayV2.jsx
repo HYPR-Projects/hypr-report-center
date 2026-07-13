@@ -469,6 +469,7 @@ function DisplayContent({
           cost={kpis.cost}
           contracted={contractedImps}
           bonus={bonusImps}
+          delivered={kpis.viAll}
         />
       )}
 

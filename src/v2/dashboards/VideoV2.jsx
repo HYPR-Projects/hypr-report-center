@@ -435,6 +435,7 @@ function VideoContent({
           cost={kpis.cost}
           contracted={contractedViews}
           bonus={bonusViews}
+          delivered={totals.reduce((s, r) => s + (r.completions || 0), 0)}
         />
       )}
 
