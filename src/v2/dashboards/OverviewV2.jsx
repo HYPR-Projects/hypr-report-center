@@ -146,8 +146,17 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
   // um aviso explica isso acima das barras. Só aplica na visão cheia: com
   // filtro de período ativo o budget é um recorte analítico pro-rata, não a
   // régua de faturamento da campanha.
+  //
+  // Guard de redução real: campanha encerrada cedo mas em OVER fatura o
+  // contrato CHEIO (backend trava o efetivo no budget quando billing_end
+  // passa) — aí não há refaturamento e o card volta a ser "Budget" normal;
+  // sem o guard mostraria "refaturado R$X / contratado R̶$̶X̶" (mesmo valor
+  // riscado). Tolerância de R$1 engole ruído de arredondamento por frente.
   const earlyEnded = !!camp.early_end_date;
-  const billedEffective = earlyEnded && !isFiltered ? totalCusto : null;
+  const billedEffective =
+    earlyEnded && !isFiltered && totalCusto < filteredBudgetTotal - 1
+      ? totalCusto
+      : null;
 
   // Custo formatado pra hero (separa centavos pra estilo do mockup).
   const { main: custoMain, cents: custoCents } = splitCents(totalCusto);

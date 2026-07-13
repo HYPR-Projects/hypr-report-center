@@ -4208,10 +4208,13 @@ def fetch_campaign_data(short_token, src=None):
 
     # Injeta early_end_date quando admin marcou encerramento antecipado.
     # `end_date` no payload PERMANECE intocado (= contrato original) — o
-    # frontend cliente usa early_end_date só pra display do período. O
-    # pacing math em query_totals abaixo continua usando end_date original,
-    # mostrando a "perda" naturalmente (Opção B do design). `reason` e
-    # `ended_by` são admin-only e NÃO entram no payload do cliente.
+    # frontend cliente usa early_end_date pra display do período; o pacing
+    # math em query_totals abaixo continua usando end_date original,
+    # mostrando a "perda" naturalmente (Opção B do design). No BACKEND,
+    # _compute_totals usa early_end_date como `billing_end` (teto do over
+    # vira budget cheio quando o encerramento real passa) — por isso a
+    # injeção precisa acontecer ANTES do submit de query_totals. `reason`
+    # e `ended_by` são admin-only e NÃO entram no payload do cliente.
     early_map = _safe_get_early_ends()
     early_for_token = early_map.get(short_token)
     if early_for_token and early_for_token.get("early_end_date"):
@@ -6348,6 +6351,12 @@ def _overlay_live_contracts(short_token, payload):
             "effective_total_cost": cpc * clicks,
         })
     campaign_info = {"_start_date_raw": start_raw, "_end_date_raw": end_raw}
+    # Encerramento antecipado ao vivo (pode ser marcado DEPOIS do freeze) —
+    # _compute_totals usa pra antecipar o teto de faturamento do over
+    # (billing_end). Cache local barato; falha → cai pro end original.
+    _early = (_safe_get_early_ends() or {}).get(short_token)
+    if _early and _early.get("early_end_date"):
+        campaign_info["early_end_date"] = _early["early_end_date"]
     try:
         new_totals = _compute_totals(perf_rows, check_row, campaign_info)
     except Exception as e:
@@ -7832,6 +7841,16 @@ def _compute_totals(perf_rows, c, campaign_info):
     elapsed_days = max(0, (today - start).days) if start else 0
     is_ended     = end < today if end else False
 
+    # Fim efetivo pro FATURAMENTO: encerramento antecipado antecipa o dia em
+    # que o teto do over deixa de ser pró-rata e vira o budget CHEIO
+    # (`row_is_ended` abaixo). Sem isso, campanha encerrada cedo E em over
+    # faturava o pró-rata até o término ORIGINAL — o "refaturado" subia
+    # ~budget/total_days por dia com a campanha já parada (Minesol NO2015:
+    # R$205k em 13/jul rastejando até R$298k em 31/jul). Todo o resto
+    # (total_days, elapsed, pacing) segue o contrato original — Opção B.
+    early_end   = _parse_iso_date_safe(campaign_info.get("early_end_date")) if hasattr(campaign_info, "get") else None
+    billing_end = min(early_end, end) if (early_end and end) else (early_end or end)
+
     # Budgets contratados por tática (sem bonus — bonus não entra no faturamento)
     o2o_display_budget  = contracted_o2o_display  * cpm_neg  / 1000
     ooh_display_budget  = contracted_ooh_display  * cpm_neg  / 1000
@@ -7902,7 +7921,9 @@ def _compute_totals(perf_rows, c, campaign_info):
             row_start = start
         row_total_days   = (end - row_start).days + 1 if row_start and end else total_days
         row_elapsed_days = max(0, (today - row_start).days) if row_start else elapsed_days
-        row_is_ended     = end < today if end else False
+        # `billing_end` (≤ end original) antecipa o "acabou" do faturamento em
+        # encerramento antecipado. Só alimenta budget_prop — pacing usa `end`.
+        row_is_ended     = billing_end < today if billing_end else False
 
 
         # Budget e negociado por tática/mídia (lookup por frente)
@@ -7949,8 +7970,9 @@ def _compute_totals(perf_rows, c, campaign_info):
         # `now > end ? tDays`) e o `?list` (`pacing_expected_to_date`: `today >=
         # e`). Sem isso, o per-row prorrateava 30/31 no dia 31 e mostrava OVER
         # enquanto Visão Geral/Admin já mostravam UNDER (bug Video OOH 101,6% vs
-        # 98,4%). Usa `today >= end` (inclui o último dia) — `row_is_ended` na
-        # 4630 usa `end < today` (estrito) só pro budget_prop, não serve aqui.
+        # 98,4%). Usa `today >= end` (inclui o último dia) — `row_is_ended`
+        # acima usa `billing_end < today` (estrito) só pro budget_prop, não
+        # serve aqui.
         pacing_elapsed = row_total_days if (end and today >= end) else row_elapsed_days
         pacing_capped_elapsed = min(pacing_elapsed, row_total_days) if row_total_days > 0 else 0
         pacing_expected = (neg / row_total_days * pacing_capped_elapsed) if (row_total_days > 0 and pacing_capped_elapsed > 0) else 0
@@ -8065,6 +8087,7 @@ def _compute_totals(perf_rows, c, campaign_info):
 def effective_cost_front(
     is_video, delivered, budget, neg, cpm_neg, cpcv_neg,
     actual_start, days_with_delivery, start, end, today,
+    early_end=None,
 ):
     """Custo efetivo (faturável consumido) de UMA frente×mídia.
 
@@ -8090,7 +8113,12 @@ def effective_cost_front(
         return 0.0
     total_days   = (end - start).days + 1
     elapsed_days = max(0, (today - start).days)
-    is_ended     = end < today
+    # `early_end` (encerramento antecipado, ≤ end) antecipa o "campanha
+    # acabou" do faturamento: teto do over vira budget cheio já no dia
+    # seguinte ao encerramento real, não no término original. Pró-rata e
+    # denominadores seguem o período original (paridade com _compute_totals).
+    billing_end  = min(early_end, end) if early_end else end
+    is_ended     = billing_end < today
     row_start = max(actual_start, start) if actual_start else start
     row_total_days = (end - row_start).days + 1 if (row_start and end) else total_days
     if is_ended:
@@ -9315,6 +9343,11 @@ def query_campaigns_list():
         _start_dt = _coerce_date(start_date)
         _end_dt   = _coerce_date(end_date)
         _today    = date.today()
+        # Encerramento antecipado → billing_end no effective_cost_front
+        # (mesma régua do report: over trava no budget cheio assim que o
+        # encerramento real passa, não no término original).
+        _early_ee = early_map.get(r["short_token"])
+        _early_dt = _parse_iso_date_safe(_early_ee["early_end_date"]) if _early_ee else None
         if r.get("_frozen_d_delivered_value") is not None:
             d_delivered_value = float(r.get("_frozen_d_delivered_value") or 0)
             v_delivered_value = float(r.get("_frozen_v_delivered_value") or 0)
@@ -9336,11 +9369,11 @@ def query_campaigns_list():
             # effective_total_cost a 2 casas (round em _compute_totals) e o
             # frontend soma; replicar aqui evita deriva de ±1 centavo.
             d_delivered_value = sum(
-                round(effective_cost_front(False, view, contr * cpm_amount / 1000, neg, cpm_amount, cpcv_amount, astart, 0, _start_dt, _end_dt, _today), 2)
+                round(effective_cost_front(False, view, contr * cpm_amount / 1000, neg, cpm_amount, cpcv_amount, astart, 0, _start_dt, _end_dt, _today, early_end=_early_dt), 2)
                 for view, contr, neg, astart in _d_fronts
             )
             v_delivered_value = sum(
-                round(effective_cost_front(True, comp, contr * cpcv_amount, neg, cpm_amount, cpcv_amount, astart, days, _start_dt, _end_dt, _today), 2)
+                round(effective_cost_front(True, comp, contr * cpcv_amount, neg, cpm_amount, cpcv_amount, astart, days, _start_dt, _end_dt, _today, early_end=_early_dt), 2)
                 for comp, contr, neg, days, astart in _v_fronts
             )
         client_delivered_value = d_delivered_value + v_delivered_value

@@ -154,6 +154,92 @@ def test_bonus_delivery_not_billed(monkeypatch):
     assert 30355085 * 14.4 / 1000 > report_total * 1.9
 
 
+def test_early_end_over_bills_full_budget(monkeypatch):
+    """Encerramento antecipado + OVER → efetivo trava no budget CHEIO já no
+    dia seguinte ao encerramento real, não pró-rata até o término original.
+
+    Caso real Minesol NO2015 (2026-07-13): voo 1/jun–31/jul (61d), encerrada
+    antecipadamente, entrega em over do contrato inteiro (R$314k a faturar
+    bruto vs R$298.444 contratados). BUG: `row_is_ended` usava o end ORIGINAL
+    → budget_prop = 298.444 × 42/61 = R$205.486 em 13/jul, subindo ~R$4.9k/dia
+    com a campanha parada, até só chegar nos 298.444 em 31/jul."""
+    class _Jul13(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 7, 13)
+
+    monkeypatch.setattr(main, "date", _Jul13)
+    cpm = 14.4
+    contracted = 20725278   # × 14.4/1000 ≈ R$ 298.444 (budget contratado)
+    perf = [
+        dict(tactic_type="O2O", media_type="DISPLAY", actual_start_date=date(2026, 6, 1),
+             days_with_delivery=35, impressions=22500000, viewable_impressions=21813005,
+             clicks=15000, completions=0, effective_total_cost=0.0),  # 21,8M × 14,4 ≈ R$314k > contrato
+    ]
+    check = dict(
+        cpm_amount=cpm, cpcv_amount=0.0,
+        contracted_o2o_display_impressions=contracted, contracted_ooh_display_impressions=0,
+        contracted_o2o_video_completions=0, contracted_ooh_video_completions=0,
+        bonus_o2o_display_impressions=1500000, bonus_ooh_display_impressions=0,
+        bonus_o2o_video_completions=0, bonus_ooh_video_completions=0,
+    )
+    budget_full = round(contracted * cpm / 1000, 2)
+    info_no_early = dict(_start_date_raw=date(2026, 6, 1), _end_date_raw=date(2026, 7, 31))
+    info_early    = dict(info_no_early, early_end_date="2026-07-05")
+
+    # SEM early end (campanha "no ar"): comportamento pró-rata preservado
+    pro_rata = _sum_totals_cost(main._compute_totals(perf, check, info_no_early), "DISPLAY")
+    assert abs(pro_rata - round(budget_full / 61 * 42, 2)) < 0.01   # 42/61 decorridos
+    assert pro_rata < budget_full
+
+    # COM early end passado: fatura o budget cheio IMEDIATAMENTE (fix)
+    totals = main._compute_totals(perf, check, info_early)
+    assert _sum_totals_cost(totals, "DISPLAY") == budget_full
+    # bônus segue fora do faturável (limiar = budget contratado, PR #151)
+    assert budget_full < round(21813005 * cpm / 1000, 2)
+
+    # Card admin (effective_cost_front) na MESMA régua
+    card = round(main.effective_cost_front(
+        False, 21813005, contracted * cpm / 1000, contracted + 1500000, cpm, 0.0,
+        date(2026, 6, 1), 35, date(2026, 6, 1), date(2026, 7, 31), _Jul13(2026, 7, 13),
+        early_end=date(2026, 7, 5),
+    ), 2)
+    assert card == budget_full
+
+    # Pacing NÃO muda com early end (Opção B): mesmo valor nas duas variantes
+    p_no  = [r["pacing"] for r in main._compute_totals(perf, check, info_no_early)]
+    p_yes = [r["pacing"] for r in totals]
+    assert p_no == p_yes
+
+
+def test_early_end_under_bills_delivery(monkeypatch):
+    """Encerramento antecipado + UNDER → efetivo = entrega × negociado
+    (refaturamento pelo entregue), estável — early end não infla nada."""
+
+    class _Jul13(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 7, 13)
+
+    monkeypatch.setattr(main, "date", _Jul13)
+    perf = [
+        dict(tactic_type="O2O", media_type="DISPLAY", actual_start_date=date(2026, 6, 1),
+             days_with_delivery=20, impressions=6000000, viewable_impressions=5000000,
+             clicks=2500, completions=0, effective_total_cost=0.0),
+    ]
+    check = dict(
+        cpm_amount=20.0, cpcv_amount=0.0,
+        contracted_o2o_display_impressions=10000000, contracted_ooh_display_impressions=0,
+        contracted_o2o_video_completions=0, contracted_ooh_video_completions=0,
+        bonus_o2o_display_impressions=0, bonus_ooh_display_impressions=0,
+        bonus_o2o_video_completions=0, bonus_ooh_video_completions=0,
+    )
+    info = dict(_start_date_raw=date(2026, 6, 1), _end_date_raw=date(2026, 7, 31),
+                early_end_date="2026-07-05")
+    report_total = _sum_totals_cost(main._compute_totals(perf, check, info), "DISPLAY")
+    assert report_total == round(5000000 * 20.0 / 1000, 2)   # entrega × CPM, não budget
+
+
 def test_helper_matches_compute_totals_when_under(monkeypatch):
     """Sub-delivery ended → custo = entrega × negociado (não o budget)."""
     monkeypatch.setattr(main, "date", _FrozenDate)
