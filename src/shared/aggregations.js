@@ -377,6 +377,13 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp, chec
  */
 export const computeVideoKpis = ({ rows, detail, tactic, checklist }) => {
   const cost     = rows.reduce((s, r) => s + (r.effective_total_cost || 0), 0);
+  // Completions ENTREGUES agregadas (sobre `rows` = totals). Alimenta o
+  // `delivered` da PacingBarV2. Exposto aqui — em vez de `totals.reduce(...)`
+  // inline no JSX do VideoV2 — porque o esbuild miscompilava aquela referência
+  // ao agrupar VideoV2/DisplayV2 no mesmo chunk (deixava `totals`/`view`
+  // soltos → "X is not defined" só na aba de Vídeo). `kpis.X` é o mesmo padrão
+  // seguro que o Display já usa (`delivered={kpis.viAll}`). Ver [[project_esbuild_rename_miscompile_jsx]].
+  const completions = rows.reduce((s, r) => s + (r.completions || 0), 0);
   const vi       = detail.reduce((s, r) => s + (r.viewable_impressions || 0), 0);
   const views100 = detail.reduce((s, r) => s + (r.video_view_100 || 0), 0);
   const starts   = detail.reduce((s, r) => s + (r.video_starts || 0), 0);
@@ -404,7 +411,7 @@ export const computeVideoKpis = ({ rows, detail, tactic, checklist }) => {
   const pacOver = Math.max(0, pac - 100);
 
   return {
-    cost, vi, views100, starts, vtr,
+    cost, completions, vi, views100, starts, vtr,
     budget, cpcvNeg, cpcvEf, rentab,
     pac, pacBase, pacOver,
     notStarted,

@@ -435,12 +435,13 @@ function VideoContent({
           cost={kpis.cost}
           contracted={contractedViews}
           bonus={bonusViews}
-          // view.totals (não o `totals` destructurado): quando VideoV2/DisplayV2
-          // caem no mesmo chunk, o esbuild renomeia o local `totals`→`totals2`
-          // mas erra ESTA referência dentro do prop JSX, deixando um `totals`
-          // solto → "ReferenceError: totals is not defined" só na aba de Vídeo.
-          // Acesso por propriedade (.totals) é imune ao rename.
-          delivered={view.totals.reduce((s, r) => s + (r.completions || 0), 0)}
+          // kpis.completions (soma sobre totals, idêntica ao antigo
+          // `totals.reduce(...)`): esbuild miscompilava a referência a `totals`
+          // /`view` DENTRO deste prop ao agrupar VideoV2/DisplayV2 no mesmo
+          // chunk, deixando o identificador solto ("X is not defined" só na aba
+          // de Vídeo). `kpis` (→`i`) renomeia certo aqui, igual ao Display
+          // (`delivered={kpis.viAll}`). Ver [[project_esbuild_rename_miscompile_jsx]].
+          delivered={kpis.completions}
         />
       )}
 
