@@ -84,6 +84,40 @@ function pacingTier(pacing) {
   return "over";
 }
 
+// Micro-indicador de eCPM diário: ontem (D-1) vs anteontem (D-2), admin-only.
+// Mede se a eficiência de compra do DSP piorou/melhorou de um dia pro outro
+// — NÃO o eCPM acumulado do card (que quase não mexe). Convenção idêntica ao
+// MetricStrip: queda é BOM (compra mais barata) → ▼ verde; alta → ▲ vermelho;
+// ~igual → • neutro. Só renderiza quando o backend mandou os DOIS dias (cada
+// um omitido abaixo de um piso de volume) — sem os dois não há comparativo
+// honesto, então some (não polui o card com "—"). Fonte micro alinhada logo
+// abaixo do valor do eCPM. `muted` neutraliza a cor em campanha encerrada.
+const ECPM_DOD_FLAT_PCT = 0.5; // |Δ| < 0,5% no dia = ruído → trata como estável
+function EcpmDodDelta({ d1, d2, muted = false }) {
+  const a = Number(d1);
+  const b = Number(d2);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= 0) return null;
+  const rounded = Math.round(((a - b) / b) * 1000) / 10;
+  const isFlat = Math.abs(rounded) < ECPM_DOD_FLAT_PCT;
+  const isDown = rounded < 0;
+  const tone = isFlat ? "text-fg-subtle/70" : isDown ? "text-success" : "text-danger";
+  const arrow = isFlat ? "•" : isDown ? "▼" : "▲";
+  return (
+    <span
+      className={cn(
+        "flex items-center gap-0.5 text-[8.5px] font-semibold leading-none mt-1 tabular-nums",
+        muted ? "text-fg-subtle/60" : tone
+      )}
+      title={`eCPM do dia: ontem R$ ${a.toFixed(2)} vs anteontem R$ ${b.toFixed(2)} — ${
+        isFlat ? "estável" : isDown ? "queda (compra mais eficiente)" : "alta"
+      } de ${Math.abs(rounded).toFixed(1)}% · não exibir para o cliente`}
+    >
+      <span className="text-[7px] leading-none">{arrow}</span>
+      {Math.abs(rounded).toFixed(1)}%
+    </span>
+  );
+}
+
 /**
  * Health do card = pior pacing entre DSP, VID e suas sub-frentes (O2O/OOH).
  *
@@ -137,6 +171,13 @@ function CampaignCardV2Inner({
     // video tem ordem de grandeza diferente). admin_ecpm vira fallback.
     display_ecpm,
     video_ecpm,
+    // eCPM diário de D-1 e D-2 por mídia (admin-only) — alimenta o micro-
+    // indicador "vs dia anterior" abaixo da pill. Backend omite o dia sem
+    // volume mínimo; sem os dois, EcpmDodDelta não renderiza.
+    display_ecpm_d1,
+    display_ecpm_d2,
+    video_ecpm_d1,
+    video_ecpm_d2,
     // Merge Reports — quando presente, indica que o token pertence a um
     // grupo unificado. UI sinaliza com badge discreto no header do card.
     merge_id,
@@ -286,15 +327,15 @@ function CampaignCardV2Inner({
         return [{ label: null, value: admin_ecpm, kind: display_has_abs ? "displayAbs" : "display" }];
       }
       return [
-        { label: "DSP", value: dVal, kind: display_has_abs ? "displayAbs" : "display" },
-        { label: "VID", value: vVal, kind: "video" },
+        { label: "DSP", value: dVal, kind: display_has_abs ? "displayAbs" : "display", d1: display_ecpm_d1, d2: display_ecpm_d2 },
+        { label: "VID", value: vVal, kind: "video", d1: video_ecpm_d1, d2: video_ecpm_d2 },
       ];
     }
     if (hasDisplay) {
-      return [{ label: null, value: display_ecpm ?? admin_ecpm, kind: display_has_abs ? "displayAbs" : "display" }];
+      return [{ label: null, value: display_ecpm ?? admin_ecpm, kind: display_has_abs ? "displayAbs" : "display", d1: display_ecpm_d1, d2: display_ecpm_d2 }];
     }
     if (hasVideo) {
-      return [{ label: null, value: video_ecpm ?? admin_ecpm, kind: "video" }];
+      return [{ label: null, value: video_ecpm ?? admin_ecpm, kind: "video", d1: video_ecpm_d1, d2: video_ecpm_d2 }];
     }
     // Nenhum formato detectado (campanha brand-new sem dados): mostra a célula
     // vazia com "—" pra manter alinhamento entre linhas.
@@ -487,6 +528,7 @@ function CampaignCardV2Inner({
                   )}>
                     {formatBRL(row.value)}
                   </span>
+                  <EcpmDodDelta d1={row.d1} d2={row.d2} muted={ended} />
                 </div>
               ))}
             </div>
@@ -512,6 +554,7 @@ function CampaignCardV2Inner({
               )}>
                 {formatBRL(ecpmRows[0].value)}
               </span>
+              <EcpmDodDelta d1={ecpmRows[0].d1} d2={ecpmRows[0].d2} muted={ended} />
             </div>
           )}
         </div>
