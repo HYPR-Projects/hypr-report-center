@@ -105,14 +105,14 @@ function EcpmDodDelta({ d1, d2, muted = false }) {
   return (
     <span
       className={cn(
-        "flex items-center gap-0.5 text-[8.5px] font-semibold leading-none mt-1 tabular-nums",
+        "flex items-center gap-0.5 text-[10.5px] font-semibold leading-none mt-1 tabular-nums",
         muted ? "text-fg-subtle/60" : tone
       )}
       title={`eCPM do dia: ontem R$ ${a.toFixed(2)} vs anteontem R$ ${b.toFixed(2)} — ${
         isFlat ? "estável" : isDown ? "queda (compra mais eficiente)" : "alta"
       } de ${Math.abs(rounded).toFixed(1)}% · não exibir para o cliente`}
     >
-      <span className="text-[7px] leading-none">{arrow}</span>
+      <span className="text-[9px] leading-none">{arrow}</span>
       {Math.abs(rounded).toFixed(1)}%
     </span>
   );
