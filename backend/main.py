@@ -8717,6 +8717,39 @@ def query_campaigns_list():
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
             GROUP BY short_token
         ),
+        -- eCPM DIÁRIO de D-1 e D-2 por mídia — ADMIN-ONLY. Alimenta o
+        -- indicador "vs dia anterior" (▲/▼) abaixo das pills DSP/VID adm do
+        -- card. Mesma matemática do eCPM lifetime da CTE `unified` (custo cru
+        -- DSP / impressions × 1000, SEM survey), só que fatiado por dia
+        -- calendário BRT — assim o delta mede a eficiência de compra de ONTEM
+        -- contra a de anteontem, não o acumulado que quase não mexe.
+        --
+        -- "Ontem"/"anteontem" em America/Sao_Paulo, consistente com
+        -- yesterday_delivery/last7d_delivery e query_data_freshness. Janela de
+        -- 2 dias (D-2..D-1) num único scan aproveita partition pruning por
+        -- `date` — custo BQ desprezível (~2x o yesterday_delivery). Mesmo
+        -- filtro de survey/controle/exposto da `unified` pra o ratio bater
+        -- com o eCPM exibido no card. Cada dia agregado por SUM condicional
+        -- em `date` pra sair numa só row por token (LEFT JOIN sem fanout).
+        ecpm_recent AS (
+            SELECT
+                short_token,
+                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY) AND media_type='DISPLAY', total_cost,  0)) AS d_cost_d1,
+                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY) AND media_type='DISPLAY', impressions, 0)) AS d_impr_d1,
+                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 2 DAY) AND media_type='DISPLAY', total_cost,  0)) AS d_cost_d2,
+                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 2 DAY) AND media_type='DISPLAY', impressions, 0)) AS d_impr_d2,
+                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY) AND media_type='VIDEO',   total_cost,  0)) AS v_cost_d1,
+                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY) AND media_type='VIDEO',   impressions, 0)) AS v_impr_d1,
+                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 2 DAY) AND media_type='VIDEO',   total_cost,  0)) AS v_cost_d2,
+                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 2 DAY) AND media_type='VIDEO',   impressions, 0)) AS v_impr_d2
+            FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+            WHERE date BETWEEN DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 2 DAY)
+                           AND DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY)
+              AND media_type IN ('DISPLAY', 'VIDEO')
+              AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
+              AND UPPER(creative_name) NOT LIKE '%SURVEY%'
+            GROUP BY short_token
+        ),
         -- Brand Safety pre-bid (ABS) detection por mídia, cobrindo DV360, Xandr
         -- e override manual. Critério "qualquer linha" — uma campanha pode
         -- misturar linhas com e sem ABS, e cada mídia (Display/Video) é
@@ -8892,6 +8925,8 @@ def query_campaigns_list():
             u.v_admin_total_cost,     u.v_admin_impressions,
             yd.d_yesterday_viewable,  yd.v_yesterday_completions,
             l7.d_last7d_viewable,     l7.v_last7d_completions,
+            er.d_cost_d1, er.d_impr_d1, er.d_cost_d2, er.d_impr_d2,
+            er.v_cost_d1, er.v_impr_d1, er.v_cost_d2, er.v_impr_d2,
             uf.admin_total_cost_full, uf.d_admin_total_cost_full, uf.v_admin_total_cost_full,
             mcf.months                AS monthly_cost_full_arr,
             ab.display_has_abs,       ab.video_has_abs
@@ -8901,6 +8936,7 @@ def query_campaigns_list():
         LEFT JOIN unified            u USING (short_token)
         LEFT JOIN yesterday_delivery yd USING (short_token)
         LEFT JOIN last7d_delivery    l7 USING (short_token)
+        LEFT JOIN ecpm_recent        er USING (short_token)
         LEFT JOIN unified_cost_full  uf USING (short_token)
         LEFT JOIN monthly_cost_full  mcf USING (short_token)
         LEFT JOIN campaign_abs       ab USING (short_token)
@@ -9041,6 +9077,14 @@ def query_campaigns_list():
         if elapsed_days <= 0:
             return None
         return negotiated / total_days * elapsed_days
+
+    # eCPM diário confiável exige volume mínimo no dia: um dia de pouquíssimas
+    # impressions (ramp-up/wind-down, anomalia de DSP) gera eCPM ruidoso que
+    # faria o delta "vs dia anterior" oscilar sem significado. Abaixo do piso,
+    # omitimos o eCPM daquele dia → frontend não desenha a seta (sem falso sinal).
+    _ECPM_DOD_MIN_IMPR = 1000
+    def _dod_ecpm(cost, impr):
+        return round(cost / impr * 1000, 2) if impr >= _ECPM_DOD_MIN_IMPR and cost > 0 else None
 
     result = []
     for r in rows:
@@ -9300,6 +9344,23 @@ def query_campaigns_list():
             entry["v_admin_impressions"] = v_admin_impr
             if v_admin_cost > 0:
                 entry["video_ecpm"] = round(v_admin_cost / v_admin_impr * 1000, 2)
+
+        # eCPM DIÁRIO D-1/D-2 por mídia (admin-only) — alimenta o indicador
+        # "vs dia anterior" abaixo das pills DSP/VID adm do card. Mesma conta
+        # do display_ecpm/video_ecpm lifetime (custo cru / impressions × 1000),
+        # só que de um único dia. Só emite o eCPM de um dia quando aquele dia
+        # passou do piso de volume (_dod_ecpm → None abaixo dele). O frontend
+        # só desenha a seta quando TEM os dois dias (d1 e d2); ausência de
+        # qualquer um → "sem comparativo" (campanha encerrada, sem entrega
+        # ontem, ou volume diário insuficiente).
+        d_ecpm_d1 = _dod_ecpm(float(r["d_cost_d1"] or 0), int(r["d_impr_d1"] or 0))
+        d_ecpm_d2 = _dod_ecpm(float(r["d_cost_d2"] or 0), int(r["d_impr_d2"] or 0))
+        v_ecpm_d1 = _dod_ecpm(float(r["v_cost_d1"] or 0), int(r["v_impr_d1"] or 0))
+        v_ecpm_d2 = _dod_ecpm(float(r["v_cost_d2"] or 0), int(r["v_impr_d2"] or 0))
+        if d_ecpm_d1 is not None: entry["display_ecpm_d1"] = d_ecpm_d1
+        if d_ecpm_d2 is not None: entry["display_ecpm_d2"] = d_ecpm_d2
+        if v_ecpm_d1 is not None: entry["video_ecpm_d1"] = v_ecpm_d1
+        if v_ecpm_d2 is not None: entry["video_ecpm_d2"] = v_ecpm_d2
 
         # Budget cliente por mídia (valor PI faturado) — alimenta o Tech Cost
         # na aba Diagnóstico do menu admin. Calculado como
