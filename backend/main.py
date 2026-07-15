@@ -5130,6 +5130,9 @@ _SOURCE_LANDING_TABLES = [
     ("Amazon",     "amazon_daily_performance_metrics",     "date", False),
     ("XANDR",      "xandr_daily_performance_metrics",      "date", True),
     ("StackAdapt", "stackadapt_daily_performance_metrics", "date", False),
+    # Yahoo (integração 2026): a tratada une o histórico legado (congelado em
+    # 2023) com a ingestão nova, então MAX(date) reflete a aterrissagem atual.
+    ("Yahoo",      "yahoo_daily_performance_metrics",      "date", False),
 ]
 
 
