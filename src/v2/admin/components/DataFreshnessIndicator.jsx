@@ -45,6 +45,8 @@ const SOURCE_LABELS = {
   XANDR:      "Xandr",
   DV360:      "DV360",
   STACKADAPT: "StackAdapt",
+  AMAZON:     "Amazon",
+  YAHOO:      "Yahoo",
 };
 
 const humanizeSource = (s) => {

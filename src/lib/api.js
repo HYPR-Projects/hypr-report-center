@@ -1670,3 +1670,32 @@ export async function triggerUnifiedRebuild() {
   }
   return r.json();
 }
+
+/**
+ * Entrega diária da campanha quebrada por DSP (aba interna "DSPs" do report).
+ * Admin-only: no report o JWT chega via prop (?adm= na URL), então recebe o
+ * token explicitamente — mesmo padrão de saveComment/saveUpload.
+ * Devolve { daily: [{date, source, media_type, impressions, ...}], sources: [...] }.
+ */
+export async function getDspBreakdown(token, adminJwt) {
+  const r = await fetch(
+    `${API_URL}?action=dsp_breakdown&token=${encodeURIComponent(token)}`,
+    { headers: adminAuthHeaders(adminJwt) },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/**
+ * Saúde global de entrega por DSP (sneak peek do menu admin): série 14d por
+ * fonte + resumo D-1 vs média 7d + campanhas ativas que pararam de entregar.
+ */
+export async function getDspHealth() {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=dsp_health`,
+    { headers: adminAuthHeaders(jwt) },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}

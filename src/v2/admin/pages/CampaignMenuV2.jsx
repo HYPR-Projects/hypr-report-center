@@ -58,6 +58,7 @@ import { Skeleton } from "../../../ui/Skeleton";
 import { cn } from "../../../ui/cn";
 import { ThemeToggleV2 } from "../../components/ThemeToggleV2";
 import { DataFreshnessIndicator } from "../components/DataFreshnessIndicator";
+import { DspHealthPanel } from "../components/DspHealthPanel";
 
 import { LayoutToggle } from "../components/LayoutToggle";
 import { ToolbarV2 } from "../components/ToolbarV2";
@@ -850,6 +851,10 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
                 CampaignMenuV2 inteiro já é renderizado dentro do
                 isAdminMode em App.jsx, então o gate é implícito. */}
             <DataFreshnessIndicator user={user} />
+            {/* Saúde de ENTREGA por DSP (volume/negócio) — complementa o
+                indicador acima, que cobre pipeline/frescor. Sneak peek com
+                gargalos clicáveis (abre o report da campanha parada). */}
+            <DspHealthPanel onOpenReport={onOpenReport} />
             {/* Sino de alertas — engine prioriza riscos por severidade ×
                 impacto BRL, mostra críticos primeiro. Admin-only por estar
                 aqui dentro (mesmo gate do DataFreshnessIndicator). */}

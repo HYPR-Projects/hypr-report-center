@@ -220,6 +220,11 @@ _performers_period_cache = {} # "from|to" -> (timestamp, list[campaign])
 _DATA_FRESHNESS_CACHE_TTL = 300
 _data_freshness_cache = {}  # "all" -> (timestamp, list[{source, max_date, ...}])
 _source_landings_cache = {}  # "all" -> (timestamp, list[{source, max_date}])
+# Central de DSPs (admin): saúde de entrega por fonte. Mesmo racional do
+# freshness — dado cosmético/diagnóstico, TTL curto, sem invalidação manual.
+_DSP_HEALTH_CACHE_TTL = 300
+_dsp_health_cache = {}      # "all" -> (timestamp, payload)
+_dsp_breakdown_cache = {}   # short_token -> (timestamp, payload)
 _cache_lock      = threading.Lock()
 
 
@@ -3296,6 +3301,35 @@ def report_data(request):
             logger.exception(f"[ERROR rebuild_unified] {e}")
             return (jsonify({"error": "Erro ao disparar reconstrução"}), 500, headers)
 
+    # GET ?action=dsp_breakdown&token=<short> — admin-only. Entrega diária da
+    # campanha quebrada por DSP (source do unified). Alimenta a aba interna
+    # "DSPs" do report; nunca entra no payload público do ?token=.
+    if request.method == "GET" and request.args.get("action") == "dsp_breakdown":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            short_token = (request.args.get("token") or "").strip().upper()
+            if not short_token:
+                return (jsonify({"error": "token é obrigatório"}), 400, headers)
+            payload = query_dsp_breakdown(short_token)
+            return (jsonify(payload), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR dsp_breakdown] {e}")
+            return (jsonify({"error": "Erro ao buscar entrega por DSP"}), 500, headers)
+
+    # GET ?action=dsp_health — admin-only. Sneak peek global da saúde de
+    # entrega por DSP: série 14d por fonte, aterrissagem, e o detector de
+    # gargalo (campanhas ativas que entregavam na semana e zeraram ontem).
+    if request.method == "GET" and request.args.get("action") == "dsp_health":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            payload = query_dsp_health()
+            return (jsonify(payload), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR dsp_health] {e}")
+            return (jsonify({"error": "Erro ao buscar saúde das DSPs"}), 500, headers)
+
     # ── Endpoints: PMP Deals (admin) ──────────────────────────────────────────
     # Análise das entregas dos deals de pagamento HYPR — substitui o fluxo
     # manual de baixar o report do Xandr Curate e alimentar a planilha
@@ -5164,6 +5198,205 @@ def query_source_landings():
     out.sort(key=lambda r: r["source"])
     _cache_set(_source_landings_cache, "all", out)
     return out
+
+
+# Regex de exclusão survey/controle — mesma semântica do report (query_daily).
+_SURVEY_LINE_RE = r"SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST"
+
+
+def query_dsp_breakdown(short_token: str):
+    """Entrega diária de uma campanha quebrada por DSP (source do unified).
+
+    Lê o unified (não o CR) porque só ele tem a coluna `source`. Aba interna
+    admin: expõe total_cost cru do unified (custo de mídia por fonte), que é
+    outra régua que o custo efetivo do report — o front rotula como tal.
+    """
+    cached = _cache_get(_dsp_breakdown_cache, short_token, _DSP_HEALTH_CACHE_TTL)
+    if cached is not None:
+        return cached
+    sql = f"""
+        SELECT
+          date, source, media_type,
+          SUM(impressions)            AS impressions,
+          SUM(measurable_impressions) AS measurable_impressions,
+          SUM(viewable_impressions)   AS viewable_impressions,
+          SUM(clicks)                 AS clicks,
+          SUM(total_cost)             AS total_cost,
+          SUM(conversions)            AS conversions,
+          SUM(video_starts)           AS video_starts,
+          SUM(video_view_100_complete) AS video_completions
+        FROM `{PROJECT_ID}.{DATASET_ASSETS}.unified_daily_performance_metrics`
+        WHERE short_token = @token
+          AND NOT REGEXP_CONTAINS(UPPER(line_name), r'{_SURVEY_LINE_RE}')
+        GROUP BY date, source, media_type
+        ORDER BY date ASC, source ASC
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("token", "STRING", short_token)]
+    )
+    daily = []
+    per_source = {}
+    for r in bq.query(sql, job_config=job_config, location="US").result():
+        row = {
+            "date": r["date"].isoformat(),
+            "source": r["source"],
+            "media_type": r["media_type"],
+            "impressions": int(r["impressions"] or 0),
+            "measurable_impressions": int(r["measurable_impressions"] or 0),
+            "viewable_impressions": int(r["viewable_impressions"] or 0),
+            "clicks": int(r["clicks"] or 0),
+            "total_cost": float(r["total_cost"] or 0.0),
+            "conversions": int(r["conversions"] or 0),
+            "video_starts": int(r["video_starts"] or 0),
+            "video_completions": int(r["video_completions"] or 0),
+        }
+        daily.append(row)
+        agg = per_source.setdefault(row["source"], {
+            "source": row["source"], "first_date": row["date"], "last_date": row["date"],
+            "impressions": 0, "viewable_impressions": 0, "clicks": 0, "total_cost": 0.0,
+        })
+        agg["first_date"] = min(agg["first_date"], row["date"])
+        agg["last_date"] = max(agg["last_date"], row["date"])
+        agg["impressions"] += row["impressions"]
+        agg["viewable_impressions"] += row["viewable_impressions"]
+        agg["clicks"] += row["clicks"]
+        agg["total_cost"] += row["total_cost"]
+    payload = {
+        "daily": daily,
+        "sources": sorted(per_source.values(), key=lambda s: -s["impressions"]),
+    }
+    _cache_set(_dsp_breakdown_cache, short_token, payload)
+    return payload
+
+
+def query_dsp_health():
+    """Saúde global de entrega por DSP p/ o sneak peek do menu admin.
+
+    Três leituras em paralelo no _query_pool:
+      a) série diária 14d por source (imps/custo/clicks/tokens distintos);
+      b) campanhas "paradas" por source: entregaram em D-7..D-2, zeraram em
+         D-1 e o checklist diz que ainda estão no ar — o detector de gargalo;
+      c) aterrissagem por fonte (tabela tratada), via query_source_landings
+         já cacheada.
+    Datas em America/Sao_Paulo, mesmo referencial do query_data_freshness.
+    """
+    cached = _cache_get(_dsp_health_cache, "all", _DSP_HEALTH_CACHE_TTL)
+    if cached is not None:
+        return cached
+
+    unified = f"`{PROJECT_ID}.{DATASET_ASSETS}.unified_daily_performance_metrics`"
+    daily_sql = f"""
+        SELECT
+          source, date,
+          SUM(impressions) AS impressions,
+          SUM(total_cost)  AS total_cost,
+          SUM(clicks)      AS clicks,
+          COUNT(DISTINCT short_token) AS tokens
+        FROM {unified}
+        WHERE date >= DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 14 DAY)
+          AND short_token IS NOT NULL
+          AND NOT REGEXP_CONTAINS(UPPER(line_name), r'{_SURVEY_LINE_RE}')
+        GROUP BY source, date
+        ORDER BY source, date
+    """
+    stopped_sql = f"""
+        WITH d1 AS (
+          SELECT DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY) AS d
+        ),
+        entregou_semana AS (
+          SELECT source, short_token, MAX(date) AS last_date
+          FROM {unified}, d1
+          WHERE date BETWEEN DATE_SUB(d1.d, INTERVAL 6 DAY) AND DATE_SUB(d1.d, INTERVAL 1 DAY)
+            AND short_token IS NOT NULL
+            AND impressions > 0
+          GROUP BY source, short_token
+        ),
+        entregou_d1 AS (
+          SELECT DISTINCT source, short_token
+          FROM {unified}, d1
+          WHERE date = d1.d AND impressions > 0
+        )
+        SELECT
+          w.source, w.short_token, w.last_date,
+          c.client_name, c.campaign_name
+        FROM entregou_semana w
+        JOIN `{PROJECT_ID}.{DATASET_ASSETS}.checklist_info` c USING (short_token)
+        LEFT JOIN entregou_d1 x ON x.source = w.source AND x.short_token = w.short_token
+        CROSS JOIN d1
+        WHERE x.short_token IS NULL
+          AND c.end_date >= d1.d
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY w.source ORDER BY w.last_date DESC) <= 20
+        ORDER BY w.source, w.last_date DESC
+    """
+
+    # MAX(date) all-time por fonte: garante que uma DSP parada há MAIS de 14
+    # dias (fora da janela da série) continue listada — é justamente o caso
+    # mais grave que o painel existe para expor.
+    last_sql = f"""
+        SELECT source, MAX(date) AS last_date
+        FROM {unified}
+        WHERE short_token IS NOT NULL
+        GROUP BY source
+    """
+
+    def _run(sql):
+        return list(bq.query(sql, job_config=bigquery.QueryJobConfig(), location="US").result())
+
+    fut_daily = _query_pool.submit(_run, daily_sql)
+    fut_stopped = _query_pool.submit(_run, stopped_sql)
+    fut_last = _query_pool.submit(_run, last_sql)
+    fut_landings = _query_pool.submit(query_source_landings)
+    daily_rows = fut_daily.result()
+    stopped_rows = fut_stopped.result()
+    last_by_source = {r["source"]: r["last_date"].isoformat() for r in fut_last.result() if r["last_date"]}
+    landings = {r["source"].upper(): r["max_date"] for r in fut_landings.result()}
+
+    daily = [{
+        "source": r["source"], "date": r["date"].isoformat(),
+        "impressions": int(r["impressions"] or 0),
+        "total_cost": float(r["total_cost"] or 0.0),
+        "clicks": int(r["clicks"] or 0),
+        "tokens": int(r["tokens"] or 0),
+    } for r in daily_rows]
+
+    stopped_by_source = {}
+    for r in stopped_rows:
+        stopped_by_source.setdefault(r["source"], []).append({
+            "short_token": r["short_token"],
+            "client_name": r["client_name"],
+            "campaign_name": r["campaign_name"],
+            "last_date": r["last_date"].isoformat(),
+        })
+
+    d1 = max((r["date"] for r in daily), default=None)
+    sources = []
+    for source in sorted(set(last_by_source) | {r["source"] for r in daily}):
+        rows = [r for r in daily if r["source"] == source]
+        d1_row = next((r for r in rows if r["date"] == d1), None)
+        # média dos 7 dias anteriores a D-1 com entrega registrada
+        prev = sorted((r for r in rows if r["date"] != d1), key=lambda r: r["date"])[-7:]
+        avg7 = (sum(r["impressions"] for r in prev) / len(prev)) if prev else 0
+        imps_d1 = d1_row["impressions"] if d1_row else 0
+        sources.append({
+            "source": source,
+            "landing_max_date": landings.get(source.upper()),
+            "last_delivery": last_by_source.get(source),
+            "imps_d1": imps_d1,
+            "cost_d1": d1_row["total_cost"] if d1_row else 0.0,
+            "avg_7d": round(avg7),
+            "delta_pct": round((imps_d1 - avg7) / avg7 * 100, 1) if avg7 else None,
+            "tokens_d1": d1_row["tokens"] if d1_row else 0,
+            "stopped": stopped_by_source.get(source, []),
+        })
+
+    payload = {
+        "sources": sources,
+        "daily": daily,
+        "reference_date": d1,
+        "server_now": datetime.now(timezone.utc).isoformat(),
+    }
+    _cache_set(_dsp_health_cache, "all", payload)
+    return payload
 
 
 # ── Trigger de reconstrução das bases unificadas via Dagster+ ────────────────

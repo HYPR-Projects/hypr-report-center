@@ -66,10 +66,11 @@ import RmndV2 from "./RmndV2";
 import PdoohV2 from "./PdoohV2";
 import LoomV2 from "./LoomV2";
 import SurveyV2 from "./SurveyV2";
+import DspHealthV2 from "./DspHealthV2";
 
 // ─── Helpers de URL ────────────────────────────────────────────────────
 
-const VALID_TABS = ["overview", "display", "video", "base", "rmnd", "pdooh", "loom", "survey"];
+const VALID_TABS = ["overview", "display", "video", "base", "rmnd", "pdooh", "loom", "survey", "dsps"];
 const VALID_TACTICS = ["O2O", "OOH", "GROUNDFLOW"];
 
 function readTabFromUrl() {
@@ -719,7 +720,8 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     (tab === "rmnd" && !showRmnd) ||
     (tab === "pdooh" && !showPdooh) ||
     (tab === "loom" && !showLoom) ||
-    (tab === "survey" && !showSurvey)
+    (tab === "survey" && !showSurvey) ||
+    (tab === "dsps" && !isAdmin)
       ? "overview"
       : tab;
 
@@ -838,6 +840,17 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                     className={SECONDARY_TAB_CLASS}
                   >
                     Survey
+                  </TabsTrigger>
+                )}
+                {/* Aba interna admin-only: saúde da entrega por DSP. Cliente
+                    nunca vê (gate aqui + endpoint admin-gated no backend). */}
+                {isAdmin && (
+                  <TabsTrigger
+                    value="dsps"
+                    iconLeft={<PulseIcon />}
+                    className={SECONDARY_TAB_CLASS}
+                  >
+                    DSPs
                   </TabsTrigger>
                 )}
               </TabsList>
@@ -974,6 +987,17 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 adminJwt={adminJwt}
               />
             </TabsContent>
+
+            {isAdmin && (
+              <TabsContent value="dsps">
+                <DspHealthV2
+                  token={token}
+                  data={data}
+                  isAdmin={isAdmin}
+                  adminJwt={adminJwt}
+                />
+              </TabsContent>
+            )}
           </Tabs>
           </div>
         </div>
@@ -1159,6 +1183,22 @@ function ClipboardIcon() {
       <rect x="9" y="3" width="6" height="4" rx="1" ry="1" />
       <line x1="9" y1="12" x2="15" y2="12" />
       <line x1="9" y1="16" x2="13" y2="16" />
+    </svg>
+  );
+}
+
+function PulseIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
     </svg>
   );
 }
