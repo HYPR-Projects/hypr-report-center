@@ -31,7 +31,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { cn } from "../../../ui/cn";
-import { getDataFreshness, triggerUnifiedRebuild } from "../../../lib/api";
+import { getDataFreshness, getRebuildStatus, triggerUnifiedRebuild } from "../../../lib/api";
 import { isFeatureAdmin } from "../../../shared/auth";
 
 const REFETCH_MS       = 5 * 60 * 1000;
@@ -164,10 +164,13 @@ export function DataFreshnessIndicator({ className, user }) {
   });
 
   // Estado do botão de reconstrução manual (dispara o job no Dagster+).
-  const [rebuild, setRebuild] = useState({ busy: false, ok: null, msg: "", runUrl: null });
+  // `polling` = run em andamento sendo acompanhada até o fim.
+  const [rebuild, setRebuild] = useState({ busy: false, polling: false, ok: null, msg: "", runUrl: null });
 
   // Ref pra cancelar fetches stale (modo strict + unmount durante refetch).
   const cancelRef = useRef({ cancelled: false });
+  // Interval do acompanhamento da run de rebuild (limpo no unmount).
+  const pollRef = useRef(null);
 
   const fetchOnce = async () => {
     cancelRef.current.cancelled = false;
@@ -188,26 +191,59 @@ export function DataFreshnessIndicator({ className, user }) {
     }
   };
 
-  // Dispara a reconstrução manual no Dagster e re-checa o frescor depois (o
-  // job leva alguns minutos pra materializar). Não bloqueia o popover.
+  // Acompanha a run no Dagster até terminar (poll 30s, teto 30 min). No
+  // SUCCESS o backend já derrubou o cache da lista (rebuild_status) — o
+  // evento `hypr:bases-rebuilt` avisa o menu pra refazer a lista com
+  // refresh:true; aqui recarregamos o frescor do indicador.
+  const startRunPolling = (runId, runUrl) => {
+    if (!runId) {
+      // Sem run_id não há o que acompanhar — mantém o comportamento antigo.
+      setRebuild({ busy: false, polling: false, ok: true, msg: "Reconstrução disparada — leva alguns minutos.", runUrl });
+      return;
+    }
+    clearInterval(pollRef.current);
+    const startedAt = Date.now();
+    pollRef.current = setInterval(async () => {
+      if (Date.now() - startedAt > 30 * 60_000) {
+        clearInterval(pollRef.current);
+        setRebuild({ busy: false, polling: false, ok: false, msg: "A run não terminou em 30 min — acompanhe no Dagster.", runUrl });
+        return;
+      }
+      try {
+        const st = await getRebuildStatus(runId);
+        if (!st?.done) return;
+        clearInterval(pollRef.current);
+        if (st.succeeded) {
+          setRebuild({ busy: false, polling: false, ok: true, msg: "Bases reconstruídas — lista de campanhas atualizada.", runUrl });
+          fetchOnce();
+          window.dispatchEvent(new CustomEvent("hypr:bases-rebuilt"));
+        } else {
+          setRebuild({ busy: false, polling: false, ok: false, msg: `Reconstrução terminou com status ${st.status}.`, runUrl });
+        }
+      } catch {
+        /* erro transiente de poll — tenta de novo no próximo tick até o teto */
+      }
+    }, 30_000);
+  };
+
+  // Dispara a reconstrução manual no Dagster e acompanha a run até o fim.
+  // Não bloqueia o popover.
   const onRebuild = async () => {
-    setRebuild({ busy: true, ok: null, msg: "", runUrl: null });
+    setRebuild({ busy: true, polling: false, ok: null, msg: "", runUrl: null });
     try {
       const res = await triggerUnifiedRebuild();
       // O backend deduplica: se já há run em fila/execução, devolve a run
       // existente com already_running=true em vez de disparar (e cobrar) outra.
       setRebuild({
-        busy: false, ok: true,
+        busy: false, polling: true, ok: null,
         msg: res?.already_running
           ? "Já existe uma reconstrução em andamento — acompanhando essa run."
-          : "Reconstrução disparada — leva alguns minutos.",
+          : "Reconstrução disparada — acompanhando a run até o fim (leva alguns minutos).",
         runUrl: res?.run_url || null,
       });
-      // Re-checa o frescor conforme o job vai terminando.
-      setTimeout(fetchOnce, 90_000);
-      setTimeout(fetchOnce, 240_000);
+      startRunPolling(res?.run_id, res?.run_url || null);
     } catch (e) {
-      setRebuild({ busy: false, ok: false, msg: e.message || "Falha ao disparar.", runUrl: null });
+      setRebuild({ busy: false, polling: false, ok: false, msg: e.message || "Falha ao disparar.", runUrl: null });
     }
   };
 
@@ -222,6 +258,7 @@ export function DataFreshnessIndicator({ className, user }) {
     return () => {
       cancelRef.current.cancelled = true;
       clearInterval(id);
+      clearInterval(pollRef.current);
       document.removeEventListener("visibilitychange", onFocus);
       window.removeEventListener("focus", onFocus);
     };
@@ -387,7 +424,7 @@ export function DataFreshnessIndicator({ className, user }) {
             <button
               type="button"
               onClick={onRebuild}
-              disabled={rebuild.busy || rebuild.ok === true}
+              disabled={rebuild.busy || rebuild.polling || rebuild.ok === true}
               className={cn(
                 "w-full h-8 rounded-md text-[12px] font-medium transition-colors",
                 "disabled:opacity-60 disabled:cursor-not-allowed",
@@ -399,14 +436,18 @@ export function DataFreshnessIndicator({ className, user }) {
             >
               {rebuild.busy
                 ? "Disparando…"
-                : rebuild.ok === true
-                  ? "Reconstrução em andamento…"
-                  : "Reconstruir agora"}
+                : rebuild.polling
+                  ? "Reconstruindo…"
+                  : rebuild.ok === true
+                    ? "Bases reconstruídas ✓"
+                    : "Reconstruir agora"}
             </button>
             {rebuild.msg && (
               <p className={cn(
                 "mt-2 text-[11px] leading-snug",
-                rebuild.ok ? "text-success" : "text-danger",
+                rebuild.ok === true ? "text-success"
+                  : rebuild.ok === false ? "text-danger"
+                  : "text-fg-muted",
               )}>
                 {rebuild.msg}
                 {rebuild.runUrl && (

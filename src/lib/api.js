@@ -1672,6 +1672,26 @@ export async function triggerUnifiedRebuild() {
 }
 
 /**
+ * Status da run de reconstrução no Dagster (acompanha o "Reconstruir agora").
+ * Devolve { status, done, succeeded }. Quando succeeded=true o backend já
+ * derrubou o cache da lista — o caller deve refazer listCampaigns com
+ * refresh:true pra reaquecer e ver a base reconstruída.
+ */
+export async function getRebuildStatus(runId) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=rebuild_status&run_id=${encodeURIComponent(runId)}`,
+    { headers: adminAuthHeaders(jwt) },
+  );
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+/**
  * Entrega diária da campanha quebrada por DSP (aba interna "DSPs" do report).
  * Admin-only: no report o JWT chega via prop (?adm= na URL), então recebe o
  * token explicitamente — mesmo padrão de saveComment/saveUpload.

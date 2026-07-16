@@ -159,6 +159,9 @@ _report_cache    = {}     # short_token -> (timestamp, payload)
 _merged_report_cache = {} # merge_id -> (timestamp, payload merged)
 _list_cache      = {}     # "all" -> (timestamp, payload)
 _clients_cache   = {}     # "all" -> (timestamp, payload)
+# Runs de "Reconstruir agora" cujo término já derrubou o cache da lista —
+# polls repetidos do mesmo run não podem ficar descartando cache recém-aquecido.
+_rebuild_cache_busted = set()  # run_id
 # Portal do cliente: payload client-safe agregado por share_id. Era 300s (5min)
 # e queimava o acesso: a base só muda 1x/dia (~06h) e qualquer mutação admin
 # (save_config/set_publish) já faz `_portal_cache.clear()`, então 5min era
@@ -3301,6 +3304,37 @@ def report_data(request):
             logger.exception(f"[ERROR rebuild_unified] {e}")
             return (jsonify({"error": "Erro ao disparar reconstrução"}), 500, headers)
 
+    # GET ?action=rebuild_status&run_id= — admin-only. Acompanha a run do
+    # "Reconstruir agora" no Dagster. Quando ela termina com SUCCESS, derruba
+    # o cache da lista/clients UMA vez (guard por run_id): a próxima carga da
+    # lista já nasce da base reconstruída, sem esperar warmup (3/3h) nem TTL.
+    if request.method == "GET" and request.args.get("action") == "rebuild_status":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        run_id = (request.args.get("run_id") or "").strip()
+        if not run_id:
+            return (jsonify({"error": "run_id é obrigatório"}), 400, headers)
+        try:
+            run_status = get_dagster_run_status(run_id)
+            done = run_status in ("SUCCESS", "FAILURE", "CANCELED")
+            if run_status == "SUCCESS" and run_id not in _rebuild_cache_busted:
+                with _cache_lock:
+                    _list_cache.pop("all", None)
+                    _clients_cache.pop("all", None)
+                _rebuild_cache_busted.add(run_id)
+                logger.info(f"[rebuild_status] run {run_id} SUCCESS — _list_cache/_clients_cache invalidados")
+            return (jsonify({
+                "ok": True,
+                "status": run_status,
+                "done": done,
+                "succeeded": run_status == "SUCCESS",
+            }), 200, headers)
+        except RuntimeError as e:
+            return (jsonify({"error": str(e)}), 502, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR rebuild_status] {e}")
+            return (jsonify({"error": "Erro ao consultar status da reconstrução"}), 500, headers)
+
     # GET ?action=dsp_breakdown&token=<short> — admin-only. Entrega diária da
     # campanha quebrada por DSP (source do unified). Alimenta a aba interna
     # "DSPs" do report; nunca entra no payload público do ?token=.
@@ -5444,6 +5478,19 @@ query($job: String!) {
 }
 """
 
+# Status de uma run específica — o front usa pra acompanhar o "Reconstruir
+# agora" até o fim e saber a hora certa de recarregar a lista de campanhas.
+_DAGSTER_RUN_STATUS_QUERY = """
+query($runId: ID!) {
+  runOrError(runId: $runId) {
+    __typename
+    ... on Run { status }
+    ... on RunNotFoundError { message }
+    ... on PythonError { message }
+  }
+}
+"""
+
 
 def _dagster_graphql(graphql_url, token, query, variables):
     """POST GraphQL no Dagster+; devolve `data` ou lança RuntimeError amigável."""
@@ -5522,6 +5569,26 @@ def trigger_dagster_rebuild():
 
     run_id = res["run"]["runId"]
     return {"run_id": run_id, "run_url": f"{base}/runs/{run_id}", "already_running": False}
+
+
+def get_dagster_run_status(run_id):
+    """Consulta o status de uma run no Dagster+ (SUCCESS/FAILURE/STARTED/...).
+
+    Lança RuntimeError amigável se a config estiver ausente ou a run não
+    existir no deployment.
+    """
+    token = os.environ.get("DAGSTER_API_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("Reconstrução não configurada (DAGSTER_API_TOKEN ausente no ambiente).")
+
+    graphql_url = os.environ.get("DAGSTER_GRAPHQL_URL", "https://hypr.dagster.cloud/prod/graphql")
+    data = _dagster_graphql(graphql_url, token, _DAGSTER_RUN_STATUS_QUERY, {"runId": run_id})
+    res = data.get("runOrError") or {}
+    if res.get("__typename") != "Run":
+        raise RuntimeError(
+            f"Run não encontrada no Dagster: {res.get('message') or res.get('__typename') or run_id}"
+        )
+    return res.get("status") or "UNKNOWN"
 
 
 def query_loom(short_token: str):
