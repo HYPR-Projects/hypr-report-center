@@ -620,6 +620,25 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
       .catch(() => { /* keep stale — toggle já mostrou "Salvo" */ });
   }, []);
 
+  // Quando um "Reconstruir agora" termina (evento do DataFreshnessIndicator),
+  // o backend já derrubou o _list_cache — refaz a lista com refresh:true pra
+  // reaquecer o cache do servidor e mostrar a base recém-reconstruída (ex.:
+  // campanha nova que acabou de entrar no checklist) sem esperar o warmup 3/3h.
+  useEffect(() => {
+    const onBasesRebuilt = () => {
+      listCampaigns({ refresh: true })
+        .then((camps) => {
+          setCampaigns(camps);
+          writeCache("menu.campaigns", camps);
+          setLastFetchedAt(Date.now());
+          setClientsFetchedAt(null);
+        })
+        .catch(() => { /* keep stale — indicador já mostrou o resultado da run */ });
+    };
+    window.addEventListener("hypr:bases-rebuilt", onBasesRebuilt);
+    return () => window.removeEventListener("hypr:bases-rebuilt", onBasesRebuilt);
+  }, []);
+
   // Fechamento manual da campanha — atualização otimista. NÃO refazemos a
   // lista imediatamente porque BigQuery tem read-after-write lag (~segundos):
   // o INSERT do `campaign_closures` pode não estar visível na próxima query,
