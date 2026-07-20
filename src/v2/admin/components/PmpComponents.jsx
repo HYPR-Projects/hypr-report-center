@@ -18,6 +18,7 @@ import {
   formatRatioPct, formatLastDelivery, emailInitial,
   pctEntrega, groupPctEntrega,
   pctEntregaRev, groupPctEntregaRev,
+  faltaEntregarRev, groupFaltaEntregarRev,
   resolveGroupPi,
   effectiveStatus, formatLineStartPeriod,
   isNewLine,
@@ -985,6 +986,28 @@ function PmpLineRowInner({
       <div className={cn("text-right text-[13px] tabular-nums",
         isCancelado ? "text-fg-subtle/70" : "text-fg-muted")}>
         {formatBRL(line.curator_revenue)}
+        {(() => {
+          // Falta entregar (R$) = PI − revenue: saldo de faturamento bruto
+          // ainda a fechar contra o contratado. Contraparte absoluta do
+          // % Entr Rev. Em grupo, calcula contra o PI compartilhado e mostra
+          // só no 1º membro (mesma regra do badge de ganho extra). Esconde
+          // quando a entrega já bateu/passou o PI (falta ≤ 0).
+          if (isCancelado) return null;
+          const isGroupMember = line.group_id != null;
+          if (isGroupMember && !isFirstGroupMember) return null;
+          const falta = isGroupMember
+            ? groupFaltaEntregarRev(line, groupPi != null ? groupPi : line.pi_brl)
+            : faltaEntregarRev(line);
+          if (falta == null || falta < 1) return null;
+          return (
+            <div className="text-[10px] text-amber-600 dark:text-amber-300 mt-0.5"
+                 title={isGroupMember
+                   ? "Falta entregar = PI compartilhado do grupo − revenue agregada do grupo"
+                   : "Falta entregar = PI − revenue bruto (faturamento a fechar)"}>
+              falta {formatBRLCompact(falta)}
+            </div>
+          );
+        })()}
       </div>
       <div className={cn("text-right tabular-nums",
         isCancelado ? "text-fg-subtle" : "text-fg")}>
@@ -1135,7 +1158,24 @@ function PmpLineRowInner({
             </PmpMobileStat>
           )}
           <PmpMobileStat label="Cost"><span className="text-fg-muted">{formatBRL(line.curator_total_cost)}</span></PmpMobileStat>
-          <PmpMobileStat label="Revenue"><span className="text-fg-muted">{formatBRL(line.curator_revenue)}</span></PmpMobileStat>
+          <PmpMobileStat label="Revenue">
+            <span className="text-fg-muted">{formatBRL(line.curator_revenue)}</span>
+            {(() => {
+              if (isCancelado) return null;
+              const isGroupMember = line.group_id != null;
+              if (isGroupMember && !isFirstGroupMember) return null;
+              const falta = isGroupMember
+                ? groupFaltaEntregarRev(line, groupPi != null ? groupPi : line.pi_brl)
+                : faltaEntregarRev(line);
+              if (falta == null || falta < 1) return null;
+              return (
+                <div className="text-[10px] text-amber-600 dark:text-amber-300 mt-0.5"
+                     title="Falta entregar = PI − revenue bruto (faturamento a fechar)">
+                  falta {formatBRLCompact(falta)}
+                </div>
+              );
+            })()}
+          </PmpMobileStat>
           <PmpMobileStat label="Margem HYPR">
             <span className={cn("font-semibold", isCancelado ? "text-fg-subtle" : "text-emerald-600 dark:text-emerald-400")}>
               {formatBRL(line.curator_margin)}

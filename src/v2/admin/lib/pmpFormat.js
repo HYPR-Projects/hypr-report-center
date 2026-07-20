@@ -209,6 +209,27 @@ export function groupPctEntregaRev(line, groupPi) {
   return revenue / groupPi;
 }
 
+// ─── Falta entregar (R$) — saldo de receita ainda a faturar contra o PI ──────
+// Contraparte absoluta do % Entr Rev: quanto de faturamento bruto ainda falta
+// pra fechar o valor contratado (PI). = PI − curator_revenue.
+// Retorna null quando não há PI; pode retornar valor ≤ 0 quando a entrega já
+// bateu/passou o PI (a UI decide esconder nesse caso).
+export function faltaEntregarRev(line) {
+  if (!line) return null;
+  const pi = line.pi_brl;
+  const revenue = line.curator_revenue;
+  if (pi == null || pi <= 0 || revenue == null) return null;
+  return pi - revenue;
+}
+
+/** Versão grupo: usa group_curator_revenue contra o PI compartilhado passado. */
+export function groupFaltaEntregarRev(line, groupPi) {
+  if (!line || groupPi == null || groupPi <= 0) return null;
+  const revenue = line.group_curator_revenue;
+  if (revenue == null) return null;
+  return groupPi - revenue;
+}
+
 // ─── % de entrega — cor de célula (régua compartilhada com sheets) ───────────
 // Régua definida pelo time (margem ÷ PI):
 //   < 70%   → vermelho      (entrega bem abaixo do esperado)
