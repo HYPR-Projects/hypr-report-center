@@ -781,7 +781,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
           >
           <Tabs value={effectiveTab} onValueChange={setTab}>
             <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3 md:gap-4 border-b border-border">
-              <TabsList variant="underline" className="border-b-0 -mx-4 md:mx-0 px-4 md:px-0">
+              <TabsList variant="underline" className="border-b-0 -mx-4 md:mx-0 px-4 md:px-0 min-w-0">
                 <TabsTrigger value="overview" iconLeft={<GridIcon />}>
                   Visão Geral
                 </TabsTrigger>
@@ -865,7 +865,15 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                   Mobile: filtros descem abaixo das tabs (flex-col no parent),
                   flex-wrap permite que CoreProduct + DateRange quebrem em
                   duas linhas se viewport for muito apertada. */}
-              <div className="pb-3 md:pb-2 flex items-center gap-2 flex-wrap">
+              {/* shrink-0: mantém os pills numa linha só, à direita — sem
+                  isso, quando a TabsList é larga (admin com todas as abas,
+                  incl. DSPs) numa campanha bi-frente (pill Core Product
+                  presente), a soma estourava a linha, o flex-wrap empilhava
+                  os filtros na vertical e o items-end os empurrava PRA CIMA,
+                  flutuando sobre as abas. Com shrink-0 aqui + min-w-0 na
+                  TabsList, o excesso vira scroll horizontal das abas (que a
+                  TabsList já suporta), não distorção dos filtros. */}
+              <div className="pb-3 md:pb-2 flex items-center gap-2 flex-wrap shrink-0">
                 {effectiveTab === "overview" && showCoreFilter && (
                   <CoreProductFilterV2
                     value={effectiveMainCore}
