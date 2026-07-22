@@ -353,6 +353,69 @@ def _get_token_lock(short_token):
         return lock
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Invalidação do _report_cache por VERSÃO da base.
+#
+# O _report_cache tem TTL de 3h (payload pesado; a base muda ~1x/dia). Mas
+# quando a base é reconstruída FORA do ciclo normal — rebuild manual, catch-up
+# automático do pipeline quando uma fonte atrasou, backfill — o report seguia
+# servindo o payload velho até o TTL vencer ou o warmup (3/3h) reaquecer. Era o
+# que fazia o report exibir D-2 enquanto lista/painel já mostravam D-1 (o painel
+# lê outra tabela). Aqui o cache do report FURA sozinho: guardamos a versão da
+# base (last_modified da campaign_results) e, ao ler um report, se ela mudou
+# desde a última checagem, limpamos o _report_cache. Cobre TODOS os caminhos de
+# reconstrução sem acoplar o report-hub ao pipeline nem depender de ?refresh.
+# Barato: __TABLES__ é metadata (não escaneia) e a leitura é cacheada 60s.
+# Defensivo: se a checagem falha, não mexe no cache (mantém o TTL de 3h).
+# ─────────────────────────────────────────────────────────────────────────────
+_BASE_VERSION_CACHE_TTL = 60           # relê o last_modified da base no máx 1x/min
+_base_version_cache = {}               # "v" -> (ts, last_modified_ms:int|None)
+_last_seen_base_version = {"v": None}  # última versão vista; muda → dispara o bust
+
+
+def _base_version():
+    """last_modified (ms) da campaign_results — a tabela que os reports servem.
+    Cacheado 60s. None se a checagem falhar (aí o chamador não invalida nada).
+    Sem location: o DATASET_HUB é lido na região default, igual às queries do
+    report (query_daily/query_detail), diferente do unified (US)."""
+    cached = _cache_get(_base_version_cache, "v", _BASE_VERSION_CACHE_TTL)
+    if cached is not None:
+        return cached
+    ver = None
+    try:
+        sql = ("SELECT last_modified_time FROM "
+               f"`{PROJECT_ID}.{DATASET_HUB}.__TABLES__` WHERE table_id = @t")
+        jc = bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ScalarQueryParameter("t", "STRING", TABLE)]
+        )
+        rows = list(bq.query(sql, job_config=jc).result())
+        ver = int(rows[0][0]) if rows else 0
+    except Exception as e:
+        logger.warning(f"[cache] _base_version falhou ({e}); mantém cache pelo TTL")
+        ver = None
+    _cache_set(_base_version_cache, "v", ver)
+    return ver
+
+
+def _bust_report_cache_if_base_changed():
+    """Limpa _report_cache/_merged_report_cache se a base foi reconstruída desde
+    a última checagem. Chamado no caminho de leitura do report (cacheado 60s)."""
+    ver = _base_version()
+    if ver is None:
+        return
+    with _cache_lock:
+        prev = _last_seen_base_version["v"]
+        _last_seen_base_version["v"] = ver
+        if prev is not None and ver != prev:
+            n = len(_report_cache) + len(_merged_report_cache)
+            _report_cache.clear()
+            _merged_report_cache.clear()
+            logger.info(
+                f"[cache] campaign_results mudou ({prev} → {ver}); "
+                f"{n} entrada(s) de report invalidada(s)"
+            )
+
+
 def _get_report_cached(short_token, force_refresh=False):
     """Wrapper single-flight em torno de fetch_campaign_data().
 
@@ -368,6 +431,10 @@ def _get_report_cached(short_token, force_refresh=False):
     frozen = _get_frozen_payload(short_token)
     if frozen is not None:
         return frozen, True
+
+    # Fura o cache do report se a base foi reconstruída desde a última leitura
+    # (rebuild manual, catch-up do pipeline, backfill) — ver _base_version.
+    _bust_report_cache_if_base_changed()
 
     if not force_refresh:
         cached = _cache_get(_report_cache, short_token, _REPORT_CACHE_TTL)
@@ -3321,8 +3388,14 @@ def report_data(request):
                 with _cache_lock:
                     _list_cache.pop("all", None)
                     _clients_cache.pop("all", None)
+                    # O rebuild refaz TODOS os tokens → derruba também o cache
+                    # dos reports (senão o report aberto seguia em D-2 até o TTL
+                    # de 3h). Resposta instantânea ao botão; a invalidação por
+                    # versão (_base_version) cobre os rebuilds automáticos.
+                    _report_cache.clear()
+                    _merged_report_cache.clear()
                 _rebuild_cache_busted.add(run_id)
-                logger.info(f"[rebuild_status] run {run_id} SUCCESS — _list_cache/_clients_cache invalidados")
+                logger.info(f"[rebuild_status] run {run_id} SUCCESS — list/clients/report caches invalidados")
             return (jsonify({
                 "ok": True,
                 "status": run_status,
