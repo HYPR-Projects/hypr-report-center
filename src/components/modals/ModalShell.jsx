@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { C } from "../../shared/theme";
 
 /**
@@ -48,7 +49,16 @@ const ModalShell = ({
       : null),
   };
 
-  return (
+  // Portal pra document.body: sem isso o overlay fica preso no subtree onde
+  // o modal é montado (ex.: dentro de um TabsContent). O `.tabs-content` ativo
+  // roda `animation: fade-in ... both` (anima opacity) → cria um stacking
+  // context, e o `zIndex: 1000` do overlay passa a valer SÓ dentro dele, que
+  // por sua vez fica em nível auto na raiz — abaixo dos triggers de aba
+  // (`z-10`). Resultado: os textos das abas vazavam por cima do modal.
+  // Portalizando pra body, o overlay entra no stacking context raiz e cobre
+  // tudo. Também imuniza contra ancestrais com transform/filter. Mesmo padrão
+  // já usado por Toast, DateRangeFilter e PortalAnalytics.
+  const overlay = (
     <div
       style={{
         position: "fixed",
@@ -69,6 +79,10 @@ const ModalShell = ({
       </div>
     </div>
   );
+
+  return typeof document !== "undefined"
+    ? createPortal(overlay, document.body)
+    : overlay;
 };
 
 export default ModalShell;
