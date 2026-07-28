@@ -1020,10 +1020,11 @@ def report_data(request):
             # Campos leves só (sem detalhe por frente): não chama _get_report_cached,
             # que seriam dezenas de fetches num request só. status=active usa o mesmo
             # in_flight do card ATIVAS; ordena por effective_end ASC (mais perto de
-            # encerrar primeiro). limit próprio: default 100, cap 200.
+            # encerrar primeiro). limit próprio: default 100, sem cap (o Force
+            # pede o total). Modo leve, então trazer todas não dispara fetches.
             if not q_token and not q_client:
                 try:
-                    limit = max(1, min(int(request.args.get("limit") or 100), 200))
+                    limit = max(1, int(request.args.get("limit") or 100))
                 except (TypeError, ValueError):
                     limit = 100
                 listed = list(campaigns)
