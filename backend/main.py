@@ -1039,6 +1039,15 @@ def report_data(request):
                     "fim":            c.get("end_date"),
                     "pacing_display": c.get("display_pacing"),
                     "pacing_video":   c.get("video_pacing"),
+                    # Campos já calculados no builder da lista (mesmos dos cards do
+                    # admin) — só expostos aqui p/ a aba Campanhas do HYPR Force.
+                    "agencia":        c.get("agency"),
+                    "ctr_display":    c.get("display_ctr"),
+                    "vtr_video":      c.get("video_vtr"),
+                    "invest_display": c.get("d_admin_total_cost"),
+                    "invest_video":   c.get("v_admin_total_cost"),
+                    "budget_display": c.get("d_client_budget"),
+                    "budget_video":   c.get("v_client_budget"),
                 } for c in listed[:limit]]
                 return (jsonify({
                     "count":     len(out),
