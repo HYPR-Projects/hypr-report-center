@@ -328,7 +328,12 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
   // saber o estado novo). Custo: 1 round-trip após ação rara.
   const handleMergeSaved = useCallback(() => {
     setMergeModal(null);
-    listCampaigns()
+    // refresh:true é OBRIGATÓRIO: `?list=true` tem Cache-Control max-age=30,
+    // então sem forçar refresh o refetch (e um F5) dentro de 30s viria do
+    // HTTP cache do browser — payload pré-merge sem merge_id → o grupo não
+    // renderiza no MergeGroupCardV2. Mesmo motivo do handleMergeSaved do
+    // CampaignMenuV2 e do handleAbsSaved abaixo.
+    listCampaigns({ refresh: true })
       .then((camps) => {
         writeCache("menu.campaigns", camps);
         setCampaigns(camps.filter((c) => normalizeSlug(c.client_name) === slug));

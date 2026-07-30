@@ -588,9 +588,16 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   // estado local sincronizado com várias campanhas afetadas (até N tokens
   // do grupo mudam de uma vez). 1 round-trip extra, aceitável após ação
   // pouco frequente.
+  //
+  // refresh:true é OBRIGATÓRIO aqui: a resposta de `?list=true` tem
+  // `Cache-Control: private, max-age=30`, então o refetch (e até um F5
+  // manual) dentro da janela de 30s seria servido do HTTP cache do browser
+  // — corpo pré-merge, sem merge_id → o selo "agrupado" não aparece e a
+  // ação parece que não surtiu efeito. O backend já invalidou seu cache;
+  // faltava furar o do browser. Mesmo motivo do handleAbsSaved abaixo.
   const handleMergeSaved = useCallback(() => {
     setMergeModal(null);
-    listCampaigns()
+    listCampaigns({ refresh: true })
       .then((camps) => {
         setCampaigns(camps);
         writeCache("menu.campaigns", camps);

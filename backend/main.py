@@ -176,6 +176,18 @@ _portal_cache    = {}     # share_id -> (timestamp, payload)
 _overrides_cache = {}     # "all" -> (timestamp, dict[short_token -> (cp, cs)])
 _aliases_cache   = {}     # "all" -> (timestamp, dict[alias_normalized -> canonical_normalized])
 _shares_cache    = {}     # "all" -> (timestamp, dict[short_token -> share_id])
+# _merges_cache é a EXCEÇÃO: TTL curto próprio (não o da lista). É o lookup
+# que DETECTA o grupo — tanto no report público (`?token=` anexa merge_meta a
+# partir dele) quanto no selo da lista admin. `_cache_invalidate_token` só
+# limpa o cache da INSTÂNCIA que serviu a mutação; com múltiplas instâncias da
+# Cloud Function, as que servem os reads seguem com um snapshot pré-merge por
+# até o TTL. Com 3h (TTL da lista), um grupo recém-criado ficava INVISÍVEL —
+# o cliente abre o link (sem ?refresh) e vê report solto em vez de agrupado, e
+# o card admin não ganha selo. A tabela é minúscula e merges mudam raramente,
+# então um TTL de 60s limita a defasagem entre instâncias a ~1min com custo
+# desprezível (1 scan/min/instância no pior caso). Mutação continua invalidando
+# na hora na instância local.
+_MERGES_CACHE_TTL = 60
 _merges_cache    = {}     # "all" -> (timestamp, dict[short_token -> {merge_id, rmnd_mode, pdooh_mode}])
 _closures_cache  = {}     # "all" -> (timestamp, dict[short_token -> closed_at_iso])
 _pauses_cache    = {}     # "all" -> (timestamp, dict[short_token -> paused_at_iso])
@@ -9953,7 +9965,13 @@ def query_campaigns_list():
     # Merge groups (Merge Reports). Token sem grupo fica sem campos extra —
     # frontend faz `if (campaign.merge_id)` pra renderizar badge "merged".
     for c in result:
-        info = merges_map.get(c["short_token"])
+        # Fallback .upper() por paridade com o caminho de report (~L4146) e
+        # vídeo (~L7828): merges_map vem sempre UPPERCASE (merge_tokens
+        # uppercaseia na escrita). Hoje campaign_results.short_token é de-facto
+        # uppercase, mas sem o fallback um token minúsculo do pipeline nunca
+        # ganharia selo aqui enquanto o report resolveria — falha parcial sutil.
+        tok = c["short_token"]
+        info = merges_map.get(tok) or merges_map.get((tok or "").upper())
         if info:
             c["merge_id"]   = info["merge_id"]
             c["rmnd_mode"]  = info["rmnd_mode"]
@@ -10402,11 +10420,12 @@ def _safe_get_merges():
     """Wrapper resiliente + cacheado pro lookup de grupos de merge.
 
     Tabela `campaign_merge_groups` é pequena (poucos grupos × poucos tokens).
-    Mesmo padrão de overrides/shares: full scan + cache atrelado ao TTL da
-    lista. Falha em dict vazio — campanhas continuam aparecendo, só não
-    enriquecidas com merge_id.
+    Full scan + cache de TTL CURTO (`_MERGES_CACHE_TTL`, não o da lista) —
+    ver comentário na declaração de `_merges_cache`: é o lookup que detecta o
+    grupo e precisa ficar coerente entre instâncias rápido. Falha em dict
+    vazio — campanhas continuam aparecendo, só não enriquecidas com merge_id.
     """
-    cached = _cache_get(_merges_cache, "all", _LIST_CACHE_TTL)
+    cached = _cache_get(_merges_cache, "all", _MERGES_CACHE_TTL)
     if cached is not None:
         return cached
     try:
