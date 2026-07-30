@@ -5269,7 +5269,14 @@ def query_data_freshness():
 _SOURCE_LANDING_TABLES = [
     ("DV360",      "dv360_daily_performance_metrics",      "date", False),
     ("Amazon",     "amazon_daily_performance_metrics",     "date", False),
-    ("XANDR",      "xandr_daily_performance_metrics",      "date", True),
+    # XANDR DSP DESATIVADA (2026-07): a ingestão parou em 30/06 e a fonte não
+    # entrega mais. Fora do painel de frescor p/ não acender vermelho eterno
+    # (dado nunca mais avança → falso "não entregou D-1"). A pipeline DSP do
+    # Xandr fica INTACTA (tratada xandr_daily_performance_metrics, CTEs no
+    # unified, xandr_daily_costs) — se a DSP voltar, basta descomentar aqui.
+    # NÃO confundir com o Xandr CURATE (deals PMP, módulo xandr_curate), que
+    # segue ATIVO e é outra coisa — este comentário não o afeta.
+    # ("XANDR",      "xandr_daily_performance_metrics",      "date", True),
     ("StackAdapt", "stackadapt_daily_performance_metrics", "date", False),
     # Yahoo (integração 2026): a tratada une o histórico legado (congelado em
     # 2023) com a ingestão nova, então MAX(date) reflete a aterrissagem atual.
