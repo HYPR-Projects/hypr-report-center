@@ -2977,6 +2977,7 @@ def report_data(request):
     #   GET  ?action=get_merge_group&merge_id=<id>                 → estado do grupo
     #   POST ?action=merge_tokens   {tokens: [...], rmnd_mode?, pdooh_mode?} → cria/anexa
     #   POST ?action=unmerge_token  {short_token}                  → remove do grupo
+    #   POST ?action=dissolve_merge_group {merge_id}               → dissolve grupo inteiro
     #   POST ?action=update_merge_settings {merge_id, rmnd_mode?, pdooh_mode?}
     #
     # Qualquer mutação invalida cache de TODOS os tokens do grupo afetado +
@@ -3081,6 +3082,37 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR unmerge_token] {e}")
             return (jsonify({"error": "Erro ao desfazer merge"}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "dissolve_merge_group":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            merge_id = (body.get("merge_id") or "").strip()
+            if not merge_id:
+                return (jsonify({"error": "merge_id é obrigatório"}), 400, headers)
+            result = merges.dissolve_group(merge_id, admin.get("email", "unknown"))
+            # Invalida cache de TODOS os membros dissolvidos + o cache merged
+            # do grupo. Um único DELETE atômico no backend garante que não
+            # sobra grupo órfão de 1 token (invariante "grupo mínimo = 2").
+            for t in (result.get("removed") or []):
+                _cache_invalidate_token(t)
+            _merged_report_cache.pop(merge_id, None)
+            for t in (result.get("removed") or []):
+                audit_log.safe_write_event(
+                    short_token=t,
+                    event_type="merge_unlinked",
+                    actor_email=admin.get("email"),
+                    message="desfez o agrupamento (grupo dissolvido)",
+                    payload={"merge_id": merge_id},
+                )
+            return (jsonify({"ok": True, **result}), 200, headers)
+        except merges.MergeError as e:
+            return (jsonify({"error": str(e)}), e.code, headers)
+        except Exception as e:
+            logger.error(f"[ERROR dissolve_merge_group] {e}")
+            return (jsonify({"error": "Erro ao desfazer grupo"}), 500, headers)
 
     if request.method == "POST" and request.args.get("action") == "update_merge_settings":
         admin = authenticate_admin(request)

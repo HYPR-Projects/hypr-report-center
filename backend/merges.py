@@ -448,6 +448,22 @@ def _insert_members(
     bq.query(sql, job_config=job_config).result()
 
 
+def _delete_group_rows(merge_id: str) -> None:
+    """Apaga TODOS os rows de um merge_id numa única query. Base da
+    dissolução do grupo — usado tanto pela auto-dissolução do unmerge
+    (quando sobra ≤1 token) quanto pelo dissolve_group explícito."""
+    sql_del = f"""
+        DELETE FROM `{_merges_table_id()}`
+        WHERE merge_id = @mid
+    """
+    bq.query(
+        sql_del,
+        job_config=bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("mid", "STRING", merge_id),
+        ])
+    ).result()
+
+
 def unmerge_token(short_token: str, admin_email: str) -> dict:
     """Remove `short_token` do seu grupo. Se sobrar apenas 1 token no
     grupo, dissolve o grupo todo (apaga ambos rows).
@@ -475,16 +491,7 @@ def unmerge_token(short_token: str, admin_email: str) -> dict:
 
     if len(remaining) <= 1:
         # Dissolve o grupo inteiro — single-token group não tem sentido
-        sql_del = f"""
-            DELETE FROM `{_merges_table_id()}`
-            WHERE merge_id = @mid
-        """
-        bq.query(
-            sql_del,
-            job_config=bigquery.QueryJobConfig(query_parameters=[
-                bigquery.ScalarQueryParameter("mid", "STRING", merge_id),
-            ])
-        ).result()
+        _delete_group_rows(merge_id)
         return {"removed": members, "merge_id": merge_id}
 
     # Remove só este token
@@ -500,6 +507,34 @@ def unmerge_token(short_token: str, admin_email: str) -> dict:
         ])
     ).result()
     return {"removed": [short_token], "merge_id": merge_id}
+
+
+def dissolve_group(merge_id: str, admin_email: str) -> dict:
+    """Dissolve o grupo INTEIRO num único DELETE atômico por merge_id.
+
+    Diferente de N `unmerge_token` concorrentes (que fazem read-decide-delete
+    e podem deixar um grupo órfão de 1 token quando algum membro não é
+    conhecido pelo caller), esta operação apaga todos os rows do grupo de
+    uma vez — independente de quantos/quais tokens o caller enxerga. Isso
+    garante a invariante "grupo mínimo = 2" (nunca sobra órfão).
+
+    Retorna:
+      {
+        "removed": [todos os tokens que estavam no grupo],
+        "merge_id": merge_id (ou None se o grupo não existia)
+      }
+    """
+    if not merge_id:
+        raise InvalidMergeError("merge_id vazio")
+    ensure_table_exists()
+
+    group = get_merge_group(merge_id)
+    if not group:
+        return {"removed": [], "merge_id": None}
+
+    members = [m["short_token"] for m in group["members"]]
+    _delete_group_rows(merge_id)
+    return {"removed": members, "merge_id": merge_id}
 
 
 def update_merge_settings(

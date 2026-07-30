@@ -1353,6 +1353,22 @@ export async function unmergeToken(short_token) {
   return jsonOrError(r, "unmerge_token");
 }
 
+/**
+ * Dissolve o grupo INTEIRO num único DELETE atômico por merge_id.
+ * Preferir a isto em vez de N `unmergeToken` concorrentes: elimina a
+ * corrida read-decide-delete e o blind spot de membros fora da lista de
+ * candidatos (ex: cliente renomeado), que deixariam um grupo órfão de 1.
+ */
+export async function dissolveGroup(merge_id) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=dissolve_merge_group`,
+    { merge_id },
+    adminAuthHeaders(jwt),
+  );
+  return jsonOrError(r, "dissolve_merge_group");
+}
+
 /** Atualiza rmnd_mode / pdooh_mode de um grupo existente. */
 export async function updateMergeSettings({ merge_id, rmnd_mode, pdooh_mode }) {
   const jwt = await getOrIssueAdminJwt();
