@@ -36,6 +36,7 @@ import {
   getMergeGroup,
   mergeTokens,
   unmergeToken,
+  dissolveGroup,
   updateMergeSettings,
 } from "../../lib/api";
 import ModalShell from "./ModalShell";
@@ -155,10 +156,15 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
   };
 
   // ── Desfazer grupo (botão destacado) ────────────────────────────────────
-  // Itera todos os membros e remove cada um — dissolve o grupo INTEIRO.
-  // Backend unmergeToken é idempotente (no-op se o token já não está em
-  // grupo), então mesmo após a auto-dissolução do grupo de 2 tokens as
-  // chamadas restantes são seguras.
+  // Dissolve o grupo INTEIRO num único DELETE atômico por merge_id (backend
+  // dissolve_merge_group). Antes isto disparava N unmergeToken concorrentes
+  // derivados de `candidates`, o que tinha dois defeitos: (1) corrida
+  // read-decide-delete — cada unmerge lia o estado inicial, computava
+  // remaining>1 e apagava só a própria row, deixando um grupo órfão de 1
+  // token; (2) blind spot — um membro cujo client_name foi renomeado após o
+  // merge some de list_mergeable_tokens (filtro por slug do cliente), então
+  // nunca entrava na lista de tokens a remover. Dissolver por merge_id
+  // resolve os dois de uma vez.
   const handleDissolveGroup = async () => {
     if (!confirm(
       "Tem certeza que deseja desfazer o grupo? " +
@@ -166,13 +172,7 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
     )) return;
     setSaving(true);
     try {
-      // Calcula a lista de membros a partir dos candidates já carregados
-      // (todos com already_in_group=true) + o próprio token base.
-      const memberTokens = [
-        baseToken,
-        ...candidates.filter((c) => c.already_in_group).map((c) => c.short_token),
-      ];
-      await Promise.all(memberTokens.map((t) => unmergeToken(t).catch(() => null)));
+      await dissolveGroup(campaign.merge_id);
       toast.success("Agrupamento desfeito");
       onSaved?.();
     } catch (e) {
