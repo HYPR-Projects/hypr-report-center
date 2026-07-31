@@ -18,6 +18,7 @@
 // independentemente — espelha o que o buildDiagnosticoRows já faz.
 
 import { MAX_OK_PACING_RATIO, TARGET_PACING_PCT } from "./constants";
+import { billableValue } from "../format";
 
 const MS_PER_DAY = 86_400_000;
 
@@ -293,6 +294,61 @@ export function enrichCampaign(c, statusFn) {
     camp_status,
     display,
     video,
+    campaign_tech: deriveCampaignTech(c),
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Tech Cost campaign-level — base das regras C1/C2/C3 e do macro H3
+// ────────────────────────────────────────────────────────────────────────
+//
+// Tech cost é margem, e margem é da PI: o custo de DSP é fungível entre
+// Display e Video dentro do mesmo contrato. As regras liam o tech cost por
+// mídia, que é estruturalmente distorcido — Display (vendido em CPM)
+// concentra ~95% do custo real enquanto Video (vendido em CPCV) fica perto
+// de zero, então toda campanha mista disparava "Tech Cost crítico" na
+// linha de Display com ~2× o número real da campanha (PEPSICO JFKV9U:
+// 43,2% na mídia × 24,3% na campanha). Mesma régua agora usada pelo
+// diagnostico.js, pelo card e pelo KPI strip.
+//
+// Projeção: tech_cost × (total_days / elapsed_days) — extrapolação
+// calendar-constante, idêntica à de diagnostico.js e aggregation.js. O
+// método antigo escalava o custo pelo delivery projetado DA MÍDIA, que
+// não se traduz pro nível campanha.
+function deriveCampaignTech(c) {
+  const realCost         = c.admin_total_cost_full ?? c.admin_total_cost ?? null;
+  const realCostNoSurvey = c.admin_total_cost ?? null;
+  const clientBudget     = billableValue(c) || null;
+  if (realCost == null || !clientBudget) {
+    return { tech_cost_pct: null, projected_tech_cost_pct: null, client_budget: clientBudget ?? null };
+  }
+
+  const tech_cost_pct = (realCost / clientBudget) * 100;
+
+  const s = parseDateUTC(c.start_date);
+  const e = parseDateUTC(c.end_date);
+  let projected_tech_cost_pct = null;
+  if (s && e) {
+    const total_days   = daysBetween(s, e) + 1;
+    const elapsed_days = Math.max(1, Math.min(total_days, daysBetween(s, todayUTC()) + 1));
+    if (total_days > 0) projected_tech_cost_pct = tech_cost_pct * (total_days / elapsed_days);
+  }
+
+  const survey_cost_brl = realCostNoSurvey != null
+    ? Math.max(0, realCost - realCostNoSurvey)
+    : 0;
+
+  return {
+    tech_cost_pct,
+    projected_tech_cost_pct,
+    tech_cost_pct_no_survey: realCostNoSurvey != null
+      ? (realCostNoSurvey / clientBudget) * 100
+      : null,
+    survey_cost_brl,
+    survey_share: realCost > 0 ? survey_cost_brl / realCost : 0,
+    client_budget: clientBudget,
+    real_cost: realCost,
+    has_abs: !!c.display_has_abs || !!c.video_has_abs,
   };
 }
 

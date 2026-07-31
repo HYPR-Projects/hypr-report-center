@@ -186,11 +186,13 @@ function MediaMetricsGrid({ mediaName, m, hasAbs }) {
           value={formatBrlRow(m.real_cost, 0)}
           title="Total já pago ao DSP"
         />
+        {/* Detalhe por mídia — a régua de status é a da CAMPANHA (tile
+            acima do grid). Aqui fica sem cor porque comparar Display (CPM)
+            e Video (CPCV) com o mesmo tier é o que produzia falso alarme. */}
         <MetricTile
-          label="Tech Cost"
+          label="Tech Cost (mídia)"
           value={formatPctRow(m.tech_cost_pct, 1)}
-          tone={techCostToneClass(m.tech_cost_pct, hasAbs)}
-          title="Custo real ÷ PI cliente × 100"
+          title="Custo real da mídia ÷ PI da mídia × 100 — referência de onde o custo se concentra. O tech cost que classifica é o da campanha."
         />
         <MetricTile
           label="Viewability"
@@ -873,6 +875,27 @@ export function AlertCampaignSheet({
               <h3 className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
                 Snapshot
               </h3>
+              {/* Tech Cost da campanha — é o número que classifica (custo de
+                  todas as mídias e DSPs ÷ PI cheia). Os tiles por mídia
+                  abaixo abrem onde o custo está concentrado. */}
+              {enriched.campaign_tech?.tech_cost_pct != null && (
+                <div className="grid grid-cols-2 gap-2">
+                  <MetricTile
+                    label="Tech Cost (campanha)"
+                    value={formatPctRow(enriched.campaign_tech.tech_cost_pct, 1)}
+                    tone={techCostToneClass(
+                      enriched.campaign_tech.tech_cost_pct,
+                      enriched.campaign_tech.has_abs
+                    )}
+                    title="Custo real HYPR de todas as mídias e DSPs (com survey) ÷ PI cliente (sem bônus) × 100"
+                  />
+                  <MetricTile
+                    label="PI cliente"
+                    value={formatBrlRow(enriched.campaign_tech.client_budget, 0)}
+                    title="Valor faturável da PI (contratado × CPM/CPCV, sem bônus) — denominador do tech cost"
+                  />
+                </div>
+              )}
               {enriched.display && (
                 <MediaMetricsGrid
                   mediaName="Display"

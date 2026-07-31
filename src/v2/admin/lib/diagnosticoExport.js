@@ -93,12 +93,17 @@ const HEADERS = [
   "VTR %",                     // só Video
   "CPM Real",
   "Custo Real",
-  "Tech Cost %",
+  // Tech Cost é da CAMPANHA (custo de todas as mídias/DSPs ÷ PI cheia) —
+  // repete igual nas linhas de Display e Video da mesma campanha. A coluna
+  // seguinte abre o detalhe por mídia (custo da mídia ÷ PI da mídia), que
+  // é referência de onde o custo se concentra, não régua de status.
+  "Tech Cost % (Campanha)",
+  "Tech Cost % (só da mídia)",
   "Viewability %",
 ];
 
 const COL_WIDTHS = [
-  18, 8, 32, 10, 18, 6, 11, 11, 22, 22, 11, 12, 16, 18, 22, 14, 14, 14, 18, 10, 10, 10, 12, 14, 12, 14,
+  18, 8, 32, 10, 18, 6, 11, 11, 22, 22, 11, 12, 16, 18, 22, 14, 14, 14, 18, 10, 10, 10, 12, 14, 20, 22, 14,
 ];
 
 function rowAoA(r, teamMap, historical) {
@@ -154,6 +159,7 @@ function rowAoA(r, teamMap, historical) {
     cell(r.realEcpm,            NUM_BRL),
     cell(r.realTotalCost,       NUM_BRL),
     cell(r.techCostPct,         NUM_PCT1),
+    cell(r.techCostMediaPct,    NUM_PCT1),
     cell(r.viewability,         NUM_PCT1),
   ];
 }

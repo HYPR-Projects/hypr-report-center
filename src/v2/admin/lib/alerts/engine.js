@@ -237,15 +237,14 @@ function computeMacroAlerts(individualAlerts, enriched, teamMap) {
   // H3 — Cliente com 3+ campanhas com Tech Cost crítico
   const techCritByClient = new Map();
   for (const e of enriched) {
-    const checkMedia = (m, hasAbs) => {
-      if (!m || m.tech_cost_pct == null) return false;
-      if (m.client_budget < MIN_BUDGET_FOR_TECH_ALERT) return false;
-      const tiers = hasAbs ? TECH_COST.abs : TECH_COST.noAbs;
-      return m.tech_cost_pct > tiers.warning;
-    };
+    // Tech cost campaign-level (mesma base de C1/C2/C3 e do diagnóstico) —
+    // antes checava as duas mídias separadas e a distorção estrutural do
+    // Display (CPM × CPCV) fazia quase toda campanha mista contar aqui.
+    const m = e.campaign_tech;
     const isTechCrit =
-      checkMedia(e.display, !!e.raw.display_has_abs) ||
-      checkMedia(e.video, !!e.raw.video_has_abs);
+      !!m && m.tech_cost_pct != null &&
+      m.client_budget >= MIN_BUDGET_FOR_TECH_ALERT &&
+      m.tech_cost_pct > (m.has_abs ? TECH_COST.abs : TECH_COST.noAbs).warning;
     if (!isTechCrit) continue;
     const client = e.raw.client_name;
     if (!client) continue;

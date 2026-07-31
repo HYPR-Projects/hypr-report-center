@@ -26,6 +26,31 @@ import {
 } from "../lib/diagnostico";
 
 // ────────────────────────────────────────────────────────────────────────
+// Tooltip do Tech Cost — abre a conta e o detalhe por mídia
+// ────────────────────────────────────────────────────────────────────────
+//
+// A célula mostra o tech cost da CAMPANHA (custo de todas as mídias e
+// todas as DSPs ÷ PI cheia), então a mesma linha aparece igual em Display
+// e Video. O tooltip é onde o detalhe por mídia sobrevive — é ele que
+// responde "de onde vem esse custo" sem que a coluna volte a classificar
+// Display como Tech Alto por causa da diferença estrutural CPM × CPCV.
+function techCostTitle(r, historical) {
+  const scope = historical
+    ? "Tech Cost da campanha na janela: custo real HYPR (todas as mídias e DSPs) ÷ PI cliente PRO-RATA da janela, sem bônus."
+    : "Tech Cost da campanha: custo real HYPR (todas as mídias e DSPs, com survey) ÷ PI cliente, sem bônus.";
+  const conta = (r.techCostCost != null && r.techCostBudget)
+    ? `\n${formatBrlRow(r.techCostCost, 2)} ÷ ${formatBrlRow(r.techCostBudget, 2)}`
+    : "";
+  const detalhe = r.techCostMediaPct != null
+    ? `\nSó ${r.media === "video" ? "Video" : "Display"}: ${formatPctRow(r.techCostMediaPct, 1)} (${formatBrlRow(r.realTotalCost, 2)} ÷ ${formatBrlRow(r.clientBudgetMedia, 2)}) — referência, não classifica status.`
+    : "";
+  const regua = (r.tech_has_abs ?? r.has_abs)
+    ? "\nCom ABS — Régua: ≤10% verde · 10–12% amarelo · >12% vermelho"
+    : "\nSem ABS — Régua: ≤8% verde · 8–10% amarelo · >10% vermelho";
+  return scope + conta + detalhe + regua;
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // Veredito da campanha — dot + label curto + modifier de tendência
 // ────────────────────────────────────────────────────────────────────────
 //
@@ -383,7 +408,10 @@ export function DiagnosticoTable({
                   ? "video"
                   : (r.has_abs ? "displayAbs" : "display");
                 const cpmTone     = ecpmToneClass(r.realEcpm, ecpmKind);
-                const techCostTone = techCostToneClass(r.techCostPct, r.has_abs);
+                // Tech cost é campaign-level (custo de todas as mídias/DSPs
+                // ÷ PI cheia) — o tier de ABS também. `tech_has_abs` cai pro
+                // `has_abs` da mídia se vier de payload antigo em cache.
+                const techCostTone = techCostToneClass(r.techCostPct, r.tech_has_abs ?? r.has_abs);
                 return (
                   <tr
                     key={`${r.short_token}-${r.media}`}
@@ -594,13 +622,7 @@ export function DiagnosticoTable({
                       align="right"
                       tabular
                       className={cn("font-semibold", techCostTone)}
-                      title={(historical
-                        ? "Custo real HYPR na janela ÷ PI cliente PRO-RATA da janela (sem bônus). "
-                        : "Custo real HYPR ÷ PI cliente (sem bônus). ") + (
-                        r.has_abs
-                          ? "Com ABS — Régua: ≤10% verde · 10–12% amarelo · >12% vermelho"
-                          : "Sem ABS — Régua: ≤8% verde · 8–10% amarelo · >10% vermelho"
-                      )}
+                      title={techCostTitle(r, historical)}
                     >
                       {formatPctRow(r.techCostPct, 1)}
                     </Td>

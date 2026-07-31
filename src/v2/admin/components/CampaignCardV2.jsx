@@ -469,7 +469,10 @@ function CampaignCardV2Inner({
                 <ResultRow
                   label="TECH"
                   value={`${techCostPct.toFixed(1)}%`}
-                  colorClass={techCostToneClass(techCostPct)}
+                  // Tier de ABS igual ao do Diagnóstico (campanha inteira):
+                  // sem isso o card pintava vermelho em 10,5% enquanto a
+                  // tabela mostrava o mesmo número em amarelo.
+                  colorClass={techCostToneClass(techCostPct, has_abs)}
                 />
               </div>
             )}

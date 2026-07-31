@@ -203,16 +203,27 @@ export function DiagnosticoLayout({
 
   // Contagens GLOBAIS (Display + Video) — o número no pill reflete o total
   // de linhas naquele status entre as duas tabelas.
+  //
+  // Exceção: os dois status de Tech Cost contam CAMPANHAS, não linhas. O
+  // tech cost é campaign-level (custo de todas as mídias ÷ PI cheia), então
+  // as linhas de Display e Video de uma campanha mista carregam o MESMO
+  // status — somar linhas mostraria "6 Tech Alto" pra 3 campanhas.
   const counts = useMemo(() => {
     const d = countByStatus(displayRows);
     const v = countByStatus(videoRows);
+    const techTokens = { [STATUS.TECH_HIGH]: new Set(), [STATUS.TECH_AT_RISK]: new Set() };
+    for (const r of [...displayRows, ...videoRows]) {
+      if (r.tech_status && techTokens[r.tech_status]) {
+        techTokens[r.tech_status].add(r.short_token);
+      }
+    }
     return {
       [STATUS.SUPER_OVER]:   d[STATUS.SUPER_OVER]   + v[STATUS.SUPER_OVER],
       [STATUS.OVER]:         d[STATUS.OVER]         + v[STATUS.OVER],
       [STATUS.UNDER]:        d[STATUS.UNDER]        + v[STATUS.UNDER],
       [STATUS.OK]:           d[STATUS.OK]           + v[STATUS.OK],
-      [STATUS.TECH_HIGH]:    d[STATUS.TECH_HIGH]    + v[STATUS.TECH_HIGH],
-      [STATUS.TECH_AT_RISK]: d[STATUS.TECH_AT_RISK] + v[STATUS.TECH_AT_RISK],
+      [STATUS.TECH_HIGH]:    techTokens[STATUS.TECH_HIGH].size,
+      [STATUS.TECH_AT_RISK]: techTokens[STATUS.TECH_AT_RISK].size,
     };
   }, [displayRows, videoRows]);
 
