@@ -560,7 +560,9 @@ def _update_status(
         sets.append("last_attempt_at = @last_attempt_at")
         params.append(bigquery.ScalarQueryParameter("last_attempt_at", "TIMESTAMP", last_attempt_at))
     if last_error is not None:
-        sets.append("last_error = @last_error")
+        # NULLIF: "" do caller significa "zera o erro" → NULL de verdade na
+        # coluna (e não string vazia, que polui diagnóstico e alerta).
+        sets.append("last_error = NULLIF(@last_error, '')")
         params.append(bigquery.ScalarQueryParameter("last_error", "STRING", last_error))
     if not sets:
         return
@@ -1834,7 +1836,9 @@ def sync_sheet(
         short_token, target_type=TARGET_TOKEN,
         status="active",
         last_synced_at=datetime.now(timezone.utc),
-        last_error=None,
+        # "" (não None) — em `_update_status`, None significa "não mexer", e o
+        # erro do sync anterior ficava pendurado na row depois de recuperar.
+        last_error="",
     )
     return {"spreadsheet_id": integ["spreadsheet_id"]}
 
@@ -1878,7 +1882,7 @@ def sync_merge_sheet(merge_id: str, members: List[Dict]) -> Dict:
         merge_id, target_type=TARGET_MERGE,
         status="active",
         last_synced_at=datetime.now(timezone.utc),
-        last_error=None,
+        last_error="",   # ver nota em sync_sheet
     )
     return {"spreadsheet_id": integ["spreadsheet_id"]}
 
