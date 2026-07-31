@@ -27,7 +27,7 @@
 //   spike no dia. A projeção usa 7d com cadeia de fallback:
 //   7d → D-1 → pacing histórico.
 
-import { billableMediaValue } from "./format";
+import { billableMediaValue, billableValue } from "./format";
 
 const TODAY = () => new Date();
 
@@ -562,15 +562,18 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
       last7dDelivered:  c.display_last7d_viewable,
       negotiatedTotal:  c.display_negotiated,
     });
+    // Tech cost é campanha (ver computeFinancials): o multiplicador de
+    // projeção usa o runway da CAMPANHA, não o da frente — assim as linhas
+    // de Display e Video projetam o mesmo tech cost, como devem.
+    const techMultiplier = dayProjMultiplier(campaignRunwayStart(c), c.end_date);
+    // Tier de ABS também vira campanha: se qualquer mídia tem pre-bid, o
+    // custo da PI inteira carrega esse prêmio.
+    const techHasAbs = !!c.display_has_abs || !!c.video_has_abs;
+
     if (displayMetrics && displayMetrics.status) {
       const displayFin = computeFinancials(c, "display");
-      // Multiplier de projeção alinhado com o runway da frente (actual_start
-      // quando disponível). Sem isso, projeção de tech cost usaria janela
-      // calendar enquanto o pacing já está em janela actual_start — gerando
-      // % projetada inconsistente com a Projetada de pacing.
-      const multiplier = dayProjMultiplier(c.display_actual_start_date || c.start_date, c.end_date);
-      const displayProjTech = displayFin.techCostPct != null && multiplier
-        ? displayFin.techCostPct * multiplier
+      const displayProjTech = displayFin.techCostPct != null && techMultiplier
+        ? displayFin.techCostPct * techMultiplier
         : null;
       // Imbalance entre frentes (O2O vs OOH): quando ambas estão contratadas,
       // a média combinada pode esconder uma frente under (OOH não iniciada,
@@ -592,6 +595,8 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
         status: displayFinalStatus,
         front_imbalance: displayImbalance,
         has_abs: !!c.display_has_abs,
+        // ABS da campanha — tier do tech cost (que agora é campaign-level).
+        tech_has_abs: techHasAbs,
         media: "display",
         // Brutos pro CSV — totais, não viewable. delivered (viewable) já vai
         // separado via spread de displayMetrics.
@@ -602,7 +607,7 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
         ctr: (c.display_impressions && c.display_impressions > 0 && c.display_clicks)
           ? (c.display_clicks / c.display_impressions) * 100
           : null,
-        tech_status: classifyTechCostStatus(displayFin.techCostPct, !!c.display_has_abs, displayProjTech),
+        tech_status: classifyTechCostStatus(displayFin.techCostPct, techHasAbs, displayProjTech),
       });
     }
 
@@ -623,9 +628,8 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
     });
     if (videoMetrics && videoMetrics.status) {
       const videoFin = computeFinancials(c, "video");
-      const multiplier = dayProjMultiplier(c.video_actual_start_date || c.start_date, c.end_date);
-      const videoProjTech = videoFin.techCostPct != null && multiplier
-        ? videoFin.techCostPct * multiplier
+      const videoProjTech = videoFin.techCostPct != null && techMultiplier
+        ? videoFin.techCostPct * techMultiplier
         : null;
       const videoImbalance = computeFrontImbalance([
         { label: "O2O", pacing: c.video_pacing_o2o },
@@ -642,6 +646,7 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
         status: videoFinalStatus,
         front_imbalance: videoImbalance,
         has_abs: !!c.video_has_abs,
+        tech_has_abs: techHasAbs,
         media: "video",
         // Brutos pro CSV. Video não tem "starts" no payload da list (só
         // aparece em report detail), então exporto impressões totais +
@@ -653,7 +658,7 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
         ctr: (c.video_impressions && c.video_impressions > 0 && c.video_clicks)
           ? (c.video_clicks / c.video_impressions) * 100
           : null,
-        tech_status: classifyTechCostStatus(videoFin.techCostPct, !!c.video_has_abs, videoProjTech),
+        tech_status: classifyTechCostStatus(videoFin.techCostPct, techHasAbs, videoProjTech),
       });
     }
   }
@@ -770,17 +775,33 @@ export function buildDiagnosticoRowsForPeriod(campaigns, { from, to }) {
     // Financeiro janelado. Custo real COM survey (fallback sem survey,
     // backend antigo). Budget cliente PRO-RATA pela fração do contrato
     // dentro da janela — é o ajuste de orçamento do modo histórico.
+    //
+    // Coluna Custo continua POR MÍDIA; Tech Cost é da CAMPANHA inteira
+    // (mesma régua do modo Agora — ver computeFinancials). Numerador =
+    // custo de todas as mídias/DSPs na janela; denominador = PI cheia da
+    // campanha pro-rateada pelo mesmo overlap.
     const realTotalCost = isDisplay
       ? (c.d_admin_total_cost_full ?? c.d_admin_total_cost ?? null)
       : (c.v_admin_total_cost_full ?? c.v_admin_total_cost ?? null);
-    const fullBudget = isDisplay ? (c.d_client_budget ?? null) : (c.v_client_budget ?? null);
-    const budgetWindow = fullBudget != null && fullBudget > 0 && ov
-      ? fullBudget * (ov.overlapDays / ov.totalDays)
+    const mediaFullBudget = isDisplay ? (c.d_client_budget ?? null) : (c.v_client_budget ?? null);
+    const proRata = ov ? ov.overlapDays / ov.totalDays : null;
+    const mediaBudgetWindow = mediaFullBudget != null && mediaFullBudget > 0 && proRata
+      ? mediaFullBudget * proRata
       : null;
-    const techCostPct = realTotalCost != null && budgetWindow != null && budgetWindow > 0
-      ? (realTotalCost / budgetWindow) * 100
+    const techCostMediaPct = realTotalCost != null && mediaBudgetWindow != null && mediaBudgetWindow > 0
+      ? (realTotalCost / mediaBudgetWindow) * 100
       : null;
+
+    const campCostWindow = c.admin_total_cost_full ?? c.admin_total_cost ?? null;
+    const campFullBudget = (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
+    const budgetWindow = campFullBudget > 0 && proRata ? campFullBudget * proRata : null;
+    const techCostPct = campCostWindow != null && budgetWindow != null && budgetWindow > 0
+      ? (campCostWindow / budgetWindow) * 100
+      : null;
+    // Tier do tech cost é campanha; `hasAbs` da linha segue por mídia
+    // (pinta eCPM/CTR, que continuam per-media).
     const hasAbs = isDisplay ? !!c.display_has_abs : !!c.video_has_abs;
+    const techHasAbs = !!c.display_has_abs || !!c.video_has_abs;
 
     return {
       short_token:   c.short_token,
@@ -805,10 +826,15 @@ export function buildDiagnosticoRowsForPeriod(campaigns, { from, to }) {
       realEcpm:      isDisplay ? (c.display_ecpm ?? null) : (c.video_ecpm ?? null),
       realTotalCost,
       clientBudgetWindow: budgetWindow,
+      clientBudgetMedia:  mediaBudgetWindow,
       techCostPct,
+      techCostMediaPct,
+      techCostCost:   campCostWindow,
+      techCostBudget: budgetWindow,
       // Sem projeção em janela fechada — classifica só o realizado.
-      tech_status: classifyTechCostStatus(techCostPct, hasAbs, null),
+      tech_status: classifyTechCostStatus(techCostPct, techHasAbs, null),
       has_abs: hasAbs,
+      tech_has_abs: techHasAbs,
       front_imbalance: null,
       // Campos do modo Agora que não existem em janela fechada — null
       // explícito pra tabela/export renderizarem "—"/vazio sem sujeira.
@@ -861,43 +887,94 @@ export function buildDiagnosticoRowsForPeriod(campaigns, { from, to }) {
 // real e Tech Cost (% do PI cliente consumido em custo real HYPR).
 // ────────────────────────────────────────────────────────────────────────
 //
-// Tech Cost
-// ─────────
-//   numerador   = custo real DSP HYPR INCLUINDO survey
-//                 (d_admin_total_cost_full / v_admin_total_cost_full)
-//   denominador = valor PI cliente daquela mídia (d_client_budget / v_client_budget,
-//                 calculado server-side como `contracted × CPM/CPCV` SEM bônus)
+// Tech Cost — MEDIDO NA CAMPANHA INTEIRA, não por mídia
+// ─────────────────────────────────────────────────────
+//   numerador   = custo real DSP HYPR de TODAS as mídias e TODAS as DSPs,
+//                 INCLUINDO survey (admin_total_cost_full)
+//   denominador = valor PI cliente da campanha inteira
+//                 (d_client_budget + v_client_budget, server-side =
+//                 `contracted × CPM/CPCV` SEM bônus)
+//
+// Por que campanha e não mídia: o tech cost é uma métrica de MARGEM, e a
+// margem é negociada na PI — o dinheiro que a HYPR gasta comprando mídia
+// é fungível entre Display e Video dentro do mesmo contrato. Medir por
+// mídia produzia um número sistematicamente distorcido porque os dois
+// lados têm modelos de precificação diferentes: Display é vendido por CPM
+// (R$ 37,5k compram ~2,6MM de imps) e Video por CPCV (R$ 37,5k compram
+// ~104k completions ≈ 111k imps). Com eCPM de compra parecido nas duas, o
+// Display concentra ~95% do custo real e o Video quase nada — então a
+// linha de Display saía com ~2× o tech cost da campanha e a de Video com
+// ~0,5%. Ex. real (COLGATE OSW2UC, 31/07/2026): campanha 6,7% enquanto a
+// linha Display marcava 12,8% e a de Video 0,6%. O mesmo padrão aparecia
+// em toda campanha mista (PEPSICO 43,2% Display × 24,3% campanha, NISSAN
+// 18,7% × 9,5%, NIVEA 18,8% × 9,8%), disparando "Tech Alto" falso.
+//
+// A régua de tiers (8/10% sem ABS, 10/12% com) foi calibrada nessa base
+// de campanha — é a mesma que o card e o KPI strip usam. Agora as três
+// views mostram o mesmo número pra mesma campanha.
 //
 // Survey entra no numerador porque sai da carteira HYPR (custo real DSP)
 // — admin precisa enxergar isso pra detectar campanhas onde survey tá
 // inflando tech cost. Não entra no eCPM (que usa numerador e denominador
 // ambos sem survey, pra ratio fazer sentido).
 //
+// `techCostMediaPct` (custo da mídia ÷ PI da mídia) continua sendo
+// calculado como DETALHE — vai pro tooltip da tabela e pro export, pra
+// quem quiser abrir onde o custo está concentrado. Só não classifica
+// status nem pinta a célula.
+//
 // Fallback: backend antigo sem campo `_full` cai pro `*_admin_total_cost`
 // sem survey. Não quebra, só não captura o custo de survey ate redeploy.
 //
-// Campanhas 100% bonificadas, single-media, ou sem CPM/CPCV preenchido na
-// checklist saem do backend sem `*_client_budget` → Tech Cost = null → UI "—".
+// Campanhas 100% bonificadas ou sem CPM/CPCV preenchido na checklist saem
+// do backend sem `*_client_budget` → Tech Cost = null → UI "—".
 function computeFinancials(campaign, media) {
   const isDisplay = media === "display";
 
   const realEcpm     = isDisplay ? (campaign.display_ecpm ?? null) : (campaign.video_ecpm ?? null);
-  // realTotalCost (coluna Custo + numerador do tech cost) com survey
-  // incluso, com fallback pro campo sem survey enquanto backend não
-  // redeployou.
+  // realTotalCost (coluna Custo) segue POR MÍDIA — é o custo daquela
+  // frente, informação legítima da linha. Só o tech cost é campanha.
   const realTotalCost = isDisplay
     ? (campaign.d_admin_total_cost_full ?? campaign.d_admin_total_cost ?? null)
     : (campaign.v_admin_total_cost_full ?? campaign.v_admin_total_cost ?? null);
-  // Faturável da mídia: refaturado pelo entregue em encerramento antes do
-  // previsto (= novo faturável), senão o PI contratado da mídia. Denominador
-  // do tech cost — alinhado com card/performer/KPI strip.
-  const clientBudget  = billableMediaValue(campaign, media);
 
-  const techCostPct = (realTotalCost != null && clientBudget != null && clientBudget > 0)
-    ? (realTotalCost / clientBudget) * 100
+  // ── Tech Cost campaign-level ──────────────────────────────────────────
+  // Custo cru de TODAS as DSPs (unified_daily_performance_metrics agrega
+  // DV360 + Xandr + Amazon + Yahoo + StackAdapt) e das duas mídias.
+  const techCostCost = campaign.admin_total_cost_full ?? campaign.admin_total_cost ?? null;
+  // Faturável da campanha: refaturado pelo entregue em encerramento antes
+  // do previsto (= novo faturável), senão o PI contratado (d+v).
+  const techCostBudget = billableValue(campaign) || null;
+  const techCostPct = (techCostCost != null && techCostBudget != null && techCostBudget > 0)
+    ? (techCostCost / techCostBudget) * 100
     : null;
 
-  return { realEcpm, realTotalCost, techCostPct };
+  // Detalhe por mídia — tooltip/export. Mesma conta de antes.
+  const mediaBudget = billableMediaValue(campaign, media);
+  const techCostMediaPct = (realTotalCost != null && mediaBudget != null && mediaBudget > 0)
+    ? (realTotalCost / mediaBudget) * 100
+    : null;
+
+  return {
+    realEcpm,
+    realTotalCost,
+    techCostPct,
+    techCostMediaPct,
+    techCostCost,
+    techCostBudget,
+    clientBudgetMedia: mediaBudget ?? null,
+  };
+}
+
+// Início efetivo da CAMPANHA pra projeção de tech cost — o mais cedo entre
+// os actual_start das duas mídias (fallback pro start contratual). Tech
+// cost agora é campanha, então a janela de projeção também precisa ser:
+// usar o runway de uma mídia só daria multiplicadores diferentes nas duas
+// linhas pro mesmo número.
+function campaignRunwayStart(c) {
+  const candidates = [c.display_actual_start_date, c.video_actual_start_date].filter(Boolean);
+  if (!candidates.length) return c.start_date;
+  return candidates.reduce((a, b) => (b < a ? b : a));
 }
 
 // ────────────────────────────────────────────────────────────────────────

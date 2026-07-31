@@ -246,16 +246,26 @@ const RULES_PER_MEDIA = [
   },
 
   // ── C · TECH COST ────────────────────────────────────────────────────
+  //
+  // C1/C2/C3 são CAMPAIGN-LEVEL (`isCampaignLevel: true`): tech cost mede
+  // margem, e margem é da PI inteira — o custo de DSP é fungível entre
+  // Display e Video dentro do mesmo contrato. Rodavam por mídia e a linha
+  // de Display disparava com ~2× o tech cost real da campanha, porque
+  // Display (CPM) concentra ~95% do custo enquanto Video (CPCV) fica perto
+  // de zero. Ver deriveCampaignTech em derive.js. Rodar uma vez por
+  // campanha também evita o alerta duplicado (Display + Video com o mesmo
+  // número) que a mudança de base traria.
   {
     id: "C1",
     category: CATEGORY.FINANCIAL,
     severity: SEVERITY.CRITICAL,
     label: "Tech Cost vermelho",
-    evaluate: ({ enriched, media, hasAbs, rawCampaign }) => {
-      const m = enriched[media];
+    isCampaignLevel: true,
+    evaluate: ({ enriched, rawCampaign }) => {
+      const m = enriched.campaign_tech;
       if (!m || m.tech_cost_pct == null) return null;
       if (m.client_budget < MIN_BUDGET_FOR_TECH_ALERT) return null;
-      const tiers = techTier(hasAbs);
+      const tiers = techTier(m.has_abs);
       if (m.tech_cost_pct <= tiers.warning) return null;
       // Margem comida = excesso acima do threshold healthy × budget.
       const excessPct  = m.tech_cost_pct - tiers.healthy;
@@ -263,7 +273,7 @@ const RULES_PER_MEDIA = [
       return {
         message: `${rawCampaign.client_name}/${rawCampaign.campaign_name} com Tech Cost crítico (${fmtPct(m.tech_cost_pct, 1)})`,
         detail:  appendSurveyDisclaimer(
-          `${mediaLabel(media)}${hasAbs ? " · ABS" : ""} · ~${fmtBrl(marginEaten)} de margem comida`,
+          `Campanha${m.has_abs ? " · ABS" : ""} · ~${fmtBrl(marginEaten)} de margem comida`,
           m
         ),
         impactBrl: marginEaten,
@@ -275,17 +285,18 @@ const RULES_PER_MEDIA = [
     category: CATEGORY.FINANCIAL,
     severity: SEVERITY.WARNING,
     label: "Tech Cost no amarelo",
-    evaluate: ({ enriched, media, hasAbs, rawCampaign }) => {
-      const m = enriched[media];
+    isCampaignLevel: true,
+    evaluate: ({ enriched, rawCampaign }) => {
+      const m = enriched.campaign_tech;
       if (!m || m.tech_cost_pct == null) return null;
       if (m.client_budget < MIN_BUDGET_FOR_TECH_ALERT) return null;
-      const tiers = techTier(hasAbs);
+      const tiers = techTier(m.has_abs);
       if (m.tech_cost_pct <= tiers.healthy) return null;
       if (m.tech_cost_pct > tiers.warning) return null;
       return {
         message: `${rawCampaign.client_name}/${rawCampaign.campaign_name} Tech Cost no amarelo (${fmtPct(m.tech_cost_pct, 1)})`,
         detail:  appendSurveyDisclaimer(
-          `${mediaLabel(media)}${hasAbs ? " · ABS" : ""} · monitorar`,
+          `Campanha${m.has_abs ? " · ABS" : ""} · monitorar`,
           m
         ),
         impactBrl: m.client_budget * 0.02, // ~2% de "atenção"
@@ -297,11 +308,12 @@ const RULES_PER_MEDIA = [
     category: CATEGORY.FINANCIAL,
     severity: SEVERITY.WARNING,
     label: "Tech Cost vai virar vermelho",
-    evaluate: ({ enriched, media, hasAbs, rawCampaign }) => {
-      const m = enriched[media];
+    isCampaignLevel: true,
+    evaluate: ({ enriched, rawCampaign }) => {
+      const m = enriched.campaign_tech;
       if (!m || m.tech_cost_pct == null || m.projected_tech_cost_pct == null) return null;
       if (m.client_budget < MIN_BUDGET_FOR_TECH_ALERT) return null;
-      const tiers = techTier(hasAbs);
+      const tiers = techTier(m.has_abs);
       // Hoje no amarelo ou abaixo, projetando passar do warning.
       if (m.tech_cost_pct > tiers.warning) return null;
       if (m.projected_tech_cost_pct <= tiers.warning) return null;
@@ -309,7 +321,7 @@ const RULES_PER_MEDIA = [
       return {
         message: `${rawCampaign.client_name}/${rawCampaign.campaign_name} Tech Cost vai cruzar vermelho`,
         detail:  appendSurveyDisclaimer(
-          `${mediaLabel(media)} · hoje ${fmtPct(m.tech_cost_pct, 1)} → projetado ${fmtPct(m.projected_tech_cost_pct, 1)}`,
+          `Campanha · hoje ${fmtPct(m.tech_cost_pct, 1)} → projetado ${fmtPct(m.projected_tech_cost_pct, 1)}`,
           m
         ),
         impactBrl: projectedMarginEaten,
