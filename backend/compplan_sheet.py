@@ -559,7 +559,9 @@ def sync_compplan_sheet() -> Dict:
     payload = build_payload(build_compplan_rows(fetch_lines()))
     sheets_integration._write_base_de_dados(
         sheets_svc, integ["spreadsheet_id"], payload,
-        COMPPLAN_TARGET_ID, TARGET_COMPPLAN, tab_name=TAB_NAME,
+        COMPPLAN_TARGET_ID, TARGET_COMPPLAN,
+        tab_name=integ.get("base_tab_title") or TAB_NAME,
+        base_gid=integ.get("base_sheet_gid"),
     )
 
     # Overlay de fórmulas (F/P) por cima dos valores estáticos recém-escritos.

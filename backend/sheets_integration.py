@@ -58,6 +58,15 @@ Schema da tabela
                                           token; merge: maior end_date do grupo)
     status             STRING           -- active | paused | revoked | error
     last_error         STRING           -- detalhe do último erro de sync
+    base_sheet_gid     INT64            -- sheetId (gid) da aba de dados. É a
+                                          âncora ESTÁVEL da aba: o título pode
+                                          ser renomeado pelo dono da planilha,
+                                          o gid não muda. Ver
+                                          `_resolve_data_tab`.
+    base_tab_title     STRING           -- último título conhecido da aba de
+                                          dados (cache do happy path: evita um
+                                          spreadsheets().get por sync). NULL em
+                                          rows legacy → assume 'Base de Dados'.
 
 Chave lógica: (target_type, short_token). A coluna `short_token` mantém o
 nome por compat — funcionalmente é o "target_id". Pra um cliente, podem
@@ -210,7 +219,9 @@ def ensure_table_exists() -> None:
             last_attempt_at    TIMESTAMP,
             sync_until         DATE,
             status             STRING,
-            last_error         STRING
+            last_error         STRING,
+            base_sheet_gid     INT64,
+            base_tab_title     STRING
         )
         """
         _bq_client().query(sql).result()
@@ -239,6 +250,16 @@ def ensure_table_exists() -> None:
             ).result()
         except Exception as e:
             logger.warning(f"[WARN ensure_table_exists ADD COLUMN last_attempt_at] {e}")
+        # Migration: adiciona base_sheet_gid / base_tab_title
+        # (PR-sheets-follow-renamed-tab). Rows legacy ficam NULL e são
+        # curadas no primeiro sync (ver `_write_base_de_dados`).
+        for col, typ in (("base_sheet_gid", "INT64"), ("base_tab_title", "STRING")):
+            try:
+                _bq_client().query(
+                    f"ALTER TABLE `{_table_id()}` ADD COLUMN IF NOT EXISTS {col} {typ}"
+                ).result()
+            except Exception as e:
+                logger.warning(f"[WARN ensure_table_exists ADD COLUMN {col}] {e}")
         _table_ensured = True
 
 
@@ -370,7 +391,9 @@ def get_integration(target_id: str, target_type: str = TARGET_TOKEN) -> Optional
         last_attempt_at,
         sync_until,
         status,
-        last_error
+        last_error,
+        base_sheet_gid,
+        base_tab_title
     FROM `{_table_id()}`
     WHERE short_token = @target_id
       AND COALESCE(target_type, 'token') = @target_type
@@ -407,6 +430,8 @@ def get_integration(target_id: str, target_type: str = TARGET_TOKEN) -> Optional
         "sync_until":       r["sync_until"],
         "status":           r["status"],
         "last_error":       r["last_error"],
+        "base_sheet_gid":   r["base_sheet_gid"],
+        "base_tab_title":   r["base_tab_title"],
     }
 
 
@@ -453,7 +478,9 @@ def _upsert_integration(row: Dict) -> None:
             @last_synced_at     AS last_synced_at,
             @sync_until         AS sync_until,
             @status             AS status,
-            @last_error         AS last_error
+            @last_error         AS last_error,
+            @base_sheet_gid     AS base_sheet_gid,
+            @base_tab_title     AS base_tab_title
     ) S
     ON T.short_token = S.short_token
        AND COALESCE(T.target_type, 'token') = S.target_type
@@ -467,15 +494,17 @@ def _upsert_integration(row: Dict) -> None:
         last_synced_at     = S.last_synced_at,
         sync_until         = S.sync_until,
         status             = S.status,
-        last_error         = S.last_error
+        last_error         = S.last_error,
+        base_sheet_gid     = S.base_sheet_gid,
+        base_tab_title     = S.base_tab_title
     WHEN NOT MATCHED THEN INSERT (
         short_token, target_type, spreadsheet_id, spreadsheet_url, created_by_email,
         refresh_token_enc, created_at, last_synced_at, sync_until,
-        status, last_error
+        status, last_error, base_sheet_gid, base_tab_title
     ) VALUES (
         S.short_token, S.target_type, S.spreadsheet_id, S.spreadsheet_url, S.created_by_email,
         S.refresh_token_enc, S.created_at, S.last_synced_at, S.sync_until,
-        S.status, S.last_error
+        S.status, S.last_error, S.base_sheet_gid, S.base_tab_title
     )
     """
 
@@ -491,6 +520,8 @@ def _upsert_integration(row: Dict) -> None:
         bigquery.ScalarQueryParameter("sync_until",        "DATE",      row["sync_until"]),
         bigquery.ScalarQueryParameter("status",            "STRING",    row["status"]),
         bigquery.ScalarQueryParameter("last_error",        "STRING",    row["last_error"]),
+        bigquery.ScalarQueryParameter("base_sheet_gid",    "INT64",     row.get("base_sheet_gid")),
+        bigquery.ScalarQueryParameter("base_tab_title",    "STRING",    row.get("base_tab_title")),
     ]
     _bq_client().query(
         sql,
@@ -529,7 +560,9 @@ def _update_status(
         sets.append("last_attempt_at = @last_attempt_at")
         params.append(bigquery.ScalarQueryParameter("last_attempt_at", "TIMESTAMP", last_attempt_at))
     if last_error is not None:
-        sets.append("last_error = @last_error")
+        # NULLIF: "" do caller significa "zera o erro" → NULL de verdade na
+        # coluna (e não string vazia, que polui diagnóstico e alerta).
+        sets.append("last_error = NULLIF(@last_error, '')")
         params.append(bigquery.ScalarQueryParameter("last_error", "STRING", last_error))
     if not sets:
         return
@@ -837,6 +870,13 @@ SHEET_COLUMNS_MERGE_PREFIX = [
     ("_short_token",  "Token"),
 ]
 
+# Títulos das abas criadas pelo app. O título da aba de dados é só o
+# título INICIAL: o dono da planilha pode renomear (ex.: pra conviver com
+# uma aba no template do cliente) e o sync acompanha via gid/header
+# (`_resolve_data_tab`).
+BASE_TAB_TITLE   = "Base de Dados"
+README_TAB_TITLE = "README"
+
 # README escrito na primeira aba como informativo. Cliente abre, vê o
 # disclaimer, e qualquer edição manual nas outras abas é sobrescrita
 # no próximo sync — não na README, que fica intocada.
@@ -849,6 +889,8 @@ README_TEXT = [
     ["• Edições manuais na aba 'Base de Dados' serão perdidas na próxima"],
     ["  atualização. Use abas adicionais (criadas por você) pra análises"],
     ["  customizadas, fórmulas ou pivots — essas não são tocadas."],
+    ["• Renomear a aba 'Base de Dados' é permitido: a sincronização segue a"],
+    ["  aba mesmo com outro nome. Já apagá-la interrompe a atualização."],
     ["• A sincronização para automaticamente 30 dias após o término da"],
     ["  campanha. Esta planilha permanecerá acessível indefinidamente."],
     [""],
@@ -1241,10 +1283,12 @@ def _create_spreadsheet_with_payload(
     title: str,
     payload: List[List],
     access_token: str,
-) -> Tuple[str, str]:
+) -> Tuple[str, str, int]:
     """Cria spreadsheet com 2 abas (README + Base de Dados), popula, formata
     header bold + frozen row, move pra pasta HYPR (best-effort) e seta
-    permissão de link público (best-effort). Retorna (id, url).
+    permissão de link público (best-effort).
+    Retorna (id, url, gid_da_aba_de_dados) — o gid é a âncora estável da aba
+    (sobrevive a rename), persistida na integração.
 
     Em caso de falha pós-criação, deleta a sheet pra não deixar órfã.
     """
@@ -1253,8 +1297,8 @@ def _create_spreadsheet_with_payload(
     create_body = {
         "properties": {"title": title},
         "sheets": [
-            {"properties": {"title": "README"}},
-            {"properties": {"title": "Base de Dados"}},
+            {"properties": {"title": README_TAB_TITLE}},
+            {"properties": {"title": BASE_TAB_TITLE}},
         ],
     }
     # IMPORTANTE: incluir `sheets.properties.{sheetId,title}` em `fields`.
@@ -1272,10 +1316,10 @@ def _create_spreadsheet_with_payload(
         s["properties"]["title"]: s["properties"]["sheetId"]
         for s in created.get("sheets", [])
     }
-    base_sheet_id = sheet_id_by_title.get("Base de Dados")
+    base_sheet_id = sheet_id_by_title.get(BASE_TAB_TITLE)
     if base_sheet_id is None:
         _try_delete_spreadsheet(spreadsheet_id, access_token)
-        raise RuntimeError("Aba 'Base de Dados' não encontrada na sheet recém-criada")
+        raise RuntimeError(f"Aba '{BASE_TAB_TITLE}' não encontrada na sheet recém-criada")
 
     try:
         sheets_svc.spreadsheets().values().batchUpdate(
@@ -1283,8 +1327,8 @@ def _create_spreadsheet_with_payload(
             body={
                 "valueInputOption": "RAW",
                 "data": [
-                    {"range": "README!A1",        "values": README_TEXT},
-                    {"range": "Base de Dados!A1", "values": payload},
+                    {"range": f"'{README_TAB_TITLE}'!A1",  "values": README_TEXT},
+                    {"range": f"'{BASE_TAB_TITLE}'!A1",    "values": payload},
                 ],
             },
         ).execute(num_retries=_SHEETS_NUM_RETRIES)
@@ -1348,7 +1392,7 @@ def _create_spreadsheet_with_payload(
     except Exception as e:
         logger.warning(f"[WARN set anyone-link permission {spreadsheet_id}] {e}")
 
-    return spreadsheet_id, spreadsheet_url
+    return spreadsheet_id, spreadsheet_url, base_sheet_id
 
 
 def create_sheet_for_campaign(
@@ -1386,7 +1430,7 @@ def create_sheet_for_campaign(
         end_date=end_date,
     )
     payload = _build_sheet_payload(detail_rows)
-    spreadsheet_id, spreadsheet_url = _create_spreadsheet_with_payload(
+    spreadsheet_id, spreadsheet_url, base_gid = _create_spreadsheet_with_payload(
         title=title, payload=payload, access_token=access_token,
     )
 
@@ -1404,6 +1448,8 @@ def create_sheet_for_campaign(
         "sync_until":        sync_until.isoformat() if sync_until else None,
         "status":            "active",
         "last_error":        None,
+        "base_sheet_gid":    base_gid,
+        "base_tab_title":    BASE_TAB_TITLE,
     })
 
     return {
@@ -1460,7 +1506,7 @@ def create_sheet_for_merge(
     )
     annotated_rows = _sort_merge_rows_by_date(annotated_rows)
     payload = _build_sheet_payload(annotated_rows, merged=True)
-    spreadsheet_id, spreadsheet_url = _create_spreadsheet_with_payload(
+    spreadsheet_id, spreadsheet_url, base_gid = _create_spreadsheet_with_payload(
         title=title, payload=payload, access_token=access_token,
     )
 
@@ -1478,6 +1524,8 @@ def create_sheet_for_merge(
         "sync_until":        sync_until.isoformat() if sync_until else None,
         "status":            "active",
         "last_error":        None,
+        "base_sheet_gid":    base_gid,
+        "base_tab_title":    BASE_TAB_TITLE,
     })
 
     return {
@@ -1514,10 +1562,125 @@ def _exchange_or_mark(refresh_token: str, target_id: str, target_type: str) -> s
         raise
 
 
+def _remember_data_tab(target_id: str, target_type: str,
+                       gid: Optional[int], title: Optional[str]) -> None:
+    """Persiste a âncora da aba de dados (gid + título atual).
+
+    Best-effort: é só cache/telemetria pro próximo sync. Falhar aqui não
+    invalida o sync que acabou de escrever o dado.
+    """
+    sets, params = [], [
+        bigquery.ScalarQueryParameter("target_id",   "STRING", target_id),
+        bigquery.ScalarQueryParameter("target_type", "STRING", target_type),
+    ]
+    if gid is not None:
+        sets.append("base_sheet_gid = @gid")
+        params.append(bigquery.ScalarQueryParameter("gid", "INT64", int(gid)))
+    if title is not None:
+        sets.append("base_tab_title = @title")
+        params.append(bigquery.ScalarQueryParameter("title", "STRING", title))
+    if not sets:
+        return
+    try:
+        _bq_client().query(
+            f"UPDATE `{_table_id()}` SET {', '.join(sets)} "
+            f"WHERE short_token = @target_id "
+            f"  AND COALESCE(target_type, 'token') = @target_type",
+            job_config=bigquery.QueryJobConfig(query_parameters=params),
+        ).result()
+    except Exception as e:
+        logger.warning(f"[WARN remember_data_tab {target_type}:{target_id}] {e}")
+
+
+def _resolve_data_tab(
+    sheets_svc, spreadsheet_id: str, *,
+    expected_header: List,
+    known_gid: Optional[int] = None,
+    preferred_title: str = BASE_TAB_TITLE,
+) -> Optional[Tuple[int, str]]:
+    """Acha a aba de dados quando o título esperado não existe mais.
+
+    Por que isso existe
+    -------------------
+    O dono da planilha PODE renomear a aba (ex.: 'Base de Dados' →
+    'Base de Dados HYPR', pra conviver com uma aba no template do cliente).
+    O range da Sheets API é keyado por TÍTULO, então o rename derrubava o
+    sync com 400 "Unable to parse range" — e as duas recuperações oferecidas
+    na UI eram inúteis: "Tentar de novo" falhava igual e "Reconectar" criava
+    uma planilha NOVA, abandonando o link já compartilhado com o cliente.
+
+    Ordem de resolução (da mais forte pra mais fraca):
+      1. `known_gid` — o sheetId é imutável sob rename. Âncora ideal.
+      2. título exato `preferred_title` — cobre rows legacy sem gid salvo.
+      3. assinatura do header — a aba que temos é a única cuja linha 1 é
+         idêntica ao header do nosso payload (nós a sobrescrevemos todo dia).
+         Desempate entre múltiplos matches (ex.: cópia manual da aba):
+         prefere a que começa com `preferred_title`.
+
+    Retorna (gid, title) ou None quando nada é seguro — nesse caso o caller
+    marca erro em vez de escrever numa aba arbitrária do cliente.
+    """
+    meta = sheets_svc.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields="sheets.properties(sheetId,title)",
+    ).execute(num_retries=_SHEETS_NUM_RETRIES)
+    tabs = [
+        (s["properties"]["sheetId"], s["properties"]["title"])
+        for s in (meta.get("sheets") or [])
+        if s.get("properties")
+    ]
+    if not tabs:
+        return None
+
+    if known_gid is not None:
+        for gid, title in tabs:
+            if int(gid) == int(known_gid):
+                return gid, title
+
+    for gid, title in tabs:
+        if title == preferred_title:
+            return gid, title
+
+    # Fallback por assinatura de header. Compara como strings pra não
+    # tropeçar em número vs texto na volta da API.
+    want = [str(c) for c in (expected_header or [])]
+    if not want:
+        return None
+    candidates = [(gid, title) for gid, title in tabs if title != README_TAB_TITLE]
+    if not candidates:
+        return None
+    try:
+        resp = sheets_svc.spreadsheets().values().batchGet(
+            spreadsheetId=spreadsheet_id,
+            ranges=[f"'{title}'!1:1" for _, title in candidates],
+        ).execute(num_retries=_SHEETS_NUM_RETRIES)
+    except HttpError as e:
+        logger.warning(f"[resolve_data_tab batchGet {spreadsheet_id}] {e}")
+        return None
+    matches = []
+    for (gid, title), rng in zip(candidates, resp.get("valueRanges") or []):
+        values = rng.get("values") or []
+        row1 = [str(c) for c in (values[0] if values else [])]
+        if row1[:len(want)] == want:
+            matches.append((gid, title))
+    if not matches:
+        return None
+    if len(matches) > 1:
+        logger.warning(
+            f"[resolve_data_tab {spreadsheet_id}] {len(matches)} abas com o "
+            f"mesmo header: {[t for _, t in matches]} — usando a preferida"
+        )
+        for gid, title in matches:
+            if title.startswith(preferred_title):
+                return gid, title
+    return matches[0]
+
+
 def _write_base_de_dados(
     sheets_svc, spreadsheet_id: str, payload: List[List],
     target_id: str, target_type: str,
-    tab_name: str = "Base de Dados",
+    tab_name: str = BASE_TAB_TITLE,
+    base_gid: Optional[int] = None,
 ) -> None:
     """Reescreve a aba `tab_name` (default 'Base de Dados') SEM esvaziá-la
     em caso de falha.
@@ -1536,20 +1699,83 @@ def _write_base_de_dados(
     soluço de infra do Google force o admin a recriar a sheet do zero.
 
     Erros permanentes mantêm a marcação correta (403/404 = revoked; resto = error).
+
+    Rename da aba: se o título não existe mais (400 "Unable to parse range"),
+    reencontra a aba por gid/header (`_resolve_data_tab`), escreve nela e
+    memoriza o novo título — o dono da planilha pode renomear à vontade sem
+    quebrar o sync nem precisar recriar a planilha.
     """
-    # 1) Escreve o payload completo a partir de A1 (overwrite in-place). Este é
-    #    o passo crítico — falhas aqui marcam status e propagam.
-    try:
-        sheets_svc.spreadsheets().values().update(
+    def _do_write(title: str):
+        return sheets_svc.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range=f"'{tab_name}'!A1",
+            range=f"'{title}'!A1",
             valueInputOption="RAW",
             body={"values": payload},
         ).execute(num_retries=_SHEETS_NUM_RETRIES)
+
+    def _tail_clear(title: str) -> None:
+        """Passo 2 (best-effort) — ver comentário longo abaixo."""
+        try:
+            sheets_svc.spreadsheets().values().clear(
+                spreadsheetId=spreadsheet_id,
+                range=f"'{title}'!A{len(payload) + 1}:Z",
+            ).execute(num_retries=_SHEETS_NUM_RETRIES)
+        except HttpError as e:
+            logger.warning(
+                f"[sheets tail-clear {target_type}:{target_id}] "
+                f"HTTP {getattr(e.resp, 'status', None)}: {str(e)[:200]} (ignorado)"
+            )
+
+    # 1) Escreve o payload completo a partir de A1 (overwrite in-place). Este é
+    #    o passo crítico — falhas aqui marcam status e propagam.
+    try:
+        _do_write(tab_name)
     except HttpError as e:
         http_status = getattr(e.resp, "status", None)
         msg = f"HTTP {http_status}: {str(e)[:300]}"
-        if http_status in (403, 404):
+        if http_status == 400 and "Unable to parse range" in str(e):
+            # Aba renomeada (ou o título salvo está velho). Reencontra e
+            # reescreve — sem tocar em nenhuma aba que não seja a nossa.
+            resolved = None
+            try:
+                resolved = _resolve_data_tab(
+                    sheets_svc, spreadsheet_id,
+                    expected_header=payload[0] if payload else [],
+                    known_gid=base_gid,
+                    preferred_title=tab_name,
+                )
+            except HttpError as e2:
+                logger.warning(
+                    f"[sheets resolve-tab {target_type}:{target_id}] {e2} "
+                    f"(mantendo o erro original)"
+                )
+            if resolved is None:
+                _update_status(
+                    target_id, target_type=target_type, status="error",
+                    last_error=(
+                        f"aba de dados não encontrada na planilha "
+                        f"(esperado '{tab_name}'). Renomeie a aba de volta pra "
+                        f"'{tab_name}' ou reconecte a integração. Detalhe: {msg}"
+                    )[:500],
+                )
+                raise
+            new_gid, new_title = resolved
+            logger.info(
+                f"[sheets tab-renamed {target_type}:{target_id}] "
+                f"'{tab_name}' → '{new_title}' (gid={new_gid}), reescrevendo"
+            )
+            try:
+                _do_write(new_title)
+            except HttpError as e3:
+                _update_status(
+                    target_id, target_type=target_type, status="error",
+                    last_error=f"write na aba '{new_title}': {str(e3)[:300]}",
+                )
+                raise
+            _remember_data_tab(target_id, target_type, new_gid, new_title)
+            _tail_clear(new_title)
+            return
+        elif http_status in (403, 404):
             # Acesso revogado / sheet deletada → recuperação real exige recriar.
             _update_status(target_id, target_type=target_type,
                            status="revoked", last_error=msg)
@@ -1572,17 +1798,7 @@ def _write_base_de_dados(
     #    o sync. Em especial, quando o payload preenche a grade inteira, o range
     #    A{n+1}:Z estoura o limite ("400 exceeds grid limits") — benigno, não há
     #    rabo pra limpar. payload sempre tem ≥1 linha (header).
-    n_rows = len(payload)
-    try:
-        sheets_svc.spreadsheets().values().clear(
-            spreadsheetId=spreadsheet_id,
-            range=f"'{tab_name}'!A{n_rows + 1}:Z",
-        ).execute(num_retries=_SHEETS_NUM_RETRIES)
-    except HttpError as e:
-        logger.warning(
-            f"[sheets tail-clear {target_type}:{target_id}] "
-            f"HTTP {getattr(e.resp, 'status', None)}: {str(e)[:200]} (ignorado)"
-        )
+    _tail_clear(tab_name)
 
 
 def sync_sheet(
@@ -1612,13 +1828,17 @@ def sync_sheet(
     payload       = _build_sheet_payload(detail_rows)
 
     _write_base_de_dados(sheets_svc, integ["spreadsheet_id"], payload,
-                         short_token, TARGET_TOKEN)
+                         short_token, TARGET_TOKEN,
+                         tab_name=integ.get("base_tab_title") or BASE_TAB_TITLE,
+                         base_gid=integ.get("base_sheet_gid"))
 
     _update_status(
         short_token, target_type=TARGET_TOKEN,
         status="active",
         last_synced_at=datetime.now(timezone.utc),
-        last_error=None,
+        # "" (não None) — em `_update_status`, None significa "não mexer", e o
+        # erro do sync anterior ficava pendurado na row depois de recuperar.
+        last_error="",
     )
     return {"spreadsheet_id": integ["spreadsheet_id"]}
 
@@ -1654,13 +1874,15 @@ def sync_merge_sheet(merge_id: str, members: List[Dict]) -> Dict:
     payload = _build_sheet_payload(annotated_rows, merged=True)
 
     _write_base_de_dados(sheets_svc, integ["spreadsheet_id"], payload,
-                         merge_id, TARGET_MERGE)
+                         merge_id, TARGET_MERGE,
+                         tab_name=integ.get("base_tab_title") or BASE_TAB_TITLE,
+                         base_gid=integ.get("base_sheet_gid"))
 
     _update_status(
         merge_id, target_type=TARGET_MERGE,
         status="active",
         last_synced_at=datetime.now(timezone.utc),
-        last_error=None,
+        last_error="",   # ver nota em sync_sheet
     )
     return {"spreadsheet_id": integ["spreadsheet_id"]}
 
