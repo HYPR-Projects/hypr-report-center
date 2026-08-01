@@ -598,15 +598,18 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
         // ABS da campanha — tier do tech cost (que agora é campaign-level).
         tech_has_abs: techHasAbs,
         media: "display",
-        // Brutos pro CSV — totais, não viewable. delivered (viewable) já vai
-        // separado via spread de displayMetrics.
-        totalImpressions: c.display_impressions ?? null,
+        // Brutos pro CSV. Impressões TOTAIS vêm do unified (d_admin_impressions)
+        // — `display_impressions` do payload da lista é VIEWABLE (backend
+        // emite d_vi ali), então usá-lo na coluna "Impressões Totais" do XLSX
+        // era rótulo errado.
+        totalImpressions: c.d_admin_impressions ?? null,
         clicks:           c.display_clicks      ?? null,
-        // CTR = clicks / impressões totais × 100. Mesmo cálculo do export
-        // (diagnosticoExport.js) — mantém consistência entre tabela e XLSX.
-        ctr: (c.display_impressions && c.display_impressions > 0 && c.display_clicks)
+        // CTR = clicks ÷ imp. visíveis, igual report/card. `display_ctr` já
+        // vem pronto do backend com esse denominador; fallback calcula com
+        // display_impressions (= viewable) pra payload antigo.
+        ctr: c.display_ctr ?? ((c.display_impressions && c.display_impressions > 0 && c.display_clicks)
           ? (c.display_clicks / c.display_impressions) * 100
-          : null,
+          : null),
         tech_status: classifyTechCostStatus(displayFin.techCostPct, techHasAbs, displayProjTech),
       });
     }
@@ -651,13 +654,15 @@ export function buildDiagnosticoRows(campaigns, getCampaignStatusFn) {
         // Brutos pro CSV. Video não tem "starts" no payload da list (só
         // aparece em report detail), então exporto impressões totais +
         // viewable + completions 100% (delivered já é v_viewable_comp).
-        totalImpressions:    c.video_impressions            ?? null,
+        // Totais = unified (v_admin_impressions); video_impressions do
+        // payload é viewable (v_vi), mesmo caso do Display acima.
+        totalImpressions:    c.v_admin_impressions          ?? null,
         viewableImpressions: c.video_viewable_impressions   ?? null,
         clicks:              c.video_clicks                 ?? null,
         // CTR — clicks raros em video mas existem. Mesma fórmula do Display.
-        ctr: (c.video_impressions && c.video_impressions > 0 && c.video_clicks)
+        ctr: c.video_ctr ?? ((c.video_impressions && c.video_impressions > 0 && c.video_clicks)
           ? (c.video_clicks / c.video_impressions) * 100
-          : null,
+          : null),
         tech_status: classifyTechCostStatus(videoFin.techCostPct, techHasAbs, videoProjTech),
       });
     }
@@ -763,14 +768,22 @@ export function buildDiagnosticoRowsForPeriod(campaigns, { from, to }) {
       : null;
     if (viewability != null && viewability > 100) viewability = 100;
 
-    // CTR: clicks (CR) ÷ impressões totais (unified). O payload de
-    // performers não traz impressões TOTAIS do CR (display_impressions ali
-    // é viewable), então o denominador é o unified janelado — mesmo denom
-    // do eCPM, mantém as razões da linha na mesma base.
+    // CTR: clicks ÷ imp. VISÍVEIS, ambos do CR — mesma régua do report e do
+    // card da lista. ANTES dividia pelas impressões TOTAIS do unified
+    // (adminImps) "pra manter a mesma base do eCPM", e o resultado saía
+    // diluído pela viewability: o CS via 0,61% no Diagnóstico e 0,73% no
+    // report da mesma campanha (0,73% × 83,3% de view = 0,61%). O eCPM
+    // continua sobre impressões totais — bases diferentes por natureza.
+    // `display_ctr` já vem pronto do backend com esse denominador; vídeo não
+    // tem campo próprio no payload de performers, então calcula na mão com
+    // video_viewable_impressions (= v_vi do CR).
     const clicks = isDisplay ? (c.display_clicks ?? null) : (c.video_clicks ?? null);
-    const ctr = clicks && adminImps && adminImps > 0
-      ? (clicks / adminImps) * 100
-      : null;
+    const ctrDenom = isDisplay
+      ? (c.display_viewable_impressions ?? c.display_impressions ?? null)
+      : (c.video_viewable_impressions   ?? c.video_impressions   ?? null);
+    const ctr = isDisplay && c.display_ctr != null
+      ? c.display_ctr
+      : (clicks && ctrDenom && ctrDenom > 0 ? (clicks / ctrDenom) * 100 : null);
 
     // Financeiro janelado. Custo real COM survey (fallback sem survey,
     // backend antigo). Budget cliente PRO-RATA pela fração do contrato
