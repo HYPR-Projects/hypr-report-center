@@ -747,6 +747,41 @@ _GF_CONTRACT_GATE = (
     " FROM `site-hypr.prod_assets.checklist_info` WHERE short_token = @token) > 0"
 )
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Soma de volumetria contratada/negociada — SEMPRE as TRÊS frentes.
+#
+# Existe porque a Groundflow foi esquecida em DOIS lugares independentes
+# (query_campaigns_list e query_performers_for_period), cada um somando só
+# O2O+OOH na mão. Efeito na Tostitos JFKV9U (contrato 50/50 O2O+RMNF):
+# Diagnóstico histórico acusava 218,9% "Super Over" (real 109,4%), o card
+# mostrava INVESTIDO pela metade (R$ 63.896 de uma PI de R$ 127.792) e o
+# Tech Cost saía dobrado (26,9% em vez de 13,4%), disparando alerta falso.
+# Somar por aqui em vez de inline evita a terceira ocorrência.
+#
+# Espera as chaves ALIASADAS das CTEs `checklist` (contracted_o2o_display,
+# contracted_groundflow_video, bonus_ooh_display, ...) — nome idêntico nas
+# duas queries. Aceita bigquery.Row e dict (ambos têm .get()).
+# ─────────────────────────────────────────────────────────────────────────────
+_FRONTS = ("o2o", "ooh", "groundflow")
+
+
+def contract_volume(row, media: str, *, include_bonus: bool) -> float:
+    """Σ da volumetria das 3 frentes pra `media` ('display' | 'video').
+
+    include_bonus=False → PI faturável (denominador de tech cost/budget);
+    bônus é cortesia e não fatura.
+    include_bonus=True  → "negociado" (denominador de pacing/entregue %),
+    porque a entrega medida inclui o que rodou em cima do bônus.
+    """
+    suffix = "display" if media == "display" else "video"
+    prefixes = ["contracted"] + (["bonus"] if include_bonus else [])
+    return sum(
+        float(row.get(f"{p}_{f}_{suffix}") or 0)
+        for p in prefixes
+        for f in _FRONTS
+    )
+
+
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:5173",
@@ -9797,19 +9832,18 @@ def query_campaigns_list():
         # pra obter o % de Tech Cost — quanto do PI virou custo cru de DSP.
         # Só emite se > 0; campanhas single-media ou 100% bonificadas ficam
         # sem o campo → UI mostra "—". Admin-only (mesma gate dos admin_*).
-        d_contracted = (
-            float(r["contracted_o2o_display"] or 0) +
-            float(r["contracted_ooh_display"] or 0)
-        )
+        # As TRÊS frentes entram na PI. Groundflow faltava aqui: o card
+        # mostrava INVESTIDO pela metade (Tostitos R$ 63.896 em vez de
+        # R$ 127.792) enquanto o client_delivered_value abaixo JÁ soma as três
+        # frentes — daí "entregue = 2× o investido", que é impossível — e o
+        # Tech Cost saía dobrado.
+        d_contracted = contract_volume(r, "display", include_bonus=False)
         cpm_amount = float(r["cpm_amount"] or 0)
         d_client_budget = d_contracted * cpm_amount / 1000 if d_contracted > 0 and cpm_amount > 0 else 0
         if d_client_budget > 0:
             entry["d_client_budget"] = round(d_client_budget, 2)
 
-        v_contracted = (
-            float(r["contracted_o2o_video"] or 0) +
-            float(r["contracted_ooh_video"] or 0)
-        )
+        v_contracted = contract_volume(r, "video", include_bonus=False)
         cpcv_amount = float(r["cpcv_amount"] or 0)
         # Video: CPCV é preço por completion (sem /1000), diferente de CPM.
         v_client_budget = v_contracted * cpcv_amount if v_contracted > 0 and cpcv_amount > 0 else 0
@@ -10049,7 +10083,16 @@ def query_performers_for_period(window_from: date, window_to: date):
                 MAX(bonus_o2o_display_impressions)      AS bonus_o2o_display,
                 MAX(bonus_ooh_display_impressions)      AS bonus_ooh_display,
                 MAX(bonus_o2o_video_completions)        AS bonus_o2o_video,
-                MAX(bonus_ooh_video_completions)        AS bonus_ooh_video
+                MAX(bonus_ooh_video_completions)        AS bonus_ooh_video,
+                -- Groundflow/RMNF é a 3ª frente e PRECISA entrar aqui: o
+                -- numerador (CTE `agg`) soma TODAS as lines, inclusive as
+                -- RMNF. Sem essas 4 colunas o contrato saía só com O2O+OOH e
+                -- o pacing histórico dobrava (Tostitos JFKV9U: 218,9% no
+                -- Diagnóstico vs 109% no card, contrato 50/50 O2O+GF).
+                MAX(contracted_groundflow_display_impressions) AS contracted_groundflow_display,
+                MAX(contracted_groundflow_video_completions)   AS contracted_groundflow_video,
+                MAX(bonus_groundflow_display_impressions)      AS bonus_groundflow_display,
+                MAX(bonus_groundflow_video_completions)        AS bonus_groundflow_video
             FROM `site-hypr.prod_assets.checklist_info`
             GROUP BY short_token
         ),
@@ -10187,6 +10230,8 @@ def query_performers_for_period(window_from: date, window_to: date):
             c.contracted_o2o_video,   c.contracted_ooh_video,
             c.bonus_o2o_display,      c.bonus_ooh_display,
             c.bonus_o2o_video,        c.bonus_ooh_video,
+            c.contracted_groundflow_display, c.contracted_groundflow_video,
+            c.bonus_groundflow_display,      c.bonus_groundflow_video,
             ab.display_has_abs, ab.video_has_abs
         FROM unified u
         JOIN base b USING (short_token)
@@ -10253,18 +10298,10 @@ def query_performers_for_period(window_from: date, window_to: date):
         v_clicks          = float(r["v_clicks"]               or 0)
         v_comp            = float(r["v_completions"]          or 0)
 
-        d_neg = (
-            float(r["contracted_o2o_display"] or 0) +
-            float(r["contracted_ooh_display"] or 0) +
-            float(r["bonus_o2o_display"]      or 0) +
-            float(r["bonus_ooh_display"]      or 0)
-        )
-        v_neg = (
-            float(r["contracted_o2o_video"] or 0) +
-            float(r["contracted_ooh_video"] or 0) +
-            float(r["bonus_o2o_video"]      or 0) +
-            float(r["bonus_ooh_video"]      or 0)
-        )
+        # Negociado = contratado + bônus das TRÊS frentes. Groundflow entra
+        # porque a entrega (CTE `agg`) soma TODAS as lines, RMNF inclusive.
+        d_neg = contract_volume(r, "display", include_bonus=True)
+        v_neg = contract_volume(r, "video",   include_bonus=True)
 
         d_expected = expected_in_window(d_neg, start_date, end_date)
         v_expected = expected_in_window(v_neg, start_date, end_date)
@@ -10346,8 +10383,11 @@ def query_performers_for_period(window_from: date, window_to: date):
         # o tech cost sai como null naturalmente (sem ratio inflado).
         cpm_amount  = float(r["cpm_amount"]  or 0)
         cpcv_amount = float(r["cpcv_amount"] or 0)
-        d_contracted = float(r["contracted_o2o_display"] or 0) + float(r["contracted_ooh_display"] or 0)
-        v_contracted = float(r["contracted_o2o_video"]   or 0) + float(r["contracted_ooh_video"]   or 0)
+        # As TRÊS frentes compõem a PI — Groundflow inclusive. Sem ela o
+        # denominador do tech cost saía pela metade em campanha com RMNF
+        # (Tostitos: 26,9% no lugar de 13,4%) e disparava "Tech Cost Alto".
+        d_contracted = contract_volume(r, "display", include_bonus=False)
+        v_contracted = contract_volume(r, "video",   include_bonus=False)
         d_client_budget = (d_contracted * cpm_amount / 1000.0) if cpm_amount  > 0 and d_contracted > 0 else 0.0
         v_client_budget = (v_contracted * cpcv_amount)         if cpcv_amount > 0 and v_contracted > 0 else 0.0
         if d_client_budget > 0:

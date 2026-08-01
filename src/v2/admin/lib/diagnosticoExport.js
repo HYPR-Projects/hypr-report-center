@@ -109,11 +109,12 @@ const COL_WIDTHS = [
 function rowAoA(r, teamMap, historical) {
   const isVideo = r.media === "video";
 
-  // CTR — clicks / impressões totais. Faz sentido nas duas mídias (video
-  // tem clicks raros mas existem).
-  const ctr = r.totalImpressions && r.clicks
-    ? (r.clicks / r.totalImpressions) * 100
-    : null;
+  // CTR — usa o mesmo valor da TABELA (r.ctr = clicks ÷ imp. visíveis, régua
+  // do report/card). Antes recalculava aqui com r.totalImpressions
+  // (impressões TOTAIS do unified) e o XLSX saía com o CTR diluído pela
+  // viewability, divergindo da tela. Faz sentido nas duas mídias (video tem
+  // clicks raros mas existem).
+  const ctr = r.ctr ?? null;
 
   // VTR — só Video. views 100% viewable / viewable imps. Em Display fica
   // vazio porque não tem semântica.
