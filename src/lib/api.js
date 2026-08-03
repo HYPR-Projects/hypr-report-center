@@ -1223,6 +1223,69 @@ export async function saveComment({ short_token, metric_name, author, comment, a
   );
 }
 
+// ── Notas internas da campanha (admin-only) ──────────────────────────────────
+//
+// Thread interna do time — NÃO é o `saveComment`/`getComments` acima (aquele
+// é o chat do report, que o cliente vê). Aqui até a LEITURA exige JWT admin:
+// nota interna nunca pode vazar pro cliente.
+
+/** Thread completa (ordem cronológica) de um short_token. */
+export async function listCampaignNotes({ short_token }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=list_campaign_notes&token=${encodeURIComponent(short_token)}`,
+    { headers: adminAuthHeaders(jwt) },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  return d?.notes || [];
+}
+
+/**
+ * Cria (sem `note_id`) ou edita (com `note_id`) uma nota. O autor vem do JWT
+ * no backend — `author_name` é só o display denormalizado da sessão Google.
+ * Retorna a nota criada quando é criação.
+ */
+export async function saveCampaignNote({ short_token, body, note_id, author_name }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=save_campaign_note`,
+    { short_token, body, note_id: note_id || null, author_name: author_name || null },
+    adminAuthHeaders(jwt),
+  );
+  const res = await throwIfNotOk(r);
+  const d = await res.json().catch(() => ({}));
+  return d?.note || null;
+}
+
+/** Soft delete. Backend só deixa o autor apagar a própria nota. */
+export async function deleteCampaignNote({ note_id }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=delete_campaign_note`,
+    { note_id },
+    adminAuthHeaders(jwt),
+  );
+  return throwIfNotOk(r);
+}
+
+/**
+ * Contagem + última nota de vários tokens de uma vez — alimenta o indicador
+ * discreto nos cards do menu. Retorna `{ token: {count, last_at, ...} }`;
+ * tokens sem nota não vêm no dict.
+ */
+export async function getCampaignNotesBatch(tokens) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=campaign_notes_batch`,
+    { tokens },
+    adminAuthHeaders(jwt),
+  );
+  const res = await throwIfNotOk(r);
+  const d = await res.json().catch(() => ({}));
+  return d?.summaries || {};
+}
+
 // ── Alcance & Frequência (admin) ─────────────────────────────────────────────
 
 /**

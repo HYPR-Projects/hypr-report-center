@@ -12,6 +12,7 @@ import { useState, useMemo } from "react";
 import { cn } from "../../../ui/cn";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
 import { localPartFromEmail, ecpmToneClass, formatDateRange, ctrColorClass } from "../lib/format";
+import { useCachedNoteSummary } from "../lib/notesSummaryCache";
 import {
   STATUS_META,
   formatPctRow,
@@ -153,6 +154,30 @@ function Th({ children, align = "left", sortable = false, active = false, dir, o
         )}
       </span>
     </th>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Marca de notas internas — dot + contagem ao lado do nome da campanha.
+// Só aparece quando a campanha tem nota; sinaliza "alguém já registrou algo
+// aqui, abra a row". A thread mora no drawer (AlertCampaignSheet).
+// ────────────────────────────────────────────────────────────────────────
+function NoteMark({ shortToken }) {
+  const summary = useCachedNoteSummary(shortToken);
+  const count = summary?.count || 0;
+  if (count === 0) return null;
+  return (
+    <span
+      className="shrink-0 inline-flex items-center gap-1 text-[9.5px] font-bold text-signature tabular-nums"
+      title={
+        summary.last_snippet
+          ? `${count} nota${count === 1 ? "" : "s"} interna${count === 1 ? "" : "s"} — última: “${summary.last_snippet}”`
+          : `${count} nota${count === 1 ? "" : "s"} interna${count === 1 ? "" : "s"}`
+      }
+    >
+      <span aria-hidden className="size-1.5 rounded-full bg-signature/70" />
+      {count}
+    </span>
   );
 }
 
@@ -473,6 +498,7 @@ export function DiagnosticoTable({
                             ABS
                           </span>
                         )}
+                        <NoteMark shortToken={r.short_token} />
                       </div>
                     </Td>
                     <Td align="left" title={csFullName || undefined}>

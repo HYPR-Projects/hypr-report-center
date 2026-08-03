@@ -53,6 +53,7 @@ import sheets_integration
 import sheets_alerts
 import audit_log
 import access_tracking
+import campaign_notes
 import pmp_deals
 import pmp_lines
 import pmp_groups
@@ -2829,6 +2830,107 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR get_comments] {e}")
             return (jsonify({"error": "Erro ao buscar comentários"}), 500, headers)
+
+    # ── Endpoints: notas internas da campanha (admin-only) ───────────────────
+    #
+    # Thread estilo chat pra o time registrar acontecimentos da campanha
+    # (pausa combinada, troca de criativo, problema no DSP). NÃO confundir
+    # com save_comment/get_comments acima, que é o chat do report e o
+    # cliente vê. Aqui TODAS as operações — inclusive leitura — exigem JWT
+    # admin, e nada disso entra no payload do report nem no Portal.
+    #
+    #   GET  ?action=list_campaign_notes&token=<short_token>
+    #   POST ?action=save_campaign_note    {short_token, body, note_id?}
+    #   POST ?action=delete_campaign_note  {note_id}
+    #   POST ?action=campaign_notes_batch  {tokens: [...]}
+    #
+    # A identidade do autor vem SEMPRE do JWT (nunca do body) — `author_name`
+    # é só display denormalizado. Sessão legada (?ak=) não tem email real,
+    # então não pode escrever: numa thread com nome em cada balão, autor
+    # anônimo não serve pra nada.
+    if request.method == "GET" and request.args.get("action") == "list_campaign_notes":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        short_token = (request.args.get("token") or request.args.get("short_token") or "").strip()
+        if not short_token:
+            return (jsonify({"error": "token é obrigatório"}), 400, headers)
+        try:
+            return (jsonify({"notes": campaign_notes.list_notes(short_token)}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR list_campaign_notes] {e}")
+            return (jsonify({"error": "Erro ao buscar notas"}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "save_campaign_note":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        author_email = (admin.get("email") or "").strip().lower()
+        if "@" not in author_email:
+            return (jsonify({
+                "error": "Sessão sem identidade — entre com sua conta Google pra escrever notas"
+            }), 403, headers)
+        try:
+            body_json = request.get_json(silent=True) or {}
+            short_token = (body_json.get("short_token") or "").strip()
+            note_body   = campaign_notes.sanitize_body(body_json.get("body"))
+            note_id     = (body_json.get("note_id") or "").strip()
+            if not short_token:
+                return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+            if not note_body:
+                return (jsonify({"error": "Nota vazia"}), 400, headers)
+
+            # note_id presente = edição. Só o autor edita a própria nota; o
+            # UPDATE já filtra por author_email, então 0 rows afetadas
+            # significa "não é sua ou não existe mais".
+            if note_id:
+                ok = campaign_notes.update_note(note_id, author_email, note_body)
+                if not ok:
+                    return (jsonify({"error": "Nota não encontrada ou não é sua"}), 403, headers)
+                return (jsonify({"ok": True, "note_id": note_id, "body": note_body}), 200, headers)
+
+            note = campaign_notes.create_note(
+                short_token,
+                author_email,
+                note_body,
+                author_name=body_json.get("author_name"),
+            )
+            return (jsonify({"ok": True, "note": note}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR save_campaign_note] {e}")
+            return (jsonify({"error": "Erro ao salvar nota"}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "delete_campaign_note":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        author_email = (admin.get("email") or "").strip().lower()
+        try:
+            body_json = request.get_json(silent=True) or {}
+            note_id = (body_json.get("note_id") or "").strip()
+            if not note_id:
+                return (jsonify({"error": "note_id é obrigatório"}), 400, headers)
+            ok = campaign_notes.delete_note(note_id, author_email)
+            if not ok:
+                return (jsonify({"error": "Nota não encontrada ou não é sua"}), 403, headers)
+            return (jsonify({"ok": True}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR delete_campaign_note] {e}")
+            return (jsonify({"error": "Erro ao apagar nota"}), 500, headers)
+
+    # POST (não GET) porque a lista de tokens do menu passa de 270 itens e
+    # não caberia em query string — mesmo padrão do access_summary_batch.
+    if request.method == "POST" and request.args.get("action") == "campaign_notes_batch":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body_json = request.get_json(silent=True) or {}
+            tokens = body_json.get("tokens") or []
+            if not isinstance(tokens, list):
+                return (jsonify({"error": "tokens deve ser array"}), 400, headers)
+            return (jsonify({"summaries": campaign_notes.summary_batch(tokens)}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR campaign_notes_batch] {e}")
+            return (jsonify({"error": "Erro ao buscar notas"}), 500, headers)
 
     # ── Endpoint: buscar negociação (Sales Center) ───────────────────────────
     # GET público — mesmo nível de acesso do report (quem tem o short_token,

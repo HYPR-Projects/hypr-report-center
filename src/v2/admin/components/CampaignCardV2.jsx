@@ -57,6 +57,7 @@ import {
 } from "../lib/format";
 import { schedulePrefetch, cancelPrefetch } from "../../../lib/prefetchReport";
 import { useCachedAccessSummary } from "../lib/accessSummaryCache";
+import { useCachedNoteSummary } from "../lib/notesSummaryCache";
 import { useFrenteBreakdown } from "../lib/useFrenteBreakdown";
 
 // Mapas health → classe de cor. Mesma régua de format.js (pacing tiers),
@@ -427,12 +428,14 @@ function CampaignCardV2Inner({
           {/* Indicadores discretos abaixo das datas: fechamento (encerrada/
               aguardando) e check-ups semanais (sempre que há o que acompanhar),
               lado a lado, no mesmo estilo minimalista (dots + label). */}
-          {((ended || awaiting) || checkupProgress) && (
-            <div className="flex items-center gap-3.5 flex-wrap">
-              {(ended || awaiting) && <FechamentoDots fechamento={fechamento} />}
-              {checkupProgress && <CheckupDots progress={checkupProgress} />}
-            </div>
-          )}
+          {/* Notas internas entram na mesma faixa de indicadores — o
+              componente se esconde sozinho quando não há nota, então a
+              faixa só aparece se alguma das três tiver conteúdo. */}
+          <div className="flex items-center gap-3.5 flex-wrap">
+            {(ended || awaiting) && <FechamentoDots fechamento={fechamento} />}
+            {checkupProgress && <CheckupDots progress={checkupProgress} />}
+            <NotesIndicator shortToken={short_token} />
+          </div>
         </div>
 
         {/* ── KPIs mobile (visível só <md) ──────────────────────────────
@@ -1106,6 +1109,62 @@ function CheckupDots({ progress }) {
             </div>
           )}
           <p className="text-[10px] text-fg-subtle pt-0.5">Detalhe por semana no relatório.</p>
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * "NOTAS N" — indicador discreto das notas internas do time, no mesmo
+ * estilo do FechamentoDots/CheckupDots (dot + label uppercase cinza, sem
+ * pílula). Só renderiza quando existe nota: campanha sem registro não
+ * ganha ruído visual.
+ *
+ * O tooltip traz o autor + trecho da última nota — o suficiente pra decidir
+ * se vale abrir o drawer. Dado vem do notesSummaryCache (1 request batched
+ * pro menu inteiro), nunca de fetch por card.
+ */
+function NotesIndicator({ shortToken }) {
+  const summary = useCachedNoteSummary(shortToken);
+  const count = summary?.count || 0;
+  if (count === 0) return null;
+
+  const lastAuthor = summary.last_author_name
+    || (summary.last_author_email ? summary.last_author_email.split("@")[0] : null);
+  const lastAt = summary.last_at ? new Date(summary.last_at) : null;
+  const lastAtLabel = lastAt && !Number.isNaN(lastAt.getTime())
+    ? lastAt.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })
+      + " " + lastAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+    : null;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div
+          className="flex items-center gap-1 mt-1.5 w-fit cursor-default"
+          aria-label={`${count} nota${count === 1 ? "" : "s"} interna${count === 1 ? "" : "s"}`}
+        >
+          <span aria-hidden className="size-1.5 rounded-full bg-signature/70" />
+          <span className="text-[9px] uppercase tracking-wider text-fg-subtle ml-0.5 leading-none">
+            {count} nota{count === 1 ? "" : "s"}
+          </span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" align="start">
+        <div className="space-y-1 leading-snug text-[11px] max-w-[240px]">
+          <p className="font-semibold text-fg">Notas internas</p>
+          {(lastAuthor || lastAtLabel) && (
+            <p className="text-[10px] text-fg-subtle">
+              última{lastAuthor ? ` de ${lastAuthor}` : ""}{lastAtLabel ? ` · ${lastAtLabel}` : ""}
+            </p>
+          )}
+          {summary.last_snippet && (
+            <p className="text-fg-muted italic">“{summary.last_snippet}”</p>
+          )}
+          <p className="text-[10px] text-fg-subtle pt-0.5">
+            Thread completa no drawer da campanha.
+          </p>
         </div>
       </TooltipContent>
     </Tooltip>

@@ -25,6 +25,7 @@ import { CoreProductsOverride } from "./CoreProductsOverride";
 import { TokenChip } from "./TokenChip";
 import { ClosureModal } from "./ClosureModal";
 import { WeeklyCheckupTracker } from "./WeeklyCheckupTracker";
+import { CampaignNotes } from "./CampaignNotes";
 import { AudienceOverridesModal } from "./AudienceOverridesModal";
 import { LabelOverridesModal } from "./LabelOverridesModal";
 import { getCreativeLineKey } from "../../../shared/aggregations";
@@ -709,6 +710,20 @@ export function CampaignDrawer({
               </div>
             </div>
           )}
+
+          {/* Notas internas — thread do time sobre essa campanha. Mesma
+              thread que aparece no drawer do Diagnóstico (é o mesmo
+              componente lendo o mesmo token). Colapsada por padrão porque
+              o drawer já é longo: o header mostra a contagem, e o fetch só
+              acontece quando alguém abre. Admin-only por construção — o
+              endpoint exige JWT e nada disso entra no report. */}
+          <div className="drawer-section-rise drawer-stagger-2 mb-5">
+            <CampaignNotes
+              shortToken={short_token}
+              teamMap={teamMap}
+              collapsible
+            />
+          </div>
 
           {/* Brand Safety pre-bid (ABS) — toggle pra cobrir casos onde o sinal
               automático do BQ não detecta (Xandr Curate em open exchange, etc).
