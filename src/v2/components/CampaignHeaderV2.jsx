@@ -13,7 +13,7 @@
 // claro contra canvas. O glow radial vem por inline style (gradient
 // arbitrário, não tem utility direta).
 
-import { useEffect, useMemo, useState } from "react";
+import { forwardRef, useEffect, useMemo, useState } from "react";
 
 import { useLogoAnalysis } from "../hooks/useLogoAnalysis";
 import { useTheme } from "../hooks/useTheme";
@@ -23,6 +23,7 @@ import { PosVendaModal } from "./PosVendaModal";
 import { ReportAnalyticsModal } from "../admin/components/ReportAnalyticsModal";
 import { getNegotiation } from "../../lib/api";
 import { fmtR } from "../../shared/format";
+import { useSlidingThumb } from "../../ui/useSlidingThumb";
 
 const fmtDateShort = (ymd) => {
   if (!ymd) return null;
@@ -700,114 +701,174 @@ function MergeIcon({ className }) {
   );
 }
 
+// Camadas empilhadas — marca o "Agregado" (soma de todos os meses) no
+// segmented control, diferenciando-o dos meses individuais.
+function LayersIcon({ className }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 2 3 7l9 5 9-5-9-5Z" />
+      <path d="M3 12l9 5 9-5" />
+      <path d="M3 17l9 5 9-5" />
+    </svg>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// MergeViewSwitcher — pills do mês (mais recente → mais antigo) + "Visão
-// agregada" no fim. Convenção de URL:
+// MergeViewSwitcher — segmented control (mockup aprovado). Uma trilha rebaixada
+// (bg-canvas-deeper) com um thumb signature que desliza pra aba ativa. Os meses
+// (mais recente → mais antigo) ficam à esquerda; um fio separa o "Agregado"
+// (resumo do conjunto) à direita, com ícone de camadas. O mês corrente ganha um
+// ponto verde discreto — sinaliza "atual" sem competir com a seleção (azul).
+//
+// Reaproveita useSlidingThumb (mesmo motor dos toggles/Tabs do app): mede o
+// botão ativo e o browser interpola transform+width em CSS (GPU, sem rAF).
+//
+// Convenção de URL (inalterada):
 //   ?view=aggregated   → visão agregada explícita
 //   ?view=<token>      → drill-down em um membro
-//   (sem ?view=)       → default backend = active_token (mês atual);
-//                        no UI, o pill do active_token vem destacado.
-// Click em qualquer pill atualiza URL e o ClientDashboardV2 refaz o fetch.
+//   (sem ?view=)       → default backend = active_token (mês atual)
+// Click em qualquer aba atualiza URL e o ClientDashboardV2 refaz o fetch.
 // ─────────────────────────────────────────────────────────────────────────────
 function MergeViewSwitcher({ members, activeToken, currentView, onChange, switchingView = false, isEnded = false }) {
-  // Ordem desc por start_date — mais recente primeiro. Cliente abre o
-  // report e vê o mês atual em destaque, com os anteriores em ordem
-  // decrescente. A agregada vem por último (resumo do conjunto).
+  // Ordem desc por start_date — mais recente primeiro. O agregado vem por
+  // último (resumo do conjunto).
   const sortedMembers = [...(members || [])].sort((a, b) =>
     (b.start_date || "").localeCompare(a.start_date || "")
   );
   const isAggregatedSelected =
     currentView === "aggregated" || currentView === "all";
+
+  // Índice da aba ativa pro thumb deslizante. O agregado ocupa o último slot
+  // (depois de todos os meses). Sem ?view=, o active_token (mês corrente) fica
+  // ativo por default. Fallbacks evitam thumb sumido se currentView vier órfão.
+  let activeIndex;
+  if (isAggregatedSelected) {
+    activeIndex = sortedMembers.length;
+  } else {
+    activeIndex = sortedMembers.findIndex((m) =>
+      currentView ? m.short_token === currentView : m.short_token === activeToken
+    );
+    if (activeIndex < 0) {
+      activeIndex = sortedMembers.findIndex((m) => m.short_token === activeToken);
+    }
+    if (activeIndex < 0) activeIndex = 0;
+  }
+
+  const { containerRef, setItemRef, thumbStyle } = useSlidingThumb(
+    activeIndex,
+    sortedMembers.length + 1,
+  );
+
   return (
-    <div className="mt-4 flex items-center gap-1.5 flex-wrap">
-      {sortedMembers.map((m) => {
-        const isActive = m.short_token === activeToken;
-        const monthLabel = formatMonthShort(m.start_date);
-        // Sem view explícito: o backend retorna active_token, então o
-        // pill do active_token vem destacado por default. Click em outro
-        // pill seta view e recarrega.
-        const selected =
-          currentView === m.short_token ||
-          (!currentView && isActive);
-        // Badge "atual" só faz sentido em campanha rodando — em campanha
-        // encerrada, todos os meses são "passados", não há um "agora".
-        // Mostrar "atual" no último mês de campanha já finalizada confunde.
+    <div
+      ref={containerRef}
+      role="tablist"
+      aria-label="Selecionar report do grupo"
+      className={[
+        "relative mt-4 inline-flex items-stretch gap-0.5 p-1 rounded-xl",
+        "bg-canvas-deeper border border-border max-w-full overflow-x-auto scrollbar-hidden",
+        "motion-reduce:[&_[data-thumb]]:!transition-none",
+      ].join(" ")}
+    >
+      {/* Thumb deslizante — desliza pra aba ativa. z-0, atrás do conteúdo.
+          Altura casa com o botão (h-9) via top-1 + calc; largura/posição vêm
+          do hook (thumbStyle). */}
+      <span
+        data-thumb
+        aria-hidden="true"
+        className="absolute top-1 left-0 h-[calc(100%-0.5rem)] rounded-lg bg-signature shadow-[0_1px_2px_rgba(0,0,0,0.18)] pointer-events-none z-0"
+        style={thumbStyle}
+      />
+
+      {sortedMembers.map((m, i) => {
+        const selected = i === activeIndex && !isAggregatedSelected;
+        const monthLabel = formatMonthShort(m.start_date) || m.short_token;
+        // Ponto "atual" só em campanha rodando — encerrada não tem "agora".
+        const isCurrent = m.short_token === activeToken && !isEnded;
         return (
-          <ViewPill
+          <SegTab
             key={m.short_token}
-            label={monthLabel || m.short_token}
-            sublabel={<CopyableToken token={m.short_token} selected={selected} />}
+            ref={setItemRef(i)}
             selected={selected}
-            badge={isActive && !isEnded ? "atual" : null}
+            current={isCurrent}
             loading={switchingView && selected}
             disabled={switchingView && !selected}
             onClick={() => onChange?.(m.short_token)}
-          />
+          >
+            <span>{monthLabel}</span>
+            <CopyableToken token={m.short_token} selected={selected} />
+          </SegTab>
         );
       })}
-      <ViewPill
-        label="Visão agregada"
-        sublabel="todos os meses"
+
+      {/* Fio separando os meses do resumo agregado. */}
+      <span className="self-center w-px h-5 mx-1 bg-border-strong shrink-0" aria-hidden="true" />
+
+      <SegTab
+        ref={setItemRef(sortedMembers.length)}
         selected={isAggregatedSelected}
         loading={switchingView && isAggregatedSelected}
         disabled={switchingView && !isAggregatedSelected}
         onClick={() => onChange?.("aggregated")}
-      />
+        title="Visão agregada — todos os meses"
+      >
+        <LayersIcon className="size-3.5 shrink-0" />
+        <span>Agregado</span>
+      </SegTab>
     </div>
   );
 }
 
-function ViewPill({ label, sublabel, selected, badge, loading = false, disabled = false, onClick }) {
+// SegTab — aba do segmented control. O texto muda de cor conforme o thumb
+// passa por trás (selected → on-signature). forwardRef porque o useSlidingThumb
+// precisa medir o <button> real. Estados: current (ponto verde à esquerda),
+// loading (spinner trailing durante a troca) e disabled (demais abas em vôo).
+const SegTab = forwardRef(function SegTab(
+  { selected, current = false, loading = false, disabled = false, onClick, title, children },
+  ref,
+) {
   return (
     <button
+      ref={ref}
       type="button"
+      role="tab"
+      aria-selected={selected}
+      aria-busy={loading || undefined}
+      title={title}
       onClick={onClick}
       disabled={disabled || loading}
-      aria-busy={loading || undefined}
       className={[
-        "inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-semibold border transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
-        selected
-          ? "bg-signature text-white border-signature"
-          : "bg-surface-2 text-fg-muted border-border",
-        // Hover só fora de transição — durante switchingView a pill fica
-        // travada (loading na selecionada, disabled nas outras).
-        !disabled && !loading && (selected
-          ? "hover:bg-signature-hover cursor-pointer"
-          : "hover:text-fg hover:bg-surface-3 hover:border-signature/40 cursor-pointer"),
-        disabled && "opacity-50 cursor-not-allowed",
+        "relative z-10 inline-flex items-center gap-2 h-9 px-3.5 rounded-lg whitespace-nowrap shrink-0",
+        "text-[13px] font-semibold transition-colors duration-150",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas-deeper",
+        selected ? "text-on-signature" : "text-fg-muted",
+        !disabled && !loading && !selected && "hover:text-fg cursor-pointer",
+        !disabled && !loading && selected && "cursor-pointer",
+        disabled && "opacity-45 cursor-not-allowed",
         loading && "cursor-wait",
       ].filter(Boolean).join(" ")}
     >
-      <span>{label}</span>
-      {sublabel && (
+      {current && (
         <span
-          className={
-            selected
-              ? "text-white/70"
-              : "text-fg-subtle"
-          }
-        >
-          {sublabel}
-        </span>
+          title="Mês atual"
+          className={["size-1.5 rounded-full shrink-0", selected ? "bg-white" : "bg-success"].join(" ")}
+          aria-hidden="true"
+        />
       )}
-      {loading ? (
-        <PillSpinner selected={selected} />
-      ) : badge ? (
-        <span
-          className={[
-            "text-[8.5px] uppercase tracking-widest font-bold px-1 py-px rounded",
-            selected
-              ? "bg-white/20 text-white"
-              : "bg-success/15 text-success",
-          ].join(" ")}
-        >
-          {badge}
-        </span>
-      ) : null}
+      {children}
+      {loading && <PillSpinner selected={selected} />}
     </button>
   );
-}
+});
 
 // Spinner inline pra estado de troca de view. Tamanho propositalmente
 // pequeno (10px) pra ocupar a mesma "footprint" visual que o badge "atual"
