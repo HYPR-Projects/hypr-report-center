@@ -28,6 +28,7 @@ import { STATUS_META, techCostToneClass, formatBrlRow, formatPctRow, formatIntRo
 import { enrichCampaign } from "../lib/alerts/derive";
 import { SEVERITY, TARGET_PACING_PCT } from "../lib/alerts/constants";
 import { getCampaignLines } from "../../../lib/api";
+import { CampaignNotes } from "./CampaignNotes";
 
 // ────────────────────────────────────────────────────────────────────────
 // Tokens de cor por severidade
@@ -868,6 +869,17 @@ export function AlertCampaignSheet({
               })}
             </section>
           )}
+
+          {/* ── Notas internas do time ─────────────────────────────
+              Fica logo abaixo dos alertas de propósito: o fluxo real é
+              "leio o alerta → registro o que foi feito". Mesma thread do
+              CampaignDrawer (mesmo token, mesmo componente); aqui abre
+              expandida porque esse sheet é curto e o registro é o ponto. */}
+          <CampaignNotes
+            shortToken={campaign.short_token}
+            teamMap={teamMap}
+            className="rounded-xl border border-border bg-surface/50 px-3.5 py-3"
+          />
 
           {/* ── Snapshot de métricas ─────────────────────────────── */}
           {enriched && (enriched.display || enriched.video) && (

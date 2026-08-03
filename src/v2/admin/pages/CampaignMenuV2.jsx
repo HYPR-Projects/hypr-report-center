@@ -71,6 +71,7 @@ import { CampaignListV2 } from "../components/CampaignListV2";
 import { CampaignDrawer } from "../components/CampaignDrawer";
 import { ReportAnalyticsModal } from "../components/ReportAnalyticsModal";
 import { prefetchAccessSummaries } from "../lib/accessSummaryCache";
+import { prefetchNoteSummaries } from "../lib/notesSummaryCache";
 import { MonthGroupedSections } from "../components/MonthGroupedSections";
 import { formatMonthLabel, getCampaignStatus } from "../lib/format";
 import { DiagnosticoLayout } from "../components/DiagnosticoLayout";
@@ -137,6 +138,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
         .filter(Boolean);
       if (tokens.length > 0) {
         prefetchAccessSummaries(tokens).catch(() => { /* silencioso */ });
+        prefetchNoteSummaries(tokens).catch(() => { /* silencioso */ });
       }
     }
     return {
@@ -296,6 +298,9 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
         // dos cards. 1 request batched, dedup interno via cache.
         const tokens = (campsR.value || []).map((c) => c.short_token).filter(Boolean);
         prefetchAccessSummaries(tokens).catch(() => { /* silencioso */ });
+        // Mesma ideia pro indicador de notas internas dos cards: 1 request
+        // batched pro menu inteiro, nunca fetch por card.
+        prefetchNoteSummaries(tokens).catch(() => { /* silencioso */ });
       } else {
         errors.push(`campaigns: ${campsR.reason?.message || campsR.reason}`);
       }
