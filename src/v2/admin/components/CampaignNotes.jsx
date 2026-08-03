@@ -139,6 +139,16 @@ const SendIcon = () => (
 
 // ── Bolha ────────────────────────────────────────────────────────────────
 /**
+ * Coluna ÚNICA (não alternando lados como WhatsApp). Motivo: num painel de
+ * 480px, bolha à direita + bolha à esquerda com largura variável deixa as
+ * duas bordas irregulares, e nome/hora/ações de cada bloco caem num eixo
+ * diferente — visualmente bagunçado justo num componente que é um log.
+ * Aqui todo mundo compartilha o mesmo gutter de avatar e a bolha ocupa a
+ * largura inteira: nomes, horas e ações empilham num só eixo.
+ *
+ * Quem escreveu se distingue pelo avatar + nome (e pelo tint signature na
+ * própria nota), não pela posição.
+ *
  * `showMeta` false quando a mensagem anterior é do mesmo autor em menos de
  * 10min — aí a bolha entra sem repetir nome/avatar. Mantém a thread limpa
  * quando alguém escreve 3 linhas seguidas, sem esconder autoria de verdade.
@@ -155,22 +165,16 @@ function NoteBubble({
   const edited = !!note.updated_at && note.updated_at !== note.created_at;
 
   return (
-    <div className={cn("flex gap-2", mine ? "justify-end" : "justify-start")}>
-      {/* Avatar só do outro lado e só na 1ª mensagem do bloco. O slot
-          continua ocupando largura nas continuações pra as bolhas do
-          mesmo autor ficarem alinhadas. */}
-      {!mine && (
-        <div className="w-[22px] shrink-0 pt-4">
-          {showMeta && <NoteAvatar name={authorName} />}
-        </div>
-      )}
+    <div className="flex gap-2">
+      {/* Gutter fixo do avatar: preenchido na 1ª mensagem do bloco, vazio nas
+          continuações — a bolha nunca sai do eixo. */}
+      <div className="w-[22px] shrink-0">
+        {showMeta && <NoteAvatar name={authorName} />}
+      </div>
 
-      <div className={cn("min-w-0 max-w-[85%] flex flex-col", mine ? "items-end" : "items-start")}>
+      <div className="min-w-0 flex-1 flex flex-col items-stretch">
         {showMeta && (
-          <div className={cn(
-            "flex items-baseline gap-1.5 mb-1 px-0.5",
-            mine && "flex-row-reverse",
-          )}>
+          <div className="flex items-baseline gap-1.5 mb-1">
             <span className="text-[11px] font-bold text-fg leading-none">
               {mine ? "Você" : authorName}
             </span>
@@ -190,9 +194,9 @@ function NoteBubble({
 
         <div
           className={cn(
-            "rounded-xl px-3 py-2 border transition-opacity",
+            "rounded-lg px-3 py-2 border transition-opacity",
             mine
-              ? "bg-signature-soft border-signature/25"
+              ? "bg-signature-soft border-signature/20"
               : "bg-surface border-border",
             busy && "opacity-50",
           )}
@@ -202,12 +206,12 @@ function NoteBubble({
           </p>
         </div>
 
-        {/* Rodapé: "editada" + ações da própria nota. Altura fixa mesmo
-            vazio — sem isso a thread pulava 14px quando "editada" ou o
-            confirm de apagar apareciam. */}
+        {/* Rodapé: "editada" + ações da própria nota. Sem reserva de altura
+            quando não há nada a mostrar (nota de outra pessoa não editada) —
+            reservar 14px em toda bolha inflava a thread inteira. */}
         <div className={cn(
-          "flex items-center gap-2 mt-1 px-0.5 h-3.5",
-          mine && "flex-row-reverse",
+          "flex items-center gap-2",
+          (edited || canEdit) && "mt-1 h-3.5",
         )}>
           {edited && (
             <span className="text-[9.5px] text-fg-subtle italic">editada</span>
@@ -638,22 +642,27 @@ export function CampaignNotes({
             </div>
           )}
 
+          {/* Empty state centrado e curto. A versão longa em itálico ocupava
+              3 linhas coladas na borda e desalinhava o bloco todo. */}
           {state === "ready" && count === 0 && (
-            <p className="text-[11.5px] text-fg-subtle italic leading-snug">
-              Nenhuma nota ainda — registre aqui o que aconteceu nessa campanha
-              (pausa combinada, troca de criativo, ajuste de budget).
+            <p className="text-center text-[11px] text-fg-subtle leading-snug py-1">
+              Nenhuma nota ainda. Registre aqui o que aconteceu nessa campanha.
             </p>
           )}
 
           {state === "ready" && count > 0 && (
             <div
               ref={scrollRef}
+              // max-h-[200px]: teto baixo de propósito. A thread é registro,
+              // não a informação principal do sheet/drawer — deixar crescer
+              // até 300px+ empurrava Snapshot e as ações admin pra baixo.
+              // Passando disso, rola aqui dentro (já ancorado no fim).
               // scrollbar-thin + pr-3: a barra nativa (larga) cobria a borda
               // das bolhas alinhadas à direita.
               // border-t: delimita o começo da thread. Sem isso, quando ela
               // abre rolada no fim, o rodapé da nota cortada no topo colava
               // no header e parecia ação DO header.
-              className="max-h-[300px] overflow-y-auto scrollbar-thin pr-3 pt-2 space-y-2 border-t border-border/60"
+              className="max-h-[200px] overflow-y-auto scrollbar-thin pr-3 pt-2 space-y-2 border-t border-border/60"
             >
               {rendered.map(({ note, mine, authorName, showMeta, dayLabel }) => (
                 <div key={note.note_id} className="space-y-2">
