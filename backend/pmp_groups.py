@@ -92,24 +92,52 @@ def _generate_group_id() -> str:
     return secrets.token_urlsafe(6)  # 8 chars URL-safe
 
 
-def _fetch_lines_metadata(line_ids: List[int]) -> dict:
-    """Retorna {line_id: {customer, line_name, short_token, group_id}}."""
-    if not line_ids:
+# ─── Modelo de membro (source, line_id) ──────────────────────────────────────
+# A unidade de um grupo agora é o PAR (source, line_id). `source` ∈
+# {'xandr','pubmatic'}. Membros são dicts {"source","line_id"}; helpers abaixo
+# normalizam entradas legadas (int puro → source='xandr').
+DEFAULT_SOURCE = "xandr"
+
+
+def _norm_member(m) -> dict:
+    """Normaliza um membro: aceita int (legado → xandr) ou dict {source,line_id}."""
+    if isinstance(m, dict):
+        return {"source": (m.get("source") or DEFAULT_SOURCE),
+                "line_id": int(m["line_id"])}
+    return {"source": DEFAULT_SOURCE, "line_id": int(m)}
+
+
+def _mkey(source: str, line_id: int) -> tuple:
+    return (source, int(line_id))
+
+
+def _fetch_lines_metadata(members: List[dict]) -> dict:
+    """Retorna {(source, line_id): {customer, line_name, short_token, group_id}}.
+
+    `members` é lista de dicts {source, line_id}. Casa por (source, line_id)
+    pra não confundir line_ids numericamente iguais entre fontes. Customer
+    cai pra customer_override quando a fonte não tem IO (PubMatic).
+    """
+    if not members:
         return {}
+    line_ids = sorted({m["line_id"] for m in members})
+    sources  = sorted({m["source"]  for m in members})
     sql = f"""
         SELECT
-          li.line_id, li.line_name, li.short_token,
-          io.customer AS customer,
+          li.source, li.line_id, li.line_name, li.short_token,
+          COALESCE(io.customer, li.customer_override) AS customer,
           g.group_id  AS current_group_id
         FROM {_full(TABLE_LINES)} li
         LEFT JOIN {_full(TABLE_IOS)} io ON io.io_id = li.io_id
-        LEFT JOIN {_full(TABLE_GROUPS)} g ON g.line_id = li.line_id
-        WHERE li.line_id IN UNNEST(@ids)
+        LEFT JOIN {_full(TABLE_GROUPS)} g
+          ON g.line_id = li.line_id AND g.source = li.source
+        WHERE li.line_id IN UNNEST(@ids) AND li.source IN UNNEST(@sources)
     """
-    rows = bq.query(sql, job_config=bigquery.QueryJobConfig(
-        query_parameters=[bigquery.ArrayQueryParameter("ids", "INT64", line_ids)]
-    )).result()
-    return {r["line_id"]: dict(r) for r in rows}
+    rows = bq.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ArrayQueryParameter("ids", "INT64", line_ids),
+        bigquery.ArrayQueryParameter("sources", "STRING", sources),
+    ])).result()
+    return {_mkey(r["source"], r["line_id"]): dict(r) for r in rows}
 
 
 # ─── Reads ──────────────────────────────────────────────────────────────────
@@ -117,10 +145,11 @@ def get_group(group_id: str) -> Optional[dict]:
     """Retorna {group_id, group_name, short_token, members: [...]} ou None."""
     sql = f"""
         SELECT g.group_id, g.group_name, g.short_token, g.notes,
-               g.line_id, li.line_name,
+               g.source, g.line_id, li.line_name,
                g.created_by, g.created_at
         FROM {_full(TABLE_GROUPS)} g
-        JOIN {_full(TABLE_LINES)} li ON li.line_id = g.line_id
+        JOIN {_full(TABLE_LINES)} li
+          ON li.line_id = g.line_id AND li.source = g.source
         WHERE g.group_id = @gid
         ORDER BY g.created_at, g.line_id
     """
@@ -138,59 +167,60 @@ def get_group(group_id: str) -> Optional[dict]:
         "created_by":  first.get("created_by"),
         "created_at":  first["created_at"].isoformat() if first.get("created_at") else None,
         "members": [
-            {"line_id": r["line_id"], "line_name": r.get("line_name")}
+            {"source": r["source"], "line_id": r["line_id"], "line_name": r.get("line_name")}
             for r in rows
         ],
     }
 
 
-def get_group_id_for_line(line_id: int) -> Optional[str]:
-    sql = f"SELECT group_id FROM {_full(TABLE_GROUPS)} WHERE line_id = @lid LIMIT 1"
-    rows = list(bq.query(sql, job_config=bigquery.QueryJobConfig(
-        query_parameters=[bigquery.ScalarQueryParameter("lid", "INT64", int(line_id))]
-    )).result())
+def get_group_id_for_line(source: str, line_id: int) -> Optional[str]:
+    sql = (f"SELECT group_id FROM {_full(TABLE_GROUPS)} "
+           f"WHERE line_id = @lid AND source = @src LIMIT 1")
+    rows = list(bq.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("lid", "INT64", int(line_id)),
+        bigquery.ScalarQueryParameter("src", "STRING", source or DEFAULT_SOURCE),
+    ])).result())
     return rows[0]["group_id"] if rows else None
 
 
-def list_groupable_lines(line_id: int) -> List[dict]:
-    """Lista lines do MESMO CLIENTE que podem ser agrupadas com `line_id`.
+def list_groupable_lines(source: str, line_id: int) -> List[dict]:
+    """Lista lines do MESMO CLIENTE que podem ser agrupadas com (source, line_id).
 
-    Critério: mesmo customer (via IO), e line ainda não está em outro grupo.
-    Inclui a própria `line_id` se ela já está num grupo (pra mostrar contexto).
-    Exclui lines arquivadas e em estado 'inactive' há muito tempo.
+    Lê de `pmp_lines_enriched`, que já resolve customer/source/grupo das DUAS
+    fontes — então o candidato pode ser Xandr OU PubMatic (agrupamento
+    cross-fornecedor). Critério: mesmo customer, não arquivada, exclui a própria.
     """
+    src = source or DEFAULT_SOURCE
     sql = f"""
         WITH target AS (
-          SELECT io.customer
-          FROM {_full(TABLE_LINES)} li
-          JOIN {_full(TABLE_IOS)} io ON io.io_id = li.io_id
-          WHERE li.line_id = @lid
+          SELECT customer
+          FROM `site-hypr.prod_assets.pmp_lines_enriched`
+          WHERE line_id = @lid AND source = @src
         )
         SELECT
-          li.line_id, li.line_name, li.state, li.start_date, li.end_date,
-          li.bid_type, li.short_token,
-          io.customer,
-          COALESCE(li.status, 'Pendente') AS status,
+          enr.source, enr.line_id, enr.external_deal_id,
+          enr.line_name, enr.state, enr.start_date, enr.end_date,
+          enr.bid_type, enr.short_token, enr.customer, enr.status,
           enr.delivery_status,
-          g.group_id  AS current_group_id,
-          g.group_name AS current_group_name
-        FROM {_full(TABLE_LINES)} li
-        JOIN {_full(TABLE_IOS)} io ON io.io_id = li.io_id
+          enr.group_id   AS current_group_id,
+          enr.group_name AS current_group_name
+        FROM `site-hypr.prod_assets.pmp_lines_enriched` enr
         CROSS JOIN target t
-        LEFT JOIN `site-hypr.prod_assets.pmp_lines_enriched` enr ON enr.line_id = li.line_id
-        LEFT JOIN {_full(TABLE_GROUPS)} g ON g.line_id = li.line_id
-        WHERE io.customer = t.customer
-          AND li.line_id != @lid
-          AND COALESCE(li.is_archived, FALSE) = FALSE
-        ORDER BY li.state DESC, li.start_date DESC, li.line_id
+        WHERE enr.customer = t.customer
+          AND NOT (enr.line_id = @lid AND enr.source = @src)
+          AND COALESCE(enr.is_archived, FALSE) = FALSE
+        ORDER BY enr.state DESC, enr.start_date DESC, enr.line_id
     """
-    rows = bq.query(sql, job_config=bigquery.QueryJobConfig(
-        query_parameters=[bigquery.ScalarQueryParameter("lid", "INT64", int(line_id))]
-    )).result()
+    rows = bq.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("lid", "INT64", int(line_id)),
+        bigquery.ScalarQueryParameter("src", "STRING", src),
+    ])).result()
     out = []
     for r in rows:
         out.append({
+            "source":            r.get("source"),
             "line_id":           r["line_id"],
+            "external_deal_id":  r.get("external_deal_id"),
             "line_name":         r.get("line_name"),
             "state":             r.get("state"),
             "status":            r.get("status"),
@@ -232,27 +262,35 @@ def get_groups_summary() -> List[dict]:
 
 
 # ─── Writes ─────────────────────────────────────────────────────────────────
-def group_lines(line_ids: List[int],
+def group_lines(members: List[dict],
                  short_token: Optional[str],
                  group_name: Optional[str],
                  created_by: str) -> dict:
     """Cria grupo OU anexa lines a grupo existente.
 
+    `members`: lista de {source, line_id} (aceita int legado = xandr). Pode
+    misturar fontes — o objetivo é justamente unir entrega Xandr + PubMatic
+    sob o mesmo PI.
+
     Regras (igual ao merge_tokens):
-      • Se nenhuma das lines está em grupo → cria grupo novo
+      • Se nenhuma está em grupo → cria grupo novo
       • Se UMA já está em grupo → anexa as outras a esse grupo
-      • Se DUAS+ estão em grupos DIFERENTES → erro (admin precisa ungrupar
-        antes)
-      • Todas as lines devem ser do MESMO customer (validação)
+      • Se DUAS+ estão em grupos DIFERENTES → erro (desagrupe antes)
+      • Todas devem ser do MESMO customer (validação)
 
     Retorna o grupo completo após o merge.
     """
-    if not line_ids or len(line_ids) < 2:
+    if not members or len(members) < 2:
         raise InvalidGroupError("Grupo precisa de pelo menos 2 lines")
-    line_ids = sorted({int(x) for x in line_ids})
+    # Normaliza + dedup por (source, line_id)
+    norm = {}
+    for m in members:
+        nm = _norm_member(m)
+        norm[_mkey(nm["source"], nm["line_id"])] = nm
+    keys = sorted(norm.keys())
 
-    meta = _fetch_lines_metadata(line_ids)
-    missing = [lid for lid in line_ids if lid not in meta]
+    meta = _fetch_lines_metadata(list(norm.values()))
+    missing = [k for k in keys if k not in meta]
     if missing:
         raise LineNotFoundError(f"Lines não encontradas: {missing}")
 
@@ -274,31 +312,28 @@ def group_lines(line_ids: List[int],
     else:
         group_id = _generate_group_id()
 
-    # Insere/atualiza membros que ainda não estão no grupo
-    to_insert = [lid for lid in line_ids if meta[lid].get("current_group_id") != group_id]
+    # Insere membros que ainda não estão no grupo
+    to_insert = [k for k in keys if meta[k].get("current_group_id") != group_id]
     if not to_insert:
-        # Tudo já tá no grupo — nothing to do, só retorna o estado atual
         return get_group(group_id)
 
     # Resolve short_token e group_name
     if not short_token:
-        # Usa o short_token compartilhado entre as lines se todas tiverem o mesmo
         tokens = {m.get("short_token") for m in meta.values() if m.get("short_token")}
         if len(tokens) == 1:
             short_token = tokens.pop()
     if not group_name:
-        # Fallback: nome do customer
-        customer = customers.pop() if customers else None
-        group_name = customer
+        group_name = customers.pop() if customers else None
 
     sql = f"""
         INSERT INTO {_full(TABLE_GROUPS)}
-          (group_id, line_id, group_name, short_token, created_by, created_at, updated_by, updated_at)
-        VALUES (@gid, @lid, @gname, @token, @by, CURRENT_TIMESTAMP(), @by, CURRENT_TIMESTAMP())
+          (group_id, source, line_id, group_name, short_token, created_by, created_at, updated_by, updated_at)
+        VALUES (@gid, @src, @lid, @gname, @token, @by, CURRENT_TIMESTAMP(), @by, CURRENT_TIMESTAMP())
     """
-    for lid in to_insert:
+    for (src, lid) in to_insert:
         bq.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=[
             bigquery.ScalarQueryParameter("gid",   "STRING", group_id),
+            bigquery.ScalarQueryParameter("src",   "STRING", src),
             bigquery.ScalarQueryParameter("lid",   "INT64",  int(lid)),
             bigquery.ScalarQueryParameter("gname", "STRING", group_name),
             bigquery.ScalarQueryParameter("token", "STRING", short_token),
@@ -311,19 +346,22 @@ def group_lines(line_ids: List[int],
     return get_group(group_id)
 
 
-def ungroup_line(line_id: int, admin_email: str) -> dict:
-    """Remove `line_id` do grupo. Se sobrar 1 line, dissolve o grupo todo.
+def ungroup_line(source: str, line_id: int, admin_email: str) -> dict:
+    """Remove (source, line_id) do grupo. Se sobrar 1 line, dissolve o grupo.
 
     Retorna {dissolved: bool, group_id, remaining: int}.
     """
-    group_id = get_group_id_for_line(line_id)
+    src = source or DEFAULT_SOURCE
+    group_id = get_group_id_for_line(src, line_id)
     if not group_id:
-        raise InvalidGroupError(f"Line {line_id} não está em grupo")
+        raise InvalidGroupError(f"Line {src}:{line_id} não está em grupo")
 
     # Deleta o membro
-    sql_del = f"DELETE FROM {_full(TABLE_GROUPS)} WHERE line_id = @lid AND group_id = @gid"
+    sql_del = (f"DELETE FROM {_full(TABLE_GROUPS)} "
+               f"WHERE line_id = @lid AND source = @src AND group_id = @gid")
     bq.query(sql_del, job_config=bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("lid", "INT64",  int(line_id)),
+        bigquery.ScalarQueryParameter("src", "STRING", src),
         bigquery.ScalarQueryParameter("gid", "STRING", group_id),
     ])).result()
 

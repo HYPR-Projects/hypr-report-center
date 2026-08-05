@@ -30,6 +30,7 @@ import {
   formatBRL, bidTypeLabel, bidTypeBadgeClass,
   statusPillClass, effectiveDeliveryMeta, effectiveStatus,
 } from "../lib/pmpFormat";
+import { SourceChip } from "./PmpComponents";
 
 export function GroupLinesModal({ open, onOpenChange, line, onGroupCreated }) {
   const [candidates, setCandidates] = useState([]);
@@ -41,6 +42,9 @@ export function GroupLinesModal({ open, onOpenChange, line, onGroupCreated }) {
   const [saving, setSaving] = useState(false);
 
   const alreadyInGroup = !!line?.group_id;
+  // Chave composta (source, line_id): membros podem cruzar fontes (Xandr +
+  // PubMatic) sob o mesmo PI. `source` legado ausente = 'xandr'.
+  const ckey = (c) => `${c.source || "xandr"}:${c.line_id}`;
 
   // Reset state quando line muda
   useEffect(() => {
@@ -50,12 +54,12 @@ export function GroupLinesModal({ open, onOpenChange, line, onGroupCreated }) {
     setGroupName(line.group_name || (line.customer ? `${line.customer} · ${line.campaign_name || ""}`.trim() : ""));
     setShortToken(line.short_token || line.group_short_token || "");
     setLoading(true);
-    listPmpGroupableLines(line.line_id)
+    listPmpGroupableLines(line.line_id, line.source || "xandr")
       .then((list) => {
         setCandidates(list);
         // Pré-seleciona lines que já estão no mesmo grupo (se houver)
         if (alreadyInGroup) {
-          const same = list.filter(c => c.current_group_id === line.group_id).map(c => c.line_id);
+          const same = list.filter(c => c.current_group_id === line.group_id).map(ckey);
           setSelected(new Set(same));
         }
       })
@@ -65,11 +69,11 @@ export function GroupLinesModal({ open, onOpenChange, line, onGroupCreated }) {
 
   if (!line) return null;
 
-  const toggle = (lineId) => {
+  const toggle = (key) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(lineId)) next.delete(lineId);
-      else next.add(lineId);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
@@ -82,9 +86,14 @@ export function GroupLinesModal({ open, onOpenChange, line, onGroupCreated }) {
     }
     setSaving(true);
     try {
-      const allIds = [line.line_id, ...Array.from(selected)];
+      // Membros = a própria line + selecionadas, cada uma {source, line_id}.
+      const parse = (k) => { const i = k.indexOf(":"); return { source: k.slice(0, i), line_id: Number(k.slice(i + 1)) }; };
+      const members = [
+        { source: line.source || "xandr", line_id: line.line_id },
+        ...Array.from(selected).map(parse),
+      ];
       const group = await groupPmpLines({
-        line_ids: allIds,
+        members,
         group_name: groupName.trim() || null,
         short_token: shortToken.trim() || null,
       });
@@ -101,7 +110,7 @@ export function GroupLinesModal({ open, onOpenChange, line, onGroupCreated }) {
     if (!confirm(`Remover line ${line.line_id} do grupo? Se sobrar 1 line, o grupo será dissolvido.`)) return;
     setSaving(true); setError(null);
     try {
-      await ungroupPmpLine(line.line_id);
+      await ungroupPmpLine(line.line_id, line.source || "xandr");
       onGroupCreated?.(null); // sinaliza refresh
       onOpenChange(false);
     } catch (e) {
@@ -171,13 +180,14 @@ export function GroupLinesModal({ open, onOpenChange, line, onGroupCreated }) {
                 <div className="space-y-1.5 max-h-[300px] overflow-y-auto pr-1">
                   {candidates.map((c) => {
                     const conflictGroup = c.current_group_id && c.current_group_id !== line.group_id;
-                    const checked = selected.has(c.line_id);
+                    const key = ckey(c);
+                    const checked = selected.has(key);
                     // Considera o workflow status (Finalizado/Cancelado/Pausado vira cinza)
                     const dm = (c.delivery_status || c.status) ? effectiveDeliveryMeta(c) : null;
                     const wf = effectiveStatus(c);
                     return (
                       <label
-                        key={c.line_id}
+                        key={key}
                         className={cn(
                           "flex items-start gap-3 p-3 rounded-md border transition-colors cursor-pointer",
                           conflictGroup ? "border-rose-500/20 bg-rose-500/5 cursor-not-allowed opacity-60"
@@ -189,12 +199,13 @@ export function GroupLinesModal({ open, onOpenChange, line, onGroupCreated }) {
                           type="checkbox"
                           checked={checked}
                           disabled={conflictGroup}
-                          onChange={() => toggle(c.line_id)}
+                          onChange={() => toggle(key)}
                           className="mt-0.5 accent-signature shrink-0"
                         />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-mono text-[11px] text-fg-muted">{c.line_id}</span>
+                            <span className="font-mono text-[11px] text-fg-muted">{c.external_deal_id || c.line_id}</span>
+                            <SourceChip source={c.source} showXandr />
                             {c.bid_type && (
                               <span className={cn("px-1.5 py-0.5 rounded text-[9px] font-medium border", bidTypeBadgeClass(c.bid_type))}>
                                 {bidTypeLabel(c.bid_type)}

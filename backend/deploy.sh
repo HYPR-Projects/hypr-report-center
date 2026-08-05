@@ -97,6 +97,14 @@ XANDR_CURATE_PASS=$(read_secret_if_missing "XANDR_CURATE_PASS" "$XANDR_CURATE_PA
 XANDR_CURATE_MEMBER_ID=$(extract_env "XANDR_CURATE_MEMBER_ID")
 XANDR_CURATE_MEMBER_ID=$(read_secret_if_missing "XANDR_CURATE_MEMBER_ID" "$XANDR_CURATE_MEMBER_ID")
 
+# PubMatic Data Provider Analytics — 2ª fonte de curadoria do PMP. Mesmo padrão
+# do Xandr: captura da revisão ativa OU lê do Secret Manager. Sem elas, o
+# pmp_sync_v2 pula o PubMatic (o Xandr segue normal).
+PUBMATIC_USER=$(extract_env "PUBMATIC_USER")
+PUBMATIC_USER=$(read_secret_if_missing "PUBMATIC_USER" "$PUBMATIC_USER")
+PUBMATIC_PASS=$(extract_env "PUBMATIC_PASS")
+PUBMATIC_PASS=$(read_secret_if_missing "PUBMATIC_PASS" "$PUBMATIC_PASS")
+
 # PMP_SCHEDULER_SECRET — segredo compartilhado entre Cloud Scheduler e a
 # Cloud Function pra autenticar o cron job sem JWT admin. Gerado uma vez,
 # armazenado no Secret Manager pra deploys futuros, e configurado no
@@ -248,6 +256,12 @@ if [ -n "$XANDR_CURATE_PASS" ]; then
 fi
 if [ -n "$XANDR_CURATE_MEMBER_ID" ]; then
   echo "XANDR_CURATE_MEMBER_ID: '${XANDR_CURATE_MEMBER_ID}'" >> "$ENV_FILE"
+fi
+if [ -n "$PUBMATIC_USER" ]; then
+  echo "PUBMATIC_USER: '${PUBMATIC_USER}'" >> "$ENV_FILE"
+fi
+if [ -n "$PUBMATIC_PASS" ]; then
+  echo "PUBMATIC_PASS: '${PUBMATIC_PASS}'" >> "$ENV_FILE"
 fi
 if [ -n "$PMP_SCHEDULER_SECRET" ]; then
   echo "PMP_SCHEDULER_SECRET: '${PMP_SCHEDULER_SECRET}'" >> "$ENV_FILE"
