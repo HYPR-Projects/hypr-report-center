@@ -943,7 +943,7 @@ function PmpLineRowInner({
               new
             </span>
           )}
-          <SourceChip source={line.source} className="shrink-0" />
+          <SourceChip source={line.source} showXandr className="shrink-0" />
         </div>
         <div className={cn("text-[11px] truncate mt-0.5 flex items-center gap-2",
           isCancelado ? "text-fg-subtle/60" : "text-fg-subtle")}>
