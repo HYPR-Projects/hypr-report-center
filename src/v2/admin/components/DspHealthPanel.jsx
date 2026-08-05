@@ -92,8 +92,14 @@ export function DspHealthPanel({ className, onOpenReport }) {
     const cancel = cancelRef.current;
     fetchOnce();
     const id = setInterval(fetchOnce, REFETCH_MS);
+    // Guard de 10s: `visibilitychange` e `focus` disparam juntos ao voltar pra
+    // aba, e sem isso cada alt-tab custava duas requests idênticas.
+    let lastFocusFetch = 0;
     const onFocus = () => {
-      if (document.visibilityState === "visible") fetchOnce();
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastFocusFetch < 10_000) return;
+      lastFocusFetch = Date.now();
+      fetchOnce();
     };
     document.addEventListener("visibilitychange", onFocus);
     window.addEventListener("focus", onFocus);

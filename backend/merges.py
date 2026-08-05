@@ -53,9 +53,13 @@ import threading
 
 from google.cloud import bigquery
 
+import bq_client
+
 import clients
 
-bq = bigquery.Client()
+# Client compartilhado: timeout obrigatório em toda query + pool HTTP
+# dimensionado pro paralelismo real. Ver bq_client.py.
+bq = bq_client.get_client()
 
 PROJECT_ID     = os.environ.get("GCP_PROJECT",     "site-hypr")
 DATASET_ASSETS = "prod_assets"

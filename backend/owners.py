@@ -48,7 +48,11 @@ import re
 import time
 import unicodedata
 from typing import Dict, List, Optional, Tuple
+import httplib2
+import google_auth_httplib2
 from google.cloud import bigquery
+
+import bq_client
 from google.auth import default as google_auth_default
 from googleapiclient.discovery import build as build_google_api
 
@@ -132,9 +136,15 @@ CACHE_TTL        = 300       # 5 min — vida útil do cache "fresco"
 CACHE_STALE_MAX  = 3600      # 1h   — teto pra servir stale em caso de erro
 SHEETS_RETRIES   = 1         # nº de retries antes de declarar falha
 SHEETS_BACKOFF_S = 0.2       # espera entre retries
+# Socket timeout da Sheets API. Baixo de propósito: com 2 tentativas o pior caso
+# é ~20s, e o fallback (cache stale de até 1h) cobre bem. Sem ele o httplib2 fica
+# sem deadline nenhum — ver o docstring de _sheets_client().
+SHEETS_TIMEOUT_S = 10
 _sheet_cache: Dict[str, object] = {"data": None, "ts": 0.0}
 
-bq = bigquery.Client()
+# Client compartilhado: timeout obrigatório em toda query + pool HTTP
+# dimensionado pro paralelismo real. Ver bq_client.py.
+bq = bq_client.get_client()
 
 
 def _full(table_name: str) -> str:
@@ -147,11 +157,29 @@ def _sheets_client():
     Na Cloud Function, ADC é a service account de runtime
     (453955675457-compute@developer.gserviceaccount.com), que já tem a
     planilha compartilhada. Não precisamos de JSON key.
+
+    TIMEOUT OBRIGATÓRIO
+    -------------------
+    `build_google_api(credentials=...)` monta um `httplib2.Http()` default, que
+    NÃO tem socket timeout — um `.execute()` pode ficar pendurado pra sempre.
+    Isso é veneno: esta função roda no caminho quente de `?list=true` (planilha
+    de De-Para dos owners), dentro de uma task de pool. Em 04/08 uma chamada
+    presa aqui foi um dos vetores que travou a instância inteira por 16h (os
+    logs mostravam "httplib2 transport does not support per-request timeout"
+    segundos antes do primeiro 504).
+
+    Passar `http=` explícito com `httplib2.Http(timeout=...)` resolve na raiz:
+    o socket estoura, `execute()` levanta, e as camadas de retry + stale-cache
+    abaixo absorvem. Como o `AuthorizedHttp` já carrega a credencial, `build()`
+    não recebe `credentials` (os dois parâmetros são mutuamente exclusivos).
     """
     creds, _ = google_auth_default(
         scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
     )
-    return build_google_api("sheets", "v4", credentials=creds, cache_discovery=False)
+    authed_http = google_auth_httplib2.AuthorizedHttp(
+        creds, http=httplib2.Http(timeout=SHEETS_TIMEOUT_S)
+    )
+    return build_google_api("sheets", "v4", http=authed_http, cache_discovery=False)
 
 
 def _fetch_sheet_data_remote() -> dict:

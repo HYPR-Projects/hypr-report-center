@@ -45,6 +45,8 @@ import secrets
 from typing import List, Optional
 from google.cloud import bigquery
 
+import bq_client
+
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +56,9 @@ TABLE_GROUPS = "pmp_line_groups"
 TABLE_LINES  = "pmp_line_items"
 TABLE_IOS    = "pmp_insertion_orders"
 
-bq = bigquery.Client()
+# Client compartilhado: timeout obrigatório em toda query + pool HTTP
+# dimensionado pro paralelismo real. Ver bq_client.py.
+bq = bq_client.get_client()
 
 
 def _full(t: str) -> str:

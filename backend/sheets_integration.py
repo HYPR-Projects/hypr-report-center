@@ -89,7 +89,11 @@ import urllib.error
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
+import httplib2
+import google_auth_httplib2
 from google.cloud import bigquery
+
+import bq_client
 from google.cloud import kms
 from google.auth import default as google_auth_default
 from googleapiclient.discovery import build as build_google_api
@@ -160,10 +164,12 @@ DRIVE_FOLDER_ID = os.environ.get("SHEETS_DRIVE_FOLDER_ID", "")
 _bq = None
 _kms = None
 
-def _bq_client() -> bigquery.Client:
+def _bq_client():
+    """Client compartilhado (timeout em toda query + pool HTTP maior).
+    Ver bq_client.py."""
     global _bq
     if _bq is None:
-        _bq = bigquery.Client()
+        _bq = bq_client.get_client()
     return _bq
 
 
@@ -341,14 +347,30 @@ def _refresh_access_token(refresh_token: str) -> str:
         raise RuntimeError(f"refresh_token exchange falhou ({e.code}): {detail}")
 
 
+# Socket timeout das APIs Drive/Sheets. Sem `http=` explícito, o
+# `build_google_api(credentials=...)` monta um httplib2.Http() SEM deadline
+# nenhum — um `.execute()` pendurado prende a thread pra sempre. Foi um dos
+# vetores do travamento de 04/08 (ver o bloco de pools em main.py). 30s é
+# generoso: criar/escrever planilha é mais lento que ler.
+GOOGLE_API_TIMEOUT_S = 30
+
+
+def _authed_http(creds):
+    """httplib2 COM timeout, já autenticado. `build()` recebe `http=` em vez de
+    `credentials=` (os dois são mutuamente exclusivos)."""
+    return google_auth_httplib2.AuthorizedHttp(
+        creds, http=httplib2.Http(timeout=GOOGLE_API_TIMEOUT_S)
+    )
+
+
 def _build_drive_client(access_token: str):
     creds = Credentials(token=access_token)
-    return build_google_api("drive", "v3", credentials=creds, cache_discovery=False)
+    return build_google_api("drive", "v3", http=_authed_http(creds), cache_discovery=False)
 
 
 def _build_sheets_client(access_token: str):
     creds = Credentials(token=access_token)
-    return build_google_api("sheets", "v4", credentials=creds, cache_discovery=False)
+    return build_google_api("sheets", "v4", http=_authed_http(creds), cache_discovery=False)
 
 
 # ─── BigQuery row ops ────────────────────────────────────────────────────────

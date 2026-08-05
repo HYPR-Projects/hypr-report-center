@@ -61,62 +61,18 @@ import compplan_sheet
 import xandr_curate
 import audience_normalize
 import audience_ai
+import bq_client
 
 logger = logging.getLogger(__name__)
 
 # ── BQ client com timeout obrigatório ────────────────────────────────────────
-# Incidente 04/06: um job BQ pendurou sem timeout, travou um worker do
-# ThreadPool e — com minScale=1 mantendo a instância quente — envenenou a
-# instância inteira: TODA request (até a leve `data_freshness`) passou a dar
-# 504 após os 540s de timeout da função. Causa: nenhum dos ~71 `.result()`
-# tinha timeout, então um upstream pendurado bloqueava o worker pra sempre.
-#
-# Em vez de editar 71 call sites, envolvemos o client num proxy que injeta:
-#   - job_timeout_ms no QueryJobConfig → BQ cancela o job server-side
-#   - timeout no .result()            → o cliente para de esperar e levanta
-# Assim um job pendurado falha rápido (vira erro tratável pelo call site /
-# handler) em vez de deadlockar a instância indefinidamente.
-_BQ_JOB_TIMEOUT_MS   = 120_000   # BQ aborta a query após 120s
-_BQ_RESULT_TIMEOUT_S = 130       # cliente desiste de esperar após 130s
+# O wrapper mora agora em `bq_client.py` — antes vivia só aqui, e os outros 11
+# módulos do backend usavam `bigquery.Client()` cru (sem timeout, cada um com
+# seu pool HTTP de 10). Ver o docstring de bq_client.py pro histórico dos dois
+# incidentes (04/06 e 04/08) que motivaram a blindagem.
+_BQ_RESULT_TIMEOUT_S = bq_client.BQ_RESULT_TIMEOUT_S
 
-
-class _TimeoutQueryJob:
-    """Proxy de QueryJob que aplica um timeout padrão no .result()."""
-    __slots__ = ("_job",)
-
-    def __init__(self, job):
-        self._job = job
-
-    def result(self, *args, **kwargs):
-        kwargs.setdefault("timeout", _BQ_RESULT_TIMEOUT_S)
-        return self._job.result(*args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self._job, name)
-
-
-class _TimeoutBQClient:
-    """Proxy de bigquery.Client que força timeout em toda query.
-
-    Só intercepta .query() (único uso de `bq` no report path); todo o
-    resto (get_table, insert_rows_json, etc.) passa direto pro client real
-    via __getattr__.
-    """
-    def __init__(self, client):
-        self._client = client
-
-    def query(self, sql, *args, **kwargs):
-        job_config = kwargs.get("job_config") or bigquery.QueryJobConfig()
-        if getattr(job_config, "job_timeout_ms", None) is None:
-            job_config.job_timeout_ms = _BQ_JOB_TIMEOUT_MS
-        kwargs["job_config"] = job_config
-        return _TimeoutQueryJob(self._client.query(sql, *args, **kwargs))
-
-    def __getattr__(self, name):
-        return getattr(self._client, name)
-
-
-bq = _TimeoutBQClient(bigquery.Client())
+bq = bq_client.get_client()
 # Injeta o client BQ no módulo clients (evita import circular — clients
 # precisa do bq pra query_client_timeseries mas não pode importar main).
 clients.set_bq_client(bq)
@@ -468,11 +424,47 @@ def _get_report_cached(short_token, force_refresh=False):
         return data, False
 
 
-# Pool reutilizado entre invocações da mesma instância para evitar criar/destruir
-# threads a cada request. Com `--concurrency=10` na Cloud Function (Gen 2),
-# até 10 requests simultâneos podem competir pelo pool. 16 workers cobre o pico
-# sem fazer fila significativa: queries BigQuery são I/O-bound (GIL liberado).
+# ─────────────────────────────────────────────────────────────────────────────
+# Pools de execução — REGRA INVIOLÁVEL: uma task rodando no `_query_pool` NUNCA
+# pode bloquear esperando outra task do `_query_pool`.
+#
+# Incidente 04/08 (instância travada 16h servindo 504 em TUDO): o pool era um só
+# e havia aninhamento em três níveis —
+#
+#   compose_merged_report  → submit(_get_report_cached)   ← nível 1, BLOQUEIA
+#     fetch_campaign_data  → submit(query_totals)         ← nível 2, BLOQUEIA
+#       query_totals       → submit(perf) + submit(check) ← nível 3
+#
+# Com os 16 workers ocupados por tasks de nível 1/2 que estavam bloqueadas
+# esperando tasks de nível 3, essas nunca conseguiam worker. Como nenhum
+# `.result()` tinha timeout, o deadlock era PERMANENTE: a instância seguia de pé
+# (minScale=1), o Cloud Run continuava roteando pra ela, e toda request pendurava
+# até os 540s. O gatilho foi a rajada de ~45 `?token=` que o menu admin dispara
+# ao abrir (bulk-prefetch das campanhas ativas).
+#
+# Correção estrutural (não é tuning de tamanho de pool):
+#   1. `_query_pool` só recebe FOLHAS — tasks que fazem I/O e voltam, sem nunca
+#      esperar por outra task do mesmo pool.
+#   2. O fan-out de reports agrupados (Merge) usa `_fanout_pool`, separado.
+#   3. `query_totals` deixou de ser submetida e roda inline na thread do caller
+#      (a concorrência é idêntica — o caller bloqueava nela na linha seguinte).
+#   4. Todo `.result()` ganhou timeout: uma trava vira erro tratável, nunca uma
+#      instância envenenada.
+# ─────────────────────────────────────────────────────────────────────────────
 _query_pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="bq-fetch")
+
+# Pool DEDICADO ao fan-out de reports agrupados. Cada task aqui roda um
+# `_get_report_cached` inteiro (que por sua vez usa o `_query_pool` pras folhas),
+# então ele precisa ser um pool à parte — senão volta o aninhamento. 4 workers:
+# grupos têm tipicamente 2-6 membros e o custo real está nas folhas.
+_fanout_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="merge-fanout")
+
+# Teto de espera por uma task de pool. Fica acima do timeout do BQ
+# (_BQ_RESULT_TIMEOUT_S = 130s) pra que o erro natural da query apareça primeiro;
+# este aqui é a rede de segurança pra travas que o BQ não cobre (Sheets API,
+# chamadas REST fora do wrapper). Estourar levanta TimeoutError, que os callers
+# tratam via _safe_future_result → o report degrada em vez de pendurar.
+_POOL_RESULT_TIMEOUT_S = 150
 
 
 def _build_clients_payload(campaigns):
@@ -937,6 +929,33 @@ def report_data(request):
     if request.method == "OPTIONS":
         return ("", 204, headers)
 
+    # ── Liveness probe ───────────────────────────────────────────────────────
+    # Primeiro de todos os handlers de propósito: precisa responder mesmo com a
+    # instância sob pressão, e não pode depender de auth (a probe do Cloud Run
+    # bate direto no container, sem credencial).
+    #
+    # Por que existe: o startup probe default é TCP na 8080 — ele passa mesmo
+    # com o processo Python completamente travado. Foi o que deixou uma
+    # instância deadlockada servindo 504 em TUDO por 16h em 04/08: ela seguia
+    # "saudável" pro Cloud Run, e o `--min-instances=1` garantia que nunca
+    # morresse. A cura só veio de um restart manual.
+    #
+    # O check aqui é o que o TCP não vê: submete uma task trivial ao
+    # `_query_pool` e espera 3s. Pool saudável responde em microssegundos; pool
+    # exaurido/deadlockado estoura o teto e devolvemos 503. Com
+    # failureThreshold=3 × period=30s, uma instância travada é reciclada em
+    # ~90s em vez de ficar envenenando o tráfego indefinidamente.
+    #
+    # Não toca BigQuery: indisponibilidade do BQ não é motivo pra matar
+    # container (só geraria restart em loop durante um incidente do lado deles).
+    if request.args.get("action") == "healthz":
+        try:
+            _query_pool.submit(lambda: True).result(timeout=3)
+        except Exception as e:
+            logger.error(f"[healthz] pool não respondeu: {type(e).__name__}: {e}")
+            return (jsonify({"ok": False, "reason": "query_pool_stuck"}), 503, headers)
+        return (jsonify({"ok": True}), 200, headers)
+
     # ── Endpoint: emitir JWT admin a partir de um Google id_token ─────────────
     # Front envia `Authorization: Bearer <google_id_token>`. Backend valida
     # via tokeninfo do Google (email verified + domínio @hypr.mobi) e devolve
@@ -1187,8 +1206,8 @@ def report_data(request):
             # piso de latência; sequencial = 2s, paralelo = ~1s).
             fut_cfg = _query_pool.submit(client_portal.get_config, slug, include_secret=True)
             fut_pub = _query_pool.submit(client_portal.get_publish_map, slug)
-            raw = fut_cfg.result()
-            publish_map = fut_pub.result()
+            raw = fut_cfg.result(timeout=_POOL_RESULT_TIMEOUT_S)
+            publish_map = fut_pub.result(timeout=_POOL_RESULT_TIMEOUT_S)
             # Sanitiza: remove campos internos (_password_hash/_password_plain) e
             # expõe SÓ a senha em texto (admin precisa repassar ao cliente).
             config = None
@@ -1301,17 +1320,17 @@ def report_data(request):
             fut_share = _query_pool.submit(shares.get_all_share_ids)
             fut_elements = _query_pool.submit(_safe_get_elements)
             campaigns, _ = _get_campaigns_list_cached()
-            published = fut_pub.result()
+            published = fut_pub.result(timeout=_POOL_RESULT_TIMEOUT_S)
             # Logos próprias de cada campanha (batch) — só depois de saber os
             # tokens publicados. Roda em paralelo com a montagem do share_map.
             fut_logos = _query_pool.submit(query_logos_for_tokens, sorted(published))
-            all_shares = fut_share.result()
+            all_shares = fut_share.result(timeout=_POOL_RESULT_TIMEOUT_S)
             share_map = {
                 k.upper(): v for k, v in all_shares.items()
                 if k and k.upper() in published
             }
-            logos_map = fut_logos.result()
-            elements_map = fut_elements.result()  # {token: {assets, negotiated, closure}}
+            logos_map = fut_logos.result(timeout=_POOL_RESULT_TIMEOUT_S)
+            elements_map = fut_elements.result(timeout=_POOL_RESULT_TIMEOUT_S)  # {token: {assets, negotiated, closure}}
             payload = client_portal.build_portal_payload(
                 config, campaigns, published, share_map, logos_map, elements_map)
             _cache_set(_portal_cache, share_id, payload)
@@ -3433,7 +3452,7 @@ def report_data(request):
                 "recent_sessions":     _query_pool.submit(access_tracking.query_recent_sessions,    short_token, 8, include_internal),
                 "tracking_start_date": _query_pool.submit(access_tracking.query_tracking_start_date),
             }
-            payload = {k: f.result() for k, f in futures.items()}
+            payload = {k: f.result(timeout=_POOL_RESULT_TIMEOUT_S) for k, f in futures.items()}
 
             _cache_set(_analytics_cache, cache_key, payload)
             return (jsonify(payload), 200, headers)
@@ -4522,7 +4541,11 @@ def fetch_campaign_data(short_token, src=None):
         "sheets_integration": _query_pool.submit(_safe_sheets_status_public, short_token),
     }
 
-    campaign_info = fut_campaign.result()
+    # Deixa levantar de propósito (só ganha o deadline): campaign_info vazio
+    # significa "campanha não existe" e o caller devolve 404. Engolir a exceção
+    # aqui transformaria falha transitória do BQ em "campanha não encontrada"
+    # na cara do cliente — 500 é a mensagem honesta.
+    campaign_info = fut_campaign.result(timeout=_POOL_RESULT_TIMEOUT_S)
     if not campaign_info:
         # Auxiliares já em voo; resultado é descartado naturalmente quando os
         # futures saem de escopo. Custo desprezível pra um caso raro.
@@ -4557,17 +4580,31 @@ def fetch_campaign_data(short_token, src=None):
     # Sem override, o campo fica ausente e o front cai pra agency do Sales
     # Center (negociação que o header já busca via get_negotiation).
     try:
-        _agency_ov = fut_agency.result()
+        _agency_ov = fut_agency.result(timeout=_POOL_RESULT_TIMEOUT_S)
         if _agency_ov and _agency_ov.get("agency"):
             campaign_info["agency"] = _agency_ov["agency"]
     except Exception as e:
         logger.warning(f"[WARN agency_override {short_token}] {e}")
 
-    # totals é o único que depende de campaign_info — dispara agora
-    fut_totals = _query_pool.submit(query_totals, short_token, campaign_info, _unified_src, _win_from, _win_to)
-
+    # totals é o único que depende de campaign_info — roda AGORA, INLINE.
+    #
+    # Por que inline e não `_query_pool.submit`: `query_totals` submete duas
+    # queries ao mesmo pool e bloqueia nelas. Rodando como task, ela era um
+    # nível de aninhamento (ver o bloco de pools lá em cima) — com workers
+    # suficientes ocupados por `query_totals` bloqueadas, as sub-tasks nunca
+    # eram agendadas e o pool travava pra sempre.
+    #
+    # Não há perda de concorrência: o caller bloqueava no `fut_totals` na linha
+    # seguinte de qualquer jeito, e as auxiliares (`aux_tasks`) já estão em voo
+    # desde antes — elas continuam correndo em paralelo com este trecho.
     result = {"campaign": campaign_info}
-    result["totals"] = _safe_future_result(fut_totals, "totals", default=[])
+    try:
+        result["totals"] = query_totals(
+            short_token, campaign_info, _unified_src, _win_from, _win_to
+        )
+    except Exception as e:
+        logger.warning(f"[WARN fetch_campaign_data totals] {type(e).__name__}: {e}")
+        result["totals"] = []
     # Guardrail Camada 3: `totals` já resolveu (bloqueou acima), então
     # _compute_totals já gravou `_implied_contract_budget` em campaign_info.
     # Detecta checklist incoerente do Command (volumetria stale) sem tocar no BQ.
@@ -4604,12 +4641,19 @@ def _safe_sheets_status_public(short_token: str):
         return None
 
 
-def _safe_future_result(future, label, default):
-    """Resolve um future logando exceções em vez de propagá-las."""
+def _safe_future_result(future, label, default, timeout=None):
+    """Resolve um future logando exceções em vez de propagá-las.
+
+    O timeout é obrigatório na prática (default = _POOL_RESULT_TIMEOUT_S): sem
+    ele, uma task travada numa chamada externa sem deadline pendurava a thread
+    da request pra sempre — foi assim que uma instância inteira morreu em 04/08.
+    Estourar o teto vira warning + `default`, e o report renderiza incompleto em
+    vez de não renderizar.
+    """
     try:
-        return future.result()
+        return future.result(timeout=_POOL_RESULT_TIMEOUT_S if timeout is None else timeout)
     except Exception as e:
-        logger.warning(f"[WARN fetch_campaign_data {label}] {e}")
+        logger.warning(f"[WARN fetch_campaign_data {label}] {type(e).__name__}: {e}")
         return default
 
 
@@ -4978,17 +5022,20 @@ def compose_merged_report(group, force_refresh=False):
         return None
 
     # Fetch paralelo — cada um já passa por _get_report_cached (cache warm
-    # entre membros). Usamos _query_pool existente pra não criar pool novo.
+    # entre membros). Vai no `_fanout_pool` (NÃO no `_query_pool`): cada task
+    # aqui roda um fetch_campaign_data inteiro, que submete folhas ao
+    # `_query_pool` e bloqueia nelas. No pool único isso era o nível 1 do
+    # aninhamento que deadlockava a instância.
     futures = {
-        t: _query_pool.submit(_get_report_cached, t, force_refresh)
+        t: _fanout_pool.submit(_get_report_cached, t, force_refresh)
         for t in tokens
     }
     per_token = {}
     for t in tokens:
         try:
-            data, _hit = futures[t].result()
+            data, _hit = futures[t].result(timeout=_POOL_RESULT_TIMEOUT_S)
         except Exception as e:
-            logger.warning(f"[WARN compose_merged_report] fetch token={t} falhou: {e}")
+            logger.warning(f"[WARN compose_merged_report] fetch token={t} falhou: {type(e).__name__}: {e}")
             continue
         if data is not None:
             per_token[t] = data
@@ -5182,13 +5229,15 @@ def _get_merge_meta_only(merge_id):
     if not tokens:
         return None
 
-    futures = {t: _query_pool.submit(_get_report_cached, t) for t in tokens}
+    # `_fanout_pool` pelo mesmo motivo do compose_merged_report acima: a task
+    # roda um report inteiro e bloqueia em folhas do `_query_pool`.
+    futures = {t: _fanout_pool.submit(_get_report_cached, t) for t in tokens}
     per_token = {}
     for t in tokens:
         try:
-            data, _hit = futures[t].result()
+            data, _hit = futures[t].result(timeout=_POOL_RESULT_TIMEOUT_S)
         except Exception as e:
-            logger.warning(f"[WARN _get_merge_meta_only] fetch token={t} falhou: {e}")
+            logger.warning(f"[WARN _get_merge_meta_only] fetch token={t} falhou: {type(e).__name__}: {e}")
             continue
         if data is not None:
             per_token[t] = data
@@ -5641,10 +5690,10 @@ def query_dsp_health():
     fut_stopped = _query_pool.submit(_run, stopped_sql)
     fut_last = _query_pool.submit(_run, last_sql)
     fut_landings = _query_pool.submit(query_source_landings)
-    daily_rows = fut_daily.result()
-    stopped_rows = fut_stopped.result()
-    last_by_source = {r["source"]: r["last_date"].isoformat() for r in fut_last.result() if r["last_date"]}
-    landings = {r["source"].upper(): r["max_date"] for r in fut_landings.result()}
+    daily_rows = fut_daily.result(timeout=_POOL_RESULT_TIMEOUT_S)
+    stopped_rows = fut_stopped.result(timeout=_POOL_RESULT_TIMEOUT_S)
+    last_by_source = {r["source"]: r["last_date"].isoformat() for r in fut_last.result(timeout=_POOL_RESULT_TIMEOUT_S) if r["last_date"]}
+    landings = {r["source"].upper(): r["max_date"] for r in fut_landings.result(timeout=_POOL_RESULT_TIMEOUT_S)}
 
     daily = [{
         "source": r["source"], "date": r["date"].isoformat(),
@@ -8323,8 +8372,11 @@ def query_totals(token, campaign_info, unified_src=None, win_from=None, win_to=N
     )
     # checklist (contrato) não tem janela — só @token; roda em paralelo
     fut_check = _query_pool.submit(_fetch_contracts, token)
-    perf_rows  = fut_perf.result()
-    check_row  = fut_check.result()
+    # Timeout explícito: esta função roda na thread do caller (request ou
+    # `_fanout_pool`), nunca dentro do `_query_pool` — mas o teto continua
+    # valendo pra que uma folha travada não pendure a request.
+    perf_rows  = fut_perf.result(timeout=_POOL_RESULT_TIMEOUT_S)
+    check_row  = fut_check.result(timeout=_POOL_RESULT_TIMEOUT_S)
 
     if check_row is None:
         return []
@@ -8816,8 +8868,8 @@ def query_campaign_lines(token):
     fut_cost = _query_pool.submit(
         lambda: list(bq.query(sql_cost, job_config=job_config, location="US").result())
     )
-    metrics_rows = fut_metrics.result()
-    cost_rows = fut_cost.result()
+    metrics_rows = fut_metrics.result(timeout=_POOL_RESULT_TIMEOUT_S)
+    cost_rows = fut_cost.result(timeout=_POOL_RESULT_TIMEOUT_S)
 
     cost_by_key = {
         (r["line_name"] or "", r["media_type"] or ""): float(r["admin_total_cost"] or 0)
@@ -9527,17 +9579,26 @@ def query_campaigns_list():
     fut_frozen   = _query_pool.submit(query_frozen_tokens)
     fut_elements = _query_pool.submit(_safe_get_elements)
 
-    rows           = fut_query.result()
-    lookup_owners  = fut_owners.result()
-    overrides_map  = fut_overrides.result()
-    aliases_map    = fut_aliases.result()
-    share_ids_map  = fut_shares.result()
-    merges_map     = fut_merges.result()
-    closures_map   = fut_closures.result()
-    pauses_map     = fut_pauses.result()
-    early_map      = fut_early.result()
-    frozen_map     = fut_frozen.result()
-    elements_map   = fut_elements.result()
+    # A query principal é a única sem degradação possível — sem ela não há
+    # lista. Timeout aqui vira 500 (o front mantém o cache stale e mostra o
+    # banner de "dados desatualizados"), que é infinitamente melhor que a
+    # request pendurar 540s.
+    rows = fut_query.result(timeout=_POOL_RESULT_TIMEOUT_S)
+    # Enriquecimentos degradam: `fut_owners` em especial vai na Google Sheets
+    # API (planilha de De-Para), a chamada externa mais propensa a travar do
+    # backend. Sem teto aqui, uma trava dela pendurava a lista admin inteira.
+    lookup_owners  = _safe_future_result(fut_owners,    "list.owners",    default={})
+    overrides_map  = _safe_future_result(fut_overrides, "list.overrides", default={})
+    aliases_map    = _safe_future_result(fut_aliases,   "list.aliases",   default={})
+    share_ids_map  = _safe_future_result(fut_shares,    "list.shares",    default={})
+    merges_map     = _safe_future_result(fut_merges,    "list.merges",    default={})
+    closures_map   = _safe_future_result(fut_closures,  "list.closures",  default={})
+    pauses_map     = _safe_future_result(fut_pauses,    "list.pauses",    default={})
+    early_map      = _safe_future_result(fut_early,     "list.early",     default={})
+    frozen_map     = _safe_future_result(fut_frozen,    "list.frozen",    default={})
+    # elements_map=None (≠ {}) é o sinal de "pula o enrichment" — com {} todo
+    # card pintaria o chip âmbar de setup. Ver _safe_get_elements.
+    elements_map   = _safe_future_result(fut_elements,  "list.elements",  default=None)
 
     # Override de core products (curadoria admin) — zera contratado/bônus das
     # frentes fora do set TAMBÉM no card admin, consistente com o report
@@ -9576,7 +9637,7 @@ def query_campaigns_list():
     _frozen_here = [r["short_token"] for r in rows if r["short_token"] in frozen_map]
     if _frozen_here:
         _snap_futs = {t: _query_pool.submit(_load_snapshot_payload, t) for t in _frozen_here}
-        snap_payloads = {t: f.result() for t, f in _snap_futs.items()}
+        snap_payloads = {t: f.result(timeout=_POOL_RESULT_TIMEOUT_S) for t, f in _snap_futs.items()}
 
     # Helpers do loop abaixo — definidos UMA vez fora do loop (antes eram
     # redefinidos a cada iteração, ~270×/request). Funções puras: todo input
@@ -10358,10 +10419,10 @@ def query_performers_for_period(window_from: date, window_to: date):
     fut_overrides = _query_pool.submit(_safe_get_overrides)
     fut_aliases   = _query_pool.submit(_safe_get_aliases)
 
-    rows           = fut_query.result()
-    lookup_owners  = fut_owners.result()
-    overrides_map  = fut_overrides.result()
-    aliases_map    = fut_aliases.result()
+    rows           = fut_query.result(timeout=_POOL_RESULT_TIMEOUT_S)
+    lookup_owners  = _safe_future_result(fut_owners,    "performers.owners",    default={})
+    overrides_map  = _safe_future_result(fut_overrides, "performers.overrides", default={})
+    aliases_map    = _safe_future_result(fut_aliases,   "performers.aliases",   default={})
 
     # Janela em date (não datetime) pra arithmetic limpa.
     wf = window_from
@@ -11006,7 +11067,7 @@ def _fetch_typeform_forms(token, workspace_id="", days=0, hard_cap=5000):
             ]
             for fut in futures:
                 try:
-                    data = fut.result()
+                    data = fut.result(timeout=_POOL_RESULT_TIMEOUT_S)
                     items_all.extend(data.get("items") or [])
                 except Exception as e:
                     # Página individual falhou — loga e segue. Melhor lista
@@ -11346,7 +11407,7 @@ def compute_portal_brand_lift(share_id: str):
         futs = {ex.submit(query_survey, t): t for t in tokens}
         for f in futs:
             try:
-                surveys[futs[f]] = f.result()
+                surveys[futs[f]] = f.result(timeout=_POOL_RESULT_TIMEOUT_S)
             except Exception:
                 surveys[futs[f]] = None
 
@@ -11361,7 +11422,7 @@ def compute_portal_brand_lift(share_id: str):
             futs = {ex.submit(_campaign_question_lifts, sv, tf_token): t for t, sv in with_survey}
             for f in futs:
                 try:
-                    results[futs[f]] = f.result() or []
+                    results[futs[f]] = f.result(timeout=_POOL_RESULT_TIMEOUT_S) or []
                 except Exception as e:
                     logger.warning(f"[WARN brand_lift campaign {futs[f]}] {e}")
                     results[futs[f]] = []
@@ -11494,7 +11555,7 @@ def compute_portal_audiences(share_id: str):
         futs = {ex.submit(query_detail, t): t for t in tokens}
         for f in futs:
             try:
-                details[futs[f]] = f.result() or []
+                details[futs[f]] = f.result(timeout=_POOL_RESULT_TIMEOUT_S) or []
             except Exception as e:
                 logger.warning(f"[WARN portal_audiences detail {futs[f]}] {e}")
                 details[futs[f]] = []

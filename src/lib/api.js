@@ -40,6 +40,36 @@ import { isDemoToken, buildDemoPayload, DEMO_TOKEN } from "../shared/demoData";
 const jsonHeaders = { "Content-Type": "application/json" };
 
 /**
+ * Deadline de cliente para as leituras do menu admin.
+ *
+ * Por que existe: nenhum fetch daqui tinha timeout. Quando o backend pendurava
+ * (incidente 04/08 — instância deadlockada), a request só terminava no teto do
+ * Cloud Run: 540s. Nesse meio tempo o menu ficava com `refreshing = true` — daí
+ * o `[useLoadingTask] watchdog liberou task após 30000ms` no console e a
+ * sensação de "travou, só funciona com refresh forçado".
+ *
+ * Com deadline, a promise rejeita, o `Promise.allSettled` do menu registra o
+ * erro, o banner de "dados desatualizados" aparece e o botão de retry funciona.
+ * O cache local segue pintando a tela — degradação visível em vez de tela morta.
+ *
+ * Os valores são generosos de propósito: a query fria da lista pode levar
+ * dezenas de segundos legitimamente. O alvo aqui é o pendurado infinito, não
+ * a lentidão.
+ */
+const READ_TIMEOUT_HEAVY_MS = 60_000;  // lista de campanhas / clientes
+const READ_TIMEOUT_LIGHT_MS = 30_000;  // lookups pequenos
+
+function timeoutSignal(ms) {
+  // AbortSignal.timeout é Baseline desde 2022; o guard cobre WebView antigo,
+  // onde simplesmente voltamos ao comportamento anterior (sem deadline).
+  try {
+    return AbortSignal.timeout(ms);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Sufixo de credencial admin legada (`&ak=hypr2026`) lido da URL da página.
  *
  * Por que existe: o menu admin abre o report com `?adm=<jwt>` quando consegue
@@ -158,7 +188,9 @@ export async function getCampaign(token, options = {}) {
   if (isDemoToken(token)) return buildDemoPayload();
   const params = new URLSearchParams({ token });
   if (options.view) params.set("view", options.view);
-  const r = await fetch(`${API_URL}?${params.toString()}`);
+  const r = await fetch(`${API_URL}?${params.toString()}`, {
+    signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
+  });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
   if (!d.campaign) throw new Error("Campanha não encontrada");
@@ -207,6 +239,7 @@ export async function listCampaigns({ refresh = false } = {}) {
   const url = refresh ? `${API_URL}?list=true&refresh=true` : `${API_URL}?list=true`;
   const r = await fetch(url, {
     headers: { ...adminAuthHeaders(jwt) },
+    signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
   });
   if (r.status === 401 || r.status === 403) {
     try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
@@ -260,6 +293,7 @@ export async function listClients() {
     if (!jwt) throw new Error("no admin jwt");
     const r = await fetch(`${API_URL}?action=list_clients`, {
       headers: { ...adminAuthHeaders(jwt) },
+      signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
     });
     if (r.status === 401 || r.status === 403) {
       try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
@@ -318,6 +352,7 @@ export async function listPerformersForPeriod({ from, to } = {}) {
   const qs = new URLSearchParams({ action: "performers", from, to }).toString();
   const r = await fetch(`${API_URL}?${qs}`, {
     headers: { ...adminAuthHeaders(jwt) },
+    signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
   });
   if (r.status === 401 || r.status === 403) {
     try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
@@ -355,6 +390,7 @@ export async function listTeamMembers() {
   if (!jwt) return { cps: [], css: [] };
   const r = await fetch(`${API_URL}?action=list_team_members`, {
     headers: { ...adminAuthHeaders(jwt) },
+    signal: timeoutSignal(READ_TIMEOUT_LIGHT_MS),
   });
   if (r.status === 401 || r.status === 403) {
     try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
