@@ -181,6 +181,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
         customer: Array.isArray(parsed.customer) ? parsed.customer : [],
         bidType:  typeof parsed.bidType === "string" ? parsed.bidType : ALL,
         status:   Array.isArray(parsed.status) ? parsed.status : [],
+        source:   typeof parsed.source === "string" ? parsed.source : ALL,
       };
     } catch { return null; }
   })();
@@ -189,11 +190,13 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   const [bidType, setBidType] = useState(persistedFilters?.bidType || ALL);
   // Status é multi-select: array. Vazio = todos.
   const [status, setStatus]   = useState(persistedFilters?.status || []);
+  // Fonte de curadoria (Xandr Curate × PubMatic). ALL = todas.
+  const [sourceFilter, setSourceFilter] = useState(persistedFilters?.source || ALL);
   useEffect(() => {
     try {
-      localStorage.setItem("hypr.pmp.filters", JSON.stringify({ customer, bidType, status }));
+      localStorage.setItem("hypr.pmp.filters", JSON.stringify({ customer, bidType, status, source: sourceFilter }));
     } catch { /* ignore */ }
-  }, [customer, bidType, status]);
+  }, [customer, bidType, status, sourceFilter]);
 
   // Filtros temporais — só aplicam na aba Histórico.
   //   histPeriod    = { from: "YYYY-MM-DD"|null, to: "YYYY-MM-DD"|null, presetId }
@@ -326,6 +329,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     return arr.filter(l => {
       if (customer.length > 0 && !customer.includes(l.customer)) return false;
       if (bidType  !== ALL && (l.bid_type || "—") !== bidType) return false;
+      if (sourceFilter !== ALL && (l.source || "xandr") !== sourceFilter) return false;
       if (status.length > 0 && !status.includes(effectiveStatus(l))) return false;
       if (term) {
         const hay = [l.line_id, l.line_name, l.customer, l.campaign_name, l.agency,
@@ -335,7 +339,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
       return true;
     });
   };
-  const liveFiltered      = useMemo(() => applyFilters(partitions.live),    [partitions.live, search, customer, bidType, status]);
+  const liveFiltered      = useMemo(() => applyFilters(partitions.live),    [partitions.live, search, customer, bidType, status, sourceFilter]);
   // Histórico passa a ser LIFETIME: mostra TODOS os deals (ativos + encerrados
   // + arquivados), com filtros aplicados. Vira a aba "tudo".
   // Filtros de período/trimestre só aplicam na aba Histórico, e fazem intersecção.
@@ -416,7 +420,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
       }
       return true;
     });
-  }, [lines, search, customer, bidType, status, histPeriod, quarterRanges, monthRanges]);
+  }, [lines, search, customer, bidType, status, sourceFilter, histPeriod, quarterRanges, monthRanges]);
 
   // Histórico com métricas janeladas quando há janela ativa e dado carregado.
   // Exige mapa não-vazio: se o endpoint ainda não existir no backend (ou
@@ -428,7 +432,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     [allLinesFiltered, windowed, windowMetrics],
   );
 
-  const allFiltered = useMemo(() => applyFilters([...partitions.live, ...partitions.other]), [partitions, search, customer, bidType, status]);
+  const allFiltered = useMemo(() => applyFilters([...partitions.live, ...partitions.other]), [partitions, search, customer, bidType, status, sourceFilter]);
 
   // Dataset da aba Por cliente: lifetime SEM arquivadas (testes/seeds só no
   // Histórico) e SEM o filtro de período do Histórico (que sobrevive no
@@ -437,8 +441,16 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   // que está exposto abaixo.
   const clientLines = useMemo(
     () => applyFilters(lines.filter(l => !l.is_archived)),
-    [lines, search, customer, bidType, status],
+    [lines, search, customer, bidType, status, sourceFilter],
   );
+
+  // Fontes de curadoria presentes no dataset. O filtro "Fonte" só aparece
+  // quando há mais de uma (ex: Xandr + PubMatic) — senão é ruído.
+  const sourcesPresent = useMemo(
+    () => Array.from(new Set(lines.map(l => (l.source || "xandr")))).sort(),
+    [lines],
+  );
+  const SOURCE_LABELS = { xandr: "Xandr Curate", pubmatic: "PubMatic" };
 
   // Conjunto exibido na aba atual — KPIs e contagens refletem isso.
   // Por cliente é uma view LIFETIME (mostra todas as lines do cliente,
@@ -867,9 +879,13 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
             <SearchInput value={search} onChange={setSearch} />
             <FilterMultiSelect label="Cliente" values={customer} onChange={setCustomer} options={customersAll} />
             <FilterSelect label="Bid"     value={bidType}  onChange={setBidType}  options={["flex","fixed"]} />
+            {sourcesPresent.length > 1 && (
+              <FilterSelect label="Fonte" value={sourceFilter} onChange={setSourceFilter}
+                            options={sourcesPresent.map(s => ({ value: s, label: SOURCE_LABELS[s] || s }))} />
+            )}
             <FilterMultiSelect label="Status" values={status} onChange={setStatus} options={PMP_STATUSES} />
-            {(search || customer.length > 0 || bidType !== ALL || status.length > 0) && (
-              <button onClick={() => { setSearch(""); setCustomer([]); setBidType(ALL); setStatus([]); }}
+            {(search || customer.length > 0 || bidType !== ALL || status.length > 0 || sourceFilter !== ALL) && (
+              <button onClick={() => { setSearch(""); setCustomer([]); setBidType(ALL); setStatus([]); setSourceFilter(ALL); }}
                       className="text-xs text-fg-muted hover:text-fg underline-offset-2 hover:underline ml-1">
                 Limpar
               </button>

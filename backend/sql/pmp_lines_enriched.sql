@@ -28,8 +28,13 @@ CREATE OR REPLACE TABLE `site-hypr.prod_assets.pmp_lines_enriched` AS
 WITH
 -- Grupos de lines: N lines sob mesmo PI compartilhado (A/B Fixed vs Flex).
 -- Cada line aparece com seu group_id; lines fora de grupo ficam NULL.
+-- NOTA MULTI-FONTE: a unidade agora é o PAR (source, line_id). `source` ∈
+-- {'xandr','pubmatic'}. TODO JOIN/agregação carrega source, senão um line_id
+-- do Xandr colidiria com um dealMetaId da PubMatic de mesmo valor numérico.
+-- Legado = 'xandr' (backfill da migração 001). Ver project_pubmatic_integracao.
 line_groups AS (
   SELECT
+    g.source,
     g.line_id,
     g.group_id,
     g.group_name,
@@ -39,8 +44,8 @@ line_groups AS (
     COUNT(*) OVER (PARTITION BY g.group_id) AS group_member_count
   FROM `site-hypr.prod_assets.pmp_line_groups` g
 ),
--- Soma de delivery POR GRUPO (todas as lines do grupo somadas).
--- Lines fora de grupo: agregação trivial (= seus próprios valores).
+-- Soma de delivery POR GRUPO (todas as lines do grupo somadas — pode cruzar
+-- fontes: um grupo une entrega Xandr + PubMatic sob o mesmo PI).
 group_delivery_agg AS (
   SELECT
     g.group_id,
@@ -55,13 +60,15 @@ group_delivery_agg AS (
     MIN(d.day)                    AS group_first_delivery_day,
     MAX(d.day)                    AS group_last_delivery_day
   FROM `site-hypr.prod_assets.pmp_line_groups` g
-  LEFT JOIN `site-hypr.prod_assets.pmp_line_delivery_daily` d ON d.line_id = g.line_id
+  LEFT JOIN `site-hypr.prod_assets.pmp_line_delivery_daily` d
+    ON d.line_id = g.line_id AND d.source = g.source
   GROUP BY g.group_id
 ),
 delivery_agg AS (
-  -- Valores já convertidos pra BRL na ingestão (parse_csv_line_level multiplica
-  -- por billing_exchange_rate do dia). Aqui só agregamos.
+  -- Valores em BRL. No Xandr foram convertidos na ingestão (× billing_exchange_rate);
+  -- no PubMatic já vêm em BRL (billing_exchange_rate=1.0). Aqui só agregamos.
   SELECT
+    source,
     line_id,
     SUM(imps)                   AS imps,
     SUM(viewable_imps)          AS viewable_imps,
@@ -76,48 +83,53 @@ delivery_agg AS (
     MAX(day)                    AS last_delivery_day,
     MAX(synced_at)              AS last_synced_at
   FROM `site-hypr.prod_assets.pmp_line_delivery_daily`
-  GROUP BY line_id
+  GROUP BY source, line_id
 ),
 delivery_7d AS (
-  -- Revenue + margem + imps dos últimos 7 dias (BRL, já convertido na ingestão).
+  -- Revenue + margem + imps dos últimos 7 dias (BRL).
   -- Margin é exposto no KPI "Margem HYPR" do PMP como crescimento últ. 7d.
   SELECT
+    source,
     line_id,
     SUM(curator_revenue) AS revenue_last_7d,
     SUM(curator_margin)  AS margin_last_7d,
     SUM(imps)            AS imps_last_7d
   FROM `site-hypr.prod_assets.pmp_line_delivery_daily`
   WHERE day >= DATE_SUB(CURRENT_DATE('America/Sao_Paulo'), INTERVAL 7 DAY)
-  GROUP BY line_id
+  GROUP BY source, line_id
 ),
 delivery_yesterday AS (
   -- Margem entregue ontem (BRL). Exposta na coluna Delivery da lista pra
   -- mostrar "quanto rendeu ontem" por line ativa.
   SELECT
+    source,
     line_id,
     SUM(curator_margin)  AS margin_yesterday,
     SUM(curator_revenue) AS revenue_yesterday
   FROM `site-hypr.prod_assets.pmp_line_delivery_daily`
   WHERE day = DATE_SUB(CURRENT_DATE('America/Sao_Paulo'), INTERVAL 1 DAY)
-  GROUP BY line_id
+  GROUP BY source, line_id
 ),
 delivery_prev_6d AS (
   -- Média diária de margem E revenue nos 6 dias ANTES de ontem (D-7..D-2).
   -- Usadas como baseline pra setinha ↗/↘ ao lado do valor de ontem. Exclui
   -- ontem pra evitar bias do próprio dia comparado.
   SELECT
+    source,
     line_id,
     SAFE_DIVIDE(SUM(curator_margin),  6) AS margin_prev_6d_avg,
     SAFE_DIVIDE(SUM(curator_revenue), 6) AS revenue_prev_6d_avg
   FROM `site-hypr.prod_assets.pmp_line_delivery_daily`
   WHERE day BETWEEN DATE_SUB(CURRENT_DATE('America/Sao_Paulo'), INTERVAL 7 DAY)
                 AND DATE_SUB(CURRENT_DATE('America/Sao_Paulo'), INTERVAL 2 DAY)
-  GROUP BY line_id
+  GROUP BY source, line_id
 ),
 joined AS (
   SELECT
     -- Identificadores
+    li.source,
     li.line_id,
+    li.external_deal_id,
     li.line_name,
     li.line_code,
     li.short_token,
@@ -156,7 +168,10 @@ joined AS (
 
     COALESCE(li.campaign_name_override, ck.campaign_name, li.line_name) AS campaign_name,
     COALESCE(li.agency_override, ck.agency) AS agency,
-    COALESCE(ck.client, io.customer) AS customer,
+    -- customer_override cobre fontes SEM insertion order (PubMatic): o conector
+    -- grava ali o cliente parseado do nome do deal. No Xandr fica NULL e o
+    -- comportamento é idêntico ao anterior (ck.client > io.customer).
+    COALESCE(ck.client, io.customer, li.customer_override) AS customer,
 
     ck.cp_name, ck.cp_email,
     ck.cs_name, ck.cs_email,
@@ -219,11 +234,13 @@ joined AS (
   -- SELECT FROM datasets em regions diferentes.
   LEFT JOIN `site-hypr.prod_assets.checklists_mirror` ck
     ON UPPER(ck.short_token) = UPPER(li.short_token)
-  LEFT JOIN delivery_agg d  ON d.line_id  = li.line_id
-  LEFT JOIN delivery_7d  d7 ON d7.line_id = li.line_id
-  LEFT JOIN delivery_yesterday dy ON dy.line_id = li.line_id
-  LEFT JOIN delivery_prev_6d   dp ON dp.line_id = li.line_id
-  LEFT JOIN line_groups  grp ON grp.line_id = li.line_id
+  -- Todos os JOINs de delivery/grupo casam por (source, line_id) pra não
+  -- cruzar dados entre fontes com line_id numericamente coincidente.
+  LEFT JOIN delivery_agg d  ON d.source  = li.source AND d.line_id  = li.line_id
+  LEFT JOIN delivery_7d  d7 ON d7.source = li.source AND d7.line_id = li.line_id
+  LEFT JOIN delivery_yesterday dy ON dy.source = li.source AND dy.line_id = li.line_id
+  LEFT JOIN delivery_prev_6d   dp ON dp.source = li.source AND dp.line_id = li.line_id
+  LEFT JOIN line_groups  grp ON grp.source = li.source AND grp.line_id = li.line_id
   LEFT JOIN group_delivery_agg gd ON gd.group_id = grp.group_id
 )
 SELECT

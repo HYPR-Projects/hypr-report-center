@@ -1650,20 +1650,24 @@ export async function linkPmpCommand({ line_id, short_token, force = false }) {
 }
 
 /** Lista lines do mesmo cliente que podem ser agrupadas com `lineId`. */
-export async function listPmpGroupableLines(lineId) {
+export async function listPmpGroupableLines(lineId, source = "xandr") {
   const jwt = await getOrIssueAdminJwt();
-  const r = await fetch(`${API_URL}?action=pmp_groupable_lines&line_id=${encodeURIComponent(lineId)}`,
+  const qs = `line_id=${encodeURIComponent(lineId)}&source=${encodeURIComponent(source || "xandr")}`;
+  const r = await fetch(`${API_URL}?action=pmp_groupable_lines&${qs}`,
     { headers: { ...adminAuthHeaders(jwt) } });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
   return d.lines || [];
 }
 
-/** Cria grupo OU anexa lines a grupo existente. Pelo menos 2 line_ids. */
-export async function groupPmpLines({ line_ids, short_token, group_name }) {
+/** Cria grupo OU anexa lines a grupo existente. Pelo menos 2 membros.
+ *  `members`: [{source, line_id}] (cross-fonte). Aceita `line_ids` legado. */
+export async function groupPmpLines({ members, line_ids, short_token, group_name }) {
   const jwt = await getOrIssueAdminJwt();
+  const body = members ? { members, short_token, group_name }
+                       : { line_ids, short_token, group_name };
   const r = await postJson(`${API_URL}?action=pmp_group_lines`,
-    { line_ids, short_token, group_name }, adminAuthHeaders(jwt));
+    body, adminAuthHeaders(jwt));
   if (!r.ok) {
     let msg = `HTTP ${r.status}`;
     try { const d = await r.json(); if (d?.error) msg = d.error; } catch {}
@@ -1673,10 +1677,10 @@ export async function groupPmpLines({ line_ids, short_token, group_name }) {
 }
 
 /** Remove line do grupo (dissolve grupo se sobrar 1 line). */
-export async function ungroupPmpLine(line_id) {
+export async function ungroupPmpLine(line_id, source = "xandr") {
   const jwt = await getOrIssueAdminJwt();
   const r = await postJson(`${API_URL}?action=pmp_ungroup_line`,
-    { line_id }, adminAuthHeaders(jwt));
+    { line_id, source: source || "xandr" }, adminAuthHeaders(jwt));
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }

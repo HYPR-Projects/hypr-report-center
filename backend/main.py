@@ -3944,7 +3944,9 @@ def report_data(request):
             line_id_raw = (request.args.get("line_id") or "").strip()
             if not line_id_raw.isdigit():
                 return (jsonify({"error": "line_id obrigatório"}), 400, headers)
-            lines = pmp_groups.list_groupable_lines(int(line_id_raw))
+            # source opcional (default xandr) — compat com chamadas antigas.
+            source = (request.args.get("source") or "xandr").strip() or "xandr"
+            lines = pmp_groups.list_groupable_lines(source, int(line_id_raw))
             return (jsonify({"lines": lines}), 200, headers)
         except Exception as e:
             logger.exception(f"[ERROR pmp_groupable_lines] {e}")
@@ -3956,15 +3958,19 @@ def report_data(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
             body = request.get_json(silent=True) or {}
-            line_ids = body.get("line_ids") or []
-            if not isinstance(line_ids, list) or len(line_ids) < 2:
-                return (jsonify({"error": "line_ids precisa ser lista com ≥ 2 IDs"}), 400, headers)
+            # Aceita `members: [{source, line_id}]` (novo, cross-fonte) OU
+            # `line_ids: [int]` (legado → source=xandr).
+            members = body.get("members")
+            if not members:
+                members = body.get("line_ids") or []
+            if not isinstance(members, list) or len(members) < 2:
+                return (jsonify({"error": "members/line_ids precisa ser lista com ≥ 2 IDs"}), 400, headers)
             try:
-                line_ids = [int(x) for x in line_ids]
-            except (TypeError, ValueError):
-                return (jsonify({"error": "line_ids devem ser inteiros"}), 400, headers)
+                members = [pmp_groups._norm_member(m) for m in members]
+            except (TypeError, ValueError, KeyError):
+                return (jsonify({"error": "membros inválidos (esperado int ou {source,line_id})"}), 400, headers)
             group = pmp_groups.group_lines(
-                line_ids=line_ids,
+                members=members,
                 short_token=(body.get("short_token") or "").strip() or None,
                 group_name=(body.get("group_name") or "").strip() or None,
                 created_by=admin.get("email", "unknown"),
@@ -3985,7 +3991,8 @@ def report_data(request):
             line_id = body.get("line_id")
             if line_id is None or (isinstance(line_id, str) and not line_id.isdigit()):
                 return (jsonify({"error": "line_id obrigatório"}), 400, headers)
-            res = pmp_groups.ungroup_line(int(line_id), admin.get("email", "unknown"))
+            source = (body.get("source") or "xandr")
+            res = pmp_groups.ungroup_line(source, int(line_id), admin.get("email", "unknown"))
             return (jsonify(res), 200, headers)
         except pmp_groups.GroupError as ge:
             return (jsonify({"error": str(ge)}), ge.code, headers)
@@ -4046,6 +4053,17 @@ def report_data(request):
             io_res     = xandr_curate.sync_insertion_orders(advertiser_id=advertiser_id)
             line_res   = xandr_curate.sync_line_items(advertiser_id=advertiser_id)
             deliv_res  = xandr_curate.sync_delivery_by_line(report_interval=interval)
+            # PubMatic (2ª fonte de curadoria) — best-effort: uma falha aqui NÃO
+            # pode derrubar o sync da Xandr, que é o caminho crítico. Só roda se
+            # as credenciais estiverem configuradas (PUBMATIC_USER/PASS).
+            pubmatic_res = None
+            if os.environ.get("PUBMATIC_USER") and os.environ.get("PUBMATIC_PASS"):
+                try:
+                    import pubmatic_curate
+                    pubmatic_res = pubmatic_curate.sync_delivery(lookback_days=14)
+                except Exception as pe:
+                    logger.warning(f"[pmp_sync_v2 pubmatic] {pe}")
+                    pubmatic_res = {"error": str(pe)}
             # Recopia o espelho de checklists do Command ANTES do refresh, senão
             # checklists novos nunca chegam ao espelho e a auto-vinculação fica cega.
             mirror_res = pmp_lines.sync_checklists_mirror()
@@ -4063,6 +4081,7 @@ def report_data(request):
                 "insertion_orders": io_res,
                 "line_items":       line_res,
                 "delivery":         deliv_res,
+                "pubmatic":         pubmatic_res,
                 "checklists_mirror": mirror_res,
                 "view_refreshed":   True,
                 "compplan_sheet":   compplan_res,

@@ -26,6 +26,28 @@ import {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+// SourceChip — fonte de curadoria da line (Xandr Curate × PubMatic)
+// ═══════════════════════════════════════════════════════════════════════════
+// Por padrão OCULTA a fonte 'xandr' (maioria histórica) pra não poluir a lista;
+// PubMatic ganha chip visível. `showXandr` força mostrar (ex: modal de grupo,
+// onde é útil distinguir as fontes ao misturar).
+const SOURCE_META = {
+  pubmatic: { label: "PubMatic", cls: "text-indigo-300 bg-indigo-500/10 border-indigo-500/30" },
+  xandr:    { label: "Xandr",    cls: "text-fg-muted bg-surface border-border" },
+};
+export function SourceChip({ source, showXandr = false, className }) {
+  const key = (source || "xandr").toLowerCase();
+  if (key === "xandr" && !showXandr) return null;
+  const m = SOURCE_META[key] || { label: source, cls: "text-fg-muted bg-surface border-border" };
+  return (
+    <span className={cn("px-1.5 py-0.5 rounded text-[9px] font-medium border", m.cls, className)}>
+      {m.label}
+    </span>
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 // PmpLineGroupCard — wrapper visual pra N lines agrupadas sob mesmo PI
 // ═══════════════════════════════════════════════════════════════════════════
 // Espelha o MergeGroupCardV2 do admin de reports — border signature, header
@@ -921,11 +943,12 @@ function PmpLineRowInner({
               new
             </span>
           )}
+          <SourceChip source={line.source} showXandr className="shrink-0" />
         </div>
         <div className={cn("text-[11px] truncate mt-0.5 flex items-center gap-2",
           isCancelado ? "text-fg-subtle/60" : "text-fg-subtle")}>
           <span className="truncate">
-            {line.agency || "—"} <span className="mx-1.5">·</span> Line {line.line_id}
+            {line.agency || "—"} <span className="mx-1.5">·</span> {line.external_deal_id || `Line ${line.line_id}`}
           </span>
           {groupBadge && (
             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-signature/10 text-signature border border-signature/20 shrink-0"
