@@ -1125,6 +1125,23 @@ function PmpLineRowInner({
               </div>
             );
           }
+          // Entregou RECENTEMENTE mas não ontem — típico de fonte com lag de
+          // reporting (PubMatic fecha D-2/D-3). Em vez de só "há Xd", mostra o
+          // valor do ÚLTIMO dia com entrega, rotulado pelo tempo relativo.
+          const mld = Number(line.margin_last_delivery || 0);
+          const hrs = line.hours_since_last_delivery;
+          if (effStatus === "Andamento" && my <= 0 && mld > 0 && hrs != null && hrs <= 24 * 7) {
+            return (
+              <div title="Margem do último dia com entrega (fonte com lag de reporting)">
+                <div className="text-[12px] font-semibold tabular-nums text-fg-muted">
+                  {formatBRLCompact(mld)}
+                </div>
+                <div className="text-[10px] text-fg-subtle mt-0.5">
+                  {lastDeliv || "último dia"}
+                </div>
+              </div>
+            );
+          }
           return (
             <div className={cn("text-[11px]", dm.text)}>
               {lastDeliv || dm.label}

@@ -124,6 +124,22 @@ delivery_prev_6d AS (
                 AND DATE_SUB(CURRENT_DATE('America/Sao_Paulo'), INTERVAL 2 DAY)
   GROUP BY source, line_id
 ),
+delivery_last AS (
+  -- Margem/revenue do ÚLTIMO dia COM entrega (não "ontem"). Usado pela coluna
+  -- Delivery pra fontes com lag de reporting (PubMatic entrega D-2/D-3): quando
+  -- "ontem" veio vazio mas houve entrega recente, mostramos este valor.
+  SELECT source, line_id, curator_margin AS margin_last_delivery,
+         curator_revenue AS revenue_last_delivery
+  FROM (
+    SELECT source, line_id, day,
+           SUM(curator_margin)  AS curator_margin,
+           SUM(curator_revenue) AS curator_revenue,
+           ROW_NUMBER() OVER (PARTITION BY source, line_id ORDER BY day DESC) AS rn
+    FROM `site-hypr.prod_assets.pmp_line_delivery_daily`
+    GROUP BY source, line_id, day
+  )
+  WHERE rn = 1
+),
 joined AS (
   SELECT
     -- Identificadores
@@ -226,6 +242,8 @@ joined AS (
     COALESCE(dy.revenue_yesterday, 0)   AS revenue_yesterday,
     COALESCE(dp.margin_prev_6d_avg, 0)  AS margin_prev_6d_avg,
     COALESCE(dp.revenue_prev_6d_avg, 0) AS revenue_prev_6d_avg,
+    COALESCE(dl.margin_last_delivery, 0)  AS margin_last_delivery,
+    COALESCE(dl.revenue_last_delivery, 0) AS revenue_last_delivery,
 
     li.created_by, li.created_at, li.updated_by, li.updated_at
   FROM `site-hypr.prod_assets.pmp_line_items` li
@@ -244,6 +262,7 @@ joined AS (
   LEFT JOIN delivery_7d  d7 ON d7.source = li.source AND d7.line_id = li.line_id
   LEFT JOIN delivery_yesterday dy ON dy.source = li.source AND dy.line_id = li.line_id
   LEFT JOIN delivery_prev_6d   dp ON dp.source = li.source AND dp.line_id = li.line_id
+  LEFT JOIN delivery_last      dl ON dl.source = li.source AND dl.line_id = li.line_id
   LEFT JOIN line_groups  grp ON grp.source = li.source AND grp.line_id = li.line_id
   LEFT JOIN group_delivery_agg gd ON gd.group_id = grp.group_id
 )
