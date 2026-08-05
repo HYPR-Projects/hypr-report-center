@@ -267,6 +267,7 @@ def fetch_delivery_rows(start_date: date, end_date: date) -> tuple[list, dict]:
     rows: List[dict] = []
     deal_meta: dict = {}
     skipped_today = 0
+    skipped_empty = 0
 
     for r in payload.get("rows") or []:
         deal_meta_id = r[idx["dealMetaId"]]
@@ -284,13 +285,24 @@ def fetch_delivery_rows(start_date: date, end_date: date) -> tuple[list, dict]:
             skipped_today += 1
             continue
 
+        imps = _int(r[idx["paidImpressions"]])
         spend = _num(r[idx["spend"]])
         transaction_rev = _num(r[idx["transactionRevenue"]])
+
+        # A API preenche o range de datas com dias ZERADOS (sem entrega). Gravar
+        # esses 0-rows criaria "dias de entrega" falsos — o último dia (mesmo
+        # zerado) viraria last_delivery_day e o deal apareceria "live/ontem"
+        # sem ter entregue nada. Também há lag de reporting (~1-2d) da PubMatic,
+        # então o dia mais recente costuma vir 0 até a base fechar. Pulamos.
+        if imps == 0 and spend == 0 and transaction_rev == 0:
+            skipped_empty += 1
+            continue
+
         rows.append({
             "line_id":                line_id,
             "source":                 SOURCE,
             "day":                    day_iso,
-            "imps":                   _int(r[idx["paidImpressions"]]),
+            "imps":                   imps,
             "viewable_imps":          0,      # viewability é % na API; não temos contagem
             "clicks":                 _int(r[idx["clicks"]]) if has_clicks else 0,
             # Sem custo separado — transactionRevenue já é o líquido HYPR.
@@ -302,15 +314,33 @@ def fetch_delivery_rows(start_date: date, end_date: date) -> tuple[list, dict]:
             "data_revenue":           _num(r[idx["dataRevenue"]]) if has_data_rev else 0.0,
             "billing_exchange_rate":  1.0,               # já é BRL
         })
-        if line_id not in deal_meta:
+        # Acumula por deal: 1º dia de entrega (start proxy) + somas p/ derivar a
+        # margem configurada (transactionRevenue/spend ~ 85%). O Xandr pega
+        # curator_margin_pct da API; no PubMatic derivamos da própria entrega.
+        dm = deal_meta.get(line_id)
+        if dm is None:
             ext = str(r[idx["publisherDealId"]]) if has_pub_deal else None
-            deal_meta[line_id] = {
+            dm = {
                 "external_deal_id": ext,
                 "deal_name": name_map.get(str(deal_meta_id)) or name_map.get(deal_meta_id),
+                "first_day": day_iso, "_sum_rev": 0.0, "_sum_margin": 0.0,
             }
+            deal_meta[line_id] = dm
+        if day_iso < dm["first_day"]:
+            dm["first_day"] = day_iso
+        dm["_sum_rev"]    += spend
+        dm["_sum_margin"] += transaction_rev
+
+    # Deriva a margem configurada (%) por deal a partir das somas.
+    for dm in deal_meta.values():
+        sr = dm.pop("_sum_rev", 0.0)
+        sm = dm.pop("_sum_margin", 0.0)
+        dm["margin_pct"] = round(sm / sr * 100, 2) if sr > 0 else None
 
     if skipped_today:
         logger.info("[pubmatic] descartadas %d linhas do dia corrente (D-1)", skipped_today)
+    if skipped_empty:
+        logger.info("[pubmatic] descartadas %d linhas de dias zerados", skipped_empty)
     return rows, deal_meta
 
 
@@ -392,12 +422,19 @@ def _ensure_masters(deal_meta: dict) -> int:
     rows = []
     for line_id, m in deal_meta.items():
         rows.append({
-            "line_id":           int(line_id),
-            "source":            SOURCE,
-            "line_name":         m.get("deal_name"),
-            "external_deal_id":  m.get("external_deal_id"),
-            "customer_override": _customer_from_deal_name(m.get("deal_name") or ""),
-            "state":             "active",   # aparece no report ⇒ ativa
+            "line_id":            int(line_id),
+            "source":             SOURCE,
+            "line_name":          m.get("deal_name"),
+            "external_deal_id":   m.get("external_deal_id"),
+            "customer_override":  _customer_from_deal_name(m.get("deal_name") or ""),
+            "state":              "active",   # aparece no report ⇒ ativa
+            # start_date = 1º dia de entrega (proxy do início do flight; o
+            # relatório não traz datas de flight). end_date fica NULL — vem do
+            # checklist do Command quando o deal é vinculado (COALESCE no enriched).
+            "start_date":         m.get("first_day").isoformat() if m.get("first_day") else None,
+            # Margem configurada derivada da entrega (transactionRevenue/spend).
+            # Alimenta o badge "+/− R$" da coluna Margem (igual ao Xandr).
+            "curator_margin_pct": m.get("margin_pct"),
         })
     _upsert_via_staging(
         target_table="pmp_line_items",
@@ -410,11 +447,14 @@ def _ensure_masters(deal_meta: dict) -> int:
             _bq.SchemaField("external_deal_id", "STRING"),
             _bq.SchemaField("customer_override", "STRING"),
             _bq.SchemaField("state", "STRING"),
+            _bq.SchemaField("start_date", "DATE"),
+            _bq.SchemaField("curator_margin_pct", "NUMERIC"),
         ],
-        # line_name/external_deal_id vêm da fonte. customer_override só é
-        # semeado (o admin pode sobrescrever depois — por isso NÃO está aqui,
-        # senão o sync desfaria a edição manual). state reflete presença no report.
-        update_cols=["line_name", "external_deal_id", "state"],
+        # line_name/external_deal_id/start_date/curator_margin_pct vêm da fonte.
+        # customer_override só é semeado (o admin pode sobrescrever depois — por
+        # isso NÃO está aqui, senão o sync desfaria a edição manual). state
+        # reflete presença no report.
+        update_cols=["line_name", "external_deal_id", "state", "start_date", "curator_margin_pct"],
         timestamp_col="last_synced_at",
     )
     return len(rows)

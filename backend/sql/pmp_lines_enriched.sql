@@ -153,8 +153,12 @@ joined AS (
     li.min_revenue_value,
     li.max_revenue_value,
     li.currency,
-    li.start_date,
-    li.end_date,
+    -- Datas do flight: a line do Xandr traz as suas; o deal PubMatic não tem
+    -- datas nativas no report, então caímos pro checklist do Command quando
+    -- vinculado (ck). start_date do PubMatic vem do 1º dia de entrega (setado
+    -- no conector); end_date só existe se vinculado ao Command.
+    COALESCE(li.start_date, ck.start_date) AS start_date,
+    COALESCE(li.end_date,   ck.end_date)   AS end_date,
     li.xandr_last_modified,
 
     -- Workflow / overrides
