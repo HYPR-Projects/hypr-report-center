@@ -250,8 +250,16 @@ export function DataFreshnessIndicator({ className, user }) {
   useEffect(() => {
     fetchOnce();
     const id = setInterval(fetchOnce, REFETCH_MS);
+    // Voltar pra aba dispara `visibilitychange` E `focus` — com um fetch em
+    // cada, todo alt-tab custava 2 requests idênticas (× 2 componentes que
+    // fazem isso = 4 por alt-tab, todas com preflight CORS). O guard de 10s
+    // colapsa a dupla num fetch só sem perder a atualização ao retomar.
+    let lastFocusFetch = 0;
     const onFocus = () => {
-      if (document.visibilityState === "visible") fetchOnce();
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastFocusFetch < 10_000) return;
+      lastFocusFetch = Date.now();
+      fetchOnce();
     };
     document.addEventListener("visibilitychange", onFocus);
     window.addEventListener("focus", onFocus);

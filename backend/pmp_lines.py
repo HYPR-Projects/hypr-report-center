@@ -26,6 +26,8 @@ import unicodedata
 from typing import List, Optional, Dict
 from google.cloud import bigquery
 
+import bq_client
+
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,9 @@ GROUP_PROPAGATE_FIELDS = {"status", "is_archived", "client_pi_amount_override"}
 
 VALID_STATUSES = {"Pendente", "Andamento", "Revisão", "Finalizado", "Pausado", "Cancelado"}
 
-bq = bigquery.Client()
+# Client compartilhado: timeout obrigatório em toda query + pool HTTP
+# dimensionado pro paralelismo real. Ver bq_client.py.
+bq = bq_client.get_client()
 
 
 def _full(t: str) -> str:

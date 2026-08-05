@@ -798,21 +798,20 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   // quando o user passa o mouse em cada card — admin pode não chegar perto
   // do card que tá com problema, e o alerta nunca sobe pro sino.
   //
-  // Escalonamento: 40ms entre cada call evita rajada de N fetches
-  // simultâneos no Worker quando há ~50 campanhas in_flight. O `schedulePrefetch`
-  // já tem TTL 50s + dedup por token, então re-chamadas (mount, refetch da
-  // lista) viram no-op naturalmente.
+  // Concorrência: o teto vive no `prefetchReport` (fila global de 4 em voo),
+  // não aqui. Antes o controle era um escalonamento de 40ms por token, que não
+  // limita nada de fato — com ~41 ativas e ~2s por report, sobravam ~40 requests
+  // abertas ao mesmo tempo. Essa rajada derrubou uma instância do backend em
+  // 04/08. Enfileirar tudo de uma vez agora é seguro: quem segura é a fila.
+  // `schedulePrefetch` já tem TTL 50s + dedup por token, então re-chamadas
+  // (mount, refetch da lista) viram no-op naturalmente.
   useEffect(() => {
     if (!campaigns?.length) return;
-    const inFlight = campaigns.filter(
-      (c) => getCampaignStatus(c.end_date, c.closed_at, c.paused_at, c.early_end_date) === "in_flight"
-    );
-    const timers = [];
-    inFlight.forEach((c, idx) => {
-      const t = setTimeout(() => schedulePrefetch(c.short_token), idx * 40);
-      timers.push(t);
-    });
-    return () => timers.forEach(clearTimeout);
+    for (const c of campaigns) {
+      if (getCampaignStatus(c.end_date, c.closed_at, c.paused_at, c.early_end_date) === "in_flight") {
+        schedulePrefetch(c.short_token);
+      }
+    }
   }, [campaigns]);
 
   // Snapshot reativo do detailCache — re-renderiza quando qualquer detail
@@ -960,6 +959,33 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
             </Button>
           </div>
         </div>
+
+        {/* Banner de dado stale. O estado `refreshError`/`lastFetchedAt` já
+            existia e era alimentado corretamente pelo runRefresh — mas NADA
+            renderizava. Resultado: quando o refresh falhava (o caso do
+            backend pendurado em 04/08), o menu seguia mostrando os números do
+            localStorage sem nenhum sinal, e o time lia isso como "o report
+            não atualiza". Silêncio é o pior estado possível aqui: o número
+            está na tela, parece atual, e não é. */}
+        {refreshError && !refreshing && (
+          <div
+            role="status"
+            className="mb-6 flex items-center justify-between gap-3 flex-wrap rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2"
+          >
+            <p className="text-xs text-fg">
+              <span className="font-semibold">Dados desatualizados.</span>{" "}
+              Não consegui atualizar agora — mostrando o último carregamento
+              {lastFetchedAt ? ` (${new Date(lastFetchedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })})` : ""}.
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => { setRefreshing(true); setRefreshError(null); runRefresh(); }}
+            >
+              Tentar de novo
+            </Button>
+          </div>
+        )}
 
         {/* MetricStrip no topo — KPIs das campanhas ativas em grid de cards
             bordados leves. Alertas operacionais (críticas, sem owner,

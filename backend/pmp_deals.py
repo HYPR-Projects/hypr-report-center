@@ -48,6 +48,8 @@ import re
 from typing import Dict, List, Optional
 from google.cloud import bigquery
 
+import bq_client
+
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +109,9 @@ MONTH_TO_QUARTER = {
 }
 
 
-bq = bigquery.Client()
+# Client compartilhado: timeout obrigatório em toda query + pool HTTP
+# dimensionado pro paralelismo real. Ver bq_client.py.
+bq = bq_client.get_client()
 
 
 def _full(table_name: str) -> str:

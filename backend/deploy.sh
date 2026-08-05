@@ -296,6 +296,25 @@ gcloud run services update-traffic "$SERVICE_NAME" \
   --region="$REGION" \
   --to-latest
 
+# ── 4.1 Liveness probe ───────────────────────────────────────────────────────
+# `gcloud functions deploy` não expõe probe, então aplicamos por cima via
+# `gcloud run services update` (mesma revisão, é o mesmo serviço por baixo).
+#
+# Motivo: o probe default é TCP na 8080, que passa com o processo Python
+# travado. Em 04/08 uma instância deadlockada ficou 16h de pé servindo 504 em
+# todas as requests — o Cloud Run a considerava saudável e o --min-instances=1
+# impedia que morresse sozinha. `?action=healthz` exercita o ThreadPool (ver o
+# handler em main.py) e devolve 503 quando ele não responde.
+#
+# 3 falhas × 30s = instância travada reciclada em ~90s. Conservador de
+# propósito: 1 falha isolada (pico de CPU) não derruba container.
+echo ""
+echo "▸ Aplicando liveness probe (?action=healthz)..."
+gcloud run services update "$SERVICE_NAME" \
+  --region="$REGION" \
+  --liveness-probe="httpGet.path=/?action=healthz,initialDelaySeconds=20,periodSeconds=30,timeoutSeconds=5,failureThreshold=3" \
+  --format="none"
+
 # ── 5. Cloud Scheduler: pmp-xandr-daily-sync ─────────────────────────────────
 # Cron diário 04:00 BRT que dispara o sync v2 (master IOs + line items +
 # delivery + refresh da pmp_lines_enriched). Tornado idempotente aqui porque

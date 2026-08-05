@@ -41,8 +41,29 @@ import { isDemoToken, buildDemoPayload } from "../shared/demoData";
 const HOVER_DELAY_MS = 100;
 const PREFETCH_TTL_MS = 50_000;
 
+// Teto de prefetches SIMULTÂNEOS — o gargalo mais importante deste módulo.
+//
+// Contexto (incidente 04/08): o menu admin faz bulk-prefetch de toda campanha
+// in_flight ao carregar. Com ~41 ativas e só 40ms de escalonamento, isso virava
+// uma rajada de ~41 requests em 2s — cada uma um report COMPLETO no backend.
+// A Cloud Function roda com concurrency=10, então o Cloud Run subia 10+
+// instâncias frias de uma vez, todas martelando o BigQuery ao mesmo tempo. Foi
+// essa rajada que expôs o deadlock do ThreadPool e matou uma instância por 16h.
+//
+// O escalonamento por tempo (40ms) não limita nada de verdade: se cada report
+// leva 2s, 40ms de espaçamento ainda deixa ~50 em voo. O que limita é contar
+// quantas estão ABERTAS. 4 é confortável: mantém o prefetch útil (os cards
+// visíveis chegam rápido) sem nunca estourar a concorrência do backend.
+//
+// Fila global de propósito: hover, IntersectionObserver e bulk-prefetch passam
+// todos por aqui, então o teto vale pra soma dos três — não por origem.
+const MAX_CONCURRENT = 4;
+
 const pendingHovers = new Map(); // token -> setTimeout id
 const prefetchedAt  = new Map(); // token -> ms timestamp
+const waiting       = [];        // tokens na fila aguardando slot
+const queued        = new Set(); // dedup da fila (O(1))
+let inFlight        = 0;
 
 // Cache em memória do detalhe parseado. Hoje o prefetch só esquenta o cache
 // HTTP do browser e descarta a Response; consumidores precisavam refetchar
@@ -71,19 +92,44 @@ function notifyListeners() {
   }
 }
 
+/**
+ * Enfileira o prefetch. O timestamp é marcado AQUI (não no disparo real) pra
+ * que a dedupe por TTL valha também pro que está esperando slot — senão o
+ * bulk-prefetch reenfileirava o mesmo token a cada re-render.
+ */
 function fireFetch(token) {
-  // Atualiza timestamp ANTES do fetch — se duas chamadas concorrentes
-  // chegam aqui (improvável dado o debounce), só uma vai disparar.
   prefetchedAt.set(token, Date.now());
 
-  // Demo token não passa pelo backend.
+  // Demo token não passa pelo backend — resolve na hora, sem ocupar slot.
   if (isDemoToken(token)) {
     detailCache.set(token, buildDemoPayload());
     notifyListeners();
     return;
   }
 
-  fetch(`${API_URL}?token=${encodeURIComponent(token)}`)
+  if (queued.has(token)) return;
+  queued.add(token);
+  waiting.push(token);
+  drainQueue();
+}
+
+function drainQueue() {
+  while (inFlight < MAX_CONCURRENT && waiting.length > 0) {
+    const token = waiting.shift();
+    queued.delete(token);
+    runFetch(token);
+  }
+}
+
+function runFetch(token) {
+  inFlight += 1;
+  // Prefetch é otimização: se o backend está lento, desistir é melhor que
+  // segurar um slot da fila (e uma conexão do browser, que tem teto de 6 por
+  // origem) enquanto o usuário espera pela navegação de verdade.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20_000);
+
+  fetch(`${API_URL}?token=${encodeURIComponent(token)}`, { signal: ctrl.signal })
     .then((r) => (r.ok ? r.json() : null))
     .then((data) => {
       if (data && data.campaign) {
@@ -94,6 +140,11 @@ function fireFetch(token) {
     .catch(() => {
       // Reseta pra próximo hover poder retentar.
       prefetchedAt.delete(token);
+    })
+    .finally(() => {
+      clearTimeout(timer);
+      inFlight -= 1;
+      drainQueue();
     });
 }
 
@@ -151,5 +202,14 @@ export function cancelPrefetch(token) {
   if (id) {
     clearTimeout(id);
     pendingHovers.delete(token);
+  }
+  // Sai da fila se ainda não começou. Mouse passou por cima e seguiu → não há
+  // motivo pra ocupar um dos 4 slots. Request já em voo continua (cancelar
+  // desperdiçaria o trabalho que o backend já fez).
+  if (queued.has(token)) {
+    queued.delete(token);
+    const i = waiting.indexOf(token);
+    if (i !== -1) waiting.splice(i, 1);
+    prefetchedAt.delete(token);
   }
 }
