@@ -473,6 +473,11 @@ export function buildMonthlyLedger({ lines = [], tsRows = [] } = {}) {
             // quanto ele já consumiu ao todo (pra derivar o que segue em aberto).
             cohortRevenue: 0, cohortMargin: 0,
             cohortRevenueLife: 0, cohortMarginLife: 0,
+            // Saldo em aberto somado POR FLIGHT (cada contrato clampado no
+            // seu próprio zero). Clampar no total do mês faria a
+            // sobre-entrega de um PI abater a falta de outro — são contratos
+            // distintos, de clientes distintos, e um não paga o outro.
+            openSum: 0, overCount: 0,
             // Quebra por fonte de curadoria. PI NÃO entra aqui: ele é do flight,
             // e um flight pode misturar Xandr + PubMatic sob o mesmo contrato
             // (ex: grupo KitKat F1). Só entrega se divide por DSP.
@@ -493,6 +498,9 @@ export function buildMonthlyLedger({ lines = [], tsRows = [] } = {}) {
 
   // ENTRADA — 1 contribuição por flight com PI.
   const campaigns = buildCampaigns(lines);
+  // flight.key → entry, pra o passe de safra abaixo devolver o consumo do
+  // próprio mês pra dentro do mesmo objeto que o hover lê.
+  const entryByFlight = new Map();
   let flightsWithPi = 0;
   for (const c of campaigns) {
     for (const f of c.flights) {
@@ -505,7 +513,7 @@ export function buildMonthlyLedger({ lines = [], tsRows = [] } = {}) {
       e.piCount += 1;
       e.campaigns.add(c.key);
       if (c.customer) e.clients.add(c.customer);
-      e.entries.push({
+      const entry = {
         key: f.key,
         // Nome do FLIGHT (= o da campanha quando ela tem um flight só), que é
         // a unidade que carrega o PI.
@@ -515,7 +523,20 @@ export function buildMonthlyLedger({ lines = [], tsRows = [] } = {}) {
         pi: f.pi,
         lines: f.lines.length,
         startDate: f.lines.map((l) => l.start_date).filter(Boolean).sort()[0] || null,
-      });
+        // Lifetime do flight (exato, vem das lines) e o saldo que sobra —
+        // mesma conta do "Em aberto" da linha, só que por PI. Permite o hover
+        // responder "quais PIs formam esse saldo?".
+        revenueLife: f.revenue,
+        marginLife: f.margin,
+        open: Math.max(0, f.pi - f.revenue),
+        // Preenchidos no passe de safra abaixo.
+        revenueInMonth: 0,
+        marginInMonth: 0,
+      };
+      e.entries.push(entry);
+      entryByFlight.set(f.key, entry);
+      e.openSum += entry.open;
+      if (f.revenue > f.pi) e.overCount += 1;
     }
   }
 
@@ -559,14 +580,19 @@ export function buildMonthlyLedger({ lines = [], tsRows = [] } = {}) {
       const e = touch(m);
       e.cohortRevenueLife += f.revenue;
       e.cohortMarginLife += f.margin;
+      let fRevenue = 0, fMargin = 0;
       for (const l of f.lines) {
         const cell = perLineMonth.get(lineKey(l))?.get(m);
         if (!cell) continue;
-        e.cohortRevenue += cell.revenue;
-        e.cohortMargin += cell.margin;
+        fRevenue += cell.revenue;
+        fMargin += cell.margin;
         bumpSource(e, l.source, "cohortRevenue", cell.revenue);
         bumpSource(e, l.source, "cohortMargin", cell.margin);
       }
+      e.cohortRevenue += fRevenue;
+      e.cohortMargin += fMargin;
+      const entry = entryByFlight.get(f.key);
+      if (entry) { entry.revenueInMonth = fRevenue; entry.marginInMonth = fMargin; }
     }
   }
 
@@ -587,10 +613,21 @@ export function buildMonthlyLedger({ lines = [], tsRows = [] } = {}) {
       // Em aberto usa a MESMA conta de "falta entregar" das rows de line
       // (PI − receita bruta entregue), clampada em zero: over-delivery não é
       // saldo negativo a receber.
+      // % cru contra o PI (pode passar de 100% quando a safra sobre-entrega —
+      // é honesto e a coluna mostra assim, ex: "104% do PI").
       cohortPct: e.pi > 0 ? e.cohortRevenue / e.pi : null,
-      laterPct: e.pi > 0 ? Math.max(0, e.cohortRevenueLife - e.cohortRevenue) / e.pi : null,
-      open: e.pi > 0 ? Math.max(0, e.pi - e.cohortRevenueLife) : 0,
-      openPct: e.pi > 0 ? Math.max(0, e.pi - e.cohortRevenueLife) / e.pi : null,
+      open: e.openSum,
+      openPct: e.pi > 0 ? e.openSum / e.pi : null,
+      // Barra "Ciclo do PI" = composição de 100% do contrato. A parte coberta
+      // (1 − em aberto) é repartida entre "no próprio mês" e "depois" na
+      // proporção real da entrega — assim a barra fecha em 100% E bate com a
+      // coluna Em aberto, mesmo com flights que passaram do PI.
+      ...(() => {
+        if (!(e.pi > 0)) return { barInMonth: 0, barLater: 0 };
+        const covered = Math.max(0, 1 - e.openSum / e.pi);
+        const share = e.cohortRevenueLife > 0 ? e.cohortRevenue / e.cohortRevenueLife : 0;
+        return { barInMonth: covered * share, barLater: covered * (1 - share) };
+      })(),
     }))
     .sort((a, b) => b.month.localeCompare(a.month));
 
@@ -609,8 +646,13 @@ export function buildMonthlyLedger({ lines = [], tsRows = [] } = {}) {
   totals.marginPct = totals.revenue > 0 ? totals.margin / totals.revenue : null;
   totals.cohortPct = totals.pi > 0 ? totals.cohortRevenue / totals.pi : null;
   totals.openPct = totals.pi > 0 ? totals.open / totals.pi : null;
-  totals.laterPct = totals.pi > 0
-    ? Math.max(0, totals.cohortRevenueLife - totals.cohortRevenue) / totals.pi : null;
+  if (totals.pi > 0) {
+    const covered = Math.max(0, 1 - totals.open / totals.pi);
+    const share = totals.cohortRevenueLife > 0 ? totals.cohortRevenue / totals.cohortRevenueLife : 0;
+    totals.barInMonth = covered * share;
+    totals.barLater = covered * (1 - share);
+  } else { totals.barInMonth = 0; totals.barLater = 0; }
+  totals.overCount = rows.reduce((s, r) => s + r.overCount, 0);
 
   // Agregado por fonte (soma de todos os meses) — alimenta o resumo por DSP
   // no topo do card.
@@ -623,6 +665,9 @@ export function buildMonthlyLedger({ lines = [], tsRows = [] } = {}) {
     }
   }
   totals.bySource = [...sourceTotals.values()].sort((a, b) => b.revenue - a.revenue);
+  // União dos PIs de todos os meses — é o que o hover da linha de Total lê
+  // pra responder "quais PIs formam o saldo em aberto no acumulado".
+  totals.entries = rows.flatMap((r) => r.entries);
 
   return {
     rows,

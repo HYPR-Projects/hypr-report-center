@@ -945,7 +945,7 @@ function MonthlyLedger({ ledger, accent }) {
                       </Td>
                       <Td className="text-right font-semibold text-fg tabular-nums">
                         {r.pi > 0
-                          ? <PiEntriesHover row={r}>{formatBRLCompact(r.pi)}</PiEntriesHover>
+                          ? <EntriesHover row={r} mode="pi">{formatBRLCompact(r.pi)}</EntriesHover>
                           : <span className="text-fg-subtle">—</span>}
                         {r.piCount > 0 && (
                           <div className="text-[10.5px] text-fg-subtle font-normal">
@@ -956,14 +956,18 @@ function MonthlyLedger({ ledger, accent }) {
                       <Td className="text-right tabular-nums">
                         {r.pi > 0 ? (
                           <>
-                            <div className="text-fg" title={formatBRL(r.cohortRevenue)}>{formatBRLCompact(r.cohortRevenue)}</div>
+                            <div className="text-fg" title={formatBRL(r.cohortRevenue)}>
+                              <EntriesHover row={r} mode="inMonth">{formatBRLCompact(r.cohortRevenue)}</EntriesHover>
+                            </div>
                             <div className="text-[10.5px] text-fg-subtle">{formatRatioPct(r.cohortPct, 0)} do PI</div>
                           </>
                         ) : <span className="text-fg-subtle">—</span>}
                       </Td>
                       <Td className="text-right tabular-nums">
                         {r.pi > 0
-                          ? <span className="text-emerald-600 dark:text-emerald-400" title={formatBRL(r.cohortMargin)}>{formatBRLCompact(r.cohortMargin)}</span>
+                          ? <span className="text-emerald-600 dark:text-emerald-400" title={formatBRL(r.cohortMargin)}>
+                              <EntriesHover row={r} mode="marginInMonth">{formatBRLCompact(r.cohortMargin)}</EntriesHover>
+                            </span>
                           : <span className="text-fg-subtle">—</span>}
                       </Td>
                       <Td className="text-right tabular-nums">
@@ -971,7 +975,9 @@ function MonthlyLedger({ ledger, accent }) {
                           <>
                             <div className={cn("font-semibold", r.open > 0 ? "text-amber-600 dark:text-amber-300" : "text-fg-subtle")}
                                  title={`PI − Receita Bruta já entregue por essa safra = ${formatBRL(r.open)}`}>
-                              {r.open > 0 ? formatBRLCompact(r.open) : "quitado"}
+                              {r.open > 0
+                                ? <EntriesHover row={r} mode="open">{formatBRLCompact(r.open)}</EntriesHover>
+                                : "quitado"}
                             </div>
                             {r.open > 0 && (
                               <div className="text-[10.5px] text-fg-subtle">{formatRatioPct(r.openPct, 0)} do PI</div>
@@ -1037,19 +1043,21 @@ function MonthlyLedger({ ledger, accent }) {
               <tr className="font-semibold">
                 <Td className={cn(FOOT, "text-left text-fg-muted text-[11px] uppercase tracking-wider")}>Total · {rows.length} {rows.length === 1 ? "mês" : "meses"}</Td>
                 <Td className={cn(FOOT, "text-right text-fg tabular-nums")} title={formatBRL(totals.pi)}>
-                  {formatBRLCompact(totals.pi)}
+                  <EntriesHover row={totals} mode="pi" monthLabel="todo o período">{formatBRLCompact(totals.pi)}</EntriesHover>
                   <div className="text-[10.5px] text-fg-subtle font-normal">{totals.piCount} PIs</div>
                 </Td>
                 <Td className={cn(FOOT, "text-right text-fg tabular-nums")} title={formatBRL(totals.cohortRevenue)}>
-                  {formatBRLCompact(totals.cohortRevenue)}
+                  <EntriesHover row={totals} mode="inMonth" monthLabel="todo o período">{formatBRLCompact(totals.cohortRevenue)}</EntriesHover>
                   <div className="text-[10.5px] text-fg-subtle font-normal">{formatRatioPct(totals.cohortPct, 0)} do PI</div>
                 </Td>
                 <Td className={cn(FOOT, "text-right text-emerald-600 dark:text-emerald-400 tabular-nums")} title={formatBRL(totals.cohortMargin)}>
-                  {formatBRLCompact(totals.cohortMargin)}
+                  <EntriesHover row={totals} mode="marginInMonth" monthLabel="todo o período">{formatBRLCompact(totals.cohortMargin)}</EntriesHover>
                 </Td>
                 <Td className={cn(FOOT, "text-right tabular-nums")} title={`Total ainda a receber: ${formatBRL(totals.open)}`}>
                   <span className={totals.open > 0 ? "text-amber-600 dark:text-amber-300" : "text-fg-subtle"}>
-                    {formatBRLCompact(totals.open)}
+                    {totals.open > 0
+                      ? <EntriesHover row={totals} mode="open" monthLabel="todo o período">{formatBRLCompact(totals.open)}</EntriesHover>
+                      : formatBRLCompact(totals.open)}
                   </span>
                   <div className="text-[10.5px] text-fg-subtle font-normal">{formatRatioPct(totals.openPct, 0)} do PI</div>
                 </Td>
@@ -1087,13 +1095,70 @@ const FOOT = "sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border";
 
 // ── Hover: quais PIs entraram naquele mês ────────────────────────────────────
 const HOVER_MAX = 8;
+const NO_ENTRIES = [];
 
-function PiEntriesHover({ row, children }) {
-  const entries = row.entries || [];
-  if (!entries.length) return children;
-  const shown = entries.slice(0, HOVER_MAX);
-  const rest = entries.length - shown.length;
-  const restSum = entries.slice(HOVER_MAX).reduce((s, e) => s + e.pi, 0);
+// Cada coluna da SAFRA é uma soma de PIs — o hover abre a soma. Um componente
+// só serve as quatro: muda o valor em foco, o título e o filtro; a lista de
+// `entries` (um item por flight com PI) é a mesma.
+const HOVER_MODES = {
+  pi: {
+    title: (m) => `PIs que entraram em ${m}`,
+    value: (e) => e.pi,
+    tone: "text-fg",
+    keep: () => true,
+    footer: "Total do mês",
+  },
+  inMonth: {
+    title: (m) => `Consumido dentro de ${m}`,
+    value: (e) => e.revenueInMonth,
+    sub: (e) => (e.pi > 0 ? `${formatRatioPct(e.revenueInMonth / e.pi, 0)} do PI de ${formatBRLCompact(e.pi)}` : null),
+    tone: "text-fg",
+    keep: (e) => e.revenueInMonth > 0.01,
+    footer: "Receita no mês",
+    empty: "Nenhum PI dessa safra entregou dentro do próprio mês.",
+  },
+  marginInMonth: {
+    title: (m) => `Margem HYPR dentro de ${m}`,
+    value: (e) => e.marginInMonth,
+    sub: (e) => (e.revenueInMonth > 0 ? `${formatRatioPct(e.marginInMonth / e.revenueInMonth, 0)} de margem` : null),
+    tone: "text-emerald-600 dark:text-emerald-400",
+    keep: (e) => e.marginInMonth > 0.01,
+    footer: "Margem no mês",
+    empty: "Nenhum PI dessa safra entregou dentro do próprio mês.",
+  },
+  open: {
+    title: (m) => `Em aberto de ${m}`,
+    value: (e) => e.open,
+    sub: (e) => `entregue ${formatBRLCompact(e.revenueLife)} de ${formatBRLCompact(e.pi)}`,
+    tone: "text-amber-600 dark:text-amber-300",
+    keep: (e) => e.open > 0.01,
+    footer: "Total em aberto",
+    empty: "Todos os PIs dessa safra já entregaram o contratado.",
+  },
+};
+
+/**
+ * Hover das colunas de safra. `row` pode ser uma linha de mês OU a linha de
+ * total — nesta, `entries` é a união de todos os meses, e o título fala do
+ * acumulado. Portalizado (Radix) porque a tabela rola por dentro: no fluxo,
+ * o card seria cortado pelo overflow do quadrante.
+ */
+function EntriesHover({ row, mode = "pi", monthLabel, children }) {
+  const cfg = HOVER_MODES[mode];
+  // Constante de módulo (e não `|| []`): array novo a cada render invalidaria
+  // o useMemo abaixo sempre.
+  const all = row.entries || NO_ENTRIES;
+  const kept = useMemo(
+    () => all.filter(cfg.keep).sort((a, b) => cfg.value(b) - cfg.value(a)),
+    [all, cfg],
+  );
+  if (!all.length) return children;
+
+  const shown = kept.slice(0, HOVER_MAX);
+  const rest = kept.length - shown.length;
+  const restSum = kept.slice(HOVER_MAX).reduce((s, e) => s + cfg.value(e), 0);
+  const total = kept.reduce((s, e) => s + cfg.value(e), 0);
+  const label = monthLabel || formatMonthLabel(row.month, "long");
 
   return (
     <Tooltip>
@@ -1105,49 +1170,59 @@ function PiEntriesHover({ row, children }) {
           {children}
         </button>
       </TooltipTrigger>
-      {/* side="right": à esquerda o card cobria a coluna Mês, que é a
-            identidade das outras linhas. O Radix vira sozinho se faltar
-            espaço na direita. */}
-      <TooltipContent side="right" align="start" className="max-w-[380px] p-0 overflow-hidden">
+      <TooltipContent side="right" align="start" className="max-w-[400px] p-0 overflow-hidden">
         <div className="px-3 py-2 border-b border-border bg-surface-3">
           <div className="text-[10px] font-bold uppercase tracking-widest text-signature">
-            PIs que entraram em {formatMonthLabel(row.month, "long")}
+            {cfg.title(label)}
           </div>
           <div className="text-[11px] text-fg-subtle mt-0.5 tabular-nums">
-            {row.piCount} {row.piCount === 1 ? "PI" : "PIs"}
-            <span className="mx-1.5">·</span>
-            {row.campaigns} {row.campaigns === 1 ? "campanha" : "campanhas"}
-            <span className="mx-1.5">·</span>
-            {row.clients} {row.clients === 1 ? "cliente" : "clientes"}
+            {kept.length} de {all.length} {all.length === 1 ? "PI" : "PIs"}
+            {row.campaigns != null && (
+              <>
+                <span className="mx-1.5">·</span>
+                {row.campaigns} {row.campaigns === 1 ? "campanha" : "campanhas"}
+              </>
+            )}
           </div>
         </div>
-        <ul className="py-1 max-h-[340px] overflow-y-auto scrollbar-thin">
-          {shown.map((e) => (
-            <li key={e.key} className="flex items-baseline gap-3 px-3 py-1.5">
-              <span className="min-w-0 flex-1">
-                <span className="block text-[12.5px] text-fg truncate" title={e.name}>{e.name}</span>
-                <span className="block text-[10.5px] text-fg-subtle truncate">
-                  {e.customer || "sem cliente"}
-                  {e.token && <span className="font-mono text-signature ml-1.5">{e.token}</span>}
-                  {e.lines > 1 && <span className="ml-1.5">· {e.lines} lines</span>}
+        {shown.length === 0 ? (
+          <div className="px-3 py-4 text-[12px] text-fg-subtle text-center">{cfg.empty}</div>
+        ) : (
+          <ul className="py-1 max-h-[340px] overflow-y-auto scrollbar-thin">
+            {shown.map((e) => (
+              <li key={e.key} className="flex items-baseline gap-3 px-3 py-1.5">
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[12.5px] text-fg truncate" title={e.name}>{e.name}</span>
+                  <span className="block text-[10.5px] text-fg-subtle truncate">
+                    {e.customer || "sem cliente"}
+                    {e.token && <span className="font-mono text-signature ml-1.5">{e.token}</span>}
+                    {e.lines > 1 && <span className="ml-1.5">· {e.lines} lines</span>}
+                  </span>
                 </span>
-              </span>
-              <span className="text-[12.5px] font-semibold text-fg tabular-nums shrink-0">
-                {formatBRL(e.pi)}
-              </span>
-            </li>
-          ))}
-          {rest > 0 && (
-            <li className="flex items-baseline justify-between gap-3 px-3 py-1.5 text-[11px] text-fg-subtle">
-              <span>+ {rest} {rest === 1 ? "outro PI" : "outros PIs"}</span>
-              <span className="tabular-nums">{formatBRL(restSum)}</span>
-            </li>
-          )}
-        </ul>
-        <div className="flex items-baseline justify-between gap-3 px-3 py-2 border-t border-border bg-surface-3">
-          <span className="text-[10px] font-bold uppercase tracking-widest text-fg-muted">Total do mês</span>
-          <span className="text-[13px] font-bold text-fg tabular-nums">{formatBRL(row.pi)}</span>
-        </div>
+                <span className="shrink-0 text-right">
+                  <span className={cn("block text-[12.5px] font-semibold tabular-nums", cfg.tone)}>
+                    {formatBRL(cfg.value(e))}
+                  </span>
+                  {cfg.sub?.(e) && (
+                    <span className="block text-[10px] text-fg-subtle tabular-nums">{cfg.sub(e)}</span>
+                  )}
+                </span>
+              </li>
+            ))}
+            {rest > 0 && (
+              <li className="flex items-baseline justify-between gap-3 px-3 py-1.5 text-[11px] text-fg-subtle">
+                <span>+ {rest} {rest === 1 ? "outro PI" : "outros PIs"}</span>
+                <span className="tabular-nums">{formatBRL(restSum)}</span>
+              </li>
+            )}
+          </ul>
+        )}
+        {shown.length > 0 && (
+          <div className="flex items-baseline justify-between gap-3 px-3 py-2 border-t border-border bg-surface-3">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-fg-muted">{cfg.footer}</span>
+            <span className={cn("text-[13px] font-bold tabular-nums", cfg.tone)}>{formatBRL(total)}</span>
+          </div>
+        )}
       </TooltipContent>
     </Tooltip>
   );
@@ -1180,10 +1255,10 @@ function SourceMixBar({ bySource, total, accent }) {
 //   âmbar       → ainda em aberto
 // É o termômetro do que a HYPR tem a receber por safra.
 function CycleBar({ row, accent }) {
-  const inMonth = Math.min(1, Math.max(0, row.cohortPct || 0));
-  const later = Math.min(1 - inMonth, Math.max(0, row.laterPct || 0));
+  const inMonth = Math.max(0, row.barInMonth || 0);
+  const later = Math.max(0, row.barLater || 0);
   const open = Math.max(0, 1 - inMonth - later);
-  const over = (row.cohortPct || 0) + (row.laterPct || 0) > 1.001;
+  const over = (row.overCount || 0) > 0;
   return (
     <div className="flex items-center gap-1.5">
       <div className="flex h-2 w-[92px] rounded-full overflow-hidden bg-amber-500/25">
@@ -1193,7 +1268,7 @@ function CycleBar({ row, accent }) {
       </div>
       {over && (
         <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400"
-              title="A safra entregou mais que o PI contratado">▲</span>
+              title={`${row.overCount} ${row.overCount === 1 ? "PI entregou" : "PIs entregaram"} mais que o contratado`}>▲</span>
       )}
     </div>
   );
