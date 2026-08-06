@@ -21,7 +21,7 @@ import {
   faltaEntregarRev, groupFaltaEntregarRev,
   resolveGroupPi,
   effectiveStatus, formatLineStartPeriod,
-  isNewLine,
+  isNewLine, METRIC,
 } from "../lib/pmpFormat";
 
 
@@ -109,7 +109,7 @@ export function PmpLineGroupCard({ lines, onLineClick, onLinkClick, variant = "d
         {/* Métricas chave do grupo direto no header — número grande, fácil escanear */}
         <div className="hidden md:flex items-center gap-6 text-right shrink-0 tabular-nums">
           <div>
-            <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-semibold">Revenue</div>
+            <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-semibold">Receita Bruta</div>
             <div className="text-[13px] text-fg font-semibold">{formatBRL(groupRev)}</div>
           </div>
           <div>
@@ -159,12 +159,14 @@ function MergeIcon() {
 // ═══════════════════════════════════════════════════════════════════════════
 // LayoutToggle PMP — 4 views (Lista / Ao Vivo / Por Cliente / Histórico)
 // ═══════════════════════════════════════════════════════════════════════════
+// "Carteira" (ex-"Por cliente") agrupa por cliente OU por campanha — a
+// hierarquia é escolhida num segmentado dentro da aba, não numa 6ª aba.
 const LAYOUT_OPTIONS = [
-  { value: "list",      label: "Lista",       icon: <ListIcon /> },
-  { value: "live",      label: "No ar",       icon: <DotIcon /> },
-  { value: "client",    label: "Por cliente", icon: <UsersIcon /> },
-  { value: "history",   label: "Histórico",   icon: <ArchiveIcon /> },
-  { value: "analytics", label: "Analytics",   icon: <AnalyticsIcon /> },
+  { value: "list",      label: "Lista",     icon: <ListIcon /> },
+  { value: "live",      label: "No ar",     icon: <DotIcon /> },
+  { value: "client",    label: "Carteira",  icon: <UsersIcon /> },
+  { value: "history",   label: "Histórico", icon: <ArchiveIcon /> },
+  { value: "analytics", label: "Analytics", icon: <AnalyticsIcon /> },
 ];
 
 export function PmpLayoutToggle({ value, onChange, counts = {} }) {
@@ -213,27 +215,35 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false, w
     { label: "Lines no ar",   value: livesCount,
       sub: totalCount ? `${livesCount} de ${totalCount} ativas` : null,
       valueClass: livesCount > 0 ? "text-emerald-400" : "text-fg" },
+    // Contagem é de PIs (unidade de conta), não de lines: um grupo de N lines
+    // divide um PI só e conta uma vez.
     { label: "Total PI",      value: formatBRL(kpis.pi),
-      sub: kpis.countWithPi != null ? `${kpis.countWithPi} c/ PI vinculado` : null },
-    { label: "Receita Bruta", value: formatBRL(kpis.revenue),
-      sub: windowed ? periodSub : (kpis.revenue7d ? `${formatBRL(kpis.revenue7d)} últ. 7d` : null) },
-    { label: "Receita Líquida", value: formatBRL(kpis.margin),
+      sub: kpis.countWithPi != null
+        ? `${kpis.countWithPi} ${kpis.countWithPi === 1 ? "PI vinculado" : "PIs vinculados"}`
+        : null,
+      title: METRIC.pi.hint },
+    { label: METRIC.revenue.label, value: formatBRL(kpis.revenue),
+      sub: windowed ? periodSub : (kpis.revenue7d ? `${formatBRL(kpis.revenue7d)} últ. 7d` : null),
+      title: METRIC.revenue.hint },
+    { label: METRIC.margin.label, value: formatBRL(kpis.margin),
       sub: windowed ? periodSub : (kpis.margin7d ? `${formatBRL(kpis.margin7d)} últ. 7d` : null),
-      valueClass: "text-emerald-400" },
-    { label: "% Margem PMP", value: kpis.pctReceber != null ? formatRatioPct(kpis.pctReceber) : "—",
-      sub: kpis.countWithPi ? `Receita Líquida ÷ Total PI · ${kpis.countWithPi} lines` : "sem PI cadastrado",
+      valueClass: "text-emerald-400",
+      title: `${METRIC.margin.hint} É a receita líquida da operação.` },
+    { label: "% Entrega (Margem)", value: kpis.pctReceber != null ? formatRatioPct(kpis.pctReceber) : "—",
+      sub: kpis.countWithPi ? "Margem HYPR ÷ Total PI" : "sem PI cadastrado",
       valueClass: kpis.pctReceber == null ? "text-fg"
         : kpis.pctReceber >= 0.85 ? "text-emerald-400" : "text-amber-400",
+      title: METRIC.pctMargin.hint,
       hint: kpis.pctReceber != null
         ? { text: "ideal ≥ 85%", ok: kpis.pctReceber >= 0.85 }
         : null },
-    // % Rev PMP — receita BRUTA entregue ÷ Total PI. Métrica de referência ao
-    // lado da margem; não tem régua de "ideal" (revenue/PI não tem a mesma
-    // meta de 85% que a margem), então fica neutra/sky pra diferenciar.
-    { label: "% Rev PMP", value: kpis.pctReceberRev != null ? formatRatioPct(kpis.pctReceberRev) : "—",
-      sub: kpis.countWithPi ? `Receita Bruta ÷ Total PI · ${kpis.countWithPi} lines` : "sem PI cadastrado",
+    // Receita BRUTA entregue ÷ Total PI. Mesma família da de cima (é a mesma
+    // conta com outro numerador), sem régua de "ideal" — por isso fica neutra
+    // em sky pra diferenciar da métrica que tem meta.
+    { label: "% Entrega (Receita)", value: kpis.pctReceberRev != null ? formatRatioPct(kpis.pctReceberRev) : "—",
+      sub: kpis.countWithPi ? "Receita Bruta ÷ Total PI" : "sem PI cadastrado",
       valueClass: kpis.pctReceberRev == null ? "text-fg" : "text-sky-400",
-      title: "Receita bruta entregue ÷ Total PI contratado." },
+      title: METRIC.pctRev.hint },
     // Receita Extra só faz sentido como leitura lifetime (Histórico) — fora
     // disso muitas lines mid-flight aparecem muito negativas e poluem.
     // Receita Extra compara margem realizada vs. esperada pelo PI CHEIO do
@@ -255,16 +265,23 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false, w
         : "sem dado de margem configurada",
       valueClass: kpis.extraLinesCount === 0 ? "text-fg"
         : kpis.extraRevenue >= 0 ? "text-emerald-400" : "text-amber-400",
-      title: "Margem realizada − (receita bruta entregue × margem configurada). Positivo = HYPR capturou mais que o contratado.",
+      // O tooltip descrevia "receita bruta × margem configurada"; a conta real
+      // (e a do badge da coluna Margem) é contra o PI CHEIO do contrato.
+      title: "Margem HYPR realizada − (PI × margem configurada). Positivo = a HYPR capturou mais que o esperado pelo contrato.",
     }] : []),
   ];
+  // Grid: 7 cards só cabem sem truncar a partir de 2xl (~1536px). Entre lg e
+  // 2xl a tela tinha 7 colunas de ~190px e o valor cheio (R$ 14.299.476,71)
+  // saía cortado — o número que mais importa na tela virava "R$ 14.299.4…".
+  // Menos colunas em telas médias = valor inteiro sempre legível.
   return (
-    <div className={cn("grid grid-cols-2 gap-4",
-      showExtra ? "md:grid-cols-4 lg:grid-cols-7" : "md:grid-cols-3 lg:grid-cols-6")}>
+    <div className={cn("grid grid-cols-2 gap-3 md:gap-4",
+      showExtra ? "md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-7"
+                : "md:grid-cols-3 lg:grid-cols-3 2xl:grid-cols-6")}>
       {items.map((it, i) => (
-        <div key={i} className="rounded-xl border border-border bg-canvas-elevated p-5" title={it.title}>
-          <div className="text-[10px] uppercase tracking-widest text-fg-subtle font-semibold">{it.label}</div>
-          <div className={cn("text-xl font-bold tabular-nums mt-2 whitespace-nowrap overflow-hidden text-ellipsis", it.valueClass || "text-fg")}
+        <div key={i} className="rounded-xl border border-border bg-canvas-elevated p-4 md:p-5" title={it.title}>
+          <div className="text-[10px] uppercase tracking-widest text-fg-subtle font-semibold leading-tight">{it.label}</div>
+          <div className={cn("text-lg xl:text-xl font-bold tabular-nums mt-2 whitespace-nowrap overflow-hidden text-ellipsis", it.valueClass || "text-fg")}
                title={typeof it.value === "string" ? it.value : ""}>
             {it.value}
           </div>
@@ -440,9 +457,9 @@ function PmpLiveCardInner({ line, onClick, onLinkClick }) {
       {/* Footer: métricas + owners */}
       <div className="flex items-center justify-between flex-wrap gap-3 pt-3 border-t border-border/50">
         <div className="flex items-center gap-5 text-[11px]">
-          <Metric label="Margin" value={formatRatioPct(line.effective_margin_pct)} />
+          <Metric label="Margem %" value={formatRatioPct(line.effective_margin_pct)} />
           <Metric label="eCPM" value={line.ecpm != null ? formatBRL(line.ecpm) : "—"} />
-          <Metric label="Imps" value={formatIntCompact(line.imps)} />
+          <Metric label="Impressões" value={formatIntCompact(line.imps)} />
         </div>
         <div className="flex items-center gap-1.5">
           {line.cp_email && <OwnerChip email={line.cp_email} role="CP" />}
@@ -616,9 +633,9 @@ export function PmpLiveGroupCard({ members, onLineClick }) {
         {/* Footer: métricas TOTAIS do grupo + owners */}
         <div className="flex items-center justify-between flex-wrap gap-3 pt-3 border-t border-signature/15">
           <div className="flex items-center gap-5 text-[11px]">
-            <Metric label="Margin" value={formatRatioPct(groupMarginPct)} />
+            <Metric label="Margem %" value={formatRatioPct(groupMarginPct)} />
             <Metric label="eCPM" value={groupEcpm != null ? formatBRL(groupEcpm) : "—"} />
-            <Metric label="Imps" value={formatIntCompact(groupImps)} />
+            <Metric label="Impressões" value={formatIntCompact(groupImps)} />
           </div>
           <div className="flex items-center gap-1.5">
             {hero.cp_email && <OwnerChip email={hero.cp_email} role="CP" />}
@@ -731,11 +748,11 @@ export function PmpCustomerAccordion({ customer, lines, onLineClick, onLinkClick
           {/* Métricas inline — texto leve, valores em negrito */}
           <div className="mt-2.5 grid grid-cols-2 md:grid-cols-5 gap-x-6 gap-y-1.5 text-[12px] tabular-nums">
             <MetricInline label="PI" value={agg.pi > 0 ? formatBRL(agg.pi) : "—"} />
-            <MetricInline label="Revenue" value={formatBRL(agg.revenue)} />
+            <MetricInline label="Receita Bruta" value={formatBRL(agg.revenue)} />
             <MetricInline label="Margem HYPR" value={formatBRL(agg.margin)}
                           highlight={agg.marginPct != null ? formatRatioPct(agg.marginPct, 0) : null} valueClass="text-emerald-400" />
             <MetricInline label="% Entrega" value={agg.pctEntrega != null ? formatRatioPct(agg.pctEntrega, 1) : "—"} />
-            <MetricInline label="Imps" value={formatInt(agg.imps)} />
+            <MetricInline label="Impressões" value={formatInt(agg.imps)} />
           </div>
         </div>
       </button>
@@ -818,7 +835,10 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
   // (user-agent stylesheet sobrescreve), então `text-[10px] uppercase
   // tracking-widest font-semibold` do container some quando o filho é
   // <button>. Por isso aplico essas classes EXPLICITAMENTE no botão também.
-  const Th = ({ field, align = "right", emerald = false, children }) => {
+  // `sub` = segunda linha minúscula do rótulo. Existe pra "% Entrega" caber
+  // em duas linhas ("% ENTREGA" / "margem" e "receita") em vez de virar a
+  // abreviação enigmática de antes ("% Entr Mgm").
+  const Th = ({ field, align = "right", emerald = false, sub = null, children }) => {
     const active = field && sortBy === field;
     const arrow = active ? (sortDir === "asc" ? "↑" : "↓") : null;
     const cls = cn(
@@ -826,8 +846,14 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
       align === "right" ? "text-right" : "text-left",
       emerald && "text-emerald-400/80",
     );
+    const label = sub ? (
+      <span className={cn("flex flex-col leading-tight", align === "right" ? "items-end" : "items-start")}>
+        <span>{children}</span>
+        <span className="text-[9px] normal-case tracking-wide font-medium text-fg-subtle/80">{sub}</span>
+      </span>
+    ) : children;
     if (!field || !interactive) {
-      return <div className={cls}>{children}</div>;
+      return <div className={cls}>{label}</div>;
     }
     const tip = active
       ? (sortDir === "desc"
@@ -848,7 +874,7 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
           active && "text-fg",
         )}
       >
-        <span>{children}</span>
+        <span>{label}</span>
         {arrow && <span className="text-fg-muted text-[9px]">{arrow}</span>}
       </button>
     );
@@ -861,13 +887,13 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
       <Th>Status</Th>
       <Th field="start_date">Início</Th>
       {!hidePi && <Th field="pi_brl">PI</Th>}
-      <Th field="curator_total_cost">Cost</Th>
-      <Th field="curator_revenue">Revenue</Th>
+      <Th field="curator_total_cost">Custo</Th>
+      <Th field="curator_revenue">Receita Bruta</Th>
       <Th field="curator_margin">Margem HYPR</Th>
-      <Th field="effective_margin_pct">Mgm %</Th>
-      {!hidePi && <Th field="pct_a_receber">% Entr Mgm</Th>}
-      {!hidePi && <Th field="pct_a_receber_rev">% Entr Rev</Th>}
-      <Th field="hours_since_last_delivery">Delivery</Th>
+      <Th field="effective_margin_pct">Margem %</Th>
+      {!hidePi && <Th field="pct_a_receber"     sub="margem">% Entrega</Th>}
+      {!hidePi && <Th field="pct_a_receber_rev" sub="receita">% Entrega</Th>}
+      <Th field="hours_since_last_delivery">Entrega</Th>
     </div>
   );
 }
@@ -909,9 +935,19 @@ function PmpLineRowInner({
   // intrinsic-size `auto 72px` é a estimativa pré-primeiro-paint (altura
   // da row desktop) pro scrollbar não pular; o browser memoriza a altura
   // real depois. Browsers sem suporte ignoram (degradação = hoje).
+  // Row é clicável (abre o drawer) — precisa ser alcançável por teclado.
+  // Continua <div> (e não <button>) porque tem botões dentro ("vincular"),
+  // e botão aninhado em botão é HTML inválido.
   return (
     <div onClick={() => onClick?.(line)}
+         role="button"
+         tabIndex={0}
+         aria-label={`Abrir ${line.campaign_name || line.line_name || `line ${line.line_id}`}`}
+         onKeyDown={(e) => {
+           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick?.(line); }
+         }}
          className={cn("cursor-pointer transition-colors hover:bg-surface/40 group",
+           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-signature",
            "[content-visibility:auto] [contain-intrinsic-size:auto_72px]",
            line.is_archived && "opacity-50")}>
       {/* ── Desktop (md+): grid denso de 11 colunas ──────────────────────── */}
@@ -1197,8 +1233,8 @@ function PmpLineRowInner({
               ) : <span className="text-amber-300/60">sem PI</span>}
             </PmpMobileStat>
           )}
-          <PmpMobileStat label="Cost"><span className="text-fg-muted">{formatBRL(line.curator_total_cost)}</span></PmpMobileStat>
-          <PmpMobileStat label="Revenue">
+          <PmpMobileStat label="Custo"><span className="text-fg-muted">{formatBRL(line.curator_total_cost)}</span></PmpMobileStat>
+          <PmpMobileStat label="Receita Bruta">
             <span className="text-fg-muted">{formatBRL(line.curator_revenue)}</span>
             {(() => {
               if (isCancelado) return null;
@@ -1221,16 +1257,16 @@ function PmpLineRowInner({
               {formatBRL(line.curator_margin)}
             </span>
           </PmpMobileStat>
-          <PmpMobileStat label="Mgm %"><span className="text-fg-muted">{formatRatioPct(line.effective_margin_pct, 0)}</span></PmpMobileStat>
+          <PmpMobileStat label="Margem %"><span className="text-fg-muted">{formatRatioPct(line.effective_margin_pct, 0)}</span></PmpMobileStat>
           {!hidePi && (
-            <PmpMobileStat label="% Entr Mgm">
+            <PmpMobileStat label="% Entrega (margem)">
               <span className={cn("inline-block px-1.5 py-0.5 rounded", !isCancelado && pctDeliveryClass(pctToShow))}>
                 {formatRatioPct(pctToShow, 0)}
               </span>
             </PmpMobileStat>
           )}
           {!hidePi && (
-            <PmpMobileStat label="% Entr Rev">
+            <PmpMobileStat label="% Entrega (receita)">
               <span className={cn("inline-block px-1.5 py-0.5 rounded", !isCancelado && pctDeliveryClass(pctRevToShow))}>
                 {formatRatioPct(pctRevToShow, 0)}
               </span>

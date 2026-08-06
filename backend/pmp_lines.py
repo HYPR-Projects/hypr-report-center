@@ -101,11 +101,19 @@ def window_metrics(date_from: str, date_to: str) -> Dict[str, dict]:
     cost/revenue/margem/imps passam a refletir só os dias da janela. PI fica
     de fora — é valor de contrato, somado cheio no frontend.
 
-    Retorna mapa {line_id(str): {imps, curator_total_cost, curator_revenue,
-    curator_margin, ...}}. Só inclui lines com delivery na janela.
+    Retorna mapa {"<source>:<line_id>": {imps, curator_total_cost,
+    curator_revenue, curator_margin, ...}}. Só inclui lines com delivery na
+    janela.
+
+    A chave carrega a FONTE porque a unidade real é o par (source, line_id):
+    um line_id do Xandr pode colidir numericamente com um dealMetaId da
+    PubMatic, e agregar só por line_id somaria entrega de deals diferentes na
+    mesma line. O frontend tenta a chave nova e cai pra `str(line_id)` quando
+    fala com um backend antigo (ver lineKey/pmpFormat.js).
     """
     sql = f"""
         SELECT
+          source,
           line_id,
           SUM(imps)                   AS imps,
           SUM(viewable_imps)          AS viewable_imps,
@@ -119,7 +127,7 @@ def window_metrics(date_from: str, date_to: str) -> Dict[str, dict]:
           MAX(day)                    AS last_delivery_day
         FROM {_full(TABLE_DELIVERY)}
         WHERE day BETWEEN @date_from AND @date_to
-        GROUP BY line_id
+        GROUP BY source, line_id
     """
     job = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("date_from", "DATE", date_from),
@@ -131,7 +139,7 @@ def window_metrics(date_from: str, date_to: str) -> Dict[str, dict]:
         for k, v in list(d.items()):
             if hasattr(v, "isoformat"):
                 d[k] = v.isoformat()
-        out[str(d["line_id"])] = d
+        out[f"{d.get('source') or 'xandr'}:{d['line_id']}"] = d
     return out
 
 
@@ -145,11 +153,16 @@ def timeseries(date_from: str, date_to: str) -> List[dict]:
     sobreviventes. A partição por `day` da tabela faz o scan ser barato mesmo
     em janelas largas.
 
-    Retorna lista achatada [{line_id, day, imps, viewable_imps, clicks,
+    Retorna lista achatada [{source, line_id, day, imps, viewable_imps, clicks,
     curator_total_cost, curator_revenue, curator_margin}], ordenada por dia.
+    `source` acompanha cada row porque a unidade é o par (source, line_id) —
+    sem ela, um dealMetaId da PubMatic com o mesmo número de uma line do Xandr
+    entraria nas duas. O frontend casa por (source, line_id) e só cai pro
+    match por line_id quando fala com um backend antigo (sem o campo).
     """
     sql = f"""
         SELECT
+          source,
           line_id,
           day,
           imps,
@@ -169,6 +182,7 @@ def timeseries(date_from: str, date_to: str) -> List[dict]:
     out: List[dict] = []
     for r in bq.query(sql, job_config=job).result():
         out.append({
+            "source":               r["source"] or "xandr",
             "line_id":              int(r["line_id"]),
             "day":                  r["day"].isoformat(),
             "imps":                 int(r["imps"] or 0),

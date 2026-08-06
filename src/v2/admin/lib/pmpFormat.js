@@ -31,6 +31,58 @@ export function isPmpEditor(user) {
   return PMP_EDITORS.has(email.toLowerCase());
 }
 
+// ─── Vocabulário único das métricas ─────────────────────────────────────────
+// O mesmo número tinha 3 nomes na tela ("Receita Bruta" no KPI, "Revenue" na
+// coluna, "Receita" no Analytics; "% Margem PMP" no KPI e "% Entr Mgm" na
+// coluna eram o MESMO cálculo). Daqui pra frente todo rótulo sai deste mapa —
+// KPIs, colunas, Analytics e export falam a mesma língua.
+export const METRIC = {
+  pi:        { label: "PI",              hint: "Valor contratado no Hypr Command (PI). Compartilhado entre as lines de um grupo — conta uma vez." },
+  cost:      { label: "Custo",           hint: "Custo do curator (media cost + tech fees) na fonte de curadoria." },
+  revenue:   { label: "Receita Bruta",   hint: "Faturamento bruto do curator (o que o buyer pagou)." },
+  margin:    { label: "Margem HYPR",     hint: "Receita Bruta − Custo. É a receita líquida que entra na HYPR." },
+  marginPct: { label: "Margem %",        hint: "Margem HYPR ÷ Receita Bruta." },
+  pctMargin: { label: "% Entrega",       sub: "Margem", hint: "Margem HYPR ÷ PI contratado. Régua do time: ideal ≥ 85%." },
+  pctRev:    { label: "% Entrega",       sub: "Receita", hint: "Receita Bruta ÷ PI contratado." },
+  imps:      { label: "Impressões",      hint: "Impressões entregues." },
+  ecpm:      { label: "eCPM",            hint: "Receita Bruta ÷ mil impressões." },
+};
+
+// ─── Chave de entrega: o par (fonte, line_id) ───────────────────────────────
+// A unidade real é (source, line_id): um line_id do Xandr pode colidir
+// numericamente com um dealMetaId da PubMatic. Endpoints de entrega
+// (window_metrics / timeseries) passaram a carregar `source`; estes helpers
+// casam as rows com as lines e mantêm compatibilidade com o backend antigo
+// (sem `source`), que ainda responde em produção até o próximo deploy.
+
+/** "xandr:31684201" — identidade canônica de uma line. */
+export function lineKey(line) {
+  return `${(line?.source || "xandr")}:${line?.line_id}`;
+}
+
+/** Resolve a chave de uma row de entrega (window_metrics / timeseries) contra
+ *  o conjunto de lines carregado.
+ *
+ *  • Row COM `source` (backend novo) → casa direto por (source, line_id).
+ *  • Row SEM `source` (backend antigo) → casa por line_id, desde que aquele
+ *    line_id exista em uma única fonte. Se houver colisão entre fontes, a row
+ *    é ambígua e fica de fora (melhor perder a linha do que somá-la nas duas).
+ */
+export function buildDeliveryKeyResolver(lines) {
+  const byId = new Map();
+  for (const l of lines || []) {
+    const id = String(l.line_id);
+    const arr = byId.get(id);
+    if (arr) arr.push(lineKey(l));
+    else byId.set(id, [lineKey(l)]);
+  }
+  return (row) => {
+    if (row?.source) return `${row.source}:${row.line_id}`;
+    const candidates = byId.get(String(row?.line_id));
+    return candidates && candidates.length === 1 ? candidates[0] : null;
+  };
+}
+
 // ─── Status workflow ─────────────────────────────────────────────────────────
 export const PMP_STATUSES = [
   "Pendente", "Andamento", "Revisão", "Finalizado", "Pausado", "Cancelado",
@@ -311,9 +363,11 @@ export function formatLastDelivery(hours) {
   const d = Math.floor(hours / 24);
   if (d === 1)  return "ontem";
   if (d < 7)    return `há ${d}d`;
-  if (d < 30)   return `há ${Math.floor(d / 7)}sem`;
-  if (d < 365)  return `há ${Math.floor(d / 30)}mês`;
-  return `há ${Math.floor(d / 365)}a`;
+  if (d < 30)   return `há ${Math.floor(d / 7)} sem`;
+  // Plural: "há 4mês" saía errado pra qualquer valor > 1.
+  if (d < 365)  { const m = Math.floor(d / 30); return `há ${m} ${m === 1 ? "mês" : "meses"}`; }
+  const y = Math.floor(d / 365);
+  return `há ${y} ${y === 1 ? "ano" : "anos"}`;
 }
 
 /** True se a line foi criada há menos de `windowHours` (default 72h).
