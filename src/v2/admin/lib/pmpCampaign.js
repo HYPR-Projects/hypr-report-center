@@ -34,7 +34,7 @@
 // (PI, receita, margem, custo, imps) mas continuam listadas na campanha, com o
 // pill de status, pra não sumirem do histórico.
 
-import { effectiveStatus, resolveGroupPi, LIVE_STATUSES } from "./pmpFormat";
+import { effectiveStatus, resolveGroupPi, LIVE_STATUSES, lineKey } from "./pmpFormat";
 
 const num = (v) => Number(v) || 0;
 
@@ -467,10 +467,28 @@ export function buildMonthlyLedger({ lines = [], tsRows = [] } = {}) {
             // hover da tabela ("quais PIs foram esses?") sem refazer conta:
             // a soma dos entries É o `pi` da linha, por construção.
             entries: [],
-            revenue: 0, margin: 0, cost: 0, imps: 0 };
+            // CAIXA do mês (todas as safras)
+            revenue: 0, margin: 0, cost: 0, imps: 0,
+            // SAFRA do mês: quanto o PI que entrou consumiu no próprio mês, e
+            // quanto ele já consumiu ao todo (pra derivar o que segue em aberto).
+            cohortRevenue: 0, cohortMargin: 0,
+            cohortRevenueLife: 0, cohortMarginLife: 0,
+            // Quebra por fonte de curadoria. PI NÃO entra aqui: ele é do flight,
+            // e um flight pode misturar Xandr + PubMatic sob o mesmo contrato
+            // (ex: grupo KitKat F1). Só entrega se divide por DSP.
+            bySource: new Map() };
       months.set(m, e);
     }
     return e;
+  };
+  const bumpSource = (e, source, field, value) => {
+    const src = source || "xandr";
+    let s = e.bySource.get(src);
+    if (!s) {
+      s = { source: src, revenue: 0, margin: 0, cost: 0, imps: 0, cohortRevenue: 0, cohortMargin: 0 };
+      e.bySource.set(src, s);
+    }
+    s[field] += value;
   };
 
   // ENTRADA — 1 contribuição por flight com PI.
@@ -501,14 +519,55 @@ export function buildMonthlyLedger({ lines = [], tsRows = [] } = {}) {
     }
   }
 
-  // CONSUMO — soma das rows diárias no mês.
+  // CONSUMO (caixa do mês) — soma das rows diárias, venham da safra que vierem.
+  // No mesmo passe montamos o índice line×mês, que é o que permite depois
+  // perguntar "quanto ESTE PI consumiu no PRÓPRIO mês".
+  const perLineMonth = new Map();   // lineKey → Map<mês, {revenue, margin}>
   for (const r of tsRows) {
     const m = String(r.day).slice(0, 7);
     const e = touch(m);
-    e.revenue += num(r.curator_revenue);
-    e.margin += num(r.curator_margin);
+    const revenue = num(r.curator_revenue);
+    const margin = num(r.curator_margin);
+    e.revenue += revenue;
+    e.margin += margin;
     e.cost += num(r.curator_total_cost);
     e.imps += num(r.imps);
+
+    const src = r.source || "xandr";
+    bumpSource(e, src, "revenue", revenue);
+    bumpSource(e, src, "margin", margin);
+    bumpSource(e, src, "cost", num(r.curator_total_cost));
+    bumpSource(e, src, "imps", num(r.imps));
+
+    const k = r._k || `${src}:${r.line_id}`;
+    let byMonth = perLineMonth.get(k);
+    if (!byMonth) { byMonth = new Map(); perLineMonth.set(k, byMonth); }
+    const cell = byMonth.get(m);
+    if (cell) { cell.revenue += revenue; cell.margin += margin; }
+    else byMonth.set(m, { revenue, margin });
+  }
+
+  // SAFRA — pra cada flight, quanto ELE entregou no MÊS EM QUE ENTROU.
+  // O lifetime vem das lines (`f.revenue`/`f.margin`, agregados da tabela
+  // enriquecida), não da série: é exato mesmo se a janela da série for menor
+  // que a vida do flight.
+  for (const c of campaigns) {
+    for (const f of c.flights) {
+      if (f.pi == null || f.pi <= 0) continue;
+      const m = flightEntryMonth(f);
+      if (!m) continue;
+      const e = touch(m);
+      e.cohortRevenueLife += f.revenue;
+      e.cohortMarginLife += f.margin;
+      for (const l of f.lines) {
+        const cell = perLineMonth.get(lineKey(l))?.get(m);
+        if (!cell) continue;
+        e.cohortRevenue += cell.revenue;
+        e.cohortMargin += cell.margin;
+        bumpSource(e, l.source, "cohortRevenue", cell.revenue);
+        bumpSource(e, l.source, "cohortMargin", cell.margin);
+      }
+    }
   }
 
   const rows = [...months.values()]
@@ -519,7 +578,19 @@ export function buildMonthlyLedger({ lines = [], tsRows = [] } = {}) {
       // Maior PI primeiro — é o que o operador procura ao abrir o hover.
       entries: e.entries.sort((a, b) => b.pi - a.pi),
       marginPct: e.revenue > 0 ? e.margin / e.revenue : null,
-      consumoVsEntrada: e.pi > 0 ? e.revenue / e.pi : null,
+      // Fontes ordenadas pela entrega do mês (maior primeiro).
+      bySource: [...e.bySource.values()].sort((a, b) => b.revenue - a.revenue),
+      // Régua da safra, toda contra o PI que entrou no mês:
+      //   cohortPct → quanto o contrato queimou no próprio mês
+      //   laterPct  → quanto queimou depois (meses seguintes)
+      //   openPct   → quanto segue em aberto pra HYPR receber
+      // Em aberto usa a MESMA conta de "falta entregar" das rows de line
+      // (PI − receita bruta entregue), clampada em zero: over-delivery não é
+      // saldo negativo a receber.
+      cohortPct: e.pi > 0 ? e.cohortRevenue / e.pi : null,
+      laterPct: e.pi > 0 ? Math.max(0, e.cohortRevenueLife - e.cohortRevenue) / e.pi : null,
+      open: e.pi > 0 ? Math.max(0, e.pi - e.cohortRevenueLife) : 0,
+      openPct: e.pi > 0 ? Math.max(0, e.pi - e.cohortRevenueLife) / e.pi : null,
     }))
     .sort((a, b) => b.month.localeCompare(a.month));
 
@@ -527,12 +598,31 @@ export function buildMonthlyLedger({ lines = [], tsRows = [] } = {}) {
     (acc, r) => {
       acc.pi += r.pi; acc.piCount += r.piCount;
       acc.revenue += r.revenue; acc.margin += r.margin; acc.cost += r.cost; acc.imps += r.imps;
+      acc.cohortRevenue += r.cohortRevenue; acc.cohortMargin += r.cohortMargin;
+      acc.cohortRevenueLife += r.cohortRevenueLife;
+      acc.open += r.open;
       return acc;
     },
-    { pi: 0, piCount: 0, revenue: 0, margin: 0, cost: 0, imps: 0 },
+    { pi: 0, piCount: 0, revenue: 0, margin: 0, cost: 0, imps: 0,
+      cohortRevenue: 0, cohortMargin: 0, cohortRevenueLife: 0, open: 0 },
   );
   totals.marginPct = totals.revenue > 0 ? totals.margin / totals.revenue : null;
-  totals.consumoVsEntrada = totals.pi > 0 ? totals.revenue / totals.pi : null;
+  totals.cohortPct = totals.pi > 0 ? totals.cohortRevenue / totals.pi : null;
+  totals.openPct = totals.pi > 0 ? totals.open / totals.pi : null;
+  totals.laterPct = totals.pi > 0
+    ? Math.max(0, totals.cohortRevenueLife - totals.cohortRevenue) / totals.pi : null;
+
+  // Agregado por fonte (soma de todos os meses) — alimenta o resumo por DSP
+  // no topo do card.
+  const sourceTotals = new Map();
+  for (const r of rows) {
+    for (const s of r.bySource) {
+      let t = sourceTotals.get(s.source);
+      if (!t) { t = { source: s.source, revenue: 0, margin: 0, cost: 0, imps: 0 }; sourceTotals.set(s.source, t); }
+      t.revenue += s.revenue; t.margin += s.margin; t.cost += s.cost; t.imps += s.imps;
+    }
+  }
+  totals.bySource = [...sourceTotals.values()].sort((a, b) => b.revenue - a.revenue);
 
   return {
     rows,

@@ -20,7 +20,7 @@
 // selecionado. PI é valor de CONTRATO (não janela) e a "% entregue" é acumulada
 // (margem lifetime ÷ PI) — rotulada como tal pra não confundir com a janela.
 
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import {
   ComposedChart, Bar, Line, XAxis, YAxis,
@@ -796,22 +796,37 @@ function ContractProgress({ rows, metric, accent }) {
 // de ritmo do mês) e nunca "% de entrega do PI", que é outra conta.
 function MonthlyLedger({ ledger, accent }) {
   const [copied, setCopied] = useState(false);
+  // Meses abertos na quebra por DSP. Fechado por padrão: o agregado é a
+  // leitura principal, a fonte é o detalhe.
+  const [expanded, setExpanded] = useState(() => new Set());
   const { rows, totals } = ledger;
-  // Escala das barrinhas: o maior valor entre entrada e consumo de todos os
-  // meses. Comparação visual entre meses só funciona com escala comum.
-  const scale = useMemo(
-    () => rows.reduce((m, r) => Math.max(m, r.pi, r.revenue), 0) || 1,
-    [rows],
-  );
+  const multiSource = (totals.bySource || []).length > 1;
+
+  const toggle = (month) => setExpanded((prev) => {
+    const next = new Set(prev);
+    if (next.has(month)) next.delete(month); else next.add(month);
+    return next;
+  });
 
   const copyTsv = async () => {
-    const head = ["Mês", "PI entrado", "PIs", "Receita Bruta", "Margem HYPR", "Margem %", "Impressões", "Consumo ÷ Entrada"];
-    const body = rows.map((r) => [
-      r.month, r.pi.toFixed(2), r.piCount, r.revenue.toFixed(2), r.margin.toFixed(2),
-      r.marginPct != null ? (r.marginPct * 100).toFixed(1) : "",
-      r.imps,
-      r.consumoVsEntrada != null ? (r.consumoVsEntrada * 100).toFixed(1) : "",
-    ]);
+    const head = ["Mês", "PI entrado", "PIs", "Receita no mês (safra)", "Margem no mês (safra)",
+                  "Em aberto", "% em aberto", "Receita Bruta (caixa)", "Margem HYPR (caixa)"];
+    const body = [];
+    for (const r of rows) {
+      body.push([formatMonthLabel(r.month, "short"), r.pi.toFixed(2), r.piCount,
+                 r.cohortRevenue.toFixed(2), r.cohortMargin.toFixed(2),
+                 r.open.toFixed(2), r.openPct != null ? (r.openPct * 100).toFixed(1) : "",
+                 r.revenue.toFixed(2), r.margin.toFixed(2)]);
+      // Quebra por DSP vai junto no clipboard — quem cola no Sheets quer o
+      // detalhe tanto quanto quem expande na tela.
+      if (multiSource) {
+        for (const s of r.bySource) {
+          body.push([`  ${SOURCE_LABEL[s.source] || s.source}`, "", "",
+                     s.cohortRevenue.toFixed(2), s.cohortMargin.toFixed(2), "", "",
+                     s.revenue.toFixed(2), s.margin.toFixed(2)]);
+        }
+      }
+    }
     const tsv = [head, ...body].map((l) => l.join("\t")).join("\n");
     try {
       await navigator.clipboard.writeText(tsv);
@@ -819,6 +834,16 @@ function MonthlyLedger({ ledger, accent }) {
       setTimeout(() => setCopied(false), 2000);
     } catch { /* clipboard bloqueado — silencioso, o usuário ainda tem o Exportar */ }
   };
+
+  // Cabeçalho de 2 níveis: a coluna só faz sentido se estiver claro de QUAL
+  // coorte ela fala. `top` do 2º nível = altura do 1º (h-6 = 24px).
+  // Cabeçalho fixo precisa ser OPACO: com tinta translúcida (bg-signature/7%)
+  // o conteúdo rolado vazava por baixo dele. A separação entre as duas coortes
+  // fica por conta do rótulo colorido + uma borda vertical que desce a tabela
+  // inteira (DIV), que é mais legível que fundo tingido de qualquer forma.
+  const G1 = "bg-surface-3";          // safra do mês
+  const G2 = "bg-surface-3";          // caixa do mês
+  const DIV = "border-l border-border";   // divisor safra | caixa
 
   return (
     <div className="rounded-xl border border-border bg-surface overflow-hidden">
@@ -832,12 +857,24 @@ function MonthlyLedger({ ledger, accent }) {
             </span>
           </h3>
           <p className="text-[11px] text-fg-subtle mt-1">
-            <span className="text-fg-muted">Entrada</span> = PI dos flights que começaram no mês
+            <span className="text-fg-muted">Safra</span> = o PI que entrou no mês, e o que ele mesmo consumiu
             <span className="mx-1.5">·</span>
-            <span className="text-fg-muted">Consumo</span> = receita entregue dentro do mês
+            <span className="text-fg-muted">Caixa</span> = tudo que foi entregue no mês, de qualquer safra
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          {multiSource && (
+            <div className="flex items-center gap-2 pr-2 mr-1 border-r border-border">
+              {totals.bySource.map((s) => (
+                <span key={s.source} className="inline-flex items-center gap-1.5 text-[11px] text-fg-muted"
+                      title={`${SOURCE_LABEL[s.source] || s.source}: ${formatBRL(s.revenue)} de Receita Bruta no acumulado`}>
+                  <span className="w-2 h-2 rounded-sm" style={{ background: SOURCE_COLOR[s.source] || accent }} />
+                  {SOURCE_LABEL[s.source] || s.source}
+                  <span className="tabular-nums text-fg">{formatBRLCompact(s.revenue)}</span>
+                </span>
+              ))}
+            </div>
+          )}
           <button type="button" onClick={copyTsv}
                   className="h-7 px-2.5 rounded-md border border-border bg-canvas-deeper text-[12px] font-medium text-fg-muted hover:text-fg hover:bg-surface-strong transition-colors">
             {copied ? "Copiado ✓" : "Copiar"}
@@ -850,103 +887,205 @@ function MonthlyLedger({ ledger, accent }) {
           Sem PI nem entrega para os filtros atuais.
         </div>
       ) : (
-        // Altura fixa + scroll interno: com 20+ meses a tabela tomava a tela
-        // inteira e empurrava tudo pra baixo. Cabeçalho e linha de total ficam
-        // grudados (sticky) pra o número nunca perder a referência.
         <div className="max-h-[440px] overflow-auto scrollbar-thin">
           <table className="w-full text-[13px]">
             <thead>
+              <tr className="text-fg-subtle">
+                <th className="sticky top-0 z-20 bg-surface-3 h-6" />
+                <th colSpan={5} className={cn("sticky top-0 z-20 h-6 px-3 text-left text-[9.5px] font-bold uppercase tracking-widest text-signature", G1)}>
+                  Safra do mês · o PI que entrou
+                </th>
+                <th colSpan={2} className={cn("sticky top-0 z-20 h-6 px-3 text-left text-[9.5px] font-bold uppercase tracking-widest text-fg-muted", G2, DIV)}>
+                  Caixa do mês · todas as safras
+                </th>
+              </tr>
               <tr className="text-fg-muted">
-                <Th className="text-left sticky top-0 z-20 bg-surface-3">Mês</Th>
-                <Th className="text-right sticky top-0 z-20 bg-surface-3">PI entrado</Th>
-                <Th className="text-right sticky top-0 z-20 bg-surface-3">PIs</Th>
-                <Th className="text-right sticky top-0 z-20 bg-surface-3">{METRIC.revenue.label}</Th>
-                <Th className="text-right sticky top-0 z-20 bg-surface-3">{METRIC.margin.label}</Th>
-                <Th className="text-right sticky top-0 z-20 bg-surface-3">Margem %</Th>
-                <Th className="text-left w-[150px] sticky top-0 z-20 bg-surface-3">Entrada × Consumo</Th>
-                <Th className="text-right sticky top-0 z-20 bg-surface-3">Consumo ÷ Entrada</Th>
+                <Th className="text-left sticky top-6 z-20 bg-surface-3">Mês</Th>
+                <Th className={cn("text-right sticky top-6 z-20", G1)}>PI entrado</Th>
+                <Th className={cn("text-right sticky top-6 z-20", G1)}>Consumido no mês</Th>
+                <Th className={cn("text-right sticky top-6 z-20", G1)}>Margem no mês</Th>
+                <Th className={cn("text-right sticky top-6 z-20", G1)}>Em aberto</Th>
+                <Th className={cn("text-left w-[132px] sticky top-6 z-20", G1)}>Ciclo do PI</Th>
+                <Th className={cn("text-right sticky top-6 z-20", G2, DIV)}>{METRIC.revenue.label}</Th>
+                <Th className={cn("text-right sticky top-6 z-20", G2)}>{METRIC.margin.label}</Th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr key={r.month} className="border-t border-border hover:bg-surface-strong transition-colors">
-                  <Td className="text-left whitespace-nowrap">
-                    <span className="font-medium text-fg">{formatMonthLabel(r.month, "short")}</span>
-                    {r.campaigns > 0 && (
-                      <span className="text-fg-subtle text-[11px]"> · {r.campaigns} {r.campaigns === 1 ? "campanha" : "campanhas"}</span>
-                    )}
-                  </Td>
-                  <Td className="text-right font-semibold text-fg tabular-nums">
-                    {r.pi > 0
-                      ? <PiEntriesHover row={r}>{formatBRLCompact(r.pi)}</PiEntriesHover>
-                      : <span className="text-fg-subtle">—</span>}
-                  </Td>
-                  <Td className="text-right text-fg-muted tabular-nums">
-                    {r.piCount
-                      ? <PiEntriesHover row={r}>{r.piCount}</PiEntriesHover>
-                      : <span className="text-fg-subtle">—</span>}
-                  </Td>
-                  <Td className="text-right text-fg tabular-nums" title={formatBRL(r.revenue)}>
-                    {r.revenue > 0 ? formatBRLCompact(r.revenue) : <span className="text-fg-subtle">—</span>}
-                  </Td>
-                  <Td className="text-right font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums" title={formatBRL(r.margin)}>
-                    {r.margin > 0 ? formatBRLCompact(r.margin) : <span className="text-fg-subtle">—</span>}
-                  </Td>
-                  <Td className="text-right text-fg-muted tabular-nums">
-                    {r.marginPct != null ? formatRatioPct(r.marginPct, 0) : "—"}
-                  </Td>
-                  <Td className="text-left">
-                    <MiniBars entrada={r.pi} consumo={r.revenue} scale={scale} accent={accent} />
-                  </Td>
-                  <Td className="text-right tabular-nums">
-                    {r.consumoVsEntrada != null
-                      ? <span className={cn("font-medium", r.consumoVsEntrada >= 1 ? "text-emerald-600 dark:text-emerald-400" : "text-fg")}>
-                          {formatRatioPct(r.consumoVsEntrada, 0)}
-                        </span>
-                      : <span className="text-fg-subtle">—</span>}
-                  </Td>
-                </tr>
-              ))}
+              {rows.map((r) => {
+                const open = expanded.has(r.month);
+                const canExpand = multiSource && r.bySource.length > 0;
+                return (
+                  <Fragment key={r.month}>
+                    <tr className={cn("border-t border-border transition-colors",
+                                      open ? "bg-surface-strong" : "hover:bg-surface-strong")}>
+                      <Td className="text-left whitespace-nowrap">
+                        <button type="button"
+                                onClick={canExpand ? () => toggle(r.month) : undefined}
+                                disabled={!canExpand}
+                                aria-expanded={canExpand ? open : undefined}
+                                className={cn("inline-flex items-center gap-1.5 text-left rounded-sm",
+                                              canExpand && "cursor-pointer hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature")}>
+                          {canExpand
+                            ? <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"
+                                   strokeLinecap="round" strokeLinejoin="round"
+                                   className={cn("text-fg-subtle transition-transform shrink-0", open && "rotate-90")} aria-hidden>
+                                <path d="m9 18 6-6-6-6" />
+                              </svg>
+                            : <span className="w-[10px] shrink-0" aria-hidden />}
+                          <span>
+                            <span className="font-medium text-fg">{formatMonthLabel(r.month, "short")}</span>
+                            {r.campaigns > 0 && (
+                              <span className="text-fg-subtle text-[11px]"> · {r.campaigns} {r.campaigns === 1 ? "campanha" : "campanhas"}</span>
+                            )}
+                          </span>
+                        </button>
+                        {canExpand && r.revenue > 0 && (
+                          <SourceMixBar bySource={r.bySource} total={r.revenue} accent={accent} />
+                        )}
+                      </Td>
+                      <Td className="text-right font-semibold text-fg tabular-nums">
+                        {r.pi > 0
+                          ? <PiEntriesHover row={r}>{formatBRLCompact(r.pi)}</PiEntriesHover>
+                          : <span className="text-fg-subtle">—</span>}
+                        {r.piCount > 0 && (
+                          <div className="text-[10.5px] text-fg-subtle font-normal">
+                            {r.piCount} {r.piCount === 1 ? "PI" : "PIs"}
+                          </div>
+                        )}
+                      </Td>
+                      <Td className="text-right tabular-nums">
+                        {r.pi > 0 ? (
+                          <>
+                            <div className="text-fg" title={formatBRL(r.cohortRevenue)}>{formatBRLCompact(r.cohortRevenue)}</div>
+                            <div className="text-[10.5px] text-fg-subtle">{formatRatioPct(r.cohortPct, 0)} do PI</div>
+                          </>
+                        ) : <span className="text-fg-subtle">—</span>}
+                      </Td>
+                      <Td className="text-right tabular-nums">
+                        {r.pi > 0
+                          ? <span className="text-emerald-600 dark:text-emerald-400" title={formatBRL(r.cohortMargin)}>{formatBRLCompact(r.cohortMargin)}</span>
+                          : <span className="text-fg-subtle">—</span>}
+                      </Td>
+                      <Td className="text-right tabular-nums">
+                        {r.pi > 0 ? (
+                          <>
+                            <div className={cn("font-semibold", r.open > 0 ? "text-amber-600 dark:text-amber-300" : "text-fg-subtle")}
+                                 title={`PI − Receita Bruta já entregue por essa safra = ${formatBRL(r.open)}`}>
+                              {r.open > 0 ? formatBRLCompact(r.open) : "quitado"}
+                            </div>
+                            {r.open > 0 && (
+                              <div className="text-[10.5px] text-fg-subtle">{formatRatioPct(r.openPct, 0)} do PI</div>
+                            )}
+                          </>
+                        ) : <span className="text-fg-subtle">—</span>}
+                      </Td>
+                      <Td className="text-left">
+                        {r.pi > 0
+                          ? <CycleBar row={r} accent={accent} />
+                          : <span className="text-fg-subtle text-[11px]">—</span>}
+                      </Td>
+                      <Td className={cn("text-right text-fg tabular-nums", DIV)} title={formatBRL(r.revenue)}>
+                        {r.revenue > 0 ? formatBRLCompact(r.revenue) : <span className="text-fg-subtle">—</span>}
+                      </Td>
+                      <Td className="text-right tabular-nums">
+                        {r.margin > 0 ? (
+                          <>
+                            <div className="font-semibold text-emerald-600 dark:text-emerald-400" title={formatBRL(r.margin)}>{formatBRLCompact(r.margin)}</div>
+                            {r.marginPct != null && <div className="text-[10.5px] text-fg-subtle font-normal">{formatRatioPct(r.marginPct, 0)} margem</div>}
+                          </>
+                        ) : <span className="text-fg-subtle">—</span>}
+                      </Td>
+                    </tr>
+
+                    {open && r.bySource.map((s) => (
+                      <tr key={`${r.month}:${s.source}`} className="border-t border-border/40 bg-canvas-deeper/40">
+                        <Td className="text-left whitespace-nowrap pl-8">
+                          <span className="inline-flex items-center gap-1.5 text-[12px] text-fg-muted">
+                            <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: SOURCE_COLOR[s.source] || accent }} />
+                            {SOURCE_LABEL[s.source] || s.source}
+                          </span>
+                        </Td>
+                        {/* PI não se divide por DSP: ele é do flight, e um flight
+                            pode misturar fontes sob o mesmo contrato. */}
+                        <Td className="text-right text-fg-subtle" title="PI é do contrato (flight), que pode cobrir mais de um DSP — por isso não se divide por fonte.">
+                          <span className="text-[11px]">não se divide</span>
+                        </Td>
+                        <Td className="text-right text-fg-muted tabular-nums" title={formatBRL(s.cohortRevenue)}>
+                          {s.cohortRevenue > 0 ? formatBRLCompact(s.cohortRevenue) : <span className="text-fg-subtle">—</span>}
+                        </Td>
+                        <Td className="text-right text-fg-muted tabular-nums" title={formatBRL(s.cohortMargin)}>
+                          {s.cohortMargin > 0 ? formatBRLCompact(s.cohortMargin) : <span className="text-fg-subtle">—</span>}
+                        </Td>
+                        <Td />
+                        <Td />
+                        <Td className={cn("text-right text-fg-muted tabular-nums", DIV)} title={formatBRL(s.revenue)}>
+                          {s.revenue > 0 ? formatBRLCompact(s.revenue) : <span className="text-fg-subtle">—</span>}
+                        </Td>
+                        <Td className="text-right text-fg-muted tabular-nums" title={formatBRL(s.margin)}>
+                          {s.margin > 0 ? formatBRLCompact(s.margin) : <span className="text-fg-subtle">—</span>}
+                        </Td>
+                      </tr>
+                    ))}
+                  </Fragment>
+                );
+              })}
             </tbody>
-            {/* Total grudado no rodapé do quadrante: rolando 20+ meses, é a
-                linha que dá escala pro que está na tela. `sticky` vai nas
-                células (não no <tr>), que é onde o browser respeita. */}
+            {/* Total grudado no rodapé: rolando 20+ meses, é a linha que dá
+                escala pro que está na tela. `sticky` vai nas células (não no
+                <tr>), que é onde o browser respeita. */}
             <tfoot>
               <tr className="font-semibold">
-                <Td className="text-left text-fg-muted text-[11px] uppercase tracking-wider sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border">Total · {rows.length} {rows.length === 1 ? "mês" : "meses"}</Td>
-                <Td className="text-right text-fg tabular-nums sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border" title={formatBRL(totals.pi)}>{formatBRLCompact(totals.pi)}</Td>
-                <Td className="text-right text-fg-muted tabular-nums sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border">{totals.piCount}</Td>
-                <Td className="text-right text-fg tabular-nums sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border" title={formatBRL(totals.revenue)}>{formatBRLCompact(totals.revenue)}</Td>
-                <Td className="text-right text-emerald-600 dark:text-emerald-400 tabular-nums sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border" title={formatBRL(totals.margin)}>{formatBRLCompact(totals.margin)}</Td>
-                <Td className="text-right text-fg-muted tabular-nums sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border">{totals.marginPct != null ? formatRatioPct(totals.marginPct, 0) : "—"}</Td>
-                <Td className="sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border" />
-                <Td className="text-right text-fg tabular-nums sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border">{totals.consumoVsEntrada != null ? formatRatioPct(totals.consumoVsEntrada, 0) : "—"}</Td>
+                <Td className={cn(FOOT, "text-left text-fg-muted text-[11px] uppercase tracking-wider")}>Total · {rows.length} {rows.length === 1 ? "mês" : "meses"}</Td>
+                <Td className={cn(FOOT, "text-right text-fg tabular-nums")} title={formatBRL(totals.pi)}>
+                  {formatBRLCompact(totals.pi)}
+                  <div className="text-[10.5px] text-fg-subtle font-normal">{totals.piCount} PIs</div>
+                </Td>
+                <Td className={cn(FOOT, "text-right text-fg tabular-nums")} title={formatBRL(totals.cohortRevenue)}>
+                  {formatBRLCompact(totals.cohortRevenue)}
+                  <div className="text-[10.5px] text-fg-subtle font-normal">{formatRatioPct(totals.cohortPct, 0)} do PI</div>
+                </Td>
+                <Td className={cn(FOOT, "text-right text-emerald-600 dark:text-emerald-400 tabular-nums")} title={formatBRL(totals.cohortMargin)}>
+                  {formatBRLCompact(totals.cohortMargin)}
+                </Td>
+                <Td className={cn(FOOT, "text-right tabular-nums")} title={`Total ainda a receber: ${formatBRL(totals.open)}`}>
+                  <span className={totals.open > 0 ? "text-amber-600 dark:text-amber-300" : "text-fg-subtle"}>
+                    {formatBRLCompact(totals.open)}
+                  </span>
+                  <div className="text-[10.5px] text-fg-subtle font-normal">{formatRatioPct(totals.openPct, 0)} do PI</div>
+                </Td>
+                <Td className={FOOT}><CycleBar row={totals} accent={accent} /></Td>
+                <Td className={cn(FOOT, DIV, "text-right text-fg tabular-nums")} title={formatBRL(totals.revenue)}>{formatBRLCompact(totals.revenue)}</Td>
+                <Td className={cn(FOOT, "text-right text-emerald-600 dark:text-emerald-400 tabular-nums")} title={formatBRL(totals.margin)}>
+                  {formatBRLCompact(totals.margin)}
+                  {totals.marginPct != null && <div className="text-[10.5px] text-fg-subtle font-normal">{formatRatioPct(totals.marginPct, 0)} margem</div>}
+                </Td>
               </tr>
             </tfoot>
           </table>
         </div>
       )}
 
-      <div className="px-4 md:px-5 py-2.5 border-t border-border flex items-center gap-4 flex-wrap text-[11px] text-fg-subtle">
+      <div className="px-4 md:px-5 py-2.5 border-t border-border flex items-center gap-x-4 gap-y-1 flex-wrap text-[11px] text-fg-subtle">
         <span className="inline-flex items-center gap-1.5">
-          <span className="w-3 h-1.5 rounded-full bg-fg-subtle/50" aria-hidden /> PI entrado no mês
+          <span className="w-3 h-1.5 rounded-full" style={{ background: accent }} aria-hidden /> consumido no próprio mês
         </span>
         <span className="inline-flex items-center gap-1.5">
-          <span className="w-3 h-1.5 rounded-full" style={{ background: accent }} aria-hidden /> Receita consumida no mês
+          <span className="w-3 h-1.5 rounded-full" style={{ background: accent, opacity: 0.4 }} aria-hidden /> consumido depois
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-3 h-1.5 rounded-full bg-amber-500/60" aria-hidden /> em aberto
         </span>
         <span className="ml-auto">
-          Coortes diferentes: o PI de um mês costuma ser consumido ao longo dos meses seguintes.
+          Em aberto = PI − Receita Bruta já entregue por aquela safra.
         </span>
       </div>
     </div>
   );
 }
 
+const FOOT = "sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border";
+
 // ── Hover: quais PIs entraram naquele mês ────────────────────────────────────
-// "R$ 475 mil · 2 PIs" não diz QUAIS. Este card abre a linha em seus flights,
-// com cliente, token e valor, pra conferência sem sair da tabela. Portalizado
-// (Radix) porque a tabela rola por dentro — um popover posicionado no fluxo
-// seria cortado pelo overflow do quadrante.
 const HOVER_MAX = 8;
 
 function PiEntriesHover({ row, children }) {
@@ -1014,18 +1153,48 @@ function PiEntriesHover({ row, children }) {
   );
 }
 
-// Duas barras finas na mesma escala (max entre todos os meses) — leitura
-// instantânea de "entrou muito e consumiu pouco" e vice-versa.
-function MiniBars({ entrada, consumo, scale, accent }) {
-  const w = (v) => `${Math.max(v > 0 ? 2 : 0, Math.min(100, (v / scale) * 100))}%`;
+// Cores por fonte de curadoria — alinhadas ao SourceChip da lista (PubMatic
+// índigo). Recharts/inline style precisam de cor literal.
+const SOURCE_LABEL = { xandr: "Xandr", pubmatic: "PubMatic" };
+const SOURCE_COLOR = { xandr: "#38bdf8", pubmatic: "#818cf8" };
+
+// Mix de DSP da linha: barrinha 100% da Receita Bruta do mês. Só aparece
+// quando há mais de uma fonte no dataset — com uma fonte só seria uma barra
+// cheia dizendo nada.
+function SourceMixBar({ bySource, total, accent }) {
+  if (!(total > 0)) return null;
   return (
-    <div className="flex flex-col gap-1 min-w-[110px]" aria-hidden>
-      <div className="h-1.5 rounded-full bg-track overflow-hidden">
-        <div className="h-full rounded-full bg-fg-subtle/50" style={{ width: w(entrada) }} />
+    <div className="mt-1 flex h-1 w-[92px] rounded-full overflow-hidden bg-track" aria-hidden
+         title={bySource.map((s) => `${SOURCE_LABEL[s.source] || s.source}: ${formatBRL(s.revenue)}`).join(" · ")}>
+      {bySource.map((s) => (
+        <span key={s.source}
+              style={{ width: `${(s.revenue / total) * 100}%`, background: SOURCE_COLOR[s.source] || accent }} />
+      ))}
+    </div>
+  );
+}
+
+// Ciclo do PI: o que aconteceu com o contrato daquele mês, em 100% da barra.
+//   cheio       → consumido no próprio mês
+//   translúcido → consumido nos meses seguintes
+//   âmbar       → ainda em aberto
+// É o termômetro do que a HYPR tem a receber por safra.
+function CycleBar({ row, accent }) {
+  const inMonth = Math.min(1, Math.max(0, row.cohortPct || 0));
+  const later = Math.min(1 - inMonth, Math.max(0, row.laterPct || 0));
+  const open = Math.max(0, 1 - inMonth - later);
+  const over = (row.cohortPct || 0) + (row.laterPct || 0) > 1.001;
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className="flex h-2 w-[92px] rounded-full overflow-hidden bg-amber-500/25">
+        {inMonth > 0 && <span style={{ width: `${inMonth * 100}%`, background: accent }} />}
+        {later > 0 && <span style={{ width: `${later * 100}%`, background: accent, opacity: 0.4 }} />}
+        {open > 0 && <span style={{ width: `${open * 100}%` }} className="bg-amber-500/60" />}
       </div>
-      <div className="h-1.5 rounded-full bg-track overflow-hidden">
-        <div className="h-full rounded-full" style={{ width: w(consumo), background: accent }} />
-      </div>
+      {over && (
+        <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400"
+              title="A safra entregou mais que o PI contratado">▲</span>
+      )}
     </div>
   );
 }
