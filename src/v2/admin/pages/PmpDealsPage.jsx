@@ -562,18 +562,27 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     return [...ys].sort((a, b) => b - a);
   }, [lines]);
 
-  const lastSyncedAt = useMemo(() => {
-    let max = null;
-    for (const l of lines) if (l.last_synced_at && (!max || l.last_synced_at > max)) max = l.last_synced_at;
-    return max;
-  }, [lines]);
-
-  // Última data de entrega coberta pelo sync — usado no popover do
-  // indicador de frescor pra dar contexto do que tá na base.
-  const latestDeliveryDay = useMemo(() => {
-    let max = null;
-    for (const l of lines) if (l.last_delivery_day && (!max || l.last_delivery_day > max)) max = l.last_delivery_day;
-    return max;
+  // Frescor por fonte de curadoria. O pmp_lines_enriched já traz last_synced_at
+  // e last_delivery_day por (source, line_id), então basta agrupar as lines por
+  // fonte e tirar o MAX de cada uma. O indicador do header lista uma seção por
+  // fonte presente — assim dá pra ver, ex., que o Xandr sincronizou hoje mas o
+  // PubMatic travou, coisa que o número global antigo escondia.
+  const SOURCE_NOTES = {
+    pubmatic: "Reporting com lag de D-2/D-3 — a última entrega fica atrás do sync.",
+  };
+  const syncSources = useMemo(() => {
+    const by = new Map();
+    for (const l of lines) {
+      const key = l.source || "xandr";
+      let s = by.get(key);
+      if (!s) { s = { key, lastSyncedAt: null, latestDeliveryDay: null, linesCount: 0 }; by.set(key, s); }
+      s.linesCount += 1;
+      if (l.last_synced_at && (!s.lastSyncedAt || l.last_synced_at > s.lastSyncedAt)) s.lastSyncedAt = l.last_synced_at;
+      if (l.last_delivery_day && (!s.latestDeliveryDay || l.last_delivery_day > s.latestDeliveryDay)) s.latestDeliveryDay = l.last_delivery_day;
+    }
+    return Array.from(by.values())
+      .sort((a, b) => a.key.localeCompare(b.key))
+      .map((s) => ({ ...s, label: SOURCE_LABELS[s.key] || s.key, note: SOURCE_NOTES[s.key] }));
   }, [lines]);
 
   // ── Actions ───────────────────────────────────────────────────────────────
@@ -743,13 +752,12 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
             <HyprReportCenterLogo height={32} />
           </button>
           <div className="flex items-center gap-2 md:gap-3">
-            {/* Status do sync Xandr Curate · ação "Sincronizar agora" mora
-                dentro do popover. Slot espelha o DataFreshnessIndicator do
-                menu admin pra manter consistência entre as duas headers. */}
+            {/* Status do sync por fonte de curadoria (Xandr + PubMatic) ·
+                ação "Sincronizar agora" (roda as duas fontes) mora dentro do
+                popover. Slot espelha o DataFreshnessIndicator do menu admin
+                pra manter consistência entre as duas headers. */}
             <PmpFreshnessIndicator
-              lastSyncedAt={lastSyncedAt}
-              latestDeliveryDay={latestDeliveryDay}
-              linesCount={lines.length || null}
+              sources={syncSources}
               onSync={canSync ? onSync : undefined}
               syncing={syncing}
             />

@@ -1,16 +1,24 @@
 // src/v2/admin/components/PmpFreshnessIndicator.jsx
 //
-// Indicador de frescor do sync Xandr Curate → pmp_deals_delivery, exposto no
-// header da página /admin/pmp. Permite o admin validar de manhã se o cron
-// diário das 04h BRT rodou com sucesso, sem precisar abrir o BQ ou checar
-// row a row.
+// Indicador de frescor do sync das fontes de curadoria do PMP
+// (Xandr Curate + PubMatic) → pmp_lines_enriched, exposto no header da página
+// /admin/pmp. Permite o admin validar de manhã se o cron diário das 04h BRT
+// rodou com sucesso em CADA fonte, sem precisar abrir o BQ ou checar row a row.
+//
+// Multi-fonte: o `pmp_lines_enriched` já calcula `last_synced_at` e
+// `last_delivery_day` agrupados por (source, line_id), então cada fonte tem
+// seu próprio frescor. O popover lista uma seção por fonte presente; o dot do
+// gatilho reflete o PIOR estado entre elas (pra alertar quando qualquer fonte
+// atrasa). PubMatic tem lag de reporting (D-2/D-3) na entrega, mas o
+// `last_synced_at` marca quando o sync rodou — então a régua abaixo (baseada
+// em last_synced_at) vale igual pras duas fontes.
 //
 // Diferente do DataFreshnessIndicator do menu admin: aquele lê
 // unified_daily_performance_metrics (delivery DV360/Xandr/StackAdapt). Este
 // usa o `last_synced_at` por line já carregado na página — derivado do
-// sync Xandr Curate específico do PMP.
+// sync PMP específico.
 //
-// Régua (hora-local America/Sao_Paulo):
+// Régua (hora-local America/Sao_Paulo), aplicada por fonte:
 //   • Sync com data BR == hoje                       → verde (ok)
 //   • Antes do cutoff 05h e sem sync de hoje         → cinza (aguardando)
 //   • Após cutoff, sync = ontem                      → amarelo (warn)
@@ -80,21 +88,45 @@ const TONE_CLASSES = {
   neutral: { dot: "bg-fg-subtle", text: "text-fg-subtle" },
 };
 
+// Prioridade pro dot agregado do gatilho: qualquer fonte em alerta ganha do
+// resto; "aguardando" (neutral) ainda vem antes de "ok" pra não esconder uma
+// fonte que não sincronizou.
+const TONE_PRIORITY = ["error", "warn", "neutral", "ok"];
+
+function worstTone(tones) {
+  for (const t of TONE_PRIORITY) if (tones.includes(t)) return t;
+  return "neutral";
+}
+
 export function PmpFreshnessIndicator({
-  lastSyncedAt, latestDeliveryDay, linesCount,
+  sources = [],
   onSync, syncing = false,
   className,
 }) {
-  const status = useMemo(() => deriveStatus(lastSyncedAt), [lastSyncedAt]);
-  const tone = TONE_CLASSES[status.tone] || TONE_CLASSES.neutral;
+  // Cada fonte: { key, label, lastSyncedAt, latestDeliveryDay, linesCount, note }.
+  // Anexa o status derivado por fonte e o tone agregado do gatilho.
+  const withStatus = useMemo(
+    () => sources.map((s) => ({ ...s, status: deriveStatus(s.lastSyncedAt) })),
+    [sources],
+  );
+  const aggTone = useMemo(
+    () => worstTone(withStatus.map((s) => s.status.tone)),
+    [withStatus],
+  );
+  const tone = TONE_CLASSES[aggTone] || TONE_CLASSES.neutral;
+
+  const multi = withStatus.length > 1;
+  const triggerLabel = multi
+    ? `Sync das fontes de curadoria (${withStatus.length})`
+    : `Sync ${withStatus[0]?.label || "PMP"} — ${withStatus[0]?.status.summary || "sem dados"}`;
 
   return (
     <Popover.Root>
       <Popover.Trigger asChild>
         <button
           type="button"
-          aria-label={`Sync Xandr Curate — ${status.summary}`}
-          title={status.summary}
+          aria-label={triggerLabel}
+          title={triggerLabel}
           className={cn(
             "inline-flex items-center justify-center size-9 rounded-full",
             "border border-border bg-surface text-fg-muted",
@@ -132,24 +164,39 @@ export function PmpFreshnessIndicator({
           )}
         >
           <div className="px-4 py-3 border-b border-border bg-surface-strong">
-            <div className="flex items-center gap-2">
-              <span className={cn("size-2 rounded-full shrink-0", tone.dot)} />
-              <span className="text-[11px] font-bold uppercase tracking-wider text-fg-muted">
-                Sync Xandr Curate
-              </span>
-            </div>
-            <p className={cn("mt-1 text-[12px] font-medium", tone.text)}>
-              {status.summary}
-            </p>
+            <span className="text-[11px] font-bold uppercase tracking-wider text-fg-muted">
+              {multi ? "Sync das fontes" : "Sync da fonte"}
+            </span>
           </div>
 
-          <ul className="py-1">
-            <Row label="Última execução" value={lastSyncedAt ? fmtBrDateTime(lastSyncedAt) : "—"} />
-            <Row label="Última entrega" value={fmtBrDate(latestDeliveryDay)} />
-            {linesCount != null && (
-              <Row label="Lines sincronizadas" value={String(linesCount)} />
-            )}
-          </ul>
+          {withStatus.length === 0 ? (
+            <p className="px-4 py-3 text-[12px] text-fg-subtle">Sem dados de sync.</p>
+          ) : (
+            withStatus.map((s, i) => {
+              const st = TONE_CLASSES[s.status.tone] || TONE_CLASSES.neutral;
+              return (
+                <div key={s.key} className={cn(i > 0 && "border-t border-border")}>
+                  <div className="flex items-center gap-2 px-4 pt-3">
+                    <span className={cn("size-2 rounded-full shrink-0", st.dot)} />
+                    <span className="text-[12px] font-semibold text-fg">{s.label}</span>
+                  </div>
+                  <p className={cn("px-4 mt-0.5 text-[12px] font-medium", st.text)}>
+                    {s.status.summary}
+                  </p>
+                  <ul className="py-1">
+                    <Row label="Última execução" value={s.lastSyncedAt ? fmtBrDateTime(s.lastSyncedAt) : "—"} />
+                    <Row label="Última entrega" value={fmtBrDate(s.latestDeliveryDay)} />
+                    {s.linesCount != null && (
+                      <Row label="Lines sincronizadas" value={String(s.linesCount)} />
+                    )}
+                  </ul>
+                  {s.note && (
+                    <p className="px-4 pb-2 text-[10.5px] text-fg-subtle leading-snug">{s.note}</p>
+                  )}
+                </div>
+              );
+            })
+          )}
 
           {onSync && (
             <div className="px-4 pt-2 pb-3 border-t border-border">
@@ -182,7 +229,7 @@ export function PmpFreshnessIndicator({
 
 function Row({ label, value }) {
   return (
-    <li className="flex items-center justify-between gap-3 px-4 py-2 text-[12px]">
+    <li className="flex items-center justify-between gap-3 px-4 py-1.5 text-[12px]">
       <span className="text-fg-muted">{label}</span>
       <span className="text-fg font-medium tabular-nums">{value}</span>
     </li>
