@@ -27,6 +27,7 @@ import {
   CartesianGrid, Tooltip as RTooltip, ResponsiveContainer, PieChart, Pie, Cell,
 } from "recharts";
 
+import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
 import { useThemeColors, useChartNeutral } from "../../hooks/useThemeColors";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { ChartCardV2 } from "../../components/ChartCardV2";
@@ -849,18 +850,21 @@ function MonthlyLedger({ ledger, accent }) {
           Sem PI nem entrega para os filtros atuais.
         </div>
       ) : (
-        <div className="overflow-x-auto">
+        // Altura fixa + scroll interno: com 20+ meses a tabela tomava a tela
+        // inteira e empurrava tudo pra baixo. Cabeçalho e linha de total ficam
+        // grudados (sticky) pra o número nunca perder a referência.
+        <div className="max-h-[440px] overflow-auto scrollbar-thin">
           <table className="w-full text-[13px]">
             <thead>
-              <tr className="bg-surface-3 text-fg-muted">
-                <Th className="text-left">Mês</Th>
-                <Th className="text-right">PI entrado</Th>
-                <Th className="text-right">PIs</Th>
-                <Th className="text-right">{METRIC.revenue.label}</Th>
-                <Th className="text-right">{METRIC.margin.label}</Th>
-                <Th className="text-right">Margem %</Th>
-                <Th className="text-left w-[150px]">Entrada × Consumo</Th>
-                <Th className="text-right">Consumo ÷ Entrada</Th>
+              <tr className="text-fg-muted">
+                <Th className="text-left sticky top-0 z-20 bg-surface-3">Mês</Th>
+                <Th className="text-right sticky top-0 z-20 bg-surface-3">PI entrado</Th>
+                <Th className="text-right sticky top-0 z-20 bg-surface-3">PIs</Th>
+                <Th className="text-right sticky top-0 z-20 bg-surface-3">{METRIC.revenue.label}</Th>
+                <Th className="text-right sticky top-0 z-20 bg-surface-3">{METRIC.margin.label}</Th>
+                <Th className="text-right sticky top-0 z-20 bg-surface-3">Margem %</Th>
+                <Th className="text-left w-[150px] sticky top-0 z-20 bg-surface-3">Entrada × Consumo</Th>
+                <Th className="text-right sticky top-0 z-20 bg-surface-3">Consumo ÷ Entrada</Th>
               </tr>
             </thead>
             <tbody>
@@ -873,9 +877,15 @@ function MonthlyLedger({ ledger, accent }) {
                     )}
                   </Td>
                   <Td className="text-right font-semibold text-fg tabular-nums">
-                    {r.pi > 0 ? formatBRLCompact(r.pi) : <span className="text-fg-subtle">—</span>}
+                    {r.pi > 0
+                      ? <PiEntriesHover row={r}>{formatBRLCompact(r.pi)}</PiEntriesHover>
+                      : <span className="text-fg-subtle">—</span>}
                   </Td>
-                  <Td className="text-right text-fg-muted tabular-nums">{r.piCount || <span className="text-fg-subtle">—</span>}</Td>
+                  <Td className="text-right text-fg-muted tabular-nums">
+                    {r.piCount
+                      ? <PiEntriesHover row={r}>{r.piCount}</PiEntriesHover>
+                      : <span className="text-fg-subtle">—</span>}
+                  </Td>
                   <Td className="text-right text-fg tabular-nums" title={formatBRL(r.revenue)}>
                     {r.revenue > 0 ? formatBRLCompact(r.revenue) : <span className="text-fg-subtle">—</span>}
                   </Td>
@@ -898,16 +908,19 @@ function MonthlyLedger({ ledger, accent }) {
                 </tr>
               ))}
             </tbody>
+            {/* Total grudado no rodapé do quadrante: rolando 20+ meses, é a
+                linha que dá escala pro que está na tela. `sticky` vai nas
+                células (não no <tr>), que é onde o browser respeita. */}
             <tfoot>
-              <tr className="border-t-2 border-border bg-surface-3/60 font-semibold">
-                <Td className="text-left text-fg-muted text-[11px] uppercase tracking-wider">Total · {rows.length} {rows.length === 1 ? "mês" : "meses"}</Td>
-                <Td className="text-right text-fg tabular-nums" title={formatBRL(totals.pi)}>{formatBRLCompact(totals.pi)}</Td>
-                <Td className="text-right text-fg-muted tabular-nums">{totals.piCount}</Td>
-                <Td className="text-right text-fg tabular-nums" title={formatBRL(totals.revenue)}>{formatBRLCompact(totals.revenue)}</Td>
-                <Td className="text-right text-emerald-600 dark:text-emerald-400 tabular-nums" title={formatBRL(totals.margin)}>{formatBRLCompact(totals.margin)}</Td>
-                <Td className="text-right text-fg-muted tabular-nums">{totals.marginPct != null ? formatRatioPct(totals.marginPct, 0) : "—"}</Td>
-                <Td />
-                <Td className="text-right text-fg tabular-nums">{totals.consumoVsEntrada != null ? formatRatioPct(totals.consumoVsEntrada, 0) : "—"}</Td>
+              <tr className="font-semibold">
+                <Td className="text-left text-fg-muted text-[11px] uppercase tracking-wider sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border">Total · {rows.length} {rows.length === 1 ? "mês" : "meses"}</Td>
+                <Td className="text-right text-fg tabular-nums sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border" title={formatBRL(totals.pi)}>{formatBRLCompact(totals.pi)}</Td>
+                <Td className="text-right text-fg-muted tabular-nums sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border">{totals.piCount}</Td>
+                <Td className="text-right text-fg tabular-nums sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border" title={formatBRL(totals.revenue)}>{formatBRLCompact(totals.revenue)}</Td>
+                <Td className="text-right text-emerald-600 dark:text-emerald-400 tabular-nums sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border" title={formatBRL(totals.margin)}>{formatBRLCompact(totals.margin)}</Td>
+                <Td className="text-right text-fg-muted tabular-nums sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border">{totals.marginPct != null ? formatRatioPct(totals.marginPct, 0) : "—"}</Td>
+                <Td className="sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border" />
+                <Td className="text-right text-fg tabular-nums sticky bottom-0 z-20 bg-surface-3 border-t-2 border-border">{totals.consumoVsEntrada != null ? formatRatioPct(totals.consumoVsEntrada, 0) : "—"}</Td>
               </tr>
             </tfoot>
           </table>
@@ -926,6 +939,78 @@ function MonthlyLedger({ ledger, accent }) {
         </span>
       </div>
     </div>
+  );
+}
+
+// ── Hover: quais PIs entraram naquele mês ────────────────────────────────────
+// "R$ 475 mil · 2 PIs" não diz QUAIS. Este card abre a linha em seus flights,
+// com cliente, token e valor, pra conferência sem sair da tabela. Portalizado
+// (Radix) porque a tabela rola por dentro — um popover posicionado no fluxo
+// seria cortado pelo overflow do quadrante.
+const HOVER_MAX = 8;
+
+function PiEntriesHover({ row, children }) {
+  const entries = row.entries || [];
+  if (!entries.length) return children;
+  const shown = entries.slice(0, HOVER_MAX);
+  const rest = entries.length - shown.length;
+  const restSum = entries.slice(HOVER_MAX).reduce((s, e) => s + e.pi, 0);
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {/* <button> em vez de <span>: o Radix abre no foco também, então o
+            resumo fica acessível por teclado. */}
+        <button type="button"
+                className="tabular-nums underline decoration-dotted decoration-fg-subtle/50 underline-offset-4 hover:decoration-signature focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature rounded-sm cursor-help">
+          {children}
+        </button>
+      </TooltipTrigger>
+      {/* side="right": à esquerda o card cobria a coluna Mês, que é a
+            identidade das outras linhas. O Radix vira sozinho se faltar
+            espaço na direita. */}
+      <TooltipContent side="right" align="start" className="max-w-[380px] p-0 overflow-hidden">
+        <div className="px-3 py-2 border-b border-border bg-surface-3">
+          <div className="text-[10px] font-bold uppercase tracking-widest text-signature">
+            PIs que entraram em {formatMonthLabel(row.month, "long")}
+          </div>
+          <div className="text-[11px] text-fg-subtle mt-0.5 tabular-nums">
+            {row.piCount} {row.piCount === 1 ? "PI" : "PIs"}
+            <span className="mx-1.5">·</span>
+            {row.campaigns} {row.campaigns === 1 ? "campanha" : "campanhas"}
+            <span className="mx-1.5">·</span>
+            {row.clients} {row.clients === 1 ? "cliente" : "clientes"}
+          </div>
+        </div>
+        <ul className="py-1 max-h-[340px] overflow-y-auto scrollbar-thin">
+          {shown.map((e) => (
+            <li key={e.key} className="flex items-baseline gap-3 px-3 py-1.5">
+              <span className="min-w-0 flex-1">
+                <span className="block text-[12.5px] text-fg truncate" title={e.name}>{e.name}</span>
+                <span className="block text-[10.5px] text-fg-subtle truncate">
+                  {e.customer || "sem cliente"}
+                  {e.token && <span className="font-mono text-signature ml-1.5">{e.token}</span>}
+                  {e.lines > 1 && <span className="ml-1.5">· {e.lines} lines</span>}
+                </span>
+              </span>
+              <span className="text-[12.5px] font-semibold text-fg tabular-nums shrink-0">
+                {formatBRL(e.pi)}
+              </span>
+            </li>
+          ))}
+          {rest > 0 && (
+            <li className="flex items-baseline justify-between gap-3 px-3 py-1.5 text-[11px] text-fg-subtle">
+              <span>+ {rest} {rest === 1 ? "outro PI" : "outros PIs"}</span>
+              <span className="tabular-nums">{formatBRL(restSum)}</span>
+            </li>
+          )}
+        </ul>
+        <div className="flex items-baseline justify-between gap-3 px-3 py-2 border-t border-border bg-surface-3">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-fg-muted">Total do mês</span>
+          <span className="text-[13px] font-bold text-fg tabular-nums">{formatBRL(row.pi)}</span>
+        </div>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

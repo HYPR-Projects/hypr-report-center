@@ -463,6 +463,10 @@ export function buildMonthlyLedger({ lines = [], tsRows = [] } = {}) {
     let e = months.get(m);
     if (!e) {
       e = { month: m, pi: 0, piCount: 0, campaigns: new Set(), clients: new Set(),
+            // `entries` = os PIs que entraram no mês, um por flight. Alimenta o
+            // hover da tabela ("quais PIs foram esses?") sem refazer conta:
+            // a soma dos entries É o `pi` da linha, por construção.
+            entries: [],
             revenue: 0, margin: 0, cost: 0, imps: 0 };
       months.set(m, e);
     }
@@ -483,6 +487,17 @@ export function buildMonthlyLedger({ lines = [], tsRows = [] } = {}) {
       e.piCount += 1;
       e.campaigns.add(c.key);
       if (c.customer) e.clients.add(c.customer);
+      e.entries.push({
+        key: f.key,
+        // Nome do FLIGHT (= o da campanha quando ela tem um flight só), que é
+        // a unidade que carrega o PI.
+        name: f.name,
+        customer: f.customer,
+        token: f.token,
+        pi: f.pi,
+        lines: f.lines.length,
+        startDate: f.lines.map((l) => l.start_date).filter(Boolean).sort()[0] || null,
+      });
     }
   }
 
@@ -501,6 +516,8 @@ export function buildMonthlyLedger({ lines = [], tsRows = [] } = {}) {
       ...e,
       campaigns: e.campaigns.size,
       clients: e.clients.size,
+      // Maior PI primeiro — é o que o operador procura ao abrir o hover.
+      entries: e.entries.sort((a, b) => b.pi - a.pi),
       marginPct: e.revenue > 0 ? e.margin / e.revenue : null,
       consumoVsEntrada: e.pi > 0 ? e.revenue / e.pi : null,
     }))
