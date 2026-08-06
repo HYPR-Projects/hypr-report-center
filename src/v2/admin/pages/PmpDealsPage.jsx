@@ -47,14 +47,18 @@ import {
   comparePmpLines, compareSortValues, formatLastDelivery,
   pctEntrega, groupPctEntrega,
   pctEntregaRev, groupPctEntregaRev,
-  resolveGroupPi,
+  resolveGroupPi, lineKey,
   effectiveStatus, isPmpEditor,
 } from "../lib/pmpFormat";
+import {
+  buildCampaigns, CAMPAIGN_SORTS, countCampaignBuckets, filterCampaigns, sortCampaigns,
+} from "../lib/pmpCampaign";
 import {
   PmpLayoutToggle, PmpKpiStrip,
   PmpLiveCard, PmpLiveGroupCard, PmpCustomerAccordion,
   PmpLineRow, PmpLineRowHeader, PmpLineGroupCard,
 } from "../components/PmpComponents";
+import { PmpCampaignView, PmpCarteiraFilters } from "../components/PmpCampaignView";
 import { GroupLinesModal } from "../components/GroupLinesModal";
 import { buildCompplanRows, applyCompplanFormats } from "../lib/compplanExport";
 import CompplanSheetCard from "../components/CompplanSheetCard";
@@ -70,17 +74,24 @@ const ALL = "__ALL__";
 // janelados pra que tudo (tabela + KPIs + export) leia o mesmo número.
 function applyWindowMetrics(lines, metrics) {
   if (!metrics) return lines;
-  // 1) Somas por grupo dentro da janela (margem/receita).
-  const gMargin = {}, gRevenue = {};
+  // Chave nova = "<fonte>:<line_id>"; backend antigo ainda responde só com o
+  // line_id (ver window_metrics em pmp_lines.py).
+  const pick = (l) => metrics[lineKey(l)] || metrics[String(l.line_id)];
+  // 1) Somas por grupo dentro da janela. Custo e impressões entram junto —
+  //    sem eles o subtotal do grupo misturava Custo/Imps LIFETIME com
+  //    Receita/Margem do período, e a linha não fechava com as próprias rows.
+  const gMargin = {}, gRevenue = {}, gCost = {}, gImps = {};
   for (const l of lines) {
     if (!l.group_id) continue;
-    const m = metrics[String(l.line_id)];
-    gMargin[l.group_id]  = (gMargin[l.group_id]  || 0) + (m ? Number(m.curator_margin  || 0) : 0);
-    gRevenue[l.group_id] = (gRevenue[l.group_id] || 0) + (m ? Number(m.curator_revenue || 0) : 0);
+    const m = pick(l);
+    gMargin[l.group_id]  = (gMargin[l.group_id]  || 0) + (m ? Number(m.curator_margin     || 0) : 0);
+    gRevenue[l.group_id] = (gRevenue[l.group_id] || 0) + (m ? Number(m.curator_revenue    || 0) : 0);
+    gCost[l.group_id]    = (gCost[l.group_id]    || 0) + (m ? Number(m.curator_total_cost || 0) : 0);
+    gImps[l.group_id]    = (gImps[l.group_id]    || 0) + (m ? Number(m.imps               || 0) : 0);
   }
   // 2) Overlay por line.
   return lines.map(l => {
-    const m = metrics[String(l.line_id)] || {};
+    const m = pick(l) || {};
     const cost    = Number(m.curator_total_cost || 0);
     const revenue = Number(m.curator_revenue    || 0);
     const margin  = Number(m.curator_margin     || 0);
@@ -100,6 +111,8 @@ function applyWindowMetrics(lines, metrics) {
       ecpm: imps > 0 ? (revenue * 1000) / imps : null,
       group_curator_margin: grpM,
       group_curator_revenue: grpR,
+      group_curator_total_cost: l.group_id ? (gCost[l.group_id] || 0) : null,
+      group_imps: l.group_id ? (gImps[l.group_id] || 0) : null,
       group_effective_margin_pct: (grpR && grpR > 0) ? grpM / grpR : null,
       group_pct_a_receber: (grpM != null && pi && pi > 0) ? grpM / pi : l.group_pct_a_receber,
       group_pct_a_receber_rev: (grpR != null && pi && pi > 0) ? grpR / pi : null,
@@ -141,6 +154,25 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   useEffect(() => {
     try { localStorage.setItem("hypr.pmp.layout", layout); } catch { /* ignore */ }
   }, [layout]);
+
+  // Carteira (aba "client") tem duas hierarquias sobre o MESMO dataset:
+  //   cliente   → accordion por cliente, campanhas/lines dentro
+  //   campanha  → accordion por campanha (PI, receita, margem, custo, entrega),
+  //               flights e lines dentro
+  // Vive num toggle em vez de virar uma 6ª aba: mesmo recorte, mesmos filtros,
+  // mesmos KPIs — só muda o eixo de leitura.
+  const [carteiraGroup, setCarteiraGroup] = useState(() => {
+    try { return localStorage.getItem("hypr.pmp.carteira") || "client"; } catch { return "client"; }
+  });
+  // Recorte da Carteira em dois eixos (ver CAMPAIGN_SITUATIONS/CYCLES).
+  // Não persiste entre sessões de propósito: é recorte de análise, e voltar
+  // no dia seguinte com "Pararam" ativo faria a carteira parecer vazia.
+  const [carteiraSituation, setCarteiraSituation] = useState("all");
+  const [carteiraCycle, setCarteiraCycle] = useState("all");
+  const [campaignSort, setCampaignSort] = useState("recent_start");
+  useEffect(() => {
+    try { localStorage.setItem("hypr.pmp.carteira", carteiraGroup); } catch { /* ignore */ }
+  }, [carteiraGroup]);
 
   // Série diária pro Analytics — fetch lazy (só ao abrir a aba). Estado:
   // idle|loading|ready|error. Declarado APÓS `layout` (o effect depende dele).
@@ -444,6 +476,24 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     [lines, search, customer, bidType, status, sourceFilter],
   );
 
+  // Campanhas da Carteira — mesmo dataset dos accordions por cliente, só que
+  // agrupado por campanha (flights de 1 PI dentro). Ver lib/pmpCampaign.js.
+  const campaigns = useMemo(() => buildCampaigns(clientLines), [clientLines]);
+  // Contagem por bucket ANTES do recorte: cada chip mostra quantas campanhas
+  // apareceriam se fosse clicado agora.
+  const carteiraCounts = useMemo(() => countCampaignBuckets(campaigns), [campaigns]);
+  const campaignsFiltered = useMemo(
+    () => filterCampaigns(campaigns, { situation: carteiraSituation, cycle: carteiraCycle }),
+    [campaigns, carteiraSituation, carteiraCycle],
+  );
+  // Lines que sobreviveram ao recorte de campanha. É o dataset da aba inteira:
+  // alimenta os dois agrupamentos, os KPIs e o badge — assim "No ar · 12" e o
+  // número no topo nunca contam coisas diferentes.
+  const carteiraLines = useMemo(
+    () => campaignsFiltered.flatMap(c => c.lines),
+    [campaignsFiltered],
+  );
+
   // Fontes de curadoria presentes no dataset. O filtro "Fonte" só aparece
   // quando há mais de uma (ex: Xandr + PubMatic) — senão é ruído.
   const sourcesPresent = useMemo(
@@ -458,9 +508,9 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   const visibleLines = useMemo(() => {
     if (layout === "live")     return liveFiltered;
     if (layout === "history")  return histLines;
-    if (layout === "client")   return clientLines;
+    if (layout === "client")   return carteiraLines;
     return allFiltered;
-  }, [layout, liveFiltered, histLines, clientLines, allFiltered]);
+  }, [layout, liveFiltered, histLines, carteiraLines, allFiltered]);
 
   // ── KPIs ──────────────────────────────────────────────────────────────────
   // Big numbers refletem o dataset visível na aba ativa (com filtros).
@@ -538,12 +588,15 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   // se você clicasse na aba agora. Histórico vira "lifetime" (tudo).
   const counts = useMemo(() => ({
     live:     liveFiltered.length,
-    // Mesmo dataset que a aba renderiza (byCustomer agrupa clientLines) —
-    // antes contava só clientes com lines ativas e divergia dos accordions.
-    client:   new Set(clientLines.map(l => l.customer || "(sem cliente)")).size,
+    // Mesmo dataset que a aba renderiza (byCustomer/campaigns agrupam
+    // clientLines) — antes contava só clientes com lines ativas e divergia
+    // dos accordions. O badge segue a hierarquia ativa da Carteira.
+    client:   carteiraGroup === "campaign"
+                ? campaignsFiltered.length
+                : new Set(carteiraLines.map(l => l.customer || "(sem cliente)")).size,
     list:     allFiltered.length,
     history:  allLinesFiltered.length,
-  }), [liveFiltered, clientLines, allFiltered, allLinesFiltered]);
+  }), [liveFiltered, carteiraLines, campaignsFiltered, carteiraGroup, allFiltered, allLinesFiltered]);
 
   const customersAll = useMemo(() => {
     const s = new Set();
@@ -664,12 +717,15 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
       "Status workflow": effectiveStatus(l),
       "Estado entrega": effectiveDeliveryMeta(l).label,
       "Bid": bidTypeLabel(l.bid_type) || "—",
+      "Fonte": SOURCE_LABELS[l.source || "xandr"] || l.source || "",
+      // Mesmo vocabulário da tela (ver METRIC em pmpFormat.js).
       "PI (R$)": Number(l.pi_brl || 0),
-      "Revenue (R$)": Number(l.curator_revenue || 0),
-      "Margem (R$)": Number(l.curator_margin || 0),
-      "Margin %": l.effective_margin_pct == null ? "" : Number(l.effective_margin_pct),
+      "Custo (R$)": Number(l.curator_total_cost || 0),
+      "Receita Bruta (R$)": Number(l.curator_revenue || 0),
+      "Margem HYPR (R$)": Number(l.curator_margin || 0),
+      "Margem %": l.effective_margin_pct == null ? "" : Number(l.effective_margin_pct),
       "% Entrega (Margem)": (() => { const p = pctEntrega(l); return p == null ? "" : Number(p); })(),
-      "% Entrega (Revenue)": (() => { const p = pctEntregaRev(l); return p == null ? "" : Number(p); })(),
+      "% Entrega (Receita)": (() => { const p = pctEntregaRev(l); return p == null ? "" : Number(p); })(),
       "Impressões": Number(l.imps || 0),
       "eCPM (R$)": l.ecpm == null ? "" : Number(l.ecpm),
       "Início": l.start_date || "", "Fim": l.end_date || "",
@@ -719,26 +775,33 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   // Inclui TODAS as lines (live + history + other) — view lifetime do
   // cliente. Encerradas ficam no mesmo accordion porque o user quer
   // contexto completo: "quanto a HYPR já faturou com esse cliente?".
+  // Agrega as CAMPANHAS por cliente (em vez de agrupar lines cruas): o cliente
+  // herda os mesmos números da visão por campanha — PI contado uma vez por
+  // flight, canceladas fora — e passa a responder ao MESMO seletor de
+  // ordenação, inclusive "mais recente → mais antiga".
   const byCustomer = useMemo(() => {
     const map = new Map();
-    // clientLines = lifetime sem arquivadas + filtros — mesmo conjunto dos
-    // KPIs e do badge da aba (contagem de clientes).
-    for (const l of clientLines) {
-      const key = l.customer || "(sem cliente)";
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(l);
+    for (const c of campaignsFiltered) {
+      const key = c.customer || "(sem cliente)";
+      let e = map.get(key);
+      if (!e) {
+        e = { name: key, lines: [], revenue: 0, margin: 0, pi: 0,
+              startDate: null, hoursSinceLastDelivery: null };
+        map.set(key, e);
+      }
+      e.lines.push(...c.lines);
+      e.revenue += c.revenue; e.margin += c.margin; e.pi += c.pi;
+      // Cliente herda a ativação MAIS RECENTE e a entrega MAIS RECENTE
+      // (menor "horas desde") entre suas campanhas.
+      if (c.startDate && (!e.startDate || c.startDate > e.startDate)) e.startDate = c.startDate;
+      if (c.hoursSinceLastDelivery != null
+          && (e.hoursSinceLastDelivery == null || c.hoursSinceLastDelivery < e.hoursSinceLastDelivery)) {
+        e.hoursSinceLastDelivery = c.hoursSinceLastDelivery;
+      }
     }
-    // Ordena clientes: 1º os com mais lines no ar, depois por revenue total
-    return [...map.entries()].sort(([ka, la], [kb, lb]) => {
-      const liveA = la.filter(x => LIVE_STATUSES.has(x.delivery_status)).length;
-      const liveB = lb.filter(x => LIVE_STATUSES.has(x.delivery_status)).length;
-      if (liveA !== liveB) return liveB - liveA;
-      const revA = la.reduce((s, x) => s + Number(x.curator_revenue || 0), 0);
-      const revB = lb.reduce((s, x) => s + Number(x.curator_revenue || 0), 0);
-      if (revA !== revB) return revB - revA;
-      return ka.localeCompare(kb);
-    });
-  }, [clientLines]);
+    const rows = [...map.values()].map(e => ({ ...e, pctMargin: e.pi > 0 ? e.margin / e.pi : null }));
+    return sortCampaigns(rows, campaignSort).map(e => [e.name, e.lines]);
+  }, [campaignsFiltered, campaignSort]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -792,7 +855,9 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
               <span className="w-0.5 h-0.5 rounded-full bg-fg-subtle" />
               <span><span className="font-semibold text-fg tabular-nums">{lines.length}</span> totais</span>
               <span className="w-0.5 h-0.5 rounded-full bg-fg-subtle" />
-              <span>Análise das entregas Xandr Curate × Hypr Command</span>
+              {/* Fontes vêm do dataset — a legenda fixa "Xandr Curate" ficou
+                  desatualizada quando a PubMatic entrou como 2ª fonte. */}
+              <span>Entregas {sourcesPresent.map(s => SOURCE_LABELS[s] || s).join(" × ")} × Hypr Command</span>
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -858,6 +923,23 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
               )}
             </div>
           )}
+          {layout === "client" && (
+            <div className="flex flex-wrap items-center gap-2">
+              <GroupBySwitch value={carteiraGroup} onChange={setCarteiraGroup} />
+              {/* Ordenação vale pros dois agrupamentos: por campanha ordena os
+                  cards, por cliente ordena os accordions com a mesma régua. */}
+              {(
+                <label className="inline-flex items-center gap-2">
+                  <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle hidden sm:inline">Ordenar</span>
+                  <select value={campaignSort} onChange={(e) => setCampaignSort(e.target.value)}
+                          className="appearance-none h-9 pl-3 pr-8 rounded-lg bg-surface border border-border text-sm text-fg hover:bg-surface-strong cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature"
+                          style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 10px center" }}>
+                    {CAMPAIGN_SORTS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                  </select>
+                </label>
+              )}
+            </div>
+          )}
           {layout === "list" && (sortBy !== LIST_DEFAULT_SORT.by || sortDir !== LIST_DEFAULT_SORT.dir) && (
             <div className="flex flex-wrap items-center gap-2">
               <SortChip
@@ -901,13 +983,34 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
           </div>
         )}
 
+        {/* Recorte da Carteira — situação (está rodando?) × ciclo (entregou o
+            contratado?). Vale pros dois agrupamentos. */}
+        {layout === "client" && (
+          <div className="mb-6 -mt-2">
+            <PmpCarteiraFilters
+              situation={carteiraSituation} cycle={carteiraCycle}
+              onSituation={setCarteiraSituation} onCycle={setCarteiraCycle}
+              counts={carteiraCounts}
+            />
+          </div>
+        )}
+
         {/* Views — skeleton só no load inicial; reload em background mantém a grid visível */}
         {(loading && lines.length === 0) ? <LinesSkeleton />
           : error  ? <ErrorState message={error} onRetry={reload} />
           : (
             <>
               {layout === "live"     && <LiveView     lines={liveOrdered}     onLineClick={setEditing} onLinkClick={canEdit ? setLinking : undefined} />}
-              {layout === "client"   && <ClientView   groups={byCustomer}     onLineClick={setEditing} onLinkClick={canEdit ? setLinking : undefined} />}
+              {layout === "client"   && (carteiraGroup === "campaign"
+                ? <PmpCampaignView campaigns={campaignsFiltered} sortBy={campaignSort}
+                                   onLineClick={setEditing} onLinkClick={canEdit ? setLinking : undefined} />
+                : <ClientView      groups={byCustomer}
+                                   summary={{
+                                     campaigns: campaignsFiltered.length,
+                                     lines: carteiraLines.length,
+                                     live: campaignsFiltered.reduce((s, c) => s + c.liveCount, 0),
+                                   }}
+                                   onLineClick={setEditing} onLinkClick={canEdit ? setLinking : undefined} />)}
               {layout === "list"     && <ListView     lines={allSorted}       sortBy={sortBy} sortDir={sortDir}
                                                        onColumnClick={(f) => {
                                                          // Ciclo 3-estado: desc → asc → default
@@ -1003,12 +1106,31 @@ function LiveView({ lines, onLineClick, onLinkClick }) {
   );
 }
 
-function ClientView({ groups, onLineClick, onLinkClick }) {
+function ClientView({ groups, onLineClick, onLinkClick, summary }) {
   if (groups.length === 0) {
     return <EmptyFilters />;
   }
   return (
     <div className="space-y-3">
+      {/* Mesma linha-resumo da visão por campanha: os chips de recorte contam
+          CAMPANHAS, então sem isto o "No ar · 8" ficava sem explicação ao lado
+          de um badge de 5 clientes. */}
+      {summary && (
+        <p className="px-1 text-[11.5px] text-fg-muted tabular-nums">
+          <span className="font-semibold text-fg">{groups.length}</span>
+          {groups.length === 1 ? " cliente" : " clientes"}
+          <span className="mx-1.5 text-fg-subtle">·</span>
+          {summary.campaigns} {summary.campaigns === 1 ? "campanha" : "campanhas"}
+          <span className="mx-1.5 text-fg-subtle">·</span>
+          {summary.lines} {summary.lines === 1 ? "line" : "lines"}
+          {summary.live > 0 && (
+            <>
+              <span className="mx-1.5 text-fg-subtle">·</span>
+              <span className="text-emerald-500 dark:text-emerald-400">{summary.live} no ar</span>
+            </>
+          )}
+        </p>
+      )}
       {groups.map(([customer, lines], i) => (
         <PmpCustomerAccordion key={customer || i} customer={customer} lines={lines}
                               onLineClick={onLineClick} onLinkClick={onLinkClick}
@@ -1523,13 +1645,13 @@ function formatRangeCompact(from, to) {
 const SORT_FIELD_LABELS = {
   customer:                  "Cliente",
   pi_brl:                    "PI",
-  curator_total_cost:        "Cost",
-  curator_revenue:           "Revenue",
+  curator_total_cost:        "Custo",
+  curator_revenue:           "Receita Bruta",
   curator_margin:            "Margem",
-  effective_margin_pct:      "Mgm %",
-  pct_a_receber:             "% Entr Mgm",
-  pct_a_receber_rev:         "% Entr Rev",
-  hours_since_last_delivery: "Delivery",
+  effective_margin_pct:      "Margem %",
+  pct_a_receber:             "% Entrega (margem)",
+  pct_a_receber_rev:         "% Entrega (receita)",
+  hours_since_last_delivery: "Entrega",
   start_date:                "Início",
 };
 
@@ -1551,6 +1673,40 @@ function SortChip({ visible, field, dir, onClear }) {
       <span className="font-medium">{label} {arrow}</span>
       <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-signature/20 group-hover:bg-signature/30 text-[12px] leading-none transition-colors">×</span>
     </button>
+  );
+}
+
+// Eixo de leitura da Carteira: mesmo dataset, duas hierarquias.
+// Segmentado (e não duas abas) porque a troca é de PONTO DE VISTA, não de
+// recorte — filtros, KPIs e contagem seguem valendo dos dois lados.
+function GroupBySwitch({ value, onChange }) {
+  const options = [
+    { value: "client",   label: "Cliente",
+      icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="7" r="3.5"/><path d="M3 21v-1a6 6 0 0 1 12 0v1"/><circle cx="17" cy="7" r="3" strokeOpacity="0.5"/></svg> },
+    { value: "campaign", label: "Campanha",
+      icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 11v3a1 1 0 0 0 1 1h3l5 4V6L7 10H4a1 1 0 0 0-1 1Z"/><path d="M16 8.5a5 5 0 0 1 0 7"/></svg> },
+  ];
+  return (
+    <div className="inline-flex items-center gap-2">
+      <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle hidden sm:inline">Agrupar por</span>
+      <div role="tablist" aria-label="Agrupar carteira por"
+           className="inline-flex gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border">
+        {options.map(o => {
+          const active = o.value === value;
+          return (
+            <button key={o.value} type="button" role="tab" aria-selected={active}
+                    onClick={() => onChange(o.value)}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium transition-colors",
+                      active ? "bg-canvas-elevated text-fg shadow-sm" : "text-fg-muted hover:text-fg",
+                    )}>
+              {o.icon}
+              <span>{o.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

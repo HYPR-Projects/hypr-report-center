@@ -37,7 +37,9 @@ import { formatMonthLabel } from "../lib/format";
 import {
   formatBRL, formatBRLCompact, formatInt, formatIntCompact, formatRatioPct,
   effectiveStatus, statusPillClass, bidTypeLabel, pctEntrega, resolveGroupPi,
+  buildDeliveryKeyResolver, lineKey, METRIC,
 } from "../lib/pmpFormat";
+import { buildMonthlyLedger } from "../lib/pmpCampaign";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const num = (v) => Number(v) || 0;
@@ -120,21 +122,41 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
     });
   }, [lines, customers, campaigns, statuses, bidTypes]);
 
-  const lineIds = useMemo(() => new Set(filteredLines.map((l) => l.line_id)), [filteredLines]);
+  // Casamento série × line pelo par (fonte, line_id) — um line_id do Xandr
+  // pode colidir com um dealMetaId da PubMatic. `rowKey` resolve a chave da
+  // row (e devolve null quando a row é ambígua num backend antigo, sem fonte).
+  const lineIds = useMemo(() => new Set(filteredLines.map(lineKey)), [filteredLines]);
+  const rowKey = useMemo(() => buildDeliveryKeyResolver(lines), [lines]);
 
   // Janela de datas (ymd) do filtro de período.
   const fromYmd = period?.from ? ymd(period.from) : null;
   const toYmd = period?.to ? ymd(period.to) : null;
 
   // Rows da série dentro do conjunto de lines + janela de período.
+  // `_k` (chave resolvida) viaja junto pra não recalcular em cada agregação.
   const tsFiltered = useMemo(() => {
-    return timeseries.filter((r) => {
-      if (!lineIds.has(r.line_id)) return false;
-      if (fromYmd && r.day < fromYmd) return false;
-      if (toYmd && r.day > toYmd) return false;
-      return true;
-    });
-  }, [timeseries, lineIds, fromYmd, toYmd]);
+    const out = [];
+    for (const r of timeseries) {
+      const k = rowKey(r);
+      if (!k || !lineIds.has(k)) continue;
+      if (fromYmd && r.day < fromYmd) continue;
+      if (toYmd && r.day > toYmd) continue;
+      out.push(r._k === k ? r : { ...r, _k: k });
+    }
+    return out;
+  }, [timeseries, lineIds, rowKey, fromYmd, toYmd]);
+
+  // Mesma filtragem por dimensão, SEM janela de período — base da tabela
+  // mensal (que é lifetime por design, ver MonthlyLedger).
+  const tsAllPeriods = useMemo(() => {
+    const out = [];
+    for (const r of timeseries) {
+      const k = rowKey(r);
+      if (!k || !lineIds.has(k)) continue;
+      out.push(r._k === k ? r : { ...r, _k: k });
+    }
+    return out;
+  }, [timeseries, lineIds, rowKey]);
 
   // Bounds do calendário a partir da série disponível.
   const dataBounds = useMemo(() => {
@@ -157,7 +179,7 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
       imps += num(r.imps);
       viewable += num(r.viewable_imps);
       clicks += num(r.clicks);
-      ids.add(r.line_id);
+      ids.add(r._k);
     }
     return {
       revenue, margin, cost, imps, viewable, clicks,
@@ -173,8 +195,12 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
   const contract = useMemo(() => {
     const piByKey = new Map();
     const marginByKey = new Map();
+    // Canceladas fora do contratado — mesma régua dos KPIs da página, que já
+    // as ignoravam. Sem isso, o "PI contratado" do Analytics ficava maior que
+    // o "Total PI" das outras abas com os mesmos filtros.
     for (const l of filteredLines) {
-      const key = l.group_id || `l:${l.line_id}`;
+      if (effectiveStatus(l) === "Cancelado") continue;
+      const key = l.group_id ? `g:${l.group_id}` : `l:${lineKey(l)}`;
       if (l.pi_brl != null && !piByKey.has(key)) piByKey.set(key, num(l.pi_brl));
       if (l.group_id) {
         if (!marginByKey.has(key)) marginByKey.set(key, num(l.group_curator_margin));
@@ -199,15 +225,14 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
     const prevFromD = new Date(prevToD); prevFromD.setDate(prevFromD.getDate() - (days - 1));
     const pf = ymd(prevFromD), pt = ymd(prevToD);
     let revenue = 0, margin = 0, imps = 0;
-    for (const r of timeseries) {
-      if (!lineIds.has(r.line_id)) continue;
+    for (const r of tsAllPeriods) {
       if (r.day < pf || r.day > pt) continue;
       revenue += num(r.curator_revenue);
       margin += num(r.curator_margin);
       imps += num(r.imps);
     }
     return { revenue, margin, imps, label: `${dayLong(pf)} – ${dayLong(pt)}` };
-  }, [timeseries, lineIds, period, fromYmd, toYmd]);
+  }, [tsAllPeriods, period, fromYmd, toYmd]);
 
   const delta = (cur, base) => (base != null && base > 0 ? (cur - base) / base : null);
 
@@ -233,14 +258,14 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
   // count = nº de deals que ENTREGARAM no período naquele status (consistente
   // com a receita, que também é do período).
   const byStatus = useMemo(() => {
-    const lineToStatus = new Map(filteredLines.map((l) => [l.line_id, effectiveStatus(l)]));
+    const lineToStatus = new Map(filteredLines.map((l) => [lineKey(l), effectiveStatus(l)]));
     const rev = new Map(), ids = new Map();
     for (const r of tsFiltered) {
-      const s = lineToStatus.get(r.line_id);
+      const s = lineToStatus.get(r._k);
       if (!s) continue;
       rev.set(s, (rev.get(s) || 0) + num(r.curator_revenue));
       if (!ids.has(s)) ids.set(s, new Set());
-      ids.get(s).add(r.line_id);
+      ids.get(s).add(r._k);
     }
     const rows = [...rev.entries()]
       .map(([status, revenue]) => ({ status, revenue, count: ids.get(status)?.size || 0 }))
@@ -263,10 +288,11 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
     // "tem PI?" olhando só o primeiro membro encontrado.
     const units = new Map();  // dedupKey → { name, members: [] }
     for (const l of filteredLines) {
+      if (effectiveStatus(l) === "Cancelado") continue;
       const name = (cmpDim === "campaign"
         ? (l.campaign_name || l.line_name)
         : l.customer) || "—";
-      const groupKey = l.group_id ? `g:${l.group_id}` : `l:${l.line_id}`;
+      const groupKey = l.group_id ? `g:${l.group_id}` : `l:${lineKey(l)}`;
       const dedupKey = `${name}|${groupKey}`;
       let u = units.get(dedupKey);
       if (!u) { u = { name, members: [] }; units.set(dedupKey, u); }
@@ -302,8 +328,8 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
   const tableRows = useMemo(() => {
     const per = new Map();
     for (const r of tsFiltered) {
-      let e = per.get(r.line_id);
-      if (!e) { e = { revenue: 0, margin: 0, imps: 0, clicks: 0 }; per.set(r.line_id, e); }
+      let e = per.get(r._k);
+      if (!e) { e = { revenue: 0, margin: 0, imps: 0, clicks: 0 }; per.set(r._k, e); }
       e.revenue += num(r.curator_revenue);
       e.margin += num(r.curator_margin);
       e.imps += num(r.imps);
@@ -311,7 +337,7 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
     }
     return filteredLines
       .map((l) => {
-        const p = per.get(l.line_id) || { revenue: 0, margin: 0, imps: 0, clicks: 0 };
+        const p = per.get(lineKey(l)) || { revenue: 0, margin: 0, imps: 0, clicks: 0 };
         return {
           line: l,
           revenue: p.revenue,
@@ -324,6 +350,18 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
       .filter((r) => r.revenue > 0 || r.imps > 0)
       .sort((a, b) => b.revenue - a.revenue);
   }, [tsFiltered, filteredLines]);
+
+  // ── Fechamento mensal ──────────────────────────────────────────────────────
+  // Entrada de PI × consumo de receita/margem, mês a mês. É LIFETIME de
+  // propósito (ignora o filtro de período, respeita os de dimensão): serve pra
+  // controle financeiro — "quanto entrou de contrato em julho × quanto foi
+  // consumido em julho" —, e um PI de julho costuma ser consumido também em
+  // agosto. Filtrar por período esconderia exatamente a defasagem que a tabela
+  // existe pra mostrar.
+  const ledger = useMemo(
+    () => buildMonthlyLedger({ lines: filteredLines, tsRows: tsAllPeriods }),
+    [filteredLines, tsAllPeriods],
+  );
 
   const filtersActive = !!period || customers.length || campaigns.length || statuses.length || bidTypes.length;
   const clearFilters = () => {
@@ -398,20 +436,26 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
       </div>
 
       {!hasData ? (
-        <div className="rounded-2xl border border-border bg-canvas-elevated p-10 text-center">
-          <p className="text-sm text-fg-muted">Nenhuma entrega para os filtros atuais.</p>
-          <p className="text-[12px] text-fg-subtle mt-1.5">Ajuste o período ou os filtros de dimensão.</p>
-        </div>
+        <>
+          <div className="rounded-2xl border border-border bg-canvas-elevated p-10 text-center">
+            <p className="text-sm text-fg-muted">Nenhuma entrega no período selecionado.</p>
+            <p className="text-[12px] text-fg-subtle mt-1.5">Ajuste o período ou os filtros de dimensão.</p>
+          </div>
+          {/* O fechamento mensal é acumulado — continua valendo mesmo quando a
+              janela escolhida não teve entrega, e é justamente aí que ele
+              responde "então em que mês isso rodou?". */}
+          <MonthlyLedger ledger={ledger} accent={accent} />
+        </>
       ) : (
         <>
           {/* ── Big numbers ────────────────────────────────────────────────── */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-            <KpiTile label="Receita" value={formatBRLCompact(kpis.revenue)} title={formatBRL(kpis.revenue)}
+            <KpiTile label={METRIC.revenue.label} value={formatBRLCompact(kpis.revenue)} title={formatBRL(kpis.revenue)}
                      accent delta={prev ? delta(kpis.revenue, prev.revenue) : null} deltaTitle={prev?.label} />
             <KpiTile label="Margem HYPR" value={formatBRLCompact(kpis.margin)} title={formatBRL(kpis.margin)}
                      sub={kpis.marginPct != null ? `${formatRatioPct(kpis.marginPct, 1)} margem` : null}
                      delta={prev ? delta(kpis.margin, prev.margin) : null} deltaTitle={prev?.label} />
-            <KpiTile label="Impressões" value={formatIntCompact(kpis.imps)} title={`${formatInt(kpis.imps)} impressões`}
+            <KpiTile label={METRIC.imps.label} value={formatIntCompact(kpis.imps)} title={`${formatInt(kpis.imps)} impressões`}
                      delta={prev ? delta(kpis.imps, prev.imps) : null} deltaTitle={prev?.label} />
             <KpiTile label="eCPM" value={kpis.ecpm != null ? formatBRL(kpis.ecpm) : "—"} sub="receita / mil imps" />
             <KpiTile label="Deals entregando" value={formatInt(kpis.deals)}
@@ -431,6 +475,9 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
               <EvolutionChart data={series} accent={accent} mode="volume" />
             </ChartCardV2>
           </div>
+
+          {/* ── Fechamento mensal (entrada de PI × consumo) ────────────────── */}
+          <MonthlyLedger ledger={ledger} accent={accent} />
 
           {/* ── Mix por cliente + status ───────────────────────────────────── */}
           {/* items-start: cada card abraça seu conteúdo (donut não estica e fica
@@ -478,10 +525,12 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
           <DealsTable rows={tableRows} accent={accent} />
 
           <p className="text-[11px] text-fg-subtle">
-            Métricas de entrega (receita, margem, impressões, eCPM) refletem o período selecionado.
-            PI é o valor de contrato e a % entregue é acumulada (gerado ÷ PI), independente do período —
-            por isso o card “Realizado vs. contratado” soma o gerado lifetime e ignora o filtro de período
-            (os filtros de cliente, campanha, status e bid continuam valendo).
+            Métricas de entrega (Receita Bruta, Margem HYPR, impressões, eCPM) refletem o período selecionado.
+            PI é o valor de contrato e a % de entrega é acumulada (gerado ÷ PI), independente do período —
+            por isso “Fechamento mensal” e “Realizado vs. contratado” somam o gerado lifetime e ignoram o
+            filtro de período (os filtros de cliente, campanha, status e bid continuam valendo).
+            No fechamento mensal, entrada de PI e consumo são coortes distintas: o contrato de um mês
+            costuma ser entregue ao longo dos meses seguintes.
             {prev && <> Variações comparam com o período anterior de mesma duração.</>}
           </p>
         </>
@@ -523,7 +572,7 @@ function Delta({ value, title }) {
   const up = pct > 0;
   const cls = flat ? "text-fg-subtle" : up ? "text-emerald-400" : "text-rose-400";
   const arrow = flat ? "→" : up ? "▲" : "▼";
-  const txt = `${up && !flat ? "+" : ""}${pct.toFixed(flat ? 0 : 0)}%`;
+  const txt = `${up ? "+" : ""}${pct.toFixed(0)}%`;
   return (
     <span className={cn("inline-flex items-center gap-0.5 text-[11px] font-semibold tabular-nums shrink-0", cls)}
           title={title ? `vs ${title}` : undefined}>
@@ -731,6 +780,171 @@ function ContractProgress({ rows, metric, accent }) {
   );
 }
 
+// ── Fechamento mensal: entrada de PI × consumo ───────────────────────────────
+//
+// A tabela de controle financeiro do time. Duas coortes DIFERENTES lado a lado,
+// de propósito:
+//
+//   ENTRADA — o PI que entrou na carteira naquele mês (contrato fechado).
+//   CONSUMO — receita/margem efetivamente entregues DENTRO daquele mês, venham
+//             de contratos de qualquer mês.
+//
+// Elas não batem e não devem bater: um PI fechado em julho costuma ser
+// consumido em julho E agosto. É essa defasagem que a tabela existe pra
+// mostrar — por isso a última coluna se chama "consumo ÷ entrada" (termômetro
+// de ritmo do mês) e nunca "% de entrega do PI", que é outra conta.
+function MonthlyLedger({ ledger, accent }) {
+  const [copied, setCopied] = useState(false);
+  const { rows, totals } = ledger;
+  // Escala das barrinhas: o maior valor entre entrada e consumo de todos os
+  // meses. Comparação visual entre meses só funciona com escala comum.
+  const scale = useMemo(
+    () => rows.reduce((m, r) => Math.max(m, r.pi, r.revenue), 0) || 1,
+    [rows],
+  );
+
+  const copyTsv = async () => {
+    const head = ["Mês", "PI entrado", "PIs", "Receita Bruta", "Margem HYPR", "Margem %", "Impressões", "Consumo ÷ Entrada"];
+    const body = rows.map((r) => [
+      r.month, r.pi.toFixed(2), r.piCount, r.revenue.toFixed(2), r.margin.toFixed(2),
+      r.marginPct != null ? (r.marginPct * 100).toFixed(1) : "",
+      r.imps,
+      r.consumoVsEntrada != null ? (r.consumoVsEntrada * 100).toFixed(1) : "",
+    ]);
+    const tsv = [head, ...body].map((l) => l.join("\t")).join("\n");
+    try {
+      await navigator.clipboard.writeText(tsv);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* clipboard bloqueado — silencioso, o usuário ainda tem o Exportar */ }
+  };
+
+  return (
+    <div className="rounded-xl border border-border bg-surface overflow-hidden">
+      <div className="px-4 md:px-5 py-3.5 border-b border-border flex items-start md:items-center justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <h3 className="text-[11px] font-bold uppercase tracking-widest text-signature flex items-center gap-2 flex-wrap">
+            Fechamento mensal
+            <span className="normal-case tracking-normal font-medium text-[10px] leading-none px-1.5 py-1 rounded-md bg-surface-strong text-fg-subtle border border-border whitespace-nowrap"
+                  title="Entrada e consumo são acumulados por mês e não reagem ao filtro de período (os filtros de cliente, campanha, status e bid continuam valendo).">
+              acumulado · ignora período
+            </span>
+          </h3>
+          <p className="text-[11px] text-fg-subtle mt-1">
+            <span className="text-fg-muted">Entrada</span> = PI dos flights que começaram no mês
+            <span className="mx-1.5">·</span>
+            <span className="text-fg-muted">Consumo</span> = receita entregue dentro do mês
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button type="button" onClick={copyTsv}
+                  className="h-7 px-2.5 rounded-md border border-border bg-canvas-deeper text-[12px] font-medium text-fg-muted hover:text-fg hover:bg-surface-strong transition-colors">
+            {copied ? "Copiado ✓" : "Copiar"}
+          </button>
+        </div>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="px-5 py-10 text-center text-[12px] text-fg-subtle">
+          Sem PI nem entrega para os filtros atuais.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[13px]">
+            <thead>
+              <tr className="bg-surface-3 text-fg-muted">
+                <Th className="text-left">Mês</Th>
+                <Th className="text-right">PI entrado</Th>
+                <Th className="text-right">PIs</Th>
+                <Th className="text-right">{METRIC.revenue.label}</Th>
+                <Th className="text-right">{METRIC.margin.label}</Th>
+                <Th className="text-right">Margem %</Th>
+                <Th className="text-left w-[150px]">Entrada × Consumo</Th>
+                <Th className="text-right">Consumo ÷ Entrada</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.month} className="border-t border-border hover:bg-surface-strong transition-colors">
+                  <Td className="text-left whitespace-nowrap">
+                    <span className="font-medium text-fg">{formatMonthLabel(r.month, "short")}</span>
+                    {r.campaigns > 0 && (
+                      <span className="text-fg-subtle text-[11px]"> · {r.campaigns} {r.campaigns === 1 ? "campanha" : "campanhas"}</span>
+                    )}
+                  </Td>
+                  <Td className="text-right font-semibold text-fg tabular-nums">
+                    {r.pi > 0 ? formatBRLCompact(r.pi) : <span className="text-fg-subtle">—</span>}
+                  </Td>
+                  <Td className="text-right text-fg-muted tabular-nums">{r.piCount || <span className="text-fg-subtle">—</span>}</Td>
+                  <Td className="text-right text-fg tabular-nums" title={formatBRL(r.revenue)}>
+                    {r.revenue > 0 ? formatBRLCompact(r.revenue) : <span className="text-fg-subtle">—</span>}
+                  </Td>
+                  <Td className="text-right font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums" title={formatBRL(r.margin)}>
+                    {r.margin > 0 ? formatBRLCompact(r.margin) : <span className="text-fg-subtle">—</span>}
+                  </Td>
+                  <Td className="text-right text-fg-muted tabular-nums">
+                    {r.marginPct != null ? formatRatioPct(r.marginPct, 0) : "—"}
+                  </Td>
+                  <Td className="text-left">
+                    <MiniBars entrada={r.pi} consumo={r.revenue} scale={scale} accent={accent} />
+                  </Td>
+                  <Td className="text-right tabular-nums">
+                    {r.consumoVsEntrada != null
+                      ? <span className={cn("font-medium", r.consumoVsEntrada >= 1 ? "text-emerald-600 dark:text-emerald-400" : "text-fg")}>
+                          {formatRatioPct(r.consumoVsEntrada, 0)}
+                        </span>
+                      : <span className="text-fg-subtle">—</span>}
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-border bg-surface-3/60 font-semibold">
+                <Td className="text-left text-fg-muted text-[11px] uppercase tracking-wider">Total · {rows.length} {rows.length === 1 ? "mês" : "meses"}</Td>
+                <Td className="text-right text-fg tabular-nums" title={formatBRL(totals.pi)}>{formatBRLCompact(totals.pi)}</Td>
+                <Td className="text-right text-fg-muted tabular-nums">{totals.piCount}</Td>
+                <Td className="text-right text-fg tabular-nums" title={formatBRL(totals.revenue)}>{formatBRLCompact(totals.revenue)}</Td>
+                <Td className="text-right text-emerald-600 dark:text-emerald-400 tabular-nums" title={formatBRL(totals.margin)}>{formatBRLCompact(totals.margin)}</Td>
+                <Td className="text-right text-fg-muted tabular-nums">{totals.marginPct != null ? formatRatioPct(totals.marginPct, 0) : "—"}</Td>
+                <Td />
+                <Td className="text-right text-fg tabular-nums">{totals.consumoVsEntrada != null ? formatRatioPct(totals.consumoVsEntrada, 0) : "—"}</Td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+
+      <div className="px-4 md:px-5 py-2.5 border-t border-border flex items-center gap-4 flex-wrap text-[11px] text-fg-subtle">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-3 h-1.5 rounded-full bg-fg-subtle/50" aria-hidden /> PI entrado no mês
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-3 h-1.5 rounded-full" style={{ background: accent }} aria-hidden /> Receita consumida no mês
+        </span>
+        <span className="ml-auto">
+          Coortes diferentes: o PI de um mês costuma ser consumido ao longo dos meses seguintes.
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// Duas barras finas na mesma escala (max entre todos os meses) — leitura
+// instantânea de "entrou muito e consumiu pouco" e vice-versa.
+function MiniBars({ entrada, consumo, scale, accent }) {
+  const w = (v) => `${Math.max(v > 0 ? 2 : 0, Math.min(100, (v / scale) * 100))}%`;
+  return (
+    <div className="flex flex-col gap-1 min-w-[110px]" aria-hidden>
+      <div className="h-1.5 rounded-full bg-track overflow-hidden">
+        <div className="h-full rounded-full bg-fg-subtle/50" style={{ width: w(entrada) }} />
+      </div>
+      <div className="h-1.5 rounded-full bg-track overflow-hidden">
+        <div className="h-full rounded-full" style={{ width: w(consumo), background: accent }} />
+      </div>
+    </div>
+  );
+}
+
 // ── Receita por status (donut) ────────────────────────────────────────────────
 function StatusDonut({ data }) {
   if (!data.rows.length) return <EmptyChart />;
@@ -758,7 +972,10 @@ function StatusDonut({ data }) {
           <span className="text-[10px] text-fg-subtle mt-0.5">{data.rows.length} {data.rows.length === 1 ? "status" : "status"}</span>
         </div>
       </div>
-      <div className="flex-1 w-full self-center divide-y divide-border/70">
+      {/* min-w-0: sem isso o filho flex não encolhe abaixo do conteúdo e a
+          legenda (donut 188px + colunas fixas) estourava a viewport em
+          larguras médias — a página inteira ganhava scroll horizontal. */}
+      <div className="flex-1 min-w-0 w-full self-center divide-y divide-border/70">
         {data.rows.map((r) => {
           const pct = data.total > 0 ? (r.revenue / data.total) * 100 : 0;
           return (
@@ -783,10 +1000,10 @@ const DEAL_COLS = [
   { key: "customer", label: "Cliente", align: "left" },
   { key: "campaign", label: "Campanha", align: "left", sortable: false },
   { key: "status", label: "Status", align: "left", sortable: false },
-  { key: "revenue", label: "Receita", align: "right" },
-  { key: "margin", label: "Margem", align: "right" },
+  { key: "revenue", label: "Receita Bruta", align: "right" },
+  { key: "margin", label: "Margem HYPR", align: "right" },
   { key: "marginPct", label: "Margem %", align: "right" },
-  { key: "pctEntregue", label: "% entregue", align: "right" },
+  { key: "pctEntregue", label: "% Entrega", align: "right" },
 ];
 
 function DealsTable({ rows, accent }) {
@@ -839,7 +1056,7 @@ function DealsTable({ rows, accent }) {
             {visible.map((r) => {
               const st = effectiveStatus(r.line);
               return (
-                <tr key={r.line.line_id} className="border-t border-border hover:bg-surface-strong transition-colors">
+                <tr key={lineKey(r.line)} className="border-t border-border hover:bg-surface-strong transition-colors">
                   <Td className="text-left"><span className="font-medium text-fg line-clamp-1">{r.line.customer || "—"}</span></Td>
                   <Td className="text-left text-fg-muted"><span className="line-clamp-1 max-w-[280px]">{r.line.campaign_name || r.line.line_name || "—"}</span></Td>
                   <Td className="text-left">
