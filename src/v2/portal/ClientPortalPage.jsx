@@ -26,8 +26,20 @@ import { TooltipProvider } from "../../ui/Tooltip";
 import { SegmentedControlV2 } from "../components/SegmentedControlV2";
 import { DateRangeFilterV2 } from "../components/DateRangeFilterV2";
 import { ThemeToggleV2 } from "../components/ThemeToggleV2";
-import { ymd } from "../../shared/dateFilter";
 import { MultiSelectDropdown } from "./PortalFilters";
+import {
+  featuresOf,
+  featureKeysOf,
+  buildFeatureOptions,
+  hasMediaSplit,
+  mediaMode,
+  sliceCampaign,
+  aggregateSlices,
+  efficiencyTiles,
+  buildPortalPresets,
+  monthsCovered,
+  overlapsPeriod,
+} from "./portalMetrics";
 import PortalAnalytics from "./PortalAnalytics";
 import HyprReportCenterLogo from "../../components/HyprReportCenterLogo";
 import { cn } from "../../ui/cn";
@@ -141,12 +153,9 @@ export default function ClientPortalPage({ shareId }) {
 }
 
 // ── Helpers client-safe ─────────────────────────────────────────────────────
-
-// Investido = PI cliente contratado (display + vídeo). Campo seguro: é o que o
-// cliente comprou, não o custo real da HYPR.
-function investedOf(c) {
-  return (Number(c.d_client_budget) || 0) + (Number(c.v_client_budget) || 0);
-}
+// A matemática de agregação, o recorte por mídia e o vocabulário de features
+// vivem em ./portalMetrics — compartilhados com a aba Analytics pra que as duas
+// visões nunca divirjam.
 
 const MONOGRAM_MAX = 2;
 function monogram(name) {
@@ -186,65 +195,64 @@ function PortalView({ data, shareId }) {
   const filtersActive = fmts.length > 0 || feats.length > 0 || !!period;
   const clearFilters = () => { setFmts([]); setFeats([]); setPeriod(null); setPeriodPresetId("all"); };
 
-  // Big numbers agregados — só métricas seguras.
-  const summary = useMemo(() => {
-    let invested = 0;
-    let impressions = 0;
-    let clicks = 0;
-    let completions = 0;
-    const ctrs = [];
-    const vtrs = [];
-    let active = 0;
-    let firstStart = null;
-    let lastEnd = null;
+  // Recorte por mídia: marcar SÓ Display (ou só Vídeo) recalcula todos os
+  // números com a parcela daquele formato. Antes o filtro só escondia a
+  // campanha inteira quando ela não tinha aquela mídia — e como quase toda
+  // campanha roda os dois, marcar "Display" não mudava nada na tela.
+  const splitAvailable = useMemo(() => hasMediaSplit(campaigns), [campaigns]);
+  const mode = mediaMode(fmts, splitAvailable);
+
+  // Limites do conjunto — NÃO reagem aos filtros. Alimentam o hero (identidade
+  // da conta) e os limites do calendário/presets: se encolhessem a cada filtro,
+  // o próprio filtro de período mudaria de escala embaixo do usuário.
+  const bounds = useMemo(() => {
+    let active = 0, firstStart = null, lastEnd = null;
     for (const c of campaigns) {
-      invested += investedOf(c);
-      impressions += Number(c.viewable_impressions) || 0;
-      clicks += Number(c.clicks) || 0;
-      completions += Number(c.completions) || 0;
-      if (c.ctr != null) ctrs.push(Number(c.ctr));
-      if (c.vtr != null) vtrs.push(Number(c.vtr));
       const status = getCampaignStatus(c.end_date, c.closed_at, c.paused_at, c.early_end_date);
       if (status === "in_flight" || status === "paused") active += 1;
       if (c.start_date && (!firstStart || c.start_date < firstStart)) firstStart = c.start_date;
       if (c.end_date && (!lastEnd || c.end_date > lastEnd)) lastEnd = c.end_date;
     }
-    const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
-    return {
-      invested,
-      impressions,
-      clicks,
-      completions,
-      // CTR agregado correto = Σcliques / Σimpressões (não média de razões).
-      ctr: impressions > 0 ? (clicks / impressions) * 100 : null,
-      vtr: mean(vtrs), // VTR médio das campanhas com vídeo
-      count: campaigns.length,
-      active,
-      firstStart,
-      lastEnd,
-    };
+    return { count: campaigns.length, active, firstStart, lastEnd };
   }, [campaigns]);
 
-  // Filtro: busca + formato + features + meses (multi-seleção, OR dentro de
+  // Opções de filtro derivadas dos DADOS do cliente — nunca uma lista fixa que
+  // oferece features que este cliente não tem (ou esconde as que tem).
+  const featureOptions = useMemo(() => buildFeatureOptions(campaigns), [campaigns]);
+  const formatOptions = useMemo(() => {
+    const has = (m) => campaigns.some((c) => (c.media || []).includes(m));
+    return [
+      has("DISPLAY") && { value: "DISPLAY", label: "Display" },
+      has("VIDEO") && { value: "VIDEO", label: "Vídeo" },
+    ].filter(Boolean);
+  }, [campaigns]);
+  const periodPresets = useMemo(
+    () => buildPortalPresets(new Date(), bounds.firstStart, bounds.lastEnd, monthsCovered(campaigns)),
+    [campaigns, bounds.firstStart, bounds.lastEnd],
+  );
+
+  // Filtro: busca + formato + features + período (multi-seleção, OR dentro de
   // cada dimensão; AND entre dimensões).
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return campaigns.filter((c) => {
       if (q && !c.campaign_name?.toLowerCase().includes(q)) return false;
       if (fmts.length > 0 && !fmts.some((f) => (c.media || []).includes(f))) return false;
-      if (feats.length > 0 && !feats.some((f) => (c.features || []).includes(f))) return false;
-      if (period?.from && period?.to) {
-        // Sobreposição: a campanha entra se o voo dela (início→fim) cruza o
-        // range escolhido. Comparação lexical de "YYYY-MM-DD" (datas ISO).
-        const from = ymd(period.from);
-        const to   = ymd(period.to);
-        const cs = c.start_date || "";
-        const ce = c.end_date || cs;
-        if (!cs || cs > to || ce < from) return false;
+      if (feats.length > 0) {
+        const keys = featureKeysOf(c);
+        if (!feats.some((f) => keys.has(f))) return false;
       }
+      if (!overlapsPeriod(c, period)) return false;
       return true;
     });
   }, [campaigns, search, fmts, feats, period]);
+
+  // Big numbers — agregam o que está FILTRADO e no recorte de mídia escolhido.
+  // (Antes agregavam `campaigns` cru, então nenhum filtro mexia nos números.)
+  const summary = useMemo(
+    () => aggregateSlices(filtered.map((c) => sliceCampaign(c, mode))),
+    [filtered, mode],
+  );
 
   // Agrupa campanhas merged num único item "group" (1 link, métricas somadas);
   // as demais viram "single". Reports agregados deixam de aparecer soltos.
@@ -301,11 +309,11 @@ function PortalView({ data, shareId }) {
   }, [items, groupBy]);
 
   const periodLabel = useMemo(() => {
-    if (!summary.firstStart || !summary.lastEnd) return null;
-    const s = formatMonthLabel(summary.firstStart.slice(0, 7), "short");
-    const e = formatMonthLabel(summary.lastEnd.slice(0, 7), "short");
+    if (!bounds.firstStart || !bounds.lastEnd) return null;
+    const s = formatMonthLabel(bounds.firstStart.slice(0, 7), "short");
+    const e = formatMonthLabel(bounds.lastEnd.slice(0, 7), "short");
     return s === e ? s : `${s} – ${e}`;
-  }, [summary]);
+  }, [bounds]);
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -360,10 +368,10 @@ function PortalView({ data, shareId }) {
                 <span className="text-[11px] font-bold uppercase tracking-[0.18em]" style={{ color: accent }}>
                   Visão geral
                 </span>
-                {summary.active > 0 && (
+                {bounds.active > 0 && (
                   <span className="inline-flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wider text-fg-muted">
                     <span className="size-1.5 rounded-full" style={{ background: accent }} aria-hidden />
-                    {summary.active} {summary.active === 1 ? "ativa" : "ativas"}
+                    {bounds.active} {bounds.active === 1 ? "ativa" : "ativas"}
                   </span>
                 )}
               </div>
@@ -376,7 +384,7 @@ function PortalView({ data, shareId }) {
               {/* Meta: total de campanhas + período do conjunto */}
               <div className="mt-3.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[14px] sm:text-[15px] text-fg-muted">
                 <span className="tabular-nums">
-                  {summary.count} {summary.count === 1 ? "campanha" : "campanhas"}
+                  {bounds.count} {bounds.count === 1 ? "campanha" : "campanhas"}
                 </span>
                 {periodLabel && (
                   <>
@@ -410,19 +418,11 @@ function PortalView({ data, shareId }) {
 
           {view === "campaigns" && (
           <>
-          {/* ── Big numbers — snapshot da conta. Só na aba Campanhas; em
-              Analytics o strip de KPIs reativo aos filtros cumpre esse papel
-              (evita duplicar dois strips quase idênticos). ──────────────────── */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5 sm:gap-4 mb-12">
-            <BigNumber label="Investimento" value={formatBrlShort(summary.invested)} fullValue={formatBRL(summary.invested)} accent />
-            <BigNumber label="Impressões" value={formatIntCompact(summary.impressions)} fullValue={`${formatInt(summary.impressions)} impressões visíveis`} sub="visíveis" />
-            <BigNumber label="Cliques" value={formatIntCompact(summary.clicks)} fullValue={formatInt(summary.clicks)} />
-            <BigNumber label="CTR" value={formatPct(summary.ctr, 2)} sub="médio" />
-            <BigNumber label="VTR" value={formatPct(summary.vtr, 1)} sub="vídeo" />
-            <BigNumber label="Views 100%" value={formatIntCompact(summary.completions)} fullValue={`${formatInt(summary.completions)} vídeos completos`} sub="vídeo completo" />
-          </div>
-
           {/* ── Campanhas — agrupamento + toolbar ────────────────────────────── */}
+          {/* A toolbar sobe PRA CIMA dos big numbers porque agora os números
+              respondem a ela: filtrar por Display, por Junho ou por Survey
+              recalcula o strip inteiro. Com a toolbar embaixo, o usuário mexia
+              no filtro e não via o efeito sem rolar de volta. */}
           <div className="flex items-center justify-end gap-4 mb-5">
             <SegmentedControlV2
               label="Agrupar por"
@@ -433,26 +433,31 @@ function PortalView({ data, shareId }) {
           </div>
 
           {/* Toolbar: filtros à esquerda, busca à direita */}
-          <div className="mb-8 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-wrap items-center gap-2">
               <DateRangeFilterV2
                 value={period}
                 presetId={periodPresetId}
-                campaignStart={summary.firstStart}
-                campaignEnd={summary.lastEnd}
+                presets={periodPresets}
+                campaignStart={bounds.firstStart}
+                campaignEnd={bounds.lastEnd}
                 onChange={(r, pid) => { setPeriod(r); setPeriodPresetId(pid); }}
                 triggerClassName="h-9 px-3 rounded-lg bg-canvas-deeper font-medium"
               />
-              <MultiSelectDropdown
-                label="Formato" allLabel="Todos os formatos"
-                options={[{ value: "DISPLAY", label: "Display" }, { value: "VIDEO", label: "Vídeo" }]}
-                selected={fmts} onChange={setFmts} accent={accent}
-              />
-            <MultiSelectDropdown
-              label="Features" allLabel="Todas as features"
-              options={[{ value: "survey", label: "Survey" }, { value: "rmnd", label: "RMND" }, { value: "pdooh", label: "PDOOH" }]}
-              selected={feats} onChange={setFeats} accent={accent}
-            />
+              {formatOptions.length > 1 && (
+                <MultiSelectDropdown
+                  label="Formato" allLabel="Todos os formatos"
+                  options={formatOptions}
+                  selected={fmts} onChange={setFmts} accent={accent}
+                />
+              )}
+              {featureOptions.length > 0 && (
+                <MultiSelectDropdown
+                  label="Features" allLabel="Todas as features"
+                  options={featureOptions}
+                  selected={feats} onChange={setFeats} accent={accent}
+                />
+              )}
               {filtersActive && (
                 <button
                   type="button"
@@ -465,6 +470,47 @@ function PortalView({ data, shareId }) {
             </div>
             <SearchInput value={search} onChange={setSearch} />
           </div>
+
+          {/* ── Big numbers — reativos aos filtros acima. Só na aba Campanhas;
+              em Analytics o strip de KPIs cumpre esse papel (evita duplicar
+              dois strips quase idênticos). ────────────────────────────────── */}
+          <div className="mb-3 flex flex-wrap items-center gap-2 min-h-[22px]">
+            {mode !== "ALL" && (
+              <span
+                className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider px-2 py-1 rounded-md"
+                style={{ background: `color-mix(in srgb, ${accent} 14%, transparent)`, color: accent }}
+              >
+                Recorte · {mode === "VIDEO" ? "Vídeo" : "Display"}
+              </span>
+            )}
+            {filtersActive && (
+              <span className="text-[11.5px] text-fg-subtle tabular-nums">
+                {summary.count} de {bounds.count} campanhas
+              </span>
+            )}
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5 sm:gap-4">
+            <BigNumber label="Investimento" value={formatBrlShort(summary.invested)} fullValue={formatBRL(summary.invested)} accent />
+            <BigNumber label="Impressões" value={formatIntCompact(summary.impressions)} fullValue={`${formatInt(summary.impressions)} impressões visíveis`} sub="visíveis" />
+            <BigNumber label="Cliques" value={formatIntCompact(summary.clicks)} fullValue={formatInt(summary.clicks)} />
+            <BigNumber label="CTR" value={formatPct(summary.ctr, 2)} sub="médio" />
+            <BigNumber label="VTR" value={formatPct(summary.vtr, 1)} sub="vídeo" />
+            {/* No recorte de Display, views 100% não é "zero" — é inaplicável.
+                Mostrar "0" leria como entrega de vídeo que falhou. */}
+            <BigNumber
+              label="Views 100%"
+              value={mode === "DISPLAY" ? "—" : formatIntCompact(summary.completions)}
+              fullValue={mode === "DISPLAY" ? undefined : `${formatInt(summary.completions)} vídeos completos`}
+              sub="vídeo completo"
+            />
+          </div>
+
+          {/* Eficiência — custo unitário EFETIVO (investimento contratado ÷
+              entrega real). Fica numa faixa própria abaixo do volume: são
+              métricas de "quanto custou cada unidade", não de tamanho. */}
+          <EfficiencyStrip summary={summary} />
+
+          <div className="mb-12" />
 
           {filtered.length === 0 ? (
             <EmptyState query={search} filtered={filtersActive} />
@@ -505,9 +551,9 @@ function PortalView({ data, shareId }) {
                       <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5 sm:gap-3">
                         {sec.items.map((it) =>
                           it.kind === "group" ? (
-                            <MergeGroupCard key={it.key} members={it.members} accent={accent} client={client} />
+                            <MergeGroupCard key={it.key} members={it.members} accent={accent} client={client} mode={mode} />
                           ) : (
-                            <PortalCampaignCard key={it.key} campaign={it.campaign} accent={accent} client={client} />
+                            <PortalCampaignCard key={it.key} campaign={it.campaign} accent={accent} client={client} mode={mode} />
                           ),
                         )}
                       </div>
@@ -644,11 +690,49 @@ function BigNumber({ label, value, fullValue, sub, accent = false }) {
   );
 }
 
-function PortalCampaignCard({ campaign: c, accent, client }) {
-  const invested = investedOf(c);
+// Faixa de eficiência — custo unitário efetivo, abaixo dos big numbers de
+// volume. Layout deliberadamente distinto (rótulo à esquerda, número à direita)
+// pra ler como uma faixa secundária, não como mais uma fileira de big numbers.
+function EfficiencyStrip({ summary }) {
+  const tiles = efficiencyTiles(summary, formatBRL);
+  return (
+    <div className="mt-3.5 sm:mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3.5 sm:gap-4">
+      {tiles.map((t) => (
+        <div
+          key={t.key}
+          className="rounded-2xl border border-border bg-surface px-5 py-4 min-w-0 flex items-center justify-between gap-3"
+          title={t.hint}
+        >
+          <div className="min-w-0">
+            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted leading-none">
+              {t.label}
+            </div>
+            <div className="mt-1.5 text-[11px] text-fg-subtle leading-none">{t.sub}</div>
+          </div>
+          <div className="text-[19px] sm:text-[21px] font-bold leading-none tabular-nums text-fg shrink-0">
+            {t.value}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PortalCampaignCard({ campaign: c, accent, client, mode = "ALL" }) {
+  // No recorte por formato o card mostra a parcela daquele formato — senão os
+  // cards contradiriam os big numbers logo acima (que já estão recortados).
+  const s = sliceCampaign(c, mode);
+  const invested = s.invested;
   const status = getCampaignStatus(c.end_date, c.closed_at, c.paused_at, c.early_end_date);
   const range = getDateRangeParts(c.start_date, c.end_date);
-  const hasVideo = Array.isArray(c.media) && c.media.includes("VIDEO");
+  const hasVideo = mode === "ALL"
+    ? Array.isArray(c.media) && c.media.includes("VIDEO")
+    : mode === "VIDEO";
+  const ctr = mode === "DISPLAY" ? c.display_ctr
+    : mode === "VIDEO" ? c.video_ctr
+    : c.ctr;
+  const shownMedia = mode === "ALL" ? (c.media || []) : [mode];
+  const features = featuresOf(c);
   const reportToken = c.share_id || c.short_token;
   const reportHref = `/report/${reportToken}`;
 
@@ -701,26 +785,26 @@ function PortalCampaignCard({ campaign: c, accent, client }) {
       {/* Métricas client-safe (sem cor condicional) */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-3.5">
         <Metric label="Investimento" value={formatBrlCompact(invested)} title={formatBRL(invested)} />
-        <Metric label="Impressões" value={formatIntCompact(c.viewable_impressions)} title={formatInt(c.viewable_impressions)} />
-        <Metric label="CTR" value={formatPct(c.ctr, 2)} />
+        <Metric label="Impressões" value={formatIntCompact(s.impressions)} title={formatInt(s.impressions)} />
+        <Metric label="CTR" value={formatPct(ctr, 2)} />
         <Metric
           label={hasVideo ? "VTR" : "Cliques"}
-          value={hasVideo ? formatPct(c.vtr, 1) : formatIntCompact(c.clicks)}
-          title={hasVideo ? undefined : formatInt(c.clicks)}
+          value={hasVideo ? formatPct(c.vtr, 1) : formatIntCompact(s.clicks)}
+          title={hasVideo ? undefined : formatInt(s.clicks)}
         />
       </div>
 
       {/* Sinais: pacing + core products + features */}
-      {(c.pacing != null || (c.tactics || []).length > 0 || (c.features || []).length > 0) && (
+      {(s.pacing != null || (c.tactics || []).length > 0 || features.length > 0) && (
         <div className="mt-4 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
-          {c.pacing != null && (
+          {s.pacing != null && (
             <span className="inline-flex items-baseline gap-1 text-[11px]">
               <span className="text-fg-subtle uppercase tracking-wider font-semibold">Pacing</span>
-              <span className="tabular-nums font-semibold text-fg">{c.pacing}%</span>
+              <span className="tabular-nums font-semibold text-fg">{Math.round(s.pacing)}%</span>
             </span>
           )}
           {(c.tactics || []).map((t) => <ProductChip key={t} t={t} />)}
-          {(c.features || []).map((f) => <FeatureChip key={f} f={f} accent={accent} />)}
+          {features.map((f) => <FeatureChip key={f} f={f} accent={accent} />)}
         </div>
       )}
 
@@ -730,7 +814,7 @@ function PortalCampaignCard({ campaign: c, accent, client }) {
       {/* Footer: formato + CTA */}
       <div className="pt-4 border-t border-border flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          {(c.media || []).map((m) => (
+          {shownMedia.map((m) => (
             <span key={m} className="text-[10px] uppercase tracking-wider font-semibold text-fg-subtle">
               {m === "DISPLAY" ? "Display" : m === "VIDEO" ? "Vídeo" : m}
             </span>
@@ -749,36 +833,32 @@ function PortalCampaignCard({ campaign: c, accent, client }) {
 
 // Card de grupo AGREGADO — vários reports merged numa única visão (1 link).
 // Métricas somadas, pacing/tactics/features unidos, membros listados.
-function MergeGroupCard({ members, accent, client }) {
+function MergeGroupCard({ members, accent, client, mode = "ALL" }) {
   const agg = useMemo(() => {
-    let invested = 0, impressions = 0, clicks = 0, completions = 0;
-    const pacings = [], vtrs = [];
+    // Mesma agregação (e mesmo recorte de mídia) do strip de big numbers —
+    // um card agregado é só um sub-total do que está sendo mostrado acima.
+    const slices = members.map((m) => sliceCampaign(m, mode));
+    const totals = aggregateSlices(slices);
+    const pacings = slices.map((s) => s.pacing).filter((p) => p != null).map(Number);
     const tactics = new Set(), features = new Set();
-    let start = null, end = null, anyActive = false, hasVideo = false;
+    let start = null, end = null, anyActive = false;
     for (const m of members) {
-      invested += investedOf(m);
-      impressions += Number(m.viewable_impressions) || 0;
-      clicks += Number(m.clicks) || 0;
-      completions += Number(m.completions) || 0;
-      if (m.pacing != null) pacings.push(Number(m.pacing));
-      if (m.vtr != null) vtrs.push(Number(m.vtr));
       (m.tactics || []).forEach((t) => tactics.add(t));
-      (m.features || []).forEach((f) => features.add(f));
-      if ((m.media || []).includes("VIDEO")) hasVideo = true;
+      featuresOf(m).forEach((f) => features.add(f));
       if (m.start_date && (!start || m.start_date < start)) start = m.start_date;
       if (m.end_date && (!end || m.end_date > end)) end = m.end_date;
       const st = getCampaignStatus(m.end_date, m.closed_at, m.paused_at, m.early_end_date);
       if (st === "in_flight" || st === "paused") anyActive = true;
     }
     const mean = (a) => (a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length) : null);
-    const meanF = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
     return {
-      invested, impressions, clicks, completions,
-      ctr: impressions > 0 ? (clicks / impressions) * 100 : null,
-      vtr: meanF(vtrs), pacing: mean(pacings),
-      tactics: [...tactics], features: [...features], hasVideo, start, end, anyActive,
+      ...totals,
+      pacing: mean(pacings),
+      tactics: [...tactics], features: [...features],
+      hasVideo: mode === "ALL" ? slices.some((s) => s.hasVideo) : mode === "VIDEO",
+      start, end, anyActive,
     };
-  }, [members]);
+  }, [members, mode]);
 
   const lead = members[0]; // membro mais recente (lista ordenada desc)
   const title = lead.campaign_name;

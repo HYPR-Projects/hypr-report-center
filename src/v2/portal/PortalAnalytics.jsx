@@ -39,25 +39,27 @@ import {
   formatBRL, formatPct, formatMonthLabel,
 } from "../admin/lib/format";
 import { formatInt, formatIntCompact } from "../admin/lib/pmpFormat";
+import {
+  num,
+  featuresOf,
+  featureKeysOf,
+  buildFeatureOptions,
+  hasMediaSplit,
+  mediaMode,
+  sliceCampaign,
+  aggregateSlices,
+  efficiencyTiles,
+  buildPortalPresets,
+  monthsCovered,
+  overlapsPeriod,
+} from "./portalMetrics";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-const num = (v) => Number(v) || 0;
 const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
-const investedOf = (c) => num(c.d_client_budget) + num(c.v_client_budget);
 
 // Core products (a "ação" central): O2O, OOH (amplifier), Groundflow.
 // PDOOH NÃO é core product — é feature (vive em `features`, não em `tactics`).
 const CORE_LABELS = { O2O: "O2O", OOH: "OOH", GROUNDFLOW: "Groundflow" };
-// Fallback de rótulo p/ as features canônicas (quando o backend ainda não
-// expõe `negotiated_features` — o pacote completo do checklist).
-const FEATURE_LABEL = { survey: "Survey", rmnd: "RMND", pdooh: "PDOOH" };
-// Pacote de features negociadas de uma campanha p/ os chips da coluna Mix.
-// Prioriza `negotiated_features` (checklist completo: Survey, PDOOH, Design
-// Studio…); cai pras 3 canônicas mapeadas quando ausente.
-const featuresOf = (c) =>
-  c.negotiated_features?.length
-    ? c.negotiated_features
-    : (c.features || []).map((k) => FEATURE_LABEL[k] || k);
 const compactBrl = (v) =>
   v >= 1_000_000 ? `R$ ${(v / 1_000_000).toFixed(1).replace(".", ",")} mi`
   : v >= 1_000 ? `R$ ${Math.round(v / 1_000)} mil`
@@ -108,10 +110,16 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
   const [periodPresetId, setPeriodPresetId] = useState("all");
   const [coreProducts, setCoreProducts] = useState([]);
   const [formats, setFormats] = useState([]);
+  const [feats, setFeats] = useState([]);
   const [selectedCampaigns, setSelectedCampaigns] = useState([]);
 
   // Dedup por token (rename de line pode trazer o mesmo token 2x) + bounds.
-  const { deduped, firstStart, lastEnd, coreOptions, campaignOptions } = useMemo(() => {
+  // Opções de filtro derivadas dos DADOS (nunca listas fixas): só entra no
+  // dropdown o que este cliente realmente tem.
+  const {
+    deduped, firstStart, lastEnd, coreOptions, campaignOptions,
+    formatOptions, featureOptions, periodPresets, splitAvailable,
+  } = useMemo(() => {
     const seen = new Set();
     const out = [];
     let fs = null, le = null;
@@ -133,61 +141,69 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
       .filter((c) => c.short_token)
       .map((c) => ({ value: c.short_token, label: c.campaign_name || c.short_token }))
       .sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
-    return { deduped: out, firstStart: fs, lastEnd: le, coreOptions, campaignOptions };
+    const hasMedia = (m) => out.some((c) => (c.media || []).includes(m));
+    const formatOptions = [
+      hasMedia("DISPLAY") && { value: "DISPLAY", label: "Display" },
+      hasMedia("VIDEO") && { value: "VIDEO", label: "Vídeo" },
+    ].filter(Boolean);
+    return {
+      deduped: out, firstStart: fs, lastEnd: le, coreOptions, campaignOptions,
+      formatOptions,
+      featureOptions: buildFeatureOptions(out),
+      periodPresets: buildPortalPresets(new Date(), fs, le, monthsCovered(out)),
+      splitAvailable: hasMediaSplit(out),
+    };
   }, [campaigns]);
+
+  // Recorte por mídia: marcar SÓ Display (ou só Vídeo) recalcula KPIs, séries
+  // mensais e tabela com a parcela daquele formato — antes o filtro só
+  // escondia campanhas que não tinham a mídia (no-op na prática).
+  const mode = mediaMode(formats, splitAvailable);
 
   const filtered = useMemo(() => {
     return deduped.filter((c) => {
       if (selectedCampaigns.length && !selectedCampaigns.includes(c.short_token)) return false;
-      if (period?.from && period?.to) {
-        const from = ymd(period.from), to = ymd(period.to);
-        const cs = c.start_date || "", ce = c.end_date || cs;
-        if (!cs || cs > to || ce < from) return false;
-      }
+      if (!overlapsPeriod(c, period)) return false;
       if (coreProducts.length && !coreProducts.some((t) => (c.tactics || []).includes(t))) return false;
       if (formats.length && !formats.some((f) => (c.media || []).includes(f))) return false;
+      if (feats.length) {
+        const keys = featureKeysOf(c);
+        if (!feats.some((f) => keys.has(f))) return false;
+      }
       return true;
     });
-  }, [deduped, period, coreProducts, formats, selectedCampaigns]);
+  }, [deduped, period, coreProducts, formats, feats, selectedCampaigns]);
 
-  const filtersActive = !!period || coreProducts.length > 0 || formats.length > 0 || selectedCampaigns.length > 0;
+  // Campanha + sua fatia no recorte atual. Tudo abaixo (KPIs, séries, mix,
+  // tabela) consome ISTO, pra que nenhuma visão fique fora do recorte.
+  const sliced = useMemo(
+    () => filtered.map((c) => ({ c, s: sliceCampaign(c, mode) })),
+    [filtered, mode],
+  );
+
+  const filtersActive = !!period || coreProducts.length > 0 || formats.length > 0
+    || feats.length > 0 || selectedCampaigns.length > 0;
   const clearFilters = () => {
-    setPeriod(null); setPeriodPresetId("all"); setCoreProducts([]); setFormats([]); setSelectedCampaigns([]);
+    setPeriod(null); setPeriodPresetId("all"); setCoreProducts([]);
+    setFormats([]); setFeats([]); setSelectedCampaigns([]);
   };
 
   // ── Agregados ──────────────────────────────────────────────────────────
-  const kpis = useMemo(() => {
-    let invested = 0, impressions = 0, clicks = 0, completions = 0, dBudget = 0, vBudget = 0;
-    const vtrs = [];
-    for (const c of filtered) {
-      invested += investedOf(c);
-      dBudget += num(c.d_client_budget);
-      vBudget += num(c.v_client_budget);
-      impressions += num(c.viewable_impressions);
-      clicks += num(c.clicks);
-      completions += num(c.completions);
-      if (c.vtr != null) vtrs.push(Number(c.vtr));
-    }
-    return {
-      invested, impressions, clicks, completions, dBudget, vBudget,
-      ctr: impressions > 0 ? (clicks / impressions) * 100 : null,
-      vtr: mean(vtrs),
-      count: filtered.length,
-    };
-  }, [filtered]);
+  const kpis = useMemo(() => aggregateSlices(sliced.map((x) => x.s)), [sliced]);
 
   const monthly = useMemo(() => {
     const map = new Map();
-    for (const c of filtered) {
+    for (const { c, s } of sliced) {
       const m = (c.start_date || "").slice(0, 7);
       if (!m) continue;
-      if (!map.has(m)) map.set(m, { month: m, invested: 0, impressions: 0, clicks: 0, completions: 0, vtrs: [], dPace: [], vPace: [], pace: [] });
+      if (!map.has(m)) map.set(m, { month: m, invested: 0, impressions: 0, clicks: 0, completions: 0, vImp: 0, vtrs: [], dPace: [], vPace: [], pace: [] });
       const e = map.get(m);
-      e.invested += investedOf(c);
-      e.impressions += num(c.viewable_impressions);
-      e.clicks += num(c.clicks);
-      e.completions += num(c.completions);
-      if (c.vtr != null) e.vtrs.push(Number(c.vtr));
+      e.invested += s.invested;
+      e.impressions += s.impressions;
+      e.clicks += s.clicks;
+      e.completions += s.completions;
+      e.vImp += num(s.vImp);
+      if (s.vtrSample != null) e.vtrs.push(s.vtrSample);
       if (c.display_pacing != null) e.dPace.push(Number(c.display_pacing));
       if (c.video_pacing != null) e.vPace.push(Number(c.video_pacing));
       if (c.pacing != null) e.pace.push(Number(c.pacing));
@@ -198,12 +214,14 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
         ...e,
         label: formatMonthLabel(e.month, "short"),
         ctr: e.impressions > 0 ? (e.clicks / e.impressions) * 100 : null,
-        vtr: e.vtrs.length ? mean(e.vtrs) : null,
+        // Σviews 100% / Σimpressões visíveis de vídeo; sem o split cai na
+        // média das campanhas do mês (backend antigo).
+        vtr: e.vImp > 0 ? (e.completions / e.vImp) * 100 : (e.vtrs.length ? mean(e.vtrs) : null),
         pacingDisplay: e.dPace.length ? mean(e.dPace) : null,
         pacingVideo: e.vPace.length ? mean(e.vPace) : null,
         pacingCombined: e.pace.length ? mean(e.pace) : null,
       }));
-  }, [filtered]);
+  }, [sliced]);
 
   // Tem pacing split (display/video, vem do backend) em algum mês?
   const hasSplitPacing = useMemo(
@@ -219,10 +237,9 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
 
   const coreMix = useMemo(() => {
     const map = new Map();
-    for (const c of filtered) {
-      const inv = investedOf(c);
+    for (const { c, s } of sliced) {
       for (const t of c.tactics || []) {
-        map.set(t, (map.get(t) || 0) + inv);
+        map.set(t, (map.get(t) || 0) + s.invested);
       }
     }
     const rows = [...map.entries()]
@@ -230,12 +247,12 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
       .sort((a, b) => b.invested - a.invested);
     const max = rows.reduce((m, r) => Math.max(m, r.invested), 0);
     return rows.map((r) => ({ ...r, pct: max > 0 ? (r.invested / max) * 100 : 0 }));
-  }, [filtered]);
+  }, [sliced]);
 
   const formatMix = useMemo(() => {
     const rows = [
-      { key: "DISPLAY", label: "Display", value: kpis.dBudget },
-      { key: "VIDEO", label: "Vídeo", value: kpis.vBudget },
+      { key: "DISPLAY", label: "Display", value: kpis.dInvested },
+      { key: "VIDEO", label: "Vídeo", value: kpis.vInvested },
     ].filter((r) => r.value > 0);
     const total = rows.reduce((s, r) => s + r.value, 0);
     return { rows, total };
@@ -306,6 +323,7 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
         <DateRangeFilterV2
           value={period}
           presetId={periodPresetId}
+          presets={periodPresets}
           campaignStart={firstStart}
           campaignEnd={lastEnd}
           onChange={(r, pid) => { setPeriod(r); setPeriodPresetId(pid); }}
@@ -317,11 +335,19 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
             options={coreOptions} selected={coreProducts} onChange={setCoreProducts} accent={accent}
           />
         )}
-        <MultiSelectDropdown
-          label="Formato" allLabel="Todos os formatos"
-          options={[{ value: "DISPLAY", label: "Display" }, { value: "VIDEO", label: "Vídeo" }]}
-          selected={formats} onChange={setFormats} accent={accent}
-        />
+        {formatOptions.length > 1 && (
+          <MultiSelectDropdown
+            label="Formato" allLabel="Todos os formatos"
+            options={formatOptions}
+            selected={formats} onChange={setFormats} accent={accent}
+          />
+        )}
+        {featureOptions.length > 0 && (
+          <MultiSelectDropdown
+            label="Features" allLabel="Todas as features"
+            options={featureOptions} selected={feats} onChange={setFeats} accent={accent}
+          />
+        )}
         {campaignOptions.length > 1 && (
           <MultiSelectDropdown
             label="Campanha" allLabel="Todas as campanhas"
@@ -337,8 +363,18 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
             Limpar
           </button>
         )}
-        <span className="ml-auto text-[12px] text-fg-subtle tabular-nums">
-          {kpis.count} {kpis.count === 1 ? "campanha" : "campanhas"}
+        <span className="ml-auto inline-flex items-center gap-2">
+          {mode !== "ALL" && (
+            <span
+              className="text-[10.5px] font-semibold uppercase tracking-wider px-2 py-1 rounded-md"
+              style={{ background: `color-mix(in srgb, ${accent} 14%, transparent)`, color: accent }}
+            >
+              Recorte · {mode === "VIDEO" ? "Vídeo" : "Display"}
+            </span>
+          )}
+          <span className="text-[12px] text-fg-subtle tabular-nums">
+            {kpis.count} {kpis.count === 1 ? "campanha" : "campanhas"}
+          </span>
         </span>
       </div>
 
@@ -355,7 +391,32 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
             <KpiTile label="Cliques" value={formatIntCompact(kpis.clicks)} title={formatInt(kpis.clicks)} />
             <KpiTile label="CTR" value={formatPct(kpis.ctr, 2)} sub="médio" />
             <KpiTile label="VTR" value={formatPct(kpis.vtr, 1)} sub="vídeo" />
-            <KpiTile label="Views 100%" value={formatIntCompact(kpis.completions)} title={`${formatInt(kpis.completions)} vídeos completos`} sub="vídeo completo" />
+            {/* No recorte de Display, views 100% é inaplicável (não "zero"). */}
+            <KpiTile
+              label="Views 100%"
+              value={mode === "DISPLAY" ? "—" : formatIntCompact(kpis.completions)}
+              title={mode === "DISPLAY" ? undefined : `${formatInt(kpis.completions)} vídeos completos`}
+              sub="vídeo completo"
+            />
+          </div>
+
+          {/* Eficiência — custo unitário efetivo (investimento contratado ÷
+              entrega real). Mesmos 3 tiles da aba Campanhas, mesma fonte de
+              cálculo (portalMetrics), reagindo aos filtros desta aba. */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {efficiencyTiles(kpis, formatBRL).map((t) => (
+              <div
+                key={t.key}
+                className="rounded-2xl border border-border bg-surface px-4 py-3.5 min-w-0 flex items-center justify-between gap-3"
+                title={t.hint}
+              >
+                <div className="min-w-0">
+                  <div className="text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted leading-none">{t.label}</div>
+                  <div className="mt-1.5 text-[11px] text-fg-subtle leading-none">{t.sub}</div>
+                </div>
+                <div className="text-[19px] font-bold leading-none tabular-nums text-fg shrink-0">{t.value}</div>
+              </div>
+            ))}
           </div>
 
           {/* ── Evolução mensal + Performance ─────────────────────────────── */}
@@ -423,7 +484,7 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
           )}
 
           {/* ── Tabela agregada ───────────────────────────────────────────── */}
-          <CampaignAnalyticsTable rows={filtered} accent={accent} />
+          <CampaignAnalyticsTable rows={sliced} accent={accent} mode={mode} />
         </>
       )}
     </div>
@@ -893,14 +954,18 @@ const TABLE_COLS = [
   { key: "vtr", label: "VTR", align: "right" },
 ];
 
-function CampaignAnalyticsTable({ rows, accent }) {
+// `rows` = [{c, s}] — campanha + a fatia dela no recorte de mídia atual, pra
+// que a tabela nunca some números fora do recorte que os KPIs mostram.
+function CampaignAnalyticsTable({ rows, accent, mode = "ALL" }) {
   const [sortKey, setSortKey] = useState("invested");
   const [sortDir, setSortDir] = useState("desc");
 
   const sorted = useMemo(() => {
-    const val = (c) => {
-      if (sortKey === "invested") return investedOf(c);
+    const val = ({ c, s }) => {
+      if (sortKey === "invested") return s.invested;
       if (sortKey === "campaign_name") return (c.campaign_name || "").toLowerCase();
+      if (sortKey === "viewable_impressions") return s.impressions;
+      if (sortKey === "ctr") return s.impressions > 0 ? (s.clicks / s.impressions) * 100 : 0;
       return num(c[sortKey]);
     };
     const arr = [...rows].sort((a, b) => {
@@ -947,25 +1012,29 @@ function CampaignAnalyticsTable({ rows, accent }) {
             </tr>
           </thead>
           <tbody>
-            {sorted.map((c, i) => (
-              <tr key={c.short_token || i} className="border-t border-border hover:bg-surface-strong transition-colors">
-                <Td className="text-left">
-                  <span className="font-medium text-fg line-clamp-1">{c.campaign_name || "—"}</span>
-                </Td>
-                <Td className="text-left text-fg-muted whitespace-nowrap">{fmtRange(c)}</Td>
-                <Td className="text-right font-semibold text-fg tabular-nums">{compactBrl(investedOf(c))}</Td>
-                <Td className="text-right text-fg tabular-nums">{formatIntCompact(num(c.viewable_impressions))}</Td>
-                <Td className="text-right tabular-nums" style={{ color: accent }}>{c.ctr != null ? `${Number(c.ctr).toFixed(2)}%` : "—"}</Td>
-                <Td className="text-right text-fg tabular-nums">{c.vtr != null ? `${Number(c.vtr).toFixed(1)}%` : "—"}</Td>
-                <Td className="text-left">
-                  <div className="flex flex-wrap gap-1">
-                    {(c.media || []).map((m) => <MixChip key={m} label={m === "VIDEO" ? "Vídeo" : "Display"} />)}
-                    {(c.tactics || []).map((t) => <MixChip key={t} label={CORE_LABELS[t] || t} soft />)}
-                    {featuresOf(c).map((f) => <MixChip key={`f-${f}`} label={f} variant="outline" />)}
-                  </div>
-                </Td>
-              </tr>
-            ))}
+            {sorted.map(({ c, s }, i) => {
+              const ctr = s.impressions > 0 ? (s.clicks / s.impressions) * 100 : null;
+              const media = mode === "ALL" ? (c.media || []) : [mode];
+              return (
+                <tr key={c.short_token || i} className="border-t border-border hover:bg-surface-strong transition-colors">
+                  <Td className="text-left">
+                    <span className="font-medium text-fg line-clamp-1">{c.campaign_name || "—"}</span>
+                  </Td>
+                  <Td className="text-left text-fg-muted whitespace-nowrap">{fmtRange(c)}</Td>
+                  <Td className="text-right font-semibold text-fg tabular-nums">{compactBrl(s.invested)}</Td>
+                  <Td className="text-right text-fg tabular-nums">{formatIntCompact(s.impressions)}</Td>
+                  <Td className="text-right tabular-nums" style={{ color: accent }}>{ctr != null ? `${ctr.toFixed(2)}%` : "—"}</Td>
+                  <Td className="text-right text-fg tabular-nums">{mode === "DISPLAY" || c.vtr == null ? "—" : `${Number(c.vtr).toFixed(1)}%`}</Td>
+                  <Td className="text-left">
+                    <div className="flex flex-wrap gap-1">
+                      {media.map((m) => <MixChip key={m} label={m === "VIDEO" ? "Vídeo" : "Display"} />)}
+                      {(c.tactics || []).map((t) => <MixChip key={t} label={CORE_LABELS[t] || t} soft />)}
+                      {featuresOf(c).map((f) => <MixChip key={`f-${f}`} label={f} variant="outline" />)}
+                    </div>
+                  </Td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

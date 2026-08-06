@@ -507,6 +507,9 @@ def _safe_campaign(entry: dict, share_id_map: dict, logos_map: dict = None,
     if v_vi > 0 or v_bud > 0:
         media.append("VIDEO")
 
+    d_ctr = round(d_clk / d_vi * 100, 2) if d_vi > 0 else None
+    v_ctr = round(v_clk / v_vi * 100, 2) if v_vi > 0 else None
+
     token = entry.get("short_token")
     token_key = (token or "").upper()
     logos_map = logos_map or {}
@@ -546,6 +549,20 @@ def _safe_campaign(entry: dict, share_id_map: dict, logos_map: dict = None,
         "ctr":                 ctr,
         "vtr":                 vtr,
         "media":               media,
+        # ── Recorte por mídia (client-safe) ────────────────────────────────
+        # Os totais acima combinam display+vídeo. Sem o split, o filtro de
+        # Formato do portal só conseguia esconder/mostrar a campanha inteira —
+        # e como quase toda campanha roda os dois formatos, virava um no-op.
+        # Com estes campos o front recorta TODOS os números (big numbers,
+        # cards, charts) para o formato escolhido, e calcula o CPM efetivo de
+        # display / CPCV efetivo de vídeo (investimento contratado ÷ entrega).
+        # Mesma base do que o cliente já vê: impressões VISÍVEIS (CR).
+        "display_impressions": d_vi or None,
+        "display_clicks":      d_clk or None,
+        "display_ctr":         d_ctr,
+        "video_impressions":   v_vi or None,
+        "video_clicks":        v_clk or None,
+        "video_ctr":           v_ctr,
     }
 
 
