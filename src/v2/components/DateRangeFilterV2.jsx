@@ -68,11 +68,18 @@ export function DateRangeFilterV2({
   // sobrescritas. Permite ao Portal do Cliente casar o pill com os demais
   // filtros (h-9 rounded-lg bg-canvas-deeper) sem afetar o uso no report.
   triggerClassName = "",
+  // Presets customizados [{id,label,range,wasClamped}]. Default = os do report
+  // (janela curta: "Ontem", "Últimos 7 dias"…). O Portal do Cliente injeta os
+  // dele (meses/anos do arquivo do cliente) porque os do report caem TODOS fora
+  // dos limites de um portal de campanhas encerradas — o clamp os colapsa em
+  // `range: null` e clicar num preset não faz nada. Ver portalMetrics.js.
+  presets: presetsProp = null,
 }) {
-  const presets = useMemo(
+  const defaultPresets = useMemo(
     () => buildPresets(new Date(), campaignStart, campaignEnd),
     [campaignStart, campaignEnd],
   );
+  const presets = presetsProp || defaultPresets;
 
   // Preset ativo único. Heurística: hint do caller > não-clampado > primeiro
   // match. Sem hint, presets que colapsam no mesmo range caíam no primeiro
@@ -209,6 +216,9 @@ export function DateRangeFilterV2({
                 // Desktop: column vertical com largura fixa.
                 "flex md:flex-col gap-1 md:gap-0",
                 "overflow-x-auto md:overflow-x-visible scrollbar-hidden",
+                // Teto de altura: o portal injeta um preset por mês do cliente
+                // (até 12 + anos), que estouraria a altura da viewport.
+                "md:max-h-[336px] md:overflow-y-auto",
                 "md:min-w-[180px]",
               )}
             >
