@@ -181,10 +181,14 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   const loadTimeseries = useCallback(async () => {
     setTsStatus("loading");
     try {
-      // Teto de ~18 meses → hoje. O backend só devolve dias com delivery, então
-      // o Analytics deriva os bounds reais (e o filtro de período) das rows.
+      // Histórico completo (~5 anos → hoje). A tabela de entrega diária inteira
+      // tem ~1.200 rows desde jul/2023, então puxar tudo custa quase nada — e é
+      // condição pro Fechamento mensal fechar a conta por SAFRA: com janela de
+      // 18 meses, os PIs mais antigos apareciam sem o consumo do próprio mês.
+      // O backend só devolve dias com delivery, então o Analytics deriva os
+      // bounds reais (e o filtro de período) das rows.
       const today = new Date();
-      const floor = new Date(today); floor.setDate(floor.getDate() - 548);
+      const floor = new Date(today); floor.setDate(floor.getDate() - 1825);
       const rows = await pmpLinesTimeseries({ dateFrom: ymd(floor), dateTo: ymd(today) });
       setTimeseries(rows);
       setTsStatus("ready");
