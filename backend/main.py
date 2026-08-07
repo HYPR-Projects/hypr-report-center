@@ -2749,9 +2749,7 @@ def report_data(request):
                 url = f"https://api.typeform.com/forms/{urllib.parse.quote(form_id)}/responses?page_size=1000&completed=true{since_param}{until_param}"
                 if before_token:
                     url += f"&before={before_token}"
-                req = urllib.request.Request(url, headers={"Authorization": f"Bearer {TYPEFORM_TOKEN}"})
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    data = json.loads(resp.read().decode())
+                data = _typeform_get_json(url, TYPEFORM_TOKEN)
                 items = data.get("items", [])
                 total += len(items)
 
@@ -10803,6 +10801,59 @@ def _extract_typeform_form_id(value: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Typeform — GET autenticado com retry em instabilidade transitória
+#
+# A API do Typeform passa por janelas de instabilidade em que a maioria das
+# chamadas estoura o gateway deles (HTTP 504 em ~10s) e só uma fração responde
+# normal em <1s. Sem retry, uma operação que encadeia várias chamadas — listar
+# forms (várias páginas), montar o meta (definição + respostas), resolver o
+# workspace — vira falha quase garantida, e o admin fica sem dropdown de survey
+# e/ou sem as opções de resposta (o modal cai no "Não consegui detectar opções").
+#
+# Este wrapper retenta apenas falhas TRANSITÓRIAS (timeout de leitura, URLError
+# de rede e HTTP 425/429/5xx). NÃO retenta 4xx reais (401 token inválido, 403
+# sem permissão, 404 form inexistente) — esses não melhoram com retry e devem
+# subir imediatamente pro handler traduzir. Quando o Typeform está 100% no ar,
+# é no-op: acerta na 1ª tentativa.
+# ─────────────────────────────────────────────────────────────────────────────
+_TYPEFORM_RETRY_CODES = {425, 429, 500, 502, 503, 504}
+
+
+def _typeform_get_json(url, token, timeout=10, attempts=3, backoff=0.5):
+    """GET JSON na API do Typeform, com retry+backoff em falha transitória.
+
+    Levanta a última exceção se todas as tentativas falharem (o chamador/handler
+    já trata HTTPError e Exception genérica).
+    """
+    last_exc = None
+    for i in range(attempts):
+        try:
+            req = urllib.request.Request(
+                url, headers={"Authorization": f"Bearer {token}"}
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            last_exc = e
+            # 4xx real (401/403/404/…) não melhora com retry: sobe já.
+            if e.code not in _TYPEFORM_RETRY_CODES or i == attempts - 1:
+                raise
+            logger.warning(
+                f"[typeform retry {i + 1}/{attempts}] HTTP {e.code} em {url}"
+            )
+        except (urllib.error.URLError, TimeoutError) as e:
+            last_exc = e
+            if i == attempts - 1:
+                raise
+            logger.warning(f"[typeform retry {i + 1}/{attempts}] {e} em {url}")
+        # Backoff exponencial curto: 0.5s, 1.0s (a última tentativa não dorme).
+        time.sleep(backoff * (2 ** i))
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("typeform_get_json: nenhuma tentativa executada")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Processamento de respostas Typeform — detecta tipo (choice / matrix)
 # ─────────────────────────────────────────────────────────────────────────────
 def _fetch_typeform_form_def(form_id, token):
@@ -10821,9 +10872,7 @@ def _fetch_typeform_form_def(form_id, token):
     mapping é a única forma de reconstruir qual answer é qual marca.
     """
     url = f"https://api.typeform.com/forms/{urllib.parse.quote(form_id)}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        data = json.loads(resp.read().decode())
+    data = _typeform_get_json(url, token)
 
     field_to_row = {}
 
@@ -10890,9 +10939,7 @@ def _fetch_typeform_form_meta(form_id, token):
     # 1. Definição do form — pra classificar o tipo e ter o field_to_row
     #    do matrix (necessário pro processamento de respostas)
     url_def = f"https://api.typeform.com/forms/{urllib.parse.quote(form_id)}"
-    req = urllib.request.Request(url_def, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        form_data = json.loads(resp.read().decode())
+    form_data = _typeform_get_json(url_def, token)
 
     # Classificação do tipo (só pra metadata; rows não dependem disso)
     has_matrix = False
@@ -10938,9 +10985,7 @@ def _fetch_typeform_form_meta(form_id, token):
             f"https://api.typeform.com/forms/{urllib.parse.quote(form_id)}"
             f"/responses?page_size=200&completed=true"
         )
-        req = urllib.request.Request(url_resp, headers={"Authorization": f"Bearer {token}"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            resp_data = json.loads(resp.read().decode())
+        resp_data = _typeform_get_json(url_resp, token)
         items = resp_data.get("items", [])
         flat_counts, matrix_rows, _, _ = _process_typeform_items(items, field_to_row)
         # Matrix rows primeiro (mais comum em Adrecall), depois flat counts
@@ -11005,9 +11050,7 @@ def _fetch_typeform_workspaces(token):
     page = 1
     while True:
         url = f"https://api.typeform.com/workspaces?page={page}&page_size=200"
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode())
+        data = _typeform_get_json(url, token)
         items = data.get("items", [])
         out.extend(items)
         if len(items) < 200 or page >= int(data.get("page_count", 1)):
@@ -11049,9 +11092,7 @@ def _fetch_typeform_forms_page(token, workspace_id, page, page_size=200):
     if workspace_id:
         params += f"&workspace_id={urllib.parse.quote(workspace_id)}"
     url = f"https://api.typeform.com/forms?{params}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read().decode())
+    return _typeform_get_json(url, token, timeout=15)
 
 
 def _fetch_typeform_forms(token, workspace_id="", days=0, hard_cap=5000):
