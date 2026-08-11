@@ -279,6 +279,12 @@ def _get_campaigns_list_cached(force_refresh=False):
     popula o cache. Garante que, se múltiplas threads pedem ao mesmo tempo,
     apenas uma faz o trabalho real. As outras esperam e leem do cache.
     """
+    # Fura lista+clientes se a base (delivery da campaign_results OU contrato do
+    # checklist_info) mudou desde a última leitura — mesmo gatilho do report.
+    # Sem isso, uma edição de contrato feita no Command aparecia no report (que
+    # fura por versão) mas NÃO no card do menu admin (que só tinha TTL de 3h).
+    _bust_stale_caches_if_base_changed()
+
     if not force_refresh:
         cached = _cache_get(_list_cache, "all", _LIST_CACHE_TTL)
         if cached is not None:
@@ -323,65 +329,100 @@ def _get_token_lock(short_token):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Invalidação do _report_cache por VERSÃO da base.
+# Invalidação dos caches AO-VIVO por VERSÃO da base.
 #
-# O _report_cache tem TTL de 3h (payload pesado; a base muda ~1x/dia). Mas
-# quando a base é reconstruída FORA do ciclo normal — rebuild manual, catch-up
-# automático do pipeline quando uma fonte atrasou, backfill — o report seguia
-# servindo o payload velho até o TTL vencer ou o warmup (3/3h) reaquecer. Era o
-# que fazia o report exibir D-2 enquanto lista/painel já mostravam D-1 (o painel
-# lê outra tabela). Aqui o cache do report FURA sozinho: guardamos a versão da
-# base (last_modified da campaign_results) e, ao ler um report, se ela mudou
-# desde a última checagem, limpamos o _report_cache. Cobre TODOS os caminhos de
-# reconstrução sem acoplar o report-hub ao pipeline nem depender de ?refresh.
+# report (_report_cache) E menu admin (_list_cache/_clients_cache) leem os
+# mesmos dados ao vivo: delivery da campaign_results + contrato do checklist_info
+# (query_totals e query_campaigns_list). Ambos têm TTL de 3h (payload pesado; a
+# base muda ~1x/dia). Mas quando a base muda FORA do ciclo normal — rebuild
+# manual, catch-up do pipeline quando uma fonte atrasou, backfill, ou uma edição
+# de contrato no Command que re-materializa o checklist_info — o cache seguia
+# servindo o payload velho até o TTL vencer ou o warmup (3/3h) reaquecer.
+#
+# Dois sintomas do mesmo bug:
+#   • report exibindo D-2 enquanto lista/painel já mostravam D-1 (campaign_results
+#     mudou off-cycle e só o report não furava);
+#   • contrato editado no checklist aparecendo no report mas NÃO no card do menu
+#     admin (o report furava por versão; a lista só tinha TTL — sem gatilho).
+#
+# Aqui os caches FURAM sozinhos: guardamos a versão da base — last_modified de
+# AMBAS as tabelas que alimentam os números ao vivo (campaign_results E
+# checklist_info) — e, ao ler um report OU a lista, se qualquer uma mudou desde a
+# última checagem, limpamos report+merged+lista+clientes juntos. Cobre TODOS os
+# caminhos de reconstrução (delivery e contrato) sem acoplar o hub ao pipeline
+# nem depender de ?refresh.
 # Barato: __TABLES__ é metadata (não escaneia) e a leitura é cacheada 60s.
-# Defensivo: se a checagem falha, não mexe no cache (mantém o TTL de 3h).
+# Defensivo: se a leitura de uma tabela falha, aquele componente é ignorado
+# (carrega o último valor conhecido) — nunca fura à toa nem trava no outro.
 # ─────────────────────────────────────────────────────────────────────────────
 _BASE_VERSION_CACHE_TTL = 60           # relê o last_modified da base no máx 1x/min
-_base_version_cache = {}               # "v" -> (ts, last_modified_ms:int|None)
-_last_seen_base_version = {"v": None}  # última versão vista; muda → dispara o bust
+_base_version_cache = {}               # "v" -> (ts, (cr_ms, ck_ms))
+_last_seen_base_version = {"v": None}  # última versão vista (tuple); muda → bust
+
+
+def _table_last_modified(dataset, table, location=None):
+    """last_modified_time (ms) de uma tabela via __TABLES__ (metadata, não
+    escaneia). None se a checagem falhar — o chamador ignora esse componente.
+    location: campaign_results (DATASET_HUB) na região default, igual às queries
+    do report; checklist_info (prod_assets) em US, igual query_totals."""
+    try:
+        sql = ("SELECT last_modified_time FROM "
+               f"`{PROJECT_ID}.{dataset}.__TABLES__` WHERE table_id = @t")
+        jc = bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ScalarQueryParameter("t", "STRING", table)]
+        )
+        rows = list(bq.query(sql, job_config=jc, location=location).result())
+        return int(rows[0][0]) if rows else 0
+    except Exception as e:
+        logger.warning(f"[cache] last_modified de {dataset}.{table} falhou "
+                       f"({e}); componente ignorado (mantém TTL)")
+        return None
 
 
 def _base_version():
-    """last_modified (ms) da campaign_results — a tabela que os reports servem.
-    Cacheado 60s. None se a checagem falhar (aí o chamador não invalida nada).
-    Sem location: o DATASET_HUB é lido na região default, igual às queries do
-    report (query_daily/query_detail), diferente do unified (US)."""
+    """Assinatura de versão da base: (campaign_results_ms, checklist_info_ms).
+    Cacheado 60s. Componente None quando aquela tabela falhou na checagem."""
     cached = _cache_get(_base_version_cache, "v", _BASE_VERSION_CACHE_TTL)
     if cached is not None:
         return cached
-    ver = None
-    try:
-        sql = ("SELECT last_modified_time FROM "
-               f"`{PROJECT_ID}.{DATASET_HUB}.__TABLES__` WHERE table_id = @t")
-        jc = bigquery.QueryJobConfig(
-            query_parameters=[bigquery.ScalarQueryParameter("t", "STRING", TABLE)]
-        )
-        rows = list(bq.query(sql, job_config=jc).result())
-        ver = int(rows[0][0]) if rows else 0
-    except Exception as e:
-        logger.warning(f"[cache] _base_version falhou ({e}); mantém cache pelo TTL")
-        ver = None
+    ver = (
+        _table_last_modified(DATASET_HUB, TABLE),                     # default loc
+        _table_last_modified(DATASET_ASSETS, "checklist_info", "US"),
+    )
     _cache_set(_base_version_cache, "v", ver)
     return ver
 
 
-def _bust_report_cache_if_base_changed():
-    """Limpa _report_cache/_merged_report_cache se a base foi reconstruída desde
-    a última checagem. Chamado no caminho de leitura do report (cacheado 60s)."""
+def _bust_stale_caches_if_base_changed():
+    """Limpa report+merged+lista+clientes se a base (delivery OU contrato) mudou
+    desde a última checagem. Chamado nos caminhos de leitura do report E da lista
+    (cacheado 60s). Componente None (leitura falhou) é ignorado: carrega o último
+    valor conhecido, então nunca fura à toa nem perde uma mudança do outro."""
     ver = _base_version()
-    if ver is None:
-        return
     with _cache_lock:
         prev = _last_seen_base_version["v"]
-        _last_seen_base_version["v"] = ver
-        if prev is not None and ver != prev:
-            n = len(_report_cache) + len(_merged_report_cache)
+        if prev is None:
+            # 1ª checagem: registra o que der pra ler (sem furar nada ainda).
+            _last_seen_base_version["v"] = tuple(v for v in ver)
+            return
+        # Carrega o componente anterior quando o novo veio None (leitura falhou).
+        merged = tuple(n if n is not None else p for n, p in zip(ver, prev))
+        _last_seen_base_version["v"] = merged
+        changed = any(
+            n is not None and p is not None and n != p
+            for n, p in zip(ver, prev)
+        )
+        if changed:
+            n = (len(_report_cache) + len(_merged_report_cache)
+                 + (1 if "all" in _list_cache else 0)
+                 + (1 if "all" in _clients_cache else 0))
             _report_cache.clear()
             _merged_report_cache.clear()
+            _list_cache.pop("all", None)
+            _clients_cache.pop("all", None)
             logger.info(
-                f"[cache] campaign_results mudou ({prev} → {ver}); "
-                f"{n} entrada(s) de report invalidada(s)"
+                f"[cache] base mudou ({prev} → {merged}); "
+                f"{n} entrada(s) invalidada(s) (report+merged+lista+clientes)"
             )
 
 
@@ -401,9 +442,10 @@ def _get_report_cached(short_token, force_refresh=False):
     if frozen is not None:
         return frozen, True
 
-    # Fura o cache do report se a base foi reconstruída desde a última leitura
-    # (rebuild manual, catch-up do pipeline, backfill) — ver _base_version.
-    _bust_report_cache_if_base_changed()
+    # Fura os caches se a base foi reconstruída desde a última leitura (rebuild
+    # manual, catch-up do pipeline, backfill, edição de contrato) — ver
+    # _base_version. Mesma checagem no caminho da lista (menu admin).
+    _bust_stale_caches_if_base_changed()
 
     if not force_refresh:
         cached = _cache_get(_report_cache, short_token, _REPORT_CACHE_TTL)
