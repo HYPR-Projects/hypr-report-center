@@ -22,7 +22,7 @@
 //   - Sincronizar com URL (popstate)
 //   - Renderizar loading state (Skeleton) e error state
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import "../v2.css";
 import "../../ui/typography";
@@ -426,6 +426,29 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
       cancelled = true;
       if (dimTimer) clearTimeout(dimTimer);
     };
+  }, [token, view, cacheKey]);
+
+  // Refetch forçado após upload de base (RMND/PDOOH). O modal grava no BQ e
+  // mostra a base otimisticamente na hora; este reload confirma a VERDADE do
+  // servidor (refresh=true fura o cache do backend) e corrige o payload —
+  // `data.rmnd`/`data.pdooh` frescos descem pra aba via serverData. Sem isto,
+  // "salvou" era só estado local: se a propagação falhasse, ninguém percebia.
+  const reloadReport = useCallback(async () => {
+    if (!token) return;
+    try {
+      setRefreshing(true);
+      const d = await getCampaign(token, {
+        ...(view ? { view } : {}),
+        refresh: true,
+      });
+      viewCacheRef.current.set(cacheKey, d);
+      writeCache(`report.${cacheKey}`, d);
+      setData(d);
+    } catch (e) {
+      console.warn("[report] reload pós-upload falhou; mantendo payload atual", e);
+    } finally {
+      setRefreshing(false);
+    }
   }, [token, view, cacheKey]);
 
   useEffect(() => {
@@ -971,6 +994,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 data={data}
                 isAdmin={isAdmin}
                 adminJwt={adminJwt}
+                onUploaded={reloadReport}
               />
             </TabsContent>
 
@@ -980,6 +1004,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 data={data}
                 isAdmin={isAdmin}
                 adminJwt={adminJwt}
+                onUploaded={reloadReport}
               />
             </TabsContent>
 

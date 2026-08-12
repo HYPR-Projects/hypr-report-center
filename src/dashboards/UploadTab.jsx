@@ -5,7 +5,7 @@ import PdoohDashboard from "./PdoohDashboard";
 import RmndUploadModal from "../components/modals/RmndUploadModal";
 import PdoohUploadModal from "../components/modals/PdoohUploadModal";
 
-const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true }) => {
+const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true, onUploaded }) => {
   const [data, setData]           = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const storageKey                = `hypr_${type.toLowerCase()}_${token}`;
@@ -22,14 +22,26 @@ const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true 
         setData(parsed);
         try { localStorage.setItem(storageKey, JSON.stringify(parsed)); } catch { /* quota */ }
         return;
-      } catch { /* fall through pra localStorage */ }
+      } catch { /* fall through */ }
     }
+    // serverData ausente/null. Para o ADMIN, a verdade é o servidor: NÃO
+    // mascarar com o fantasma do localStorage — senão o admin vê a base
+    // "salva" pra sempre no próprio navegador e nunca percebe uma falha de
+    // propagação (enquanto o cliente, sem localStorage, vê a aba vazia). Foi
+    // exatamente o que confundiu o diagnóstico na auditoria 12/08/2026. Cai no
+    // placeholder "Subir base" quando o servidor de fato não tem a base.
+    if (!readOnly) {
+      setData(null);
+      return;
+    }
+    // Cliente (readOnly): mantém o fallback offline/pré-fetch — dado já visto
+    // é melhor que aba em branco durante uma janela transitória de staleness.
     try {
       const s = localStorage.getItem(storageKey);
       if (s) { setData(JSON.parse(s)); return; }
     } catch { /* ignore */ }
     setData(null);
-  }, [storageKey, serverData]);
+  }, [storageKey, serverData, readOnly]);
 
   const clear = () => {
     setData(null);
@@ -77,7 +89,7 @@ const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true 
           adminJwt={adminJwt}
           theme={modalTheme}
           onClose={() => setModalOpen(false)}
-          onSaved={(payload) => { setData(payload); setModalOpen(false); }}
+          onSaved={(payload) => { setData(payload); setModalOpen(false); onUploaded?.(); }}
         />
       );
     }
@@ -89,7 +101,7 @@ const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true 
           adminJwt={adminJwt}
           theme={modalTheme}
           onClose={() => setModalOpen(false)}
-          onSaved={(payload) => { setData(payload); setModalOpen(false); }}
+          onSaved={(payload) => { setData(payload); setModalOpen(false); onUploaded?.(); }}
         />
       );
     }

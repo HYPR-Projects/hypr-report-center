@@ -229,6 +229,7 @@ def _cache_invalidate_token(short_token):
     """
     with _cache_lock:
         _report_cache.pop(short_token, None)
+        _report_asset_ver.pop(short_token, None)
         _list_cache.pop("all", None)
         _clients_cache.pop("all", None)
         _overrides_cache.pop("all", None)
@@ -418,12 +419,95 @@ def _bust_stale_caches_if_base_changed():
                  + (1 if "all" in _clients_cache else 0))
             _report_cache.clear()
             _merged_report_cache.clear()
+            _report_asset_ver.clear()
             _list_cache.pop("all", None)
             _clients_cache.pop("all", None)
             logger.info(
                 f"[cache] base mudou ({prev} → {merged}); "
                 f"{n} entrada(s) invalidada(s) (report+merged+lista+clientes)"
             )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Versão de asset por token (RMND/PDOOH) — invalidação CROSS-INSTÂNCIA dos
+# uploads de base subidos pelo admin.
+#
+# Diferente do _base_version (delivery/contrato da pipeline, que muda ~1x/dia e
+# fura TUDO — report+merged+lista+clientes), um upload de RMND/PDOOH afeta APENAS
+# o report DAQUELE token. Dobrá-lo no _base_version furaria os caches CAROS de
+# lista/clientes (query fria de 15-65s) a cada upload — regressão de perf à toa.
+#
+# O problema real: `_cache_invalidate_token` no POST só limpa a instância que
+# serviu a escrita; as OUTRAS instâncias da Cloud Function seguem servindo o
+# payload pré-upload por até 3h (TTL do _report_cache). O cliente abre o link
+# numa dessas e vê a aba RMND/PDOOH vazia — exatamente o sintoma reportado
+# (auditoria 12/08/2026: base salva no BQ, mas leitura stale em outra instância).
+#
+# Solução: ao servir um report CACHEADO, comparamos a versão de asset com que
+# ele foi construído (`_report_asset_ver`) com a versão ATUAL (bulk cacheado
+# 60s). Mudou → furamos SÓ aquele token e relemos do BQ. Comparação por VALOR
+# (não timestamp) — imune a skew de relógio BQ×instância.
+_ASSET_VERSIONS_TTL   = 60
+_asset_versions_cache = {}   # "all" -> (ts, dict[short_token -> max_updated_at_ms])
+_report_asset_ver     = {}   # short_token -> versão de asset com que o report foi cacheado
+
+
+def query_asset_versions():
+    """Versão (max updated_at em ms) das bases RMND/PDOOH por token. As duas
+    tabelas são minúsculas (dev_assets, região US); 1 scan/min/instância no pior
+    caso, custo desprezível."""
+    sql = (
+        "SELECT short_token, CAST(UNIX_MILLIS(MAX(updated_at)) AS INT64) AS ms FROM ("
+        "  SELECT short_token, updated_at FROM `site-hypr.dev_assets.rmnd_data`"
+        "  UNION ALL"
+        "  SELECT short_token, updated_at FROM `site-hypr.dev_assets.pdooh_data`"
+        ") WHERE short_token IS NOT NULL GROUP BY short_token"
+    )
+    rows = list(bq.query(sql, location="US").result())
+    return {r["short_token"]: int(r["ms"]) for r in rows if r["ms"] is not None}
+
+
+def _safe_get_asset_versions():
+    """Wrapper resiliente + cacheado 60s do dict de versões de asset. Falha na
+    checagem devolve {} (nunca fura à toa: versão 0 == cache construído com 0)."""
+    cached = _cache_get(_asset_versions_cache, "all", _ASSET_VERSIONS_TTL)
+    if cached is not None:
+        return cached
+    try:
+        data = query_asset_versions()
+    except Exception as e:
+        logger.warning(f"[WARN _safe_get_asset_versions] {e}")
+        data = {}
+    _cache_set(_asset_versions_cache, "all", data)
+    return data
+
+
+def _asset_ver_now(short_token):
+    """Versão atual do asset do token (0 = sem base ou checagem falhou).
+    NÃO chamar com _cache_lock em mãos — toca _cache_get/_cache_set."""
+    return _safe_get_asset_versions().get(short_token, 0)
+
+
+def _record_report_asset_ver(short_token):
+    """Registra a versão de asset com que o report acabou de ser cacheado —
+    lida depois por _report_asset_is_stale pra detectar upload em outra
+    instância. Chamar SEMPRE junto do _cache_set(_report_cache, ...)."""
+    ver = _asset_ver_now(short_token)          # fora do lock (toca cache)
+    with _cache_lock:
+        _report_asset_ver[short_token] = ver
+
+
+def _report_asset_is_stale(short_token):
+    """True se a base RMND/PDOOH do token mudou desde que o report foi cacheado.
+    Compara VALOR de versão (imune a skew de relógio). Cache antigo sem versão
+    registrada (built None) é stale só se HÁ base agora — força 1 rebuild que
+    passa a registrar a versão e estabiliza."""
+    cur = _asset_ver_now(short_token)          # fora do lock
+    with _cache_lock:
+        built = _report_asset_ver.get(short_token)
+    if built is None:
+        return cur != 0
+    return cur != built
 
 
 def _get_report_cached(short_token, force_refresh=False):
@@ -449,7 +533,7 @@ def _get_report_cached(short_token, force_refresh=False):
 
     if not force_refresh:
         cached = _cache_get(_report_cache, short_token, _REPORT_CACHE_TTL)
-        if cached is not None:
+        if cached is not None and not _report_asset_is_stale(short_token):
             return cached, True
 
     lock = _get_token_lock(short_token)
@@ -457,12 +541,13 @@ def _get_report_cached(short_token, force_refresh=False):
         # Double-check
         if not force_refresh:
             cached = _cache_get(_report_cache, short_token, _REPORT_CACHE_TTL)
-            if cached is not None:
+            if cached is not None and not _report_asset_is_stale(short_token):
                 return cached, True
         data = fetch_campaign_data(short_token)
         if data is None:
             return None, False
         _cache_set(_report_cache, short_token, data)
+        _record_report_asset_ver(short_token)
         return data, False
 
 
@@ -6906,13 +6991,14 @@ def _get_frozen_payload(short_token):
     # ANTES do freeze (frozen ausente) faria o report servir o número velho até
     # o TTL expirar. Exige frozen=True; senão, lê o snapshot do BQ.
     cached = _cache_get(_report_cache, short_token, _REPORT_CACHE_TTL)
-    if cached is not None and cached.get("frozen"):
+    if cached is not None and cached.get("frozen") and not _report_asset_is_stale(short_token):
         return cached
     payload = _load_snapshot_payload(short_token)
     if payload is not None:
         payload = _overlay_frozen_live_fields(short_token, payload)
         payload = _overlay_live_contracts(short_token, payload)
         _cache_set(_report_cache, short_token, payload)
+        _record_report_asset_ver(short_token)
     return payload
 
 
@@ -6926,6 +7012,18 @@ def _overlay_frozen_live_fields(short_token, payload):
     for key, fn in (("survey", query_survey), ("loom", query_loom)):
         try:
             payload[key] = fn(short_token)
+        except Exception as e:
+            logger.warning(f"[WARN frozen overlay {key} {short_token}] {e}")
+    # RMND (Amazon Ads) e PDOOH: bases de Excel que o admin sobe pelo modal —
+    # rotineiramente DEPOIS do encerramento/freeze (o fechamento de retail media
+    # e de PDOOH chega dias após o fim da campanha). Sem overlay, o snapshot
+    # guarda rmnd=null/pdooh=null e a base subida pós-freeze fica invisível pra
+    # sempre — mesma classe de bug de survey/loom. save_upload já invalida o
+    # _report_cache do token na instância do POST; isto cobre o cache miss em
+    # qualquer instância. Ver auditoria RMND/PDOOH (12/08/2026).
+    for key, up_type in (("rmnd", "RMND"), ("pdooh", "PDOOH")):
+        try:
+            payload[key] = query_upload(short_token, up_type)
         except Exception as e:
             logger.warning(f"[WARN frozen overlay {key} {short_token}] {e}")
     # Alcance & Frequência: 4 chaves de TOPO (não objeto aninhado como
