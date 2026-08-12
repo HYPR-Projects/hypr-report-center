@@ -23,7 +23,7 @@ import TabChat from "../../components/TabChat";
 import { useTheme } from "../hooks/useTheme";
 import { legacyThemeObj } from "../legacyThemeBridge";
 
-export default function RmndV2({ token, data, isAdmin, adminJwt }) {
+export default function RmndV2({ token, data, isAdmin, adminJwt, onUploaded }) {
   const [theme] = useTheme();
   const isDark = theme === "dark";
   const legacyTheme = legacyThemeObj(theme);
@@ -47,6 +47,7 @@ export default function RmndV2({ token, data, isAdmin, adminJwt }) {
         readOnly={!isAdmin}
         adminJwt={adminJwt}
         isDark={isDark}
+        onUploaded={onUploaded}
       />
 
       <TabChat

@@ -188,6 +188,10 @@ export async function getCampaign(token, options = {}) {
   if (isDemoToken(token)) return buildDemoPayload();
   const params = new URLSearchParams({ token });
   if (options.view) params.set("view", options.view);
+  // refresh=true fura o _report_cache do backend (bypassa staleness entre
+  // instâncias). Usado após upload de base RMND/PDOOH pra confirmar a
+  // persistência lendo a verdade do servidor, não o otimismo local.
+  if (options.refresh) params.set("refresh", "true");
   const r = await fetch(`${API_URL}?${params.toString()}`, {
     signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
   });
