@@ -1187,7 +1187,7 @@ function ListView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLinkCl
           horizontal é UX padrão pra tabelas densas (Linear/Notion/Stripe).
           Inert no desktop (o conteúdo cabe e a barra não aparece). */}
       <div className="overflow-x-auto scrollbar-hidden">
-        <div className="md:min-w-[1248px]">
+        <div className="md:min-w-[1330px]">
           <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
           <div className="divide-y divide-border/60">
         {items.map((it) => {
@@ -1332,7 +1332,7 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
           fica aninhado dentro do min-w pra preservar o cabeçalho fixo + a
           altura máxima da lista no desktop. */}
       <div className="overflow-x-auto scrollbar-hidden">
-        <div className="md:min-w-[1248px]">
+        <div className="md:min-w-[1330px]">
           <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
           <div className="divide-y divide-border/60 max-h-[calc(100vh-380px)] overflow-y-auto">
         {sorted.map((it) => {
@@ -1375,7 +1375,7 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
 // ─── Subtotal inline minimalista (mesmo grid do row, sem cores berrantes) ───
 function InlineGroupSubtotal({ members, groupPi, groupPctReceber, groupPctReceberRev }) {
   const first = members[0];
-  const grid = "grid grid-cols-[12px_minmax(220px,2.4fr)_minmax(104px,0.36fr)_84px_112px_112px_128px_136px_58px_72px_72px_minmax(88px,0.44fr)] gap-x-4";
+  const grid = "grid grid-cols-[12px_minmax(220px,2.4fr)_minmax(104px,0.36fr)_84px_112px_112px_128px_136px_58px_72px_72px_minmax(88px,0.44fr)] gap-x-3";
   return (
     <div className={cn(grid, "hidden md:grid px-5 py-2.5 items-center border-t border-border/40 bg-surface/40 text-[12px]")}>
       <div />

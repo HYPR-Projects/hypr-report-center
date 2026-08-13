@@ -843,11 +843,11 @@ function Chevron({ open }) {
 // informação primária — sobrava "Amazon…", "Al…", às vezes um caractere só.
 // Com `minmax(220px, …)` a coluna nunca encolhe abaixo do legível; se a tela
 // for estreita, o container já tem overflow-x-auto e rola.
-const ROW_GRID = "grid grid-cols-[12px_minmax(220px,2.4fr)_minmax(104px,0.36fr)_84px_112px_112px_128px_136px_58px_72px_72px_minmax(88px,0.44fr)] gap-x-4";
+const ROW_GRID = "grid grid-cols-[12px_minmax(220px,2.4fr)_minmax(104px,0.36fr)_84px_112px_112px_128px_136px_58px_72px_72px_minmax(88px,0.44fr)] gap-x-3";
 
 export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "desc", onColumnClick = null }) {
   const grid = hidePi
-    ? "grid grid-cols-[12px_minmax(220px,2.6fr)_minmax(110px,0.4fr)_88px_116px_116px_138px_60px_minmax(82px,0.55fr)] gap-x-4"
+    ? "grid grid-cols-[12px_minmax(220px,2.6fr)_minmax(110px,0.4fr)_88px_116px_116px_138px_60px_minmax(82px,0.55fr)] gap-x-3"
     : ROW_GRID;
   const interactive = !!onColumnClick;
 
@@ -951,7 +951,7 @@ function PmpLineRowInner({
   // Grid: quando hidePi, esconde a coluna PI (PI está no header do grupo).
   // Também esconde % Entrega per-line (faz sentido só ao nível do grupo).
   const grid = hidePi
-    ? "grid grid-cols-[12px_minmax(220px,2.6fr)_minmax(110px,0.4fr)_88px_116px_116px_138px_60px_minmax(82px,0.55fr)] gap-x-4"
+    ? "grid grid-cols-[12px_minmax(220px,2.6fr)_minmax(110px,0.4fr)_88px_116px_116px_138px_60px_minmax(82px,0.55fr)] gap-x-3"
     : ROW_GRID;
 
   // content-visibility:auto — browser pula render/paint das rows fora do
