@@ -69,3 +69,6 @@ def test_query_cobre_error_revoked_e_active_stale(monkeypatch):
     assert "status = 'active'" in sql
     # threshold interpolado no SQL (não fica literal "{STALE_THRESHOLD_HOURS}")
     assert f"INTERVAL {sa.STALE_THRESHOLD_HOURS} HOUR" in sql
+    # Campanha encerrada segue 'active' com sync velho POR DESIGN — sem esse
+    # guard, todo report finalizado viraria alerta diário pro CS dono.
+    assert "sync_until" in sql, "stale de active tem que respeitar a janela de sync"

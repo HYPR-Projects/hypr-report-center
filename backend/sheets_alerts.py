@@ -105,7 +105,9 @@ def find_stale_integrations() -> List[Dict]:
        notificado. Era o ponto cego que deixou a integração da Heineken parada
        sem ninguém saber. Agora alertamos.
 
-    `paused` (grupo vazio / sync_until vencido) é intencional e NÃO alerta.
+    Fora da janela (`sync_until` vencido) NÃO alerta: desde ago/2026 a
+    integração de campanha encerrada permanece `active` (só para de
+    sincronizar), então "sync velho" ali é o comportamento esperado.
     `deleted` já fica fora (soft-delete só conta em queries específicas).
     """
     sql = f"""
@@ -124,6 +126,11 @@ def find_stale_integrations() -> List[Dict]:
         status IN ('error', 'revoked')
         OR (
           status = 'active'
+          -- Fora da janela de sync (campanha encerrada há mais de 30 dias) o
+          -- last_synced_at fica velho POR DESIGN — a integração continua ativa
+          -- e a sheet disponível, só não sincroniza mais. Sem esse filtro, todo
+          -- report encerrado viraria alerta diário pro CS.
+          AND (sync_until IS NULL OR sync_until >= CURRENT_DATE("America/Sao_Paulo"))
           AND (
             last_synced_at IS NULL
             OR last_synced_at < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {STALE_THRESHOLD_HOURS} HOUR)

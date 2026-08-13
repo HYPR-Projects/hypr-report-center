@@ -218,6 +218,40 @@ def test_renamed_tab_found_by_header_when_gid_unknown(update_status, remember):
     update_status.assert_not_called()
 
 
+def test_fim_de_janela_nao_rebaixa_status(update_status, monkeypatch):
+    """Campanha encerrada (sync_until vencido) sai do sync mas NÃO muda de
+    status. Até ago/2026 o cron marcava 'paused' aqui, e o card do report
+    renderizava isso como "Integração com erro — falha no último sync"."""
+    assert not hasattr(si, "list_expired_integrations"), (
+        "list_expired_integrations era o caminho que rebaixava pra 'paused' — "
+        "não reintroduzir"
+    )
+    monkeypatch.setattr(si, "count_out_of_window", lambda: 3)
+    monkeypatch.setattr(si, "list_active_integrations", lambda: [])
+
+    summary = si.sync_all_due(lambda t: ([], []))
+
+    assert summary["out_of_window"] == 3, "fora da janela só conta, não muda nada"
+    assert summary["synced"] == 0
+    update_status.assert_not_called()
+
+
+def test_merge_sem_membros_nao_rebaixa_status(update_status, monkeypatch):
+    """Grupo esvaziado: registra o motivo e não escreve na sheet, mas a
+    integração continua ativa (quem avisa é o alerta de stale)."""
+    monkeypatch.setattr(
+        si, "get_integration",
+        lambda target_id, target_type=None: {"spreadsheet_id": "SID"},
+    )
+
+    out = si.sync_merge_sheet("MID", [])
+
+    assert out["skipped"] is True
+    _, kwargs = update_status.call_args
+    assert kwargs.get("status") is None, "grupo vazio não é motivo pra desativar"
+    assert kwargs.get("last_error") == "grupo sem membros"
+
+
 def test_no_data_tab_marks_error_and_does_not_touch_other_tabs(update_status, remember):
     """Aba apagada/planilha repurposed: erro acionável, sem escrever em aba
     aleatória do cliente."""

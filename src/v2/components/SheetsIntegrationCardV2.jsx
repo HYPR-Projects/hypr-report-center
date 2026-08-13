@@ -10,6 +10,13 @@
 //                        botões "Sincronizar agora" e "Excluir integração".
 //   3. ERRO/REVOGADA  — admin vê banner "Reconectar". Cliente não vê o card.
 //
+// Campanha encerrada NÃO é um quarto estado: passada a janela de sync
+// (`sync_until`), a integração continua CONECTADA/ativa — some só o sync
+// automático, porque não entra dado novo em campanha encerrada. Até ago/2026
+// o backend rebaixava essas rows pra `paused` e o card caía no estado 3,
+// dizendo "Integração com erro — falha no último sync (ex.: 502)" pra ~92
+// integrações que nunca tinham falhado. Ver `computeFreshness`.
+//
 // OAuth flow
 // ──────────
 // Usa Google Identity Services (GIS) `oauth2.initCodeClient` em modo
@@ -220,7 +227,7 @@ export default function SheetsIntegrationCardV2({
   }, []);
 
   // ── Cliente sem integração ativa: nada renderiza ──────────────────────────
-  if (!isAdmin && (!integration || integration.status !== "active")) {
+  if (!isAdmin && !isActiveLike(integration)) {
     return null;
   }
 
@@ -240,7 +247,7 @@ export default function SheetsIntegrationCardV2({
             <p className="text-xs text-fg-muted mt-1 max-w-2xl">
               {isMerge
                 ? "Cria uma planilha no seu Drive com a base unificada de todos os tokens do grupo (com colunas extras Mês e Token), atualizada automaticamente às 08h e 12h BRT todos os dias."
-                : "Cria uma planilha no seu Drive com a Base de Dados completa, atualizada automaticamente às 08h e 12h BRT todos os dias. Compartilhe com o cliente como faria com qualquer planilha. Sync automático para 30 dias após o término da campanha."}
+                : "Cria uma planilha no seu Drive com a Base de Dados completa, atualizada automaticamente às 08h e 12h BRT todos os dias. Compartilhe com o cliente como faria com qualquer planilha. O sync automático para 30 dias após o término da campanha — a integração e a planilha continuam ativas, com os dados finais."}
             </p>
             {error && <ErrorLine msg={error} />}
           </div>
@@ -262,14 +269,17 @@ export default function SheetsIntegrationCardV2({
   }
 
   // ── Estado ATIVO ──────────────────────────────────────────────────────────
-  if (integration?.status === "active") {
+  if (isActiveLike(integration)) {
     // Cliente vê só ícone + título + pill + botão — alinhamento ao centro
     // dá leitura mais limpa. Admin tem metadados em coluna abaixo do
     // título (created_by, last_sync, sync_until), então alinha ao topo
     // pra ícone/título encostarem na primeira linha de texto.
     const rowAlign = isAdmin ? "items-start" : "items-center";
     const freshness = isAdmin ? computeFreshness(integration) : { level: "fresh" };
-    const showStaleBanner = freshness.level !== "fresh";
+    // "closed" = janela de sync vencida (campanha encerrada). Sync velho ali é
+    // o esperado, então nada de banner de alerta — só a linha informativa.
+    const showStaleBanner = freshness.level !== "fresh" && freshness.level !== "closed";
+    const windowClosed = isSyncWindowClosed(integration);
     return (
       <Card variant={showStaleBanner ? "warning" : undefined}>
         <div className="flex flex-col gap-3">
@@ -301,9 +311,18 @@ export default function SheetsIntegrationCardV2({
                     </div>
                   )}
                   {integration.sync_until && (
-                    <div>
-                      Sync ativo até: <span className="text-fg-muted">{fmtDateBR(integration.sync_until)}</span>
-                    </div>
+                    windowClosed ? (
+                      <div>
+                        Sync automático encerrado em{" "}
+                        <span className="text-fg-muted">{fmtDateBR(integration.sync_until)}</span>
+                        {" "}— campanha finalizada. A integração segue ativa e a planilha
+                        mantém os dados finais.
+                      </div>
+                    ) : (
+                      <div>
+                        Sync ativo até: <span className="text-fg-muted">{fmtDateBR(integration.sync_until)}</span>
+                      </div>
+                    )
                   )}
                 </div>
               )}
@@ -390,7 +409,11 @@ export default function SheetsIntegrationCardV2({
   }
 
   // ── Estado ERRO/REVOGADO (admin only) ─────────────────────────────────────
-  if (isAdmin && integration && integration.status !== "active") {
+  // Só quebra DE VERDADE entra aqui. A condição era `status !== "active"`, que
+  // varria pra cá qualquer status novo/legado (foi assim que `paused` de
+  // campanha encerrada virou "Integração com erro").
+  if (isAdmin && integration &&
+      (integration.status === "error" || integration.status === "revoked")) {
     return (
       <Card variant="error">
         <div className="flex items-start gap-4">
@@ -500,13 +523,14 @@ function StaleBanner({ freshness }) {
 function StatusPill({ status }) {
   const styles = {
     active:  "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
-    paused:  "bg-amber-500/10 text-amber-400 border-amber-500/30",
+    paused:  "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
     revoked: "bg-red-500/10 text-red-400 border-red-500/30",
     error:   "bg-red-500/10 text-red-400 border-red-500/30",
   };
   const labels = {
     active:  "Ativo",
-    paused:  "Pausado",
+    // Legado — backend não escreve mais 'paused' (ver isActiveLike).
+    paused:  "Ativo",
     revoked: "Revogado",
     error:   "Erro",
   };
@@ -553,6 +577,10 @@ function SheetIcon() {
 //   - never-tried:      nem tentou recentemente → cron parou globalmente, ou
 //                        a row não foi processada no último run que crashou.
 function computeFreshness(integration) {
+  // Janela vencida: a campanha encerrou há mais de 30 dias, o cron parou de
+  // sincronizar de propósito e nada de novo vai entrar. `last_synced_at` velho
+  // aqui é o estado correto, não sintoma de nada.
+  if (isSyncWindowClosed(integration)) return { level: "closed" };
   if (!integration?.last_synced_at) return { level: "fresh" };
   const now      = Date.now();
   const synced   = new Date(integration.last_synced_at).getTime();
@@ -568,6 +596,26 @@ function computeFreshness(integration) {
     return { level: "tried-and-failed", hoursSinceSync };
   }
   return { level: "never-tried", hoursSinceSync };
+}
+
+// Uma integração continua "ativa" pra sempre — inclusive depois que a campanha
+// encerra e o sync para. `paused` é status LEGADO (backend não escreve mais)
+// e é tratado como ativo pra que rows antigas não sumam nem virem card de erro.
+function isActiveLike(integration) {
+  const s = integration?.status;
+  return s === "active" || s === "paused";
+}
+
+// True quando a janela de sync já fechou: `sync_until` (end_date + 30d) é
+// anterior a hoje. Estado normal e permanente de campanha encerrada.
+// `sync_until` vem como DATE (YYYY-MM-DD), então comparar as strings ISO
+// evita fuso: `new Date("2026-07-30")` parseia como UTC e volta um dia no BRT.
+function isSyncWindowClosed(integration) {
+  const until = integration?.sync_until;
+  if (!until) return false;   // sem janela definida (ex.: compplan)
+  const d = new Date();
+  const todayISO = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return String(until).slice(0, 10) < todayISO;
 }
 
 function formatHoursAgo(hours) {
