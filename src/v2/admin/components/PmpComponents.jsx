@@ -274,12 +274,26 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false, w
   // 2xl a tela tinha 7 colunas de ~190px e o valor cheio (R$ 14.299.476,71)
   // saía cortado — o número que mais importa na tela virava "R$ 14.299.4…".
   // Menos colunas em telas médias = valor inteiro sempre legível.
+  // Com showExtra são 7 cards — número ímpar que não fecha em nenhum dos
+  // breakpoints acima (2 cols → 3+3+1, 3 cols → 3+3+1, 4 cols → 4+3), deixando
+  // o último card sozinho com o resto da linha vazio ao lado. Em lg isso era um
+  // buraco de 334px medido em produção.
+  //
+  // Em vez de mexer na contagem de colunas (que está justificada acima pela
+  // legibilidade do valor de 8 dígitos), o ÚLTIMO card estica pra fechar a
+  // linha. Mesma solução da grade de tiles do drawer e do grid do Overview.
+  // Sem showExtra são 6 cards e todos os breakpoints já fecham — daí o span
+  // só entrar no caso ímpar.
+  const tailSpan = showExtra ? "col-span-2 md:col-span-3 lg:col-span-2 2xl:col-span-1" : "";
   return (
     <div className={cn("grid grid-cols-2 gap-3 md:gap-4",
       showExtra ? "md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-7"
                 : "md:grid-cols-3 lg:grid-cols-3 2xl:grid-cols-6")}>
       {items.map((it, i) => (
-        <div key={i} className="rounded-xl border border-border bg-canvas-elevated p-4 md:p-5" title={it.title}>
+        <div key={i}
+             className={cn("rounded-xl border border-border bg-canvas-elevated p-4 md:p-5",
+               i === items.length - 1 && tailSpan)}
+             title={it.title}>
           <div className="text-[10px] uppercase tracking-widest text-fg-subtle font-semibold leading-tight">{it.label}</div>
           <div className={cn("text-lg xl:text-xl font-bold tabular-nums mt-2 whitespace-nowrap overflow-hidden text-ellipsis", it.valueClass || "text-fg")}
                title={typeof it.value === "string" ? it.value : ""}>
@@ -817,13 +831,23 @@ function Chevron({ open }) {
 //   • Revenue  — quanto o buyer paga ao curator
 //   • Margem   — Revenue - Cost = o que a HYPR efetivamente fatura (DESTAQUE)
 //
-// Larguras generosas (140-160px) pra acomodar valores completos sem
-// abreviar — operação contábil precisa do número exato.
-const ROW_GRID = "grid grid-cols-[12px_minmax(0,1.3fr)_minmax(104px,0.36fr)_84px_136px_136px_136px_148px_58px_80px_80px_minmax(88px,0.44fr)] gap-x-4";
+// Larguras medidas, não estimadas. O maior valor que aparece numa LINHA é
+// ~94px ("R$ 4.000.000,00"); os totais de 8 dígitos vivem nos cards do topo,
+// não aqui. As colunas numéricas estavam em 136-148px — 40px de folga cada,
+// somando ~84px parados enquanto a coluna do cliente colapsava.
+//
+// A COLUNA DO CLIENTE PRECISA DE MÍNIMO EXPLÍCITO. Era `minmax(0,1.3fr)`, e
+// o `0` é o que permitia o colapso: com todas as vizinhas fixas, a fração
+// resolvia em 105px para caber nome + token + chip de fonte. Os badges são
+// `shrink-0` e o nome é `truncate`, então quem desaparecia era justamente a
+// informação primária — sobrava "Amazon…", "Al…", às vezes um caractere só.
+// Com `minmax(220px, …)` a coluna nunca encolhe abaixo do legível; se a tela
+// for estreita, o container já tem overflow-x-auto e rola.
+const ROW_GRID = "grid grid-cols-[12px_minmax(220px,2.4fr)_minmax(104px,0.36fr)_84px_112px_112px_128px_136px_58px_72px_72px_minmax(88px,0.44fr)] gap-x-4";
 
 export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "desc", onColumnClick = null }) {
   const grid = hidePi
-    ? "grid grid-cols-[12px_minmax(0,1.55fr)_minmax(110px,0.4fr)_88px_140px_140px_150px_60px_minmax(82px,0.55fr)] gap-x-4"
+    ? "grid grid-cols-[12px_minmax(220px,2.6fr)_minmax(110px,0.4fr)_88px_116px_116px_138px_60px_minmax(82px,0.55fr)] gap-x-4"
     : ROW_GRID;
   const interactive = !!onColumnClick;
 
@@ -927,7 +951,7 @@ function PmpLineRowInner({
   // Grid: quando hidePi, esconde a coluna PI (PI está no header do grupo).
   // Também esconde % Entrega per-line (faz sentido só ao nível do grupo).
   const grid = hidePi
-    ? "grid grid-cols-[12px_minmax(0,1.55fr)_minmax(110px,0.4fr)_88px_140px_140px_150px_60px_minmax(82px,0.55fr)] gap-x-4"
+    ? "grid grid-cols-[12px_minmax(220px,2.6fr)_minmax(110px,0.4fr)_88px_116px_116px_138px_60px_minmax(82px,0.55fr)] gap-x-4"
     : ROW_GRID;
 
   // content-visibility:auto — browser pula render/paint das rows fora do
@@ -957,12 +981,45 @@ function PmpLineRowInner({
         <span className={cn("w-2 h-2 rounded-full", dm.dot)} />
       </div>
 
+      {/* DUAS FAIXAS COM PAPÉIS SEPARADOS
+          ────────────────────────────────────────────────────────────────
+          Linha 1 = o que se LÊ: cliente · campanha, e só. Antes ela também
+          carregava o token (48px) e o chip de fonte (39px), ambos `shrink-0`,
+          num espaço que resolvia em 105px — então quem cedia era o nome, que
+          é a informação primária. Sobrava "Amazon…" ou um caractere.
+
+          Linha 2 = os IDENTIFICADORES técnicos: agência, deal/line id e o
+          token. Continuam a um passo de distância (11px abaixo), com o token
+          preservando a cor signature pra seguir localizável no scan.
+
+          O `title` com o texto completo é a prévia no hover — não existia,
+          então um nome truncado era simplesmente inalcançável. */}
       <div className="min-w-0">
-        <div className="flex items-center gap-2 truncate">
-          <span className={cn("text-[13px] font-medium truncate", isCancelado ? "text-fg-subtle" : "text-fg")}>
+        <div className="flex items-center gap-2 min-w-0">
+          <span
+            className={cn("text-[13px] font-medium truncate", isCancelado ? "text-fg-subtle" : "text-fg")}
+            title={[!hidePi && (line.customer || "sem cliente"), line.campaign_name || "—"]
+              .filter(Boolean).join(" · ")}
+          >
             {!hidePi && (line.customer || <span className="italic text-fg-muted">sem cliente</span>)}
             {!hidePi && <span className={cn("mx-2", isCancelado ? "text-fg-subtle/60" : "text-fg-subtle")}>·</span>}
             <span className={isCancelado ? "text-fg-subtle italic" : "text-fg"}>{line.campaign_name || "—"}</span>
+          </span>
+          {!isCancelado && isNewLine(line) && (
+            <span
+              className="badge-new font-semibold text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full shrink-0 bg-signature/15 text-signature border border-signature/40"
+              title="Line criada há menos de 72h">
+              new
+            </span>
+          )}
+        </div>
+        <div className={cn("text-[11px] mt-0.5 flex items-center gap-2 min-w-0",
+          isCancelado ? "text-fg-subtle/60" : "text-fg-subtle")}>
+          <span
+            className="truncate"
+            title={`${line.agency || "sem agência"} · ${line.external_deal_id || `Line ${line.line_id}`}`}
+          >
+            {line.agency || "—"} <span className="mx-1.5">·</span> {line.external_deal_id || `Line ${line.line_id}`}
           </span>
           {line.short_token && (
             <span className={cn("font-mono text-[10px] px-1.5 py-0.5 rounded shrink-0",
@@ -972,20 +1029,12 @@ function PmpLineRowInner({
               {line.short_token}
             </span>
           )}
-          {!isCancelado && isNewLine(line) && (
-            <span
-              className="badge-new font-semibold text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full shrink-0 bg-signature/15 text-signature border border-signature/40"
-              title="Line criada há menos de 72h">
-              new
-            </span>
-          )}
-          <SourceChip source={line.source} showXandr className="shrink-0" />
-        </div>
-        <div className={cn("text-[11px] truncate mt-0.5 flex items-center gap-2",
-          isCancelado ? "text-fg-subtle/60" : "text-fg-subtle")}>
-          <span className="truncate">
-            {line.agency || "—"} <span className="mx-1.5">·</span> {line.external_deal_id || `Line ${line.line_id}`}
-          </span>
+          {/* Sem `showXandr`: medido na lista em produção, "Xandr" aparecia em
+              93 de 94 lines e "PubMatic" em 1 — o chip gastava 39px + gap em
+              toda linha pra não distinguir nada. É o comportamento default do
+              SourceChip (xandr → null), que a lista estava anulando. Agora só
+              aparece quando de fato informa algo. */}
+          <SourceChip source={line.source} className="shrink-0" />
           {groupBadge && (
             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-signature/10 text-signature border border-signature/20 shrink-0"
                   title={`Esta line pertence a um grupo · ${groupBadge}`}>
