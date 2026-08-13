@@ -16,6 +16,7 @@
 import { useId } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { cn } from "../../ui/cn";
+import { CountBadge } from "../../ui/CountBadge";
 
 const SEP_RE = /[-_| ]+/;
 
@@ -86,9 +87,7 @@ export function CreativeLineFilterV2({ lines, selected, onChange }) {
             </svg>
             <span className="truncate">{trigger}</span>
             {isActive && (
-              <span className="shrink-0 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full bg-signature text-on-signature text-[10px] font-bold tabular-nums">
-                {selected.length}
-              </span>
+              <CountBadge value={selected.length} tone="signature" />
             )}
             <svg
               width="10"

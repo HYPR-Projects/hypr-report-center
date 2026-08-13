@@ -30,13 +30,13 @@ const buttonStyles = cva(
     variants: {
       variant: {
         primary:
-          "bg-signature text-on-signature hover:bg-signature-hover",
+          "bg-signature-fill text-on-signature hover:bg-signature-hover",
         secondary:
           "bg-surface-strong text-fg hover:bg-surface border border-border-strong",
         ghost:
           "bg-transparent text-fg hover:bg-surface",
         danger:
-          "bg-danger text-fg hover:opacity-90",
+          "bg-danger text-on-semantic hover:opacity-90",
       },
       size: {
         sm: "h-8 px-3 text-xs rounded-md",

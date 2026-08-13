@@ -212,7 +212,7 @@ export function LabelOverridesModal({
                 type="button"
                 onClick={handleAdd}
                 disabled={!newRaw.trim() || !newName.trim() || ov.busyLabel === "__new__"}
-                className="shrink-0 rounded-md bg-signature px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+                className="shrink-0 rounded-md bg-signature-fill px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
               >
                 {ov.busyLabel === "__new__" ? "…" : "Add"}
               </button>

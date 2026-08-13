@@ -2,6 +2,12 @@ export const fmt  = (n,d=0) => n==null?"—":Number(n).toLocaleString("pt-BR",{m
 export const fmtR = (n)     => n==null?"—":`R$ ${fmt(n,2)}`;
 export const fmtP = (n)     => n==null?"—":`${fmt(n,1)}%`;
 export const fmtP2= (n)     => n==null?"—":`${fmt(n,2)}%`;
+// Porcentagem com N casas. Existe pra substituir os `toFixed()` espalhados
+// pelos componentes: toFixed é insensível ao idioma e sempre devolve PONTO
+// decimal, então a UI misturava "1.29%" com "R$ 0,78" na mesma linha — e, em
+// tabela, "878.432" (ponto de milhar) ao lado de "32.0%" (ponto decimal), o
+// mesmo caractere com dois significados opostos.
+export const fmtPd= (n,d=0) => n==null?"—":`${fmt(n,d)}%`;
 
 // ─── Datas/horas ─────────────────────────────────────────────────────────────
 // Timestamps são armazenados em UTC no backend e serializados COM offset

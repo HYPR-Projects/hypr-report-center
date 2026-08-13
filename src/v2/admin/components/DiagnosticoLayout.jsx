@@ -17,6 +17,7 @@
 
 import { useState, useMemo, useEffect, useRef } from "react";
 import { cn } from "../../../ui/cn";
+import { CountBadge } from "../../../ui/CountBadge";
 import { getCampaignStatus } from "../lib/format";
 import {
   STATUS,
@@ -45,7 +46,7 @@ function StatusFilterPill({ status, count, active, onToggle }) {
       aria-pressed={active}
       title={meta.description}
       className={cn(
-        "inline-flex items-center gap-2 h-8 px-3.5 rounded-full cursor-pointer",
+        "inline-flex items-center gap-2 h-7 px-3 rounded-full cursor-pointer",
         "text-xs font-medium transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
         active
@@ -55,17 +56,7 @@ function StatusFilterPill({ status, count, active, onToggle }) {
     >
       <span className={cn("size-1.5 rounded-full shrink-0", meta.dotClass)} />
       {meta.label}
-      <span
-        className={cn(
-          "inline-flex items-center justify-center min-w-[22px] h-4 px-1.5 rounded-full",
-          "text-[10px] font-bold tabular-nums",
-          active
-            ? "bg-canvas-elevated/60 text-fg"
-            : "bg-surface-strong text-fg-muted"
-        )}
-      >
-        {count}
-      </span>
+      <CountBadge value={count} tone={active ? "onColor" : "neutral"} />
     </button>
   );
 }

@@ -7,6 +7,7 @@ import DateRangeFilter from "../components/DateRangeFilter";
 import { ymd } from "../shared/dateFilter";
 import { parseSurveyConfig, fmtClientRange } from "../shared/surveyConfig";
 import { loadSurveyQuestions, combineSurveyQuestions } from "../shared/surveyCombine";
+import { fmt } from "../shared/format";
 
 // Quando `combinedItems` é passado (array de {short_token, label, survey}),
 // o SurveyTab opera em modo AGREGADO: busca cada mês, soma as contagens
@@ -321,7 +322,7 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
                       {sign(r.liftAbs)}{r.liftAbs.toFixed(2)}
                     </div>
                     <div style={{fontSize:11,color:liftColor,fontWeight:600}}>
-                      {sign(r.liftRel)}{r.liftRel.toFixed(1)}%
+                      {sign(r.liftRel)}{fmt(r.liftRel, 1)}%
                     </div>
                   </>
                 ):(

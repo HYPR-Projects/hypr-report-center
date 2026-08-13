@@ -23,6 +23,7 @@
 // os rankings de CS e CP — assim o caller só precisa passar dados crus.
 
 import { useState, useMemo, useEffect, useRef, useSyncExternalStore } from "react";
+import { fmt } from "../../../shared/format";
 import { cn } from "../../../ui/cn";
 import { formatBRL } from "../lib/format";
 import { computeTopPerformers } from "../lib/aggregation";
@@ -114,7 +115,7 @@ function formatPctInt(value) {
 }
 function formatPctTwo(value) {
   if (value == null || !Number.isFinite(value)) return "—";
-  return `${(Math.round(value * 100) / 100).toFixed(2)}%`;
+  return `${fmt(Math.round(value * 100) / 100, 2)}%`;
 }
 
 function MicroMetric({ label, value, tone = "fg" }) {

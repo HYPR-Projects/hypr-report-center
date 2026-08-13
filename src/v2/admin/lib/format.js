@@ -41,11 +41,36 @@ export function formatTimeAgo(timestamp) {
 }
 
 /**
- * "115%" / "—"  (preserva ausência sem confundir com zero).
+ * "115%" / "1,29%" / "—"  (preserva ausência sem confundir com zero).
+ *
+ * Usa Intl em pt-BR, não `toFixed()`.
+ *
+ * `toFixed` é insensível ao idioma e sempre devolve ponto decimal, então a
+ * interface misturava as duas convenções na MESMA linha: "1.29%" (toFixed) ao
+ * lado de "R$ 0,78" (Intl). Na tabela de Diagnóstico ficava ambíguo, não só
+ * inconsistente — "878.432" (ponto de milhar) e "32.0%" (ponto decimal)
+ * apareciam na mesma row, o mesmo caractere significando duas coisas opostas.
+ * Para um cliente lendo o report, é erro de rigor.
+ *
+ * Formatters memoizados por casas decimais: `new Intl.NumberFormat` custa
+ * ~1ms na primeira chamada, e isto roda por célula de tabela.
  */
+const _PCT_FMT = new Map();
+function pctFormatter(decimals) {
+  let f = _PCT_FMT.get(decimals);
+  if (!f) {
+    f = new Intl.NumberFormat("pt-BR", {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    });
+    _PCT_FMT.set(decimals, f);
+  }
+  return f;
+}
+
 export function formatPct(value, decimals = 0) {
   if (value == null || isNaN(value)) return "—";
-  return `${Number(value).toFixed(decimals)}%`;
+  return `${pctFormatter(decimals).format(Number(value))}%`;
 }
 
 /**

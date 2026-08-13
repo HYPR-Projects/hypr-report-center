@@ -291,8 +291,8 @@ function formatCell(value, type) {
   switch (type) {
     case "date":     return formatDateLabel(value);
     case "number":   return fmt(value);
-    case "percent1": return value > 0 ? `${value.toFixed(1)}%` : "—";
-    case "percent2": return value > 0 ? `${value.toFixed(2)}%` : "—";
+    case "percent1": return value > 0 ? `${fmt(value, 1)}%` : "—";
+    case "percent2": return value > 0 ? `${fmt(value, 2)}%` : "—";
     case "currency": return fmtR(value);
     default:         return String(value);
   }

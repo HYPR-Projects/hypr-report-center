@@ -56,6 +56,7 @@ import { getOrIssueAdminJwt } from "../../../shared/auth";
 import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
 import { cn } from "../../../ui/cn";
+import { CountBadge } from "../../../ui/CountBadge";
 import { ThemeToggleV2 } from "../../components/ThemeToggleV2";
 import { DataFreshnessIndicator } from "../components/DataFreshnessIndicator";
 import { DspHealthPanel } from "../components/DspHealthPanel";
@@ -862,7 +863,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
     <div className="min-h-screen w-full bg-canvas text-fg transition-colors">
       {/* ── Topbar ──────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-30 bg-canvas-elevated border-b border-border">
-        <div className="max-w-[1400px] mx-auto px-4 md:px-6 h-16 flex items-center justify-between gap-3">
+        <div className="page-shell h-16 flex items-center justify-between gap-3">
           <button
             type="button"
             onClick={() => {
@@ -915,7 +916,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
       </header>
 
       {/* ── Conteúdo ─────────────────────────────────────────────────────── */}
-      <main className="max-w-[1400px] mx-auto px-4 md:px-6 py-6 md:py-8">
+      <main className="page-shell py-6 md:py-8">
         {/* Hero: título + Novo Report */}
         <div className="flex items-end justify-between gap-4 flex-wrap mb-6">
           <div>
@@ -1290,7 +1291,7 @@ function ActiveFilterPill({ active, count, onToggle }) {
       aria-pressed={active}
       title={active ? "Mostrando só campanhas ativas — clique pra limpar" : "Filtrar só campanhas ativas"}
       className={cn(
-        "inline-flex items-center gap-2 h-8 px-3.5 rounded-full cursor-pointer",
+        "inline-flex items-center gap-2 h-7 px-3 rounded-full cursor-pointer",
         "text-xs font-medium transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
         active
@@ -1307,16 +1308,7 @@ function ActiveFilterPill({ active, count, onToggle }) {
         )} />
       </span>
       Apenas ativas
-      <span
-        className={cn(
-          "inline-flex items-center justify-center min-w-[22px] h-4 px-1.5 rounded-full text-[10px] font-bold tabular-nums",
-          active
-            ? "bg-signature/25 text-fg"
-            : "bg-surface-strong text-fg-muted"
-        )}
-      >
-        {count}
-      </span>
+      <CountBadge value={count} tone={active ? "onSignature" : "neutral"} />
     </button>
   );
 }

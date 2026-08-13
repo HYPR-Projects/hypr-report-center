@@ -426,7 +426,7 @@ function MemberTabs({ members, activeToken, onChange }) {
                 "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold border cursor-pointer transition-colors",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas-elevated",
                 selected
-                  ? "bg-signature text-white border-signature"
+                  ? "bg-signature-fill text-white border-signature"
                   : "bg-surface-2 text-fg-muted border-border hover:text-fg hover:bg-surface-3 hover:border-signature/40",
               )}
             >

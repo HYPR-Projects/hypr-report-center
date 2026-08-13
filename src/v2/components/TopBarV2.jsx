@@ -132,7 +132,7 @@ export function TopBarV2({
               "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md",
               "bg-signature-soft border border-signature/40 text-signature",
               "text-xs font-bold cursor-pointer",
-              "hover:bg-signature hover:text-fg transition-colors",
+              "hover:bg-signature-fill hover:text-fg transition-colors",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
             )}
           >

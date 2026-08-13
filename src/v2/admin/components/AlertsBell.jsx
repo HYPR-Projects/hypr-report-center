@@ -14,6 +14,7 @@
 import { useState, useMemo, useEffect } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { cn } from "../../../ui/cn";
+import { CountBadge } from "../../../ui/CountBadge";
 import {
   SEVERITY,
   CATEGORY,
@@ -211,20 +212,15 @@ export function AlertsBell({
         >
           <BellIcon />
           {unreadCriticalCount > 0 && (
-            <span
+            <CountBadge
               aria-hidden
-              className={cn(
-                "absolute -top-0.5 -right-0.5",
-                "inline-flex items-center justify-center",
-                "min-w-[16px] h-4 px-1 rounded-full",
-                "text-[9px] font-bold tabular-nums leading-none",
-                "bg-danger text-white",
-                "ring-2 ring-canvas-elevated",
-                "animate-pulse",
-              )}
-            >
-              {unreadCriticalCount > 99 ? "99+" : unreadCriticalCount}
-            </span>
+              value={unreadCriticalCount > 99 ? "99+" : unreadCriticalCount}
+              tone="danger"
+              // O anel da cor do container separa o selo do ícone embaixo.
+              // -top-1/-right-1 (em vez de -0.5) porque o selo cresceu de 16
+              // pra 18px e precisa manter a mordida no canto do botão.
+              className="absolute -top-1 -right-1 ring-2 ring-canvas-elevated animate-pulse"
+            />
           )}
         </button>
       </Popover.Trigger>
@@ -322,13 +318,7 @@ export function AlertsBell({
                   )}
                 >
                   {t.label}
-                  <span className={cn(
-                    "inline-flex items-center justify-center min-w-[18px] h-4 px-1 rounded-full",
-                    "text-[10px] font-bold tabular-nums",
-                    activeTab === t.id ? "bg-surface text-fg-muted" : "bg-surface text-fg-subtle",
-                  )}>
-                    {t.count}
-                  </span>
+                  <CountBadge value={t.count} tone="neutral" />
                 </button>
               ))}
             </div>

@@ -20,6 +20,7 @@
 // linguagem visual do report (DualChartV2/ChartCardV2).
 
 import { useMemo, useState, useEffect, useRef } from "react";
+import { fmt } from "../../shared/format";
 import { createPortal } from "react-dom";
 import {
   ComposedChart, Bar, Line, LineChart, XAxis, YAxis, ReferenceLine,
@@ -584,12 +585,12 @@ function PerformanceChart({ data, accent }) {
       <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke={neutral.grid} vertical={false} />
         <XAxis dataKey="label" tick={{ fill: neutral.label, fontSize: 11 }} tickLine={false} axisLine={{ stroke: neutral.grid }} padding={{ left: 16, right: 16 }} />
-        <YAxis yAxisId="ctr" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${Number(v).toFixed(1)}%`} padding={{ top: 8 }} />
-        <YAxis yAxisId="vtr" orientation="right" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${Number(v).toFixed(0)}%`} padding={{ top: 8 }} />
+        <YAxis yAxisId="ctr" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${fmt(Number(v), 1)}%`} padding={{ top: 8 }} />
+        <YAxis yAxisId="vtr" orientation="right" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${fmt(Number(v), 0)}%`} padding={{ top: 8 }} />
         <RTooltip content={(p) => (
           <ChartTooltip {...p} rows={(pl) => pl.map((x) => ({
             name: x.dataKey === "ctr" ? "CTR" : "VTR",
-            value: x.value == null ? "—" : `${Number(x.value).toFixed(2)}%`,
+            value: x.value == null ? "—" : `${fmt(Number(x.value), 2)}%`,
             color: x.dataKey === "ctr" ? accent : hypr.fgMuted,
           }))} />
         )} />
@@ -626,12 +627,12 @@ function PacingChart({ data, accent, split }) {
         <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={neutral.grid} vertical={false} />
           <XAxis dataKey="label" tick={{ fill: neutral.label, fontSize: 11 }} tickLine={false} axisLine={{ stroke: neutral.grid }} padding={{ left: 16, right: 16 }} />
-          <YAxis tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={48} tickFormatter={(v) => `${Number(v).toFixed(0)}%`} padding={{ top: 8 }} domain={[0, (max) => Math.max(120, Math.ceil(max / 20) * 20)]} />
+          <YAxis tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={48} tickFormatter={(v) => `${fmt(Number(v), 0)}%`} padding={{ top: 8 }} domain={[0, (max) => Math.max(120, Math.ceil(max / 20) * 20)]} />
           <ReferenceLine y={100} stroke={neutral.axis} strokeDasharray="4 4" />
           <RTooltip content={(p) => (
             <ChartTooltip {...p} rows={(pl) => pl.map((x) => ({
               name: label(x.dataKey),
-              value: x.value == null ? "—" : `${Number(x.value).toFixed(0)}%`,
+              value: x.value == null ? "—" : `${fmt(Number(x.value), 0)}%`,
               color: x.dataKey === "pacingVideo" ? hypr.fgMuted : accent,
             }))} />
           )} />
@@ -695,7 +696,7 @@ function FormatDonut({ mix, accent }) {
             <div key={r.key} className="flex items-center gap-2.5">
               <span className="size-2.5 rounded-sm shrink-0" style={{ background: accent, opacity: opacity[r.key] }} aria-hidden />
               <span className="text-[13px] text-fg flex-1">{r.label}</span>
-              <span className="text-[13px] text-fg-muted tabular-nums">{pct.toFixed(0)}%</span>
+              <span className="text-[13px] text-fg-muted tabular-nums">{fmt(pct, 0)}%</span>
               <span className="text-[13px] font-semibold text-fg tabular-nums w-[88px] text-right">{compactBrl(r.value)}</span>
             </div>
           );
@@ -797,7 +798,7 @@ function AudienceBreakdown({ data, accent, top }) {
                   const pctv = totalViewable > 0 ? (x.value / totalViewable) * 100 : 0;
                   return {
                     name: x.payload?.isOther ? `Outras (${x.payload.count})` : x.name,
-                    value: `${formatInt(x.value)} · ${pctv.toFixed(0)}%`,
+                    value: `${formatInt(x.value)} · ${fmt(pctv, 0)}%`,
                     color: x.payload?.isOther ? hypr.fgMuted : accent,
                   };
                 })} />
@@ -852,7 +853,7 @@ function AudienceBreakdown({ data, accent, top }) {
                     <Td className="text-right text-fg-muted tabular-nums" style={{ whiteSpace: "nowrap" }}>
                       <span title={`${formatInt(e.impressions)} impressões totais`}>{formatIntCompact(e.impressions)}</span>
                     </Td>
-                    <Td className="text-right tabular-nums" style={{ color: accent }}>{e.ctr != null ? `${e.ctr.toFixed(2)}%` : "—"}</Td>
+                    <Td className="text-right tabular-nums" style={{ color: accent }}>{e.ctr != null ? `${fmt(e.ctr, 2)}%` : "—"}</Td>
                   </tr>
                 );
               })}
@@ -891,12 +892,12 @@ function BrandLiftSection({ monthly, accent }) {
         <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={neutral.grid} vertical={false} />
           <XAxis dataKey="label" tick={{ fill: neutral.label, fontSize: 11 }} tickLine={false} axisLine={{ stroke: neutral.grid }} padding={{ left: 16, right: 16 }} />
-          <YAxis yAxisId="rel" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${Number(v).toFixed(0)}%`} padding={{ top: 8 }} />
+          <YAxis yAxisId="rel" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${fmt(Number(v), 0)}%`} padding={{ top: 8 }} />
           <YAxis yAxisId="abs" orientation="right" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${Number(v).toFixed(0)}pp`} padding={{ top: 8 }} />
           <RTooltip content={(p) => (
             <ChartTooltip {...p} rows={(pl) => pl.map((x) => ({
               name: x.dataKey === "liftRel" ? "Lift relativo" : "Lift absoluto",
-              value: x.value == null ? "—" : (x.dataKey === "liftRel" ? `${Number(x.value).toFixed(1)}%` : `${Number(x.value).toFixed(1)} pp`),
+              value: x.value == null ? "—" : (x.dataKey === "liftRel" ? `${fmt(Number(x.value), 1)}%` : `${fmt(Number(x.value), 1)} pp`),
               color: x.dataKey === "liftRel" ? accent : hypr.fgMuted,
             }))} />
           )} />
@@ -932,8 +933,8 @@ function BrandLiftSection({ monthly, accent }) {
                         : <span className="text-fg-subtle">—</span>}
                     </div>
                   </Td>
-                  <Td className="text-right font-semibold" style={{ color: accent }}>{m.liftRel == null ? "—" : `${m.liftRel.toFixed(1)}%`}</Td>
-                  <Td className="text-right text-fg">{m.liftAbs == null ? "—" : `${m.liftAbs.toFixed(1)} pp`}</Td>
+                  <Td className="text-right font-semibold" style={{ color: accent }}>{m.liftRel == null ? "—" : `${fmt(m.liftRel, 1)}%`}</Td>
+                  <Td className="text-right text-fg">{m.liftAbs == null ? "—" : `${fmt(m.liftAbs, 1)} pp`}</Td>
                 </tr>
               );
             })}
@@ -1023,8 +1024,8 @@ function CampaignAnalyticsTable({ rows, accent, mode = "ALL" }) {
                   <Td className="text-left text-fg-muted whitespace-nowrap">{fmtRange(c)}</Td>
                   <Td className="text-right font-semibold text-fg tabular-nums">{compactBrl(s.invested)}</Td>
                   <Td className="text-right text-fg tabular-nums">{formatIntCompact(s.impressions)}</Td>
-                  <Td className="text-right tabular-nums" style={{ color: accent }}>{ctr != null ? `${ctr.toFixed(2)}%` : "—"}</Td>
-                  <Td className="text-right text-fg tabular-nums">{mode === "DISPLAY" || c.vtr == null ? "—" : `${Number(c.vtr).toFixed(1)}%`}</Td>
+                  <Td className="text-right tabular-nums" style={{ color: accent }}>{ctr != null ? `${fmt(ctr, 2)}%` : "—"}</Td>
+                  <Td className="text-right text-fg tabular-nums">{mode === "DISPLAY" || c.vtr == null ? "—" : `${fmt(Number(c.vtr), 1)}%`}</Td>
                   <Td className="text-left">
                     <div className="flex flex-wrap gap-1">
                       {media.map((m) => <MixChip key={m} label={m === "VIDEO" ? "Vídeo" : "Display"} />)}
@@ -1105,17 +1106,17 @@ function SurveyTypeChip({ type, detail }) {
             <>
               <div className="flex items-center justify-between text-[11px] mb-1">
                 <span className="text-fg-muted">Exposto</span>
-                <span className="font-semibold text-fg tabular-nums">{detail.exposed.toFixed(1)}%</span>
+                <span className="font-semibold text-fg tabular-nums">{fmt(detail.exposed, 1)}%</span>
               </div>
               <div className="flex items-center justify-between text-[11px] mb-2">
                 <span className="text-fg-muted">Controle</span>
-                <span className="font-semibold text-fg tabular-nums">{detail.control.toFixed(1)}%</span>
+                <span className="font-semibold text-fg tabular-nums">{fmt(detail.control, 1)}%</span>
               </div>
               <div className="flex items-center justify-between text-[11px] pt-2 border-t border-border">
                 <span className="text-fg-muted">Lift</span>
                 <span className={cn("font-bold tabular-nums", positive ? "text-success" : "text-danger")}>
-                  {detail.liftAbs > 0 ? "+" : ""}{detail.liftAbs.toFixed(1)} pp
-                  <span className="font-medium opacity-80"> ({detail.liftRel > 0 ? "+" : ""}{detail.liftRel.toFixed(0)}%)</span>
+                  {detail.liftAbs > 0 ? "+" : ""}{fmt(detail.liftAbs, 1)} pp
+                  <span className="font-medium opacity-80"> ({detail.liftRel > 0 ? "+" : ""}{fmt(detail.liftRel, 0)}%)</span>
                 </span>
               </div>
             </>

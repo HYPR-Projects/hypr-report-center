@@ -434,7 +434,7 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
     <div className="min-h-screen w-full bg-canvas text-fg transition-colors">
       {/* Topbar */}
       <header className="sticky top-0 z-30 bg-canvas-elevated border-b border-border">
-        <div className="max-w-[1400px] mx-auto px-6 h-16 flex items-center justify-between">
+        <div className="page-shell h-16 flex items-center justify-between">
           <button
             type="button"
             onClick={() => {
@@ -467,7 +467,7 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
         </div>
       </header>
 
-      <main className="max-w-[1400px] mx-auto px-6 py-6">
+      <main className="page-shell py-6 md:py-8">
         {/* Breadcrumb */}
         <button
           onClick={onBack}
@@ -506,7 +506,7 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
           <button
             type="button"
             onClick={() => setPortalOpen(true)}
-            className="inline-flex items-center gap-2 h-9 px-3.5 rounded-lg text-[13px] font-semibold text-on-signature bg-signature hover:bg-signature-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+            className="inline-flex items-center gap-2 h-9 px-3.5 rounded-lg text-[13px] font-semibold text-on-signature bg-signature-fill hover:bg-signature-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />

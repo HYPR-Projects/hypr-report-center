@@ -14,6 +14,7 @@
 // Reusa o Drawer base de ui/Drawer.jsx (Radix Dialog + animação slide).
 
 import { useMemo, useState, useEffect } from "react";
+import { fmt } from "../../../shared/format";
 import {
   Drawer,
   DrawerContent,
@@ -29,6 +30,7 @@ import { enrichCampaign } from "../lib/alerts/derive";
 import { SEVERITY, TARGET_PACING_PCT } from "../lib/alerts/constants";
 import { getCampaignLines } from "../../../lib/api";
 import { CampaignNotes } from "./CampaignNotes";
+import { CountBadge } from "../../../ui/CountBadge";
 
 // ────────────────────────────────────────────────────────────────────────
 // Tokens de cor por severidade
@@ -136,10 +138,10 @@ function StatusBadge({ pacing }) {
 // ────────────────────────────────────────────────────────────────────────
 // Card de métrica única (label + valor + cor opcional)
 // ────────────────────────────────────────────────────────────────────────
-function MetricTile({ label, value, tone, title }) {
+function MetricTile({ label, value, tone, title, className }) {
   return (
-    <div className="px-3 py-2.5 rounded-lg bg-surface border border-border" title={title}>
-      <p className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
+    <div className={cn("px-3 py-2.5 rounded-lg bg-surface border border-border", className)} title={title}>
+      <p className="lbl-section">
         {label}
       </p>
       <p className={cn("mt-1 text-sm font-bold tabular-nums leading-none", tone)}>
@@ -157,10 +159,62 @@ function MediaMetricsGrid({ mediaName, m, hasAbs }) {
   const ecpmKind = mediaName === "Video"
     ? "video"
     : (hasAbs ? "displayAbs" : "display");
+
+  // Lista declarativa em vez de JSX condicional inline: a grade precisa saber
+  // QUANTOS tiles existem pra decidir se o último vira full-width.
+  const tiles = [
+    {
+      label: "Pacing atual",
+      value: formatPctRow(m.projected_pacing, 1),
+      title: "Pacing = delivered ÷ expected_to_date × 100",
+    },
+    {
+      label: "CPM Real",
+      value: formatBrlRow(m.ecpm_real, 2),
+      tone: ecpmToneClass(m.ecpm_real, ecpmKind),
+      title: "eCPM real HYPR (custo cru DSP / 1k imps)",
+    },
+    {
+      label: "Custo Real",
+      value: formatBrlRow(m.real_cost, 0),
+      title: "Total já pago ao DSP",
+    },
+    // Detalhe por mídia — a régua de status é a da CAMPANHA (tile acima do
+    // grid). Aqui fica sem cor porque comparar Display (CPM) e Video (CPCV)
+    // com o mesmo tier é o que produzia falso alarme.
+    {
+      label: "Tech Cost (mídia)",
+      value: formatPctRow(m.tech_cost_pct, 1),
+      title: "Custo real da mídia ÷ PI da mídia × 100 — referência de onde o custo se concentra. O tech cost que classifica é o da campanha.",
+    },
+    {
+      label: "Viewability",
+      value: formatPctRow(m.viewability, 1),
+      title: "Viewable / total impressions",
+    },
+    {
+      label: "Dias restantes",
+      value: m.days_remaining != null ? `${m.days_remaining}d` : "—",
+      title: "Dias até end_date (inclusive)",
+    },
+    (m.excess_brl != null && m.excess_brl > 0) && {
+      label: "Excesso projetado",
+      value: formatBrlRow(m.excess_brl, 0),
+      tone: "text-danger",
+      title: "Volume projetado acima de 125% do contrato × CPM real",
+    },
+    (m.catch_up_multiplier != null && m.catch_up_multiplier > 1) && {
+      label: "Catch-up",
+      value: `${m.catch_up_multiplier.toFixed(1)}x`,
+      tone: m.catch_up_multiplier > 3 ? "text-danger" : m.catch_up_multiplier > 1.5 ? "text-warning" : "text-fg",
+      title: "Ritmo necessário pra fechar 100% ÷ ritmo atual",
+    },
+  ];
+
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        <h4 className="text-[11px] font-bold uppercase tracking-wider text-fg-muted">
+        <h4 className="lbl-metric">
           {mediaName}
         </h4>
         <StatusBadge pacing={m.projected_pacing} />
@@ -170,58 +224,33 @@ function MediaMetricsGrid({ mediaName, m, hasAbs }) {
           </span>
         )}
       </div>
-      <div className="grid grid-cols-2 gap-2">
+      <MetricTileGrid tiles={tiles} />
+    </div>
+  );
+}
+
+// Grade de tiles em 2 colunas que NÃO deixa célula órfã.
+//
+// Os tiles são condicionais (Excesso projetado e Catch-up só aparecem quando
+// há excesso / atraso), então a contagem varia entre 6, 7 e 8. Com 7, o último
+// tile ficava sozinho com metade da linha vazia à direita — e isso acontecia
+// duas vezes na mesma tela, uma no bloco de Display e outra no de Video.
+//
+// Quando a contagem é ímpar, o último tile ocupa a linha inteira. É mais
+// honesto que um buraco: o tile órfão costuma ser justamente o "Excesso
+// projetado", que merece ênfase quando existe.
+function MetricTileGrid({ tiles }) {
+  const list = tiles.filter(Boolean);
+  const isOdd = list.length % 2 === 1;
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {list.map((t, i) => (
         <MetricTile
-          label="Pacing atual"
-          value={formatPctRow(m.projected_pacing, 1)}
-          title="Pacing = delivered ÷ expected_to_date × 100"
+          key={t.label}
+          {...t}
+          className={isOdd && i === list.length - 1 ? "col-span-2" : undefined}
         />
-        <MetricTile
-          label="CPM Real"
-          value={formatBrlRow(m.ecpm_real, 2)}
-          tone={ecpmToneClass(m.ecpm_real, ecpmKind)}
-          title="eCPM real HYPR (custo cru DSP / 1k imps)"
-        />
-        <MetricTile
-          label="Custo Real"
-          value={formatBrlRow(m.real_cost, 0)}
-          title="Total já pago ao DSP"
-        />
-        {/* Detalhe por mídia — a régua de status é a da CAMPANHA (tile
-            acima do grid). Aqui fica sem cor porque comparar Display (CPM)
-            e Video (CPCV) com o mesmo tier é o que produzia falso alarme. */}
-        <MetricTile
-          label="Tech Cost (mídia)"
-          value={formatPctRow(m.tech_cost_pct, 1)}
-          title="Custo real da mídia ÷ PI da mídia × 100 — referência de onde o custo se concentra. O tech cost que classifica é o da campanha."
-        />
-        <MetricTile
-          label="Viewability"
-          value={formatPctRow(m.viewability, 1)}
-          title="Viewable / total impressions"
-        />
-        <MetricTile
-          label="Dias restantes"
-          value={m.days_remaining != null ? `${m.days_remaining}d` : "—"}
-          title="Dias até end_date (inclusive)"
-        />
-        {m.excess_brl != null && m.excess_brl > 0 && (
-          <MetricTile
-            label="Excesso projetado"
-            value={formatBrlRow(m.excess_brl, 0)}
-            tone="text-danger"
-            title="Volume projetado acima de 125% do contrato × CPM real"
-          />
-        )}
-        {m.catch_up_multiplier != null && m.catch_up_multiplier > 1 && (
-          <MetricTile
-            label="Catch-up"
-            value={`${m.catch_up_multiplier.toFixed(1)}x`}
-            tone={m.catch_up_multiplier > 3 ? "text-danger" : m.catch_up_multiplier > 1.5 ? "text-warning" : "text-fg"}
-            title="Ritmo necessário pra fechar 100% ÷ ritmo atual"
-          />
-        )}
-      </div>
+      ))}
     </div>
   );
 }
@@ -268,13 +297,13 @@ function CostAnalysisCard({ mediaName, m }) {
       } else if (m.adjustment_pct < 0) {
         recommendation = {
           verb: "Reduzir",
-          body: `Reduzir budget em ${absAdj.toFixed(0)}% — de ${formatBrlRow(m.current_daily_cost, 0)}/dia → ${formatBrlRow(m.ideal_daily_remaining, 0)}/dia nos próximos ${m.days_remaining}d pra fechar em ${TARGET_PACING_PCT}%.`,
+          body: `Reduzir budget em ${fmt(absAdj, 0)}% — de ${formatBrlRow(m.current_daily_cost, 0)}/dia → ${formatBrlRow(m.ideal_daily_remaining, 0)}/dia nos próximos ${m.days_remaining}d pra fechar em ${TARGET_PACING_PCT}%.`,
           tone: "text-warning",
         };
       } else {
         recommendation = {
           verb: "Aumentar",
-          body: `Aumentar budget em ${absAdj.toFixed(0)}% — de ${formatBrlRow(m.current_daily_cost, 0)}/dia → ${formatBrlRow(m.ideal_daily_remaining, 0)}/dia nos próximos ${m.days_remaining}d pra fechar em ${TARGET_PACING_PCT}%.`,
+          body: `Aumentar budget em ${fmt(absAdj, 0)}% — de ${formatBrlRow(m.current_daily_cost, 0)}/dia → ${formatBrlRow(m.ideal_daily_remaining, 0)}/dia nos próximos ${m.days_remaining}d pra fechar em ${TARGET_PACING_PCT}%.`,
           tone: "text-warning",
         };
       }
@@ -283,14 +312,14 @@ function CostAnalysisCard({ mediaName, m }) {
 
   return (
     <div className="space-y-2">
-      <h4 className="text-[11px] font-bold uppercase tracking-wider text-fg-muted">
+      <h4 className="lbl-metric">
         {mediaName}
       </h4>
       <div className="rounded-lg border border-border bg-surface overflow-hidden">
         {/* Linha 1 — situação atual */}
         <div className="grid grid-cols-2 divide-x divide-border/60">
           <div className="px-3 py-2.5">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
+            <p className="lbl-section">
               Alocado até hoje
             </p>
             <p className="mt-1 text-sm font-bold tabular-nums">
@@ -298,7 +327,7 @@ function CostAnalysisCard({ mediaName, m }) {
             </p>
           </div>
           <div className="px-3 py-2.5">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
+            <p className="lbl-section">
               Ideal até hoje ({TARGET_PACING_PCT}%)
             </p>
             <p className="mt-1 text-sm font-bold tabular-nums text-fg-muted">
@@ -308,7 +337,7 @@ function CostAnalysisCard({ mediaName, m }) {
         </div>
         {/* Linha 2 — diferença */}
         <div className="px-3 py-2 border-t border-border/60 bg-canvas-deeper">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
+          <p className="lbl-section">
             {overSpending ? "Acima do ideal" : "Abaixo do ideal"}
           </p>
           <p className={cn("mt-0.5 text-sm font-bold tabular-nums", overSpending ? "text-danger" : "text-success")}>
@@ -318,7 +347,7 @@ function CostAnalysisCard({ mediaName, m }) {
         {/* Linha 3 — projeção */}
         <div className="grid grid-cols-2 divide-x divide-border/60 border-t border-border/60">
           <div className="px-3 py-2.5">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
+            <p className="lbl-section">
               Projetado ao final
             </p>
             <p className={cn("mt-1 text-sm font-bold tabular-nums", tone)}>
@@ -326,7 +355,7 @@ function CostAnalysisCard({ mediaName, m }) {
             </p>
           </div>
           <div className="px-3 py-2.5">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
+            <p className="lbl-section">
               Excesso projetado
             </p>
             <p className={cn("mt-1 text-sm font-bold tabular-nums", willOverSpend ? "text-danger" : "text-success")}>
@@ -341,7 +370,7 @@ function CostAnalysisCard({ mediaName, m }) {
               <span className={cn("text-[10px] font-bold uppercase tracking-wider", recommendation.tone)}>
                 {recommendation.verb}
               </span>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
+              <span className="lbl-section">
                 · ação recomendada
               </span>
             </div>
@@ -417,7 +446,7 @@ function evaluateLineIssues(line, hasAbs) {
     issues.push({
       key: "vw",
       label: "Viewability baixa",
-      value: `${viewPct.toFixed(0)}%`,
+      value: `${fmt(viewPct, 0)}%`,
       detail: `abaixo de ${LINE_TH.viewability}%`,
       severity: viewPct < 40 ? "critical" : "warning",
     });
@@ -428,7 +457,7 @@ function evaluateLineIssues(line, hasAbs) {
     issues.push({
       key: "vtr",
       label: "VTR baixo",
-      value: `${vtr.toFixed(0)}%`,
+      value: `${fmt(vtr, 0)}%`,
       detail: `abaixo de ${LINE_TH.vtr}%`,
       severity: vtr < 40 ? "critical" : "warning",
     });
@@ -452,8 +481,8 @@ function evaluateLineIssues(line, hasAbs) {
     issues.push({
       key: "ctr",
       label: "CTR baixo",
-      value: `${ctr.toFixed(2)}%`,
-      detail: `abaixo de ${LINE_TH.ctrDisplay.toFixed(2)}%`,
+      value: `${fmt(ctr, 2)}%`,
+      detail: `abaixo de ${fmt(LINE_TH.ctrDisplay, 2)}%`,
       severity: ctr < LINE_TH.ctrDisplay * 0.5 ? "critical" : "warning",
     });
   }
@@ -601,7 +630,7 @@ function CriticalLines({ shortToken, hasAbsDisplay, hasAbsVideo }) {
                 >
                   {formatBrlRow(l.cost, 0)}
                 </p>
-                <p className="text-[9.5px] uppercase tracking-wide text-fg-subtle font-semibold">
+                <p className="lbl-micro text-fg-subtle">
                   gasto
                 </p>
               </div>
@@ -706,7 +735,7 @@ function SurveyLines({ shortToken }) {
   return (
     <section className="space-y-2">
       <div>
-        <h3 className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
+        <h3 className="lbl-section">
           Survey acima da régua
         </h3>
         <p className="mt-1 text-[11px] text-fg-muted leading-snug">
@@ -831,8 +860,8 @@ export function AlertCampaignSheet({
           {/* ── Lista de alertas agrupados ────────────────────────── */}
           {alerts.length > 0 && (
             <section className="space-y-3">
-              <h3 className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
-                Alertas ({alerts.length})
+              <h3 className="lbl-section">
+                Alertas <CountBadge value={alerts.length} tone="neutral" className="ml-1.5 align-middle" />
               </h3>
               {SEVERITY_ORDER.map((sev) => {
                 const list = grouped[sev];
@@ -841,7 +870,7 @@ export function AlertCampaignSheet({
                 return (
                   <div key={sev} className="space-y-1.5">
                     <p className={cn("text-[10.5px] font-bold uppercase tracking-wider", tone.text)}>
-                      {tone.label} · {list.length}
+                      {tone.label} <CountBadge value={list.length} tone="neutral" className="ml-1 align-middle" />
                     </p>
                     <ul className="space-y-1.5">
                       {list.map((a) => (
@@ -875,16 +904,20 @@ export function AlertCampaignSheet({
               "leio o alerta → registro o que foi feito". Mesma thread do
               CampaignDrawer (mesmo token, mesmo componente); aqui abre
               expandida porque esse sheet é curto e o registro é o ponto. */}
+          {/* O card vai no BODY, não na seção: assim o título "Notas internas"
+              nasce na mesma margem esquerda de ALERTAS / SNAPSHOT / LINES
+              CRÍTICAS, e a coluna de títulos do drawer fica alinhada. */}
           <CampaignNotes
             shortToken={campaign.short_token}
             teamMap={teamMap}
-            className="rounded-xl border border-border bg-surface/50 px-3.5 py-3"
+            className="space-y-2"
+            bodyClassName="rounded-xl border border-border bg-surface/50 px-3.5 py-3"
           />
 
           {/* ── Snapshot de métricas ─────────────────────────────── */}
           {enriched && (enriched.display || enriched.video) && (
             <section className="space-y-4">
-              <h3 className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
+              <h3 className="lbl-section">
                 Snapshot
               </h3>
               {/* Tech Cost da campanha — é o número que classifica (custo de
@@ -930,7 +963,7 @@ export function AlertCampaignSheet({
             (enriched.display?.target_total_cost != null ||
              enriched.video?.target_total_cost != null) && (
               <section className="space-y-4">
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
+                <h3 className="lbl-section">
                   Análise de custo (meta {TARGET_PACING_PCT}% pacing)
                 </h3>
                 {enriched.display?.target_total_cost != null && (
@@ -946,7 +979,7 @@ export function AlertCampaignSheet({
           {/* ── Lines críticas (lazy fetch via getCampaignLines) ─────── */}
           <section className="space-y-2">
             <div>
-              <h3 className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
+              <h3 className="lbl-section">
                 Lines críticas
               </h3>
               <p className="mt-1 text-[11px] text-fg-muted leading-snug">

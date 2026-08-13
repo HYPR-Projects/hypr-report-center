@@ -53,18 +53,56 @@
   --color-signature-light: #C5EAF6;      /* azul-claro: sparklines secundárias, glow detail */
   --color-signature-glow: rgba(51, 151, 185, 0.18);   /* glow radial em hero/cards de destaque */
 
-  /* Semânticas (avisos, sucesso, erro) */
+  /* Signature como PREENCHIMENTO que carrega texto (botão primário, tab
+   * ativa, selo de contagem).
+   *
+   * Por que existe um token separado: #3397B9 com texto #F5F7FA em cima dá
+   * 3,12:1 — abaixo do mínimo de 4,5:1 da WCAG pra texto normal. E o CTA
+   * "Ver Report" é o botão mais clicado do produto. Escurecer o signature
+   * inteiro resolveria o fill mas pioraria `text-signature` (que precisa ser
+   * CLARO pra contrastar com o canvas escuro) — os dois papéis puxam em
+   * direções opostas, então viram dois tokens.
+   *
+   *   --color-signature       → borda, dot, ring de foco, barra de chart
+   *   --color-signature-fill  → superfície que recebe texto claro
+   *
+   * #246C84 (= signature-hover) com #F5F7FA: 5,51:1. O hover continua
+   * funcionando porque o Button troca a cor no :hover, não o token. */
+  --color-signature-fill: #246C84;
+
+  /* Semânticas (avisos, sucesso, erro)
+   *
+   * Cores de PREENCHIMENTO e de TEXTO ao mesmo tempo. No dark, warning
+   * (10,6:1) e success (5,6:1) já passam como texto sobre canvas e não
+   * mudam. Danger não passava: #F5272B dava 3,81:1 sobre canvas e 2,75:1
+   * sobre surface-3 — e é a cor que pinta todo pacing crítico em 11-13px.
+   * #FF6B6E sobe pra 5,54:1 sobre canvas e 4,67:1 sobre surface.
+   *
+   * `danger-soft` mantém o vermelho SATURADO de origem de propósito: como
+   * fundo ele não precisa de contraste próprio, e o vermelho fechado dá 5,0:1
+   * com o novo texto claro (contra 4,48:1 se o soft também clareasse). */
   --color-warning: #EDD900;              /* atenção, pacing, alertas leves */
   --color-warning-soft: rgba(237, 217, 0, 0.15);
   --color-success: #4CB050;              /* completou, dentro do alvo */
   --color-success-soft: rgba(76, 176, 80, 0.15);
-  --color-danger: #F5272B;               /* erro, pacing crítico */
-  --color-danger-soft: rgba(245, 39, 43, 0.15);
+  --color-danger: #FF6B6E;               /* erro, pacing crítico — 5,54:1 sobre canvas */
+  --color-danger-soft: rgba(245, 39, 43, 0.15);   /* fundo mantém o vermelho fechado */
 
-  /* Foreground (texto sobre canvas) */
+  /* Foreground (texto sobre canvas)
+   *
+   * fg-subtle subiu de 0.45 → 0.60 na PR de consolidação. Não era um tom
+   * "terciário decorativo": é a cor de praticamente todos os ~286 rótulos em
+   * versalete da interface — os que nomeiam cada KPI, cada coluna, cada
+   * seção. A 0.45 dava 3,75:1 sobre surface e 3,46:1 sobre surface-3, abaixo
+   * do mínimo da WCAG, em corpo de 9-11px.
+   *
+   * Subir só o subtle esmagaria a distância pro muted, então a escala foi
+   * reespaçada inteira: 1.00 / 0.78 / 0.58. Os três degraus continuam
+   * distinguíveis a olho e todos passam a régua, inclusive sobre surface-3
+   * (o fundo mais claro do tema, que é onde o contraste é pior). */
   --color-fg: #F5F7FA;                   /* texto primário (alto contraste) */
-  --color-fg-muted: rgba(245, 247, 250, 0.7);   /* texto secundário */
-  --color-fg-subtle: rgba(245, 247, 250, 0.45); /* texto terciário, captions */
+  --color-fg-muted: rgba(245, 247, 250, 0.78);  /* texto secundário */
+  --color-fg-subtle: rgba(245, 247, 250, 0.58); /* texto terciário, captions */
   --color-fg-disabled: rgba(245, 247, 250, 0.3);
 
   /* Borders e divisores
@@ -119,10 +157,24 @@
   --color-chart-line: #E5EBF2;           /* line de taxa (CTR/VTR) — dark */
 
   /* Texto sobre signature sólido (ex: tab ativa, badge, pill).
-   * Não muda por tema — signature é azul escuro nos dois modos, então
-   * branco-off contrasta bem em ambos. Sem este token, light usava
-   * text-fg (#0F1419 quase preto) sobre azul = leitura ruim. */
+   * Não muda por tema — signature-fill é azul escuro nos dois modos, então
+   * branco-off contrasta bem em ambos (5,51:1 no dark, 4,8:1 no light).
+   * Sem este token, light usava text-fg (#0F1419 quase preto) sobre azul. */
   --color-on-signature: #F5F7FA;
+
+  /* Texto sobre fill SEMÂNTICO sólido (bg-danger, bg-success, bg-warning) —
+   * badge do sino, botão destrutivo, iniciais dos avatares de CP/CS.
+   *
+   * Precisa ser um token porque as cores semânticas INVERTEM de luminosidade
+   * entre os temas: no dark elas são claras (pra brilhar sobre o canvas
+   * escuro) e no light são escuras (pra contrastar com o branco). Uma classe
+   * fixa `text-white` só pode estar certa em um dos dois — e estava errada
+   * nos dois: branco sobre o verde de CS dava 2,75:1.
+   *
+   *   dark  → tinta escura sobre fill claro: 5,54:1 (danger), 5,58:1 (success)
+   *   light → tinta clara sobre fill escuro: 4,72:1 (danger), 4,95:1 (success)
+   */
+  --color-on-semantic: #1C262F;
 
   /* ═══════════════ TIPOGRAFIA ═══════════════ */
 
@@ -170,7 +222,7 @@
    * glow ficam de cores diferentes em light. */
   --shadow-glow-success:   0 0 0 3px rgba(76, 176, 80, 0.18);   /* #4CB050 = success dark */
   --shadow-glow-warning:   0 0 0 3px rgba(237, 217, 0, 0.20);   /* #EDD900 = warning dark */
-  --shadow-glow-danger:    0 0 0 3px rgba(245, 39, 43, 0.18);   /* #F5272B = danger dark */
+  --shadow-glow-danger:    0 0 0 3px rgba(255, 107, 110, 0.18); /* #FF6B6E = danger dark */
   --shadow-glow-signature: 0 0 0 3px rgba(51, 151, 185, 0.18);  /* #3397B9 = signature dark */
 
   /* ═══════════════ MOTION ═══════════════ */
@@ -261,19 +313,37 @@
   --color-signature-soft: rgba(42, 123, 151, 0.12);
   --color-signature-light: #5BA8C7;
   --color-signature-glow: rgba(42, 123, 151, 0.10);
+  /* No light o signature já é escuro o bastante pra receber texto claro
+   * (#F5F7FA sobre #2A7B97 = 4,8:1), então fill e cor base coincidem. O
+   * token existe mesmo assim pros componentes não precisarem saber em qual
+   * tema estão. */
+  --color-signature-fill: #25708A;
 
-  /* Semânticas — todas escurecem pra contrastar */
-  --color-warning: #B8A500;
-  --color-warning-soft: rgba(184, 165, 0, 0.18);
-  --color-success: #3D9842;
-  --color-success-soft: rgba(61, 152, 66, 0.18);
-  --color-danger: #D8201E;
-  --color-danger-soft: rgba(216, 32, 30, 0.18);
+  /* Semânticas — todas escurecem pra contrastar
+   *
+   * warning e success estavam calibrados pra preencher área, não pra pintar
+   * glifo: #B8A500 dava 2,49:1 sobre branco e #3D9842 dava 3,64:1 — e é
+   * assim que aparecem todo status "Over" e "Ok" no tema claro. Os novos
+   * valores dão 5,18:1 e 5,31:1 mantendo o mesmo matiz.
+   *
+   * Os `-soft` caíram de 0.18 → 0.12 de alpha: com o texto agora mais
+   * escuro, 0.18 comprimia o contraste do par texto-sobre-pill pra ~4,1:1.
+   * Com 0.12 o par volta pra ≥4,5:1 e a pill fica igualmente legível. */
+  --color-warning: #7A6E00;
+  --color-warning-soft: rgba(122, 110, 0, 0.12);
+  --color-success: #2F7A34;
+  --color-success-soft: rgba(47, 122, 52, 0.12);
+  --color-danger: #C51A18;
+  --color-danger-soft: rgba(197, 26, 24, 0.10);
 
-  /* Foreground — preto/cinzas */
+  /* Foreground — preto/cinzas
+   *
+   * Mesma reescala do dark (1.00 / 0.78 / 0.60): fg-subtle a 0.5 dava
+   * 3,49:1 sobre card branco, e a 0.60 dá 4,84:1. O muted sobe junto pra
+   * manter os degraus separados. */
   --color-fg: #0F1419;
-  --color-fg-muted: rgba(15, 20, 25, 0.65);
-  --color-fg-subtle: rgba(15, 20, 25, 0.5);
+  --color-fg-muted: rgba(15, 20, 25, 0.78);
+  --color-fg-subtle: rgba(15, 20, 25, 0.60);
   --color-fg-disabled: rgba(15, 20, 25, 0.35);
 
   /* Borders */
@@ -316,6 +386,16 @@
   --color-surface-2: #FFFFFF;
   --color-surface-3: #F1F3F6;
 
+  /* Inverte junto com as semânticas — ver o comentário do token no bloco
+   * dark. No light os fills são escuros, então a tinta em cima é clara.
+   *
+   * Branco PURO, não o off-white #F5F7FA do dark: sobre os fills escuros do
+   * light, os 10 pontos de luminância a mais são a diferença entre 4,47:1 e
+   * 4,8:1 nas iniciais dos avatares. No dark o off-white é o próprio
+   * foreground e faz sentido; aqui é só tinta sobre cor. */
+  --color-on-semantic: #FFFFFF;
+  --color-on-signature: #FFFFFF;
+
   /* Track no light: precisa ser visivelmente mais escuro que a card
    * hospedeira (bg-surface = ~#F1F2F3 sobre canvas claro). Antes era
    * 0.10 mas em sub-bars (que aplicam bg-track só em 1 camada, vs as
@@ -342,8 +422,8 @@
    * --color-success/warning/danger/signature. Alpha um pouco maior
    * que dark porque sobre fundo claro precisa de mais peso pra
    * o halo aparecer com a mesma intensidade percebida. */
-  --shadow-glow-success:   0 0 0 3px rgba(61, 152, 66, 0.22);   /* #3D9842 = success light */
-  --shadow-glow-warning:   0 0 0 3px rgba(184, 165, 0, 0.22);   /* #B8A500 = warning light */
-  --shadow-glow-danger:    0 0 0 3px rgba(216, 32, 30, 0.22);   /* #D8201E = danger light */
+  --shadow-glow-success:   0 0 0 3px rgba(47, 122, 52, 0.22);   /* #2F7A34 = success light */
+  --shadow-glow-warning:   0 0 0 3px rgba(122, 110, 0, 0.22);   /* #7A6E00 = warning light */
+  --shadow-glow-danger:    0 0 0 3px rgba(197, 26, 24, 0.22);   /* #C51A18 = danger light */
   --shadow-glow-signature: 0 0 0 3px rgba(42, 123, 151, 0.20);  /* #2A7B97 = signature light */
 }

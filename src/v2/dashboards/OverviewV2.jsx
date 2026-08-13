@@ -179,6 +179,32 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
         ? "xl:grid-cols-5"
         : "xl:grid-cols-4";
 
+  // ── Última linha sem célula órfã (md/lg) ────────────────────────────
+  // Em xl o gridColsClass acima fecha a conta exata. Abaixo de xl o grid é de
+  // 2 colunas (md) e 3 (lg) com o hero ocupando 2 — e aí, dependendo de quais
+  // slots condicionais aparecem, o último card sobrava sozinho com metade da
+  // linha vazia. Acontecia justamente em lg, que é o notebook de 13" onde boa
+  // parte do time abre o report.
+  //
+  // Em vez de mexer nas condições de negócio (que decidem o que mostrar), o
+  // último card visível estica pra fechar a linha quando a contagem é ímpar.
+  // Mesma solução da grade de tiles do drawer.
+  const nonHeroCount =
+    (isBonusOnly ? 0 : 1) +          // Budget
+    1 +                               // Imp. Visíveis (sempre)
+    (slot4Visible ? 1 : 0) +
+    (slot5Visible ? 1 : 0);
+  // O `lg:grid-cols-3` saiu junto: com o hero ocupando 2 de 3 colunas, o
+  // resto da grade nunca fechava numa conta redonda (2, 3 ou 4 cards em 3
+  // vagas sempre sobrava alguém). Com 2 colunas até xl, o hero ocupa a linha
+  // inteira e os cards descem em pares — aí basta esticar o último quando a
+  // contagem é ímpar.
+  const oddTail = nonHeroCount % 2 === 1;
+  // Qual slot é o último visível — é ele que recebe o span.
+  const tailSlot = slot5Visible ? 5 : slot4Visible ? 4 : 3;
+  const tailSpan = (slot) =>
+    oddTail && tailSlot === slot ? "md:col-span-2 xl:col-span-1" : undefined;
+
   return (
     <div className="space-y-6">
       {/* ─── 0. Guardrail: volumetria contratada incoerente (ADMIN-ONLY) ──
@@ -210,7 +236,7 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
           encurta pra 5 cols — Budget, Custo+Over e Pacing Geral somem
           (este último porque o cálculo usa budget contratado, que é 0 em
           campanha 100% bônus). Layout fica: Hero(3)+Imp(1)+Views(1)=5. */}
-      <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 ${gridColsClass}`}>
+      <div className={`grid grid-cols-1 md:grid-cols-2 gap-3 ${gridColsClass}`}>
         <div className={isBonusOnly ? "md:col-span-2 xl:col-span-3" : "md:col-span-2 xl:col-span-2"}>
           {isBonusOnly ? (
             <HeroKpiCardV2
@@ -266,6 +292,7 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
         )}
 
         <KpiCardV2
+          className={tailSpan(3)}
           label="Imp. Visíveis"
           value={fmt(totalImpressions)}
           hint="Soma de viewable impressions no período."
@@ -285,6 +312,7 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
 
         {hasVideo ? (
           <KpiCardV2
+            className={tailSpan(4)}
             label="Views 100%"
             value={fmt(totalViews100)}
             hint="Completions de vídeo (visualizações até 100%)."
@@ -322,6 +350,7 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
             exceto em bonificada, onde Custo+Over não faz sentido). */}
         {!isFiltered && pacingGeral > 0 ? (
           <KpiCardV2
+            className={tailSpan(5)}
             label={`Pacing Geral${pacingSuffix}`}
             value={
               <span className="inline-flex items-center gap-2 flex-wrap">

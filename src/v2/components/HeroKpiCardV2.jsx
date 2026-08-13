@@ -24,6 +24,7 @@
 //   />
 
 import { SparklineV2 } from "./SparklineV2";
+import { fmt } from "../../shared/format";
 import { Card, CardBody } from "../../ui/Card";
 import { cn } from "../../ui/cn";
 
@@ -115,7 +116,7 @@ export function HeroKpiCardV2({
                 className="size-2.5"
               />
               {deltaPercent > 0 ? "+" : ""}
-              {deltaPercent.toFixed(1)}% {deltaLabel}
+              {fmt(deltaPercent, 1)}% {deltaLabel}
             </span>
           )}
 

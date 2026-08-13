@@ -1014,9 +1014,26 @@ export function countByStatus(rows) {
 // ────────────────────────────────────────────────────────────────────────
 // Formatadores específicos da tabela
 // ────────────────────────────────────────────────────────────────────────
+// Intl em pt-BR (não `toFixed`): a tabela exibia "878.432" com ponto de milhar
+// ao lado de "32.0%" com ponto decimal — o mesmo caractere significando duas
+// coisas opostas na mesma linha. Memoizado por casas decimais porque roda por
+// célula. Ver o comentário longo em lib/format.js:formatPct.
+const _PCT_ROW_FMT = new Map();
+function pctRowFormatter(decimals) {
+  let f = _PCT_ROW_FMT.get(decimals);
+  if (!f) {
+    f = new Intl.NumberFormat("pt-BR", {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    });
+    _PCT_ROW_FMT.set(decimals, f);
+  }
+  return f;
+}
+
 export function formatPctRow(value, decimals = 1) {
   if (value == null || !Number.isFinite(value)) return "—";
-  return `${value.toFixed(decimals)}%`;
+  return `${pctRowFormatter(decimals).format(value)}%`;
 }
 
 export function formatIntRow(value) {

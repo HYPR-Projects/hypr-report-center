@@ -186,7 +186,7 @@ export function PeriodPicker({ preset, onPresetChange, custom, onCustomChange, a
                         disabled={!draftRange?.from || !draftRange?.to}
                         className={cn(
                           "px-3 h-7 rounded-md text-xs font-semibold cursor-pointer transition-colors",
-                          "bg-signature text-white hover:bg-signature/90",
+                          "bg-signature-fill text-white hover:bg-signature-fill/90",
                           "disabled:bg-surface-strong disabled:text-fg-subtle disabled:cursor-not-allowed",
                         )}
                       >

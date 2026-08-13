@@ -23,6 +23,7 @@
 //   8. Disclaimer "Tracking iniciado em DD/MM" enquanto data < 90d
 
 import * as Dialog from "@radix-ui/react-dialog";
+import { fmt } from "../../../shared/format";
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "../../../ui/cn";
 import { SparklineV2 } from "../../components/SparklineV2";
@@ -296,7 +297,7 @@ function computeDaysAgo(isoString) {
 const fmtDelta = (pct) => {
   if (pct == null || !isFinite(pct)) return null;
   const sign = pct >= 0 ? "▲" : "▼";
-  return `${sign} ${Math.abs(pct).toFixed(0)}%`;
+  return `${sign} ${fmt(Math.abs(pct), 0)}%`;
 };
 
 const fmtDuration = (sec) => {
@@ -483,7 +484,7 @@ function RangeToggle({ value, onChange }) {
           className={cn(
             "px-2.5 py-1 rounded text-[11px] font-semibold transition-colors cursor-pointer",
             value === o.v
-              ? "bg-signature text-white"
+              ? "bg-signature-fill text-white"
               : "text-fg-muted hover:text-fg hover:bg-surface-strong",
           )}
         >
@@ -1011,7 +1012,7 @@ function DeviceCard({ devices, loading }) {
             <span className={cn("w-2 h-2 rounded-sm", TONE[d.name] || "bg-fg-subtle")} />
             <span className="text-fg flex-1">{d.name}</span>
             <span className="font-semibold text-fg-muted tabular-nums">
-              {(d.share * 100).toFixed(0)}%
+              {fmt(d.share * 100, 0)}%
             </span>
           </div>
         ))}

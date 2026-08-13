@@ -144,7 +144,7 @@ export default function ClientPortalPage({ shareId }) {
       <PortalMessage
         title="Não consegui carregar"
         body="Tente recarregar a página em instantes."
-        action={<button onClick={loadData} className="mt-4 px-4 h-9 rounded-lg bg-signature text-on-signature text-[13px] font-semibold">Tentar de novo</button>}
+        action={<button onClick={loadData} className="mt-4 px-4 h-9 rounded-lg bg-signature-fill text-on-signature text-[13px] font-semibold">Tentar de novo</button>}
       />
     );
   }
@@ -336,7 +336,7 @@ function PortalView({ data, shareId }) {
 
         {/* ── Topbar: marca HYPR (produto) ─────────────────────────────────── */}
         <header className="relative z-30 sticky top-0 backdrop-blur-md bg-canvas/70 border-b border-border">
-          <div className="max-w-[1400px] mx-auto px-5 sm:px-8 h-[68px] flex items-center justify-between gap-3">
+          <div className="page-shell h-[68px] flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
               <HyprReportCenterLogo height={26} />
               {/* Divisor + label alinhados ao centro ÓPTICO dos glifos do logo,
@@ -354,7 +354,7 @@ function PortalView({ data, shareId }) {
           </div>
         </header>
 
-        <main className="relative max-w-[1400px] mx-auto px-5 sm:px-8 pt-10 sm:pt-14 pb-24">
+        <main className="relative page-shell pt-10 sm:pt-14 pb-24">
           {/* ── Hero do cliente — eyebrow + nome grande à esquerda, logo da
               marca flutuando à direita. Espelha o ritmo do header do report
               (CampaignHeaderV2: barra+eyebrow → título → meta), sem card pra

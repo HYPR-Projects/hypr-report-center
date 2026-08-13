@@ -19,6 +19,7 @@
 // Lazy fetch on mount — só roda quando admin expande o card.
 
 import { useEffect, useState } from "react";
+import { fmt } from "../../../shared/format";
 import { cn } from "../../../ui/cn";
 import { getCampaignLines } from "../../../lib/api";
 
@@ -201,9 +202,9 @@ export function CampaignLines({ shortToken, hasAbs }) {
 
           {/* Linha 3: 4 pílulas com mais respiro */}
           <div className="grid grid-cols-4 gap-1.5">
-            <Pill label="CTR"  value={ctr     != null ? `${ctr.toFixed(2)}%`     : "—"} t={tones.ctr} />
-            <Pill label="View" value={viewPct != null ? `${viewPct.toFixed(0)}%` : "—"} t={tones.view} />
-            <Pill label="VTR"  value={vtr     != null ? `${vtr.toFixed(0)}%`     : "—"} t={isVideo ? tones.vtr : "neutral"} />
+            <Pill label="CTR"  value={ctr     != null ? `${fmt(ctr, 2)}%`     : "—"} t={tones.ctr} />
+            <Pill label="View" value={viewPct != null ? `${fmt(viewPct, 0)}%` : "—"} t={tones.view} />
+            <Pill label="VTR"  value={vtr     != null ? `${fmt(vtr, 0)}%`     : "—"} t={isVideo ? tones.vtr : "neutral"} />
             <Pill label="eCPM" value={ecpm    != null ? `R$ ${ecpm.toFixed(2)}`  : "—"} t={tones.ecpm} />
           </div>
         </div>

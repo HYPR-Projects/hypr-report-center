@@ -761,7 +761,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
           shareState={shareState}
         />
 
-        <div className="mx-auto max-w-[1440px] px-4 md:px-6 lg:px-8 py-6 md:py-8 space-y-6">
+        <div className="page-shell py-6 md:py-8 space-y-6">
           <CampaignHeaderV2
             campaignName={camp.campaign_name}
             clientName={camp.client_name}
@@ -1045,7 +1045,7 @@ function DashboardSkeleton() {
   return (
     <div className="min-h-screen bg-canvas text-fg font-sans">
       <TopBarV2 updatedAtLabel="Carregando..." />
-      <div className="mx-auto max-w-[1440px] px-4 md:px-6 lg:px-8 py-6 md:py-8 space-y-6">
+      <div className="page-shell py-6 md:py-8 space-y-6">
         <div className="rounded-2xl border border-border-strong bg-surface-2 p-8 space-y-3">
           <Skeleton className="h-3 w-24" />
           <Skeleton className="h-9 w-96" />

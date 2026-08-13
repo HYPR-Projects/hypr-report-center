@@ -23,6 +23,7 @@
 //   └─────────────────────────────────────────────┘
 
 import { useState } from "react";
+import { fmt } from "../../../shared/format";
 import * as Popover from "@radix-ui/react-popover";
 import { Drawer, DrawerContent, DrawerHeader, DrawerBody } from "../../../ui/Drawer";
 import { cn } from "../../../ui/cn";
@@ -461,7 +462,7 @@ function MetricBreakdown({ label, total, items, children, showTechFee = false })
                       it.techFee != null ? techCostToneClass(it.techFee) : "text-fg-subtle",
                     )}
                   >
-                    {it.techFee != null ? `${it.techFee.toFixed(1)}%` : "—"}
+                    {it.techFee != null ? `${fmt(it.techFee, 1)}%` : "—"}
                   </span>
                 )}
                 <span className="shrink-0 w-16 text-right font-semibold tabular-nums text-fg">

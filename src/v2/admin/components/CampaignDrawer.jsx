@@ -1627,7 +1627,7 @@ function PauseForm({
           type="button"
           onClick={onConfirm}
           disabled={saving}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-signature text-white hover:bg-signature-hover transition-colors disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-signature-fill text-white hover:bg-signature-hover transition-colors disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
         >
           {saving && <Spinner />}
           {saving ? "Pausando..." : busy === "error" ? "Tentar de novo" : "Confirmar pausa"}

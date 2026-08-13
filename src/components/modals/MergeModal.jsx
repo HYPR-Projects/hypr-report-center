@@ -375,7 +375,7 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
               type="button"
               onClick={handleSave}
               disabled={saving || !hasChanges || loading}
-              className="text-xs font-bold px-4 h-9 rounded-md bg-signature text-white hover:bg-signature-hover transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              className="text-xs font-bold px-4 h-9 rounded-md bg-signature-fill text-white hover:bg-signature-hover transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {saving
                 ? "Salvando…"
