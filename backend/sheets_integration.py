@@ -11,8 +11,10 @@ Modelo de operação
   criar a sheet no Drive pessoal dele e sincronizar os dados diariamente.
 - A sheet vive no Drive do membro que ativou. Ele compartilha manualmente
   com o cliente (mesmo fluxo que ele usa hoje pra qualquer planilha).
-- Sync para automaticamente 30 dias após `end_date` da campanha. A sheet
-  permanece acessível no Drive do membro indefinidamente.
+- O SYNC para automaticamente 30 dias após `end_date` da campanha (janela
+  `sync_until`), mas a INTEGRAÇÃO continua `active` pra sempre: campanha
+  encerrada não gera dado novo, então não há o que sincronizar — só isso.
+  A sheet permanece acessível no Drive do membro indefinidamente.
 
 Por que SA não foi usada
 ------------------------
@@ -56,7 +58,14 @@ Schema da tabela
                                           UI mente.
     sync_until         DATE             -- end_date + 30 dias (token: do próprio
                                           token; merge: maior end_date do grupo)
-    status             STRING           -- active | paused | revoked | error
+    status             STRING           -- active | revoked | error
+                                          ('paused' é LEGADO: até ago/2026 o
+                                          cron rebaixava pra paused quando
+                                          `sync_until` vencia. Isso pintava
+                                          campanha encerrada como quebrada na
+                                          UI. Não é mais escrito por ninguém —
+                                          fim de janela agora é só ausência de
+                                          sync, com status intacto.)
     last_error         STRING           -- detalhe do último erro de sync
     base_sheet_gid     INT64            -- sheetId (gid) da aba de dados. É a
                                           âncora ESTÁVEL da aba: o título pode
@@ -138,8 +147,9 @@ OAUTH_SCOPE = "https://www.googleapis.com/auth/drive.file"
 # Token endpoint do Google — troca de auth code por access/refresh tokens.
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
-# Janela após end_date pra continuar sincronizando. Depois disso o sync
-# para mas a sheet permanece acessível no Drive do membro.
+# Janela após end_date pra continuar sincronizando. Depois disso o sync para
+# (nada novo entra numa campanha encerrada), mas a integração NÃO muda de
+# status e a sheet permanece acessível no Drive do membro.
 SYNC_GRACE_DAYS = 30
 
 # Status HTTP transientes do lado do Google — vale retry e NÃO devem derrubar
@@ -728,29 +738,22 @@ def list_active_integrations() -> List[Dict]:
     ]
 
 
-def list_expired_integrations() -> List[Dict]:
+def count_out_of_window() -> int:
     """
-    Retorna integrações cujo sync_until passou e que ainda estão active.
-    Usado pelo cron diário pra marcar como 'paused'.
+    Quantas integrações ativas já passaram do `sync_until` (campanha encerrada
+    há mais de SYNC_GRACE_DAYS). Elas NÃO são rebaixadas de status — seguem
+    `active` com a sheet acessível; só não entram no sync. Contagem existe
+    apenas pro log do cron ("N ativas, M fora da janela").
     """
     ensure_table_exists()
     sql = f"""
-    SELECT
-        short_token,
-        COALESCE(target_type, 'token') AS target_type
+    SELECT COUNT(*) AS n
     FROM `{_table_id()}`
     WHERE status = 'active'
       AND sync_until < CURRENT_DATE("America/Sao_Paulo")
     """
     rows = list(_bq_client().query(sql).result())
-    return [
-        {
-            "target_id":   r["short_token"],
-            "target_type": r["target_type"],
-            "short_token": r["short_token"],  # compat
-        }
-        for r in rows
-    ]
+    return int(rows[0]["n"]) if rows else 0
 
 
 def sync_all_due(token_loader, merge_loader=None) -> Dict:
@@ -775,6 +778,10 @@ def sync_all_due(token_loader, merge_loader=None) -> Dict:
     Retorna sumário com contagens. Erros individuais não interrompem o loop —
     cada falha é registrada em last_error/status do registro afetado.
 
+    Fim de janela (`sync_until` vencido) NÃO é falha e NÃO muda status: a
+    integração de uma campanha encerrada continua `active` indefinidamente,
+    só não recebe mais sync. Ver `count_out_of_window`.
+
     Esse loop é sequencial de propósito. Cloud Function gen2 com concurrency
     e múltiplas requisições simultâneas dá pra paralelizar, mas:
       (1) Sheets API tem quotas per-user (60 writes/min) — paralelizar com
@@ -783,27 +790,23 @@ def sync_all_due(token_loader, merge_loader=None) -> Dict:
       (3) Sequencial é mais fácil de debugar e dá retry granular natural.
     """
     summary = {
-        "synced":       0,
-        "revoked":      0,
-        "errors":       0,
-        "paused":       0,
-        "total_active": 0,
+        "synced":         0,
+        "revoked":        0,
+        "errors":         0,
+        "out_of_window":  0,
+        "total_active":   0,
     }
 
-    # Pausa primeiro as expiradas (não tenta sync nelas).
-    for row in list_expired_integrations():
-        try:
-            _update_status(
-                row["target_id"],
-                target_type=row.get("target_type", TARGET_TOKEN),
-                status="paused",
-            )
-            summary["paused"] += 1
-        except Exception as e:
-            logger.warning(
-                f"[WARN sheets sync_all_due pause "
-                f"{row.get('target_type','token')}/{row['target_id']}] {e}"
-            )
+    # Integrações fora da janela (campanha encerrada há mais de
+    # SYNC_GRACE_DAYS) simplesmente não são selecionadas por
+    # `list_active_integrations` — o filtro `sync_until >= today` já as exclui.
+    # NÃO rebaixamos o status: a integração continua ativa e a sheet
+    # disponível, com os dados finais da campanha congelados nela. Só contamos
+    # pra o log do cron não parecer que "sumiram" integrações.
+    try:
+        summary["out_of_window"] = count_out_of_window()
+    except Exception as e:
+        logger.warning(f"[WARN sheets sync_all_due count_out_of_window] {e}")
 
     active = list_active_integrations()
     summary["total_active"] = len(active)
@@ -1874,9 +1877,12 @@ def sync_merge_sheet(merge_id: str, members: List[Dict]) -> Dict:
     if not integ:
         raise ValueError(f"Integração merge não encontrada para {merge_id}")
     if not members:
-        # Grupo ficou vazio (todos os tokens removidos). Marca paused
-        # pra que o cron pare de tentar; admin decide se exclui.
-        _update_status(merge_id, target_type=TARGET_MERGE, status="paused",
+        # Grupo ficou vazio (todos os tokens removidos). Não escreve nada na
+        # sheet (senão apagaria o histórico) e NÃO rebaixa o status — a
+        # integração segue ativa, com os últimos dados na planilha. Registra
+        # o motivo em last_error; se o grupo ainda estiver dentro da janela,
+        # o alerta de stale (>26h sem sync) avisa o CS dono.
+        _update_status(merge_id, target_type=TARGET_MERGE,
                        last_error="grupo sem membros")
         return {"spreadsheet_id": integ["spreadsheet_id"], "skipped": True}
 
