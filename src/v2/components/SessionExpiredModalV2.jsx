@@ -52,7 +52,7 @@ export function SessionExpiredModalV2() {
           type="button"
           onClick={() => window.location.reload()}
           autoFocus
-          className="w-full inline-flex items-center justify-center gap-2 h-10 px-4 rounded-lg bg-signature text-on-signature text-sm font-semibold hover:bg-signature-hover transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas-elevated"
+          className="w-full inline-flex items-center justify-center gap-2 h-10 px-4 rounded-lg bg-signature-fill text-on-signature text-sm font-semibold hover:bg-signature-hover transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas-elevated"
         >
           <RefreshIcon className="size-4" />
           Recarregar página

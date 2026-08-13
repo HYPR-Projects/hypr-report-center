@@ -60,7 +60,7 @@ export function FormatBreakdownTableV2({
   numeratorLabel = "Cliques",
   rateKey = "ctr",
   rateLabel = "CTR",
-  rateFormatter = (v) => `${(v || 0).toFixed(2)}%`,
+  rateFormatter = (v) => `${fmt(v || 0, 2)}%`,
   extraRows = null, // detail rows pra calcular custo/CPM (opcional)
   getDetailGroupKey = null, // (row) => key — sobrepõe heurística default
   mediaType = "DISPLAY",
@@ -226,7 +226,7 @@ export function FormatBreakdownTableV2({
                 </Td>
                 <Td>
                   <span className="text-fg font-semibold">
-                    {r.share.toFixed(1)}%
+                    {fmt(r.share, 1)}%
                   </span>
                 </Td>
                 <Td>{fmt(r[denomKey])}</Td>
@@ -239,12 +239,12 @@ export function FormatBreakdownTableV2({
                 </Td>
                 {mediaType === "DISPLAY" ? (
                   <>
-                    <Td>{r.viewability > 0 ? `${r.viewability.toFixed(1)}%` : "—"}</Td>
+                    <Td>{r.viewability > 0 ? `${fmt(r.viewability, 1)}%` : "—"}</Td>
                     <Td accent={r.cost > 0}>{r.cost > 0 ? fmtR(r.cost) : "—"}</Td>
                   </>
                 ) : (
                   <>
-                    <Td>{r.ctr_extra > 0 ? `${r.ctr_extra.toFixed(2)}%` : "—"}</Td>
+                    <Td>{r.ctr_extra > 0 ? `${fmt(r.ctr_extra, 2)}%` : "—"}</Td>
                     <Td accent={r.cost > 0}>{r.cost > 0 ? fmtR(r.cost) : "—"}</Td>
                   </>
                 )}
@@ -346,7 +346,7 @@ function EditableNameCell({ value, overridden, busy, onRename, onReset }) {
           <ScopeToggle scope={scope} onChange={setScope} />
           <button
             type="button" onClick={commit} title="Salvar" aria-label="Salvar"
-            className="rounded-md bg-signature p-1 text-white hover:opacity-90"
+            className="rounded-md bg-signature-fill p-1 text-white hover:opacity-90"
           >
             <CheckIcon />
           </button>
@@ -415,7 +415,7 @@ export function ScopeToggle({ scope, onChange, size = "sm" }) {
           onClick={() => onChange(o.v)}
           className={cn(
             "px-2 py-1 font-semibold transition-colors",
-            scope === o.v ? "bg-signature text-white" : "bg-surface text-fg-subtle hover:text-fg",
+            scope === o.v ? "bg-signature-fill text-white" : "bg-surface text-fg-subtle hover:text-fg",
           )}
         >
           {o.label}

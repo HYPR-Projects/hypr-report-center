@@ -73,10 +73,11 @@ export function ToolbarV2({
           Em mobile o label "Ordenar" some pra preservar espaço — o ícone
           de ordenação dentro do select já comunica a função. */}
       {sortGroups && (
+        // O rótulo "Ordenar" era um <span> solto entre dois controles — o
+        // único texto flutuando numa fileira de componentes, sem caixa e sem
+        // alinhamento próprio. O select já carrega aria-label="Ordenar por" e
+        // o ícone de ordenação, então a fileira passa a ter só controles.
         <div className="flex items-center gap-2">
-          <span className="hidden sm:inline text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
-            Ordenar
-          </span>
           <div className="relative">
             <select
               value={sortBy}

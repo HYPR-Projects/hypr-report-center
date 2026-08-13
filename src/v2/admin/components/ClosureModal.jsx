@@ -294,7 +294,7 @@ export function ClosureModal({
               disabled={!canSave}
               className={cn(
                 "inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold",
-                "bg-signature text-white hover:bg-signature-hover transition-colors",
+                "bg-signature-fill text-white hover:bg-signature-hover transition-colors",
                 "disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
               )}
@@ -384,7 +384,7 @@ function DeliveryModeSegment({ value, onChange, disabled }) {
                 "transition-colors cursor-pointer disabled:cursor-not-allowed",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
                 selected
-                  ? "bg-signature text-white"
+                  ? "bg-signature-fill text-white"
                   : "text-fg-muted hover:text-fg hover:bg-surface-strong",
               )}
             >

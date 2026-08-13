@@ -13,6 +13,7 @@
 // Mutations preservadas: drawer de edição, popup de auto-vinculação.
 
 import { useState, useEffect, useMemo, useCallback, lazy, Suspense } from "react";
+import { fmt } from "../../../shared/format";
 import * as Popover from "@radix-ui/react-popover";
 import { DayPicker } from "react-day-picker";
 import { ptBR } from "date-fns/locale";
@@ -35,6 +36,7 @@ import {
   Drawer, DrawerContent, DrawerHeader, DrawerBody, DrawerFooter,
 } from "../../../ui/Drawer";
 import { cn } from "../../../ui/cn";
+import { CountBadge } from "../../../ui/CountBadge";
 import { ymd, parseYmd } from "../../../shared/dateFilter";
 import HyprReportCenterLogo from "../../../components/HyprReportCenterLogo";
 import { ThemeToggleV2 } from "../../components/ThemeToggleV2";
@@ -812,7 +814,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     <TooltipProvider delayDuration={200}>
     <div className="min-h-screen w-full bg-canvas text-fg transition-colors">
       <header className="sticky top-0 z-30 bg-canvas-elevated border-b border-border">
-        <div className="max-w-[1600px] mx-auto px-4 md:px-8 h-16 flex items-center justify-between gap-3">
+        <div className="page-shell-wide h-16 flex items-center justify-between gap-3">
           <button type="button" onClick={onBackToMenu}
                   className="flex items-center text-fg cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas-elevated min-w-0"
                   aria-label="Voltar">
@@ -842,7 +844,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
         </div>
       </header>
 
-      <main className="max-w-[1600px] mx-auto px-4 md:px-8 py-8 md:py-10">
+      <main className="page-shell-wide py-6 md:py-8">
         {/* Hero — generoso */}
         <div className="flex items-end justify-between gap-4 flex-wrap mb-8">
           <div>
@@ -1494,9 +1496,7 @@ function FilterMultiSelect({ label, values, onChange, options }) {
           >
             <span className={cn("truncate", !isAll && "font-medium")}>{summary}</span>
             {!isAll && (
-              <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-signature/20 text-signature text-[10px] font-bold tabular-nums shrink-0">
-                {values.length}
-              </span>
+              <CountBadge value={values.length} tone="onSignature" />
             )}
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
@@ -1802,7 +1802,7 @@ function PeriodFilterPill({ value, onChange }) {
                 <div className="flex justify-end gap-2 pt-2 border-t border-border mt-2">
                   <button onClick={() => setOpen(false)} className="px-3 h-7 rounded-md text-xs text-fg-muted hover:bg-surface-strong">Cancelar</button>
                   <button onClick={applyCustom} disabled={!draftRange?.from || !draftRange?.to}
-                          className="px-3 h-7 rounded-md text-xs font-semibold bg-signature text-white hover:bg-signature/90 disabled:bg-surface-strong disabled:text-fg-subtle">
+                          className="px-3 h-7 rounded-md text-xs font-semibold bg-signature-fill text-white hover:bg-signature-fill/90 disabled:bg-surface-strong disabled:text-fg-subtle">
                     Aplicar
                   </button>
                 </div>
@@ -1853,9 +1853,7 @@ function QuarterFilterPill({ values, onChange, availableYears }) {
           </svg>
           <span>{label}</span>
           {isActive && values.length > 1 && (
-            <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-signature/20 text-signature text-[10px] font-bold tabular-nums">
-              {values.length}
-            </span>
+            <CountBadge value={values.length} tone="onSignature" />
           )}
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={cn("transition-transform", open && "rotate-180")}>
             <path d="m6 9 6 6 6-6"/>
@@ -1964,9 +1962,7 @@ function MonthFilterPill({ values, onChange, availableYears }) {
           </svg>
           <span>{label}</span>
           {isActive && values.length > 1 && (
-            <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-signature/20 text-signature text-[10px] font-bold tabular-nums">
-              {values.length}
-            </span>
+            <CountBadge value={values.length} tone="onSignature" />
           )}
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={cn("transition-transform", open && "rotate-180")}>
             <path d="m6 9 6 6 6-6"/>
@@ -2498,7 +2494,7 @@ function DeltaPill({ pct }) {
   return (
     <span className={cn("inline-flex items-center gap-0.5 px-1.5 h-4 rounded text-[10px] font-semibold tabular-nums",
                         cls)}
-          title={`Variação vs 7d anteriores: ${pct.toFixed(1)}%`}>
+          title={`Variação vs 7d anteriores: ${fmt(pct, 1)}%`}>
       <span aria-hidden>{arrow}</span>{text}
     </span>
   );
@@ -2731,7 +2727,7 @@ function LinkCommandPopup({ open, onOpenChange, line, onLink }) {
                             "text-[10px] tabular-nums",
                             linkingThis ? "text-signature font-semibold" : "text-fg-subtle",
                           )}>
-                        {linkingThis ? "vinculando…" : `match ${(s.score * 100).toFixed(0)}%`}
+                        {linkingThis ? "vinculando…" : `match ${fmt(s.score * 100, 0)}%`}
                       </div>
                     </div>
                     <div className="text-sm text-fg mt-1">{s.client} <span className="text-fg-subtle mx-1">·</span> {s.campaign_name}</div>

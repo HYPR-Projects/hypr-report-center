@@ -25,10 +25,14 @@ import { cn } from "./cn";
 const SIZE_PX = { xs: 18, sm: 22, md: 28, lg: 36 };
 const SIZE_TXT = { xs: "text-[8px]", sm: "text-[9.5px]", md: "text-[11px]", lg: "text-xs" };
 
-const ROLE_BG = {
-  cp: "bg-signature",      // CP = signature blue
-  cs: "bg-success",        // CS = success green
-  neutral: "bg-surface-strong",
+// Fundo + tinta por role. A tinta vem junto porque `neutral` é o único que
+// NÃO é um fill semântico: ele usa uma surface do tema (escura no dark, clara
+// no light), então a inicial precisa seguir o foreground normal em vez de
+// inverter como as dos roles coloridos.
+const ROLE_STYLE = {
+  cp:      "bg-signature text-on-semantic",   // CP = signature blue
+  cs:      "bg-success text-on-semantic",     // CS = success green
+  neutral: "bg-surface-strong text-fg",
 };
 
 /**
@@ -55,13 +59,17 @@ export function Avatar({
 }) {
   const px = SIZE_PX[size] ?? SIZE_PX.sm;
   const txtCls = SIZE_TXT[size] ?? SIZE_TXT.sm;
-  const bgCls = ROLE_BG[role] ?? ROLE_BG.neutral;
+  const bgCls = ROLE_STYLE[role] ?? ROLE_STYLE.neutral;
 
   return (
     <div
       className={cn(
         "inline-flex items-center justify-center rounded-full font-bold leading-none",
-        "text-white tracking-tight",
+        // A tinta vem do ROLE_STYLE (não é mais `text-white` fixo): os fills
+        // de role invertem de luminosidade entre dark e light, então a cor
+        // das iniciais tem que inverter junto. Branco fixo dava 2,75:1 sobre
+        // o verde de CS nos dois temas.
+        "tracking-tight",
         // Anel da cor do container elevado pra dar separação no avatar
         // stack. canvas-elevated é #232F39 em dark e #FFFFFF em light —
         // ambos casam com o background dos cards onde o Avatar mais

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { C, CL } from "../shared/theme";
+import { fmt } from "../shared/format";
 
 const CampaignCard = ({ c, onOpenReport, onLoom, onSurvey, onLogo, onCopyLink, onOwner, copied, isDark, teamMap }) => {
   const [expanded, setExpanded] = useState(false);
@@ -100,7 +101,7 @@ const CampaignCard = ({ c, onOpenReport, onLoom, onSurvey, onLogo, onCopyLink, o
                 <span style={{ fontSize: 12, fontWeight: 700, color:
                   c.display_pacing >= 90 && c.display_pacing <= 110 ? C.blue :
                   c.display_pacing < 70 ? "#e5534b" : "#f0a529"
-                }}>{c.display_pacing.toFixed(0)}%</span>
+                }}>{fmt(c.display_pacing, 0)}%</span>
               </div>
             )}
             {c.video_pacing != null && (
@@ -116,7 +117,7 @@ const CampaignCard = ({ c, onOpenReport, onLoom, onSurvey, onLogo, onCopyLink, o
                 <span style={{ fontSize: 12, fontWeight: 700, color:
                   c.video_pacing >= 90 && c.video_pacing <= 110 ? C.blue :
                   c.video_pacing < 70 ? "#e5534b" : "#f0a529"
-                }}>{c.video_pacing.toFixed(0)}%</span>
+                }}>{fmt(c.video_pacing, 0)}%</span>
               </div>
             )}
             {c.display_ctr != null && (
@@ -126,7 +127,7 @@ const CampaignCard = ({ c, onOpenReport, onLoom, onSurvey, onLogo, onCopyLink, o
                 borderRadius: 6, padding: "3px 8px", display: "flex", flexDirection: "column", alignItems: "center", gap: 1,
               }}>
                 <span style={{ fontSize: 9, color: muted, textTransform: "uppercase", letterSpacing: 0.8, fontWeight: 600 }}>CTR</span>
-                <span style={{ fontSize: 12, fontWeight: 700, color: text }}>{c.display_ctr.toFixed(2)}%</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: text }}>{fmt(c.display_ctr, 2)}%</span>
               </div>
             )}
             {c.video_vtr != null && (
@@ -136,7 +137,7 @@ const CampaignCard = ({ c, onOpenReport, onLoom, onSurvey, onLogo, onCopyLink, o
                 borderRadius: 6, padding: "3px 8px", display: "flex", flexDirection: "column", alignItems: "center", gap: 1,
               }}>
                 <span style={{ fontSize: 9, color: muted, textTransform: "uppercase", letterSpacing: 0.8, fontWeight: 600 }}>VTR</span>
-                <span style={{ fontSize: 12, fontWeight: 700, color: text }}>{c.video_vtr.toFixed(2)}%</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: text }}>{fmt(c.video_vtr, 2)}%</span>
               </div>
             )}
           </div>

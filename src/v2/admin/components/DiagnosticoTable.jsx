@@ -9,6 +9,7 @@
 // nova aba (mesmo handler `onOpenReport` usado nos cards).
 
 import { useState, useMemo } from "react";
+import { fmt } from "../../../shared/format";
 import { cn } from "../../../ui/cn";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
 import { localPartFromEmail, ecpmToneClass, formatDateRange, ctrColorClass } from "../lib/format";
@@ -76,8 +77,15 @@ function StatusVerdict({ row }) {
   return (
     <Tooltip delayDuration={150}>
       <TooltipTrigger asChild>
+        {/* Veredito e tendência em UMA linha, não empilhados.
+            Empilhados, a célula ficava mais alta nas linhas que tinham
+            modificador de tendência e mais baixa nas que não tinham — e como
+            ela é a célula mais alta da row, a altura da linha inteira oscilava.
+            Numa tabela de 37 linhas que existe pra varredura vertical, isso
+            destruía a cadência horizontal. Em linha única a row tem sempre a
+            mesma altura, e ainda sobra largura. */}
         <span
-          className="inline-flex items-center gap-1.5 cursor-help align-middle"
+          className="inline-flex items-center gap-1.5 cursor-help align-middle whitespace-nowrap"
           aria-label={meta.label}
           onClick={(e) => e.stopPropagation()}
         >
@@ -89,16 +97,19 @@ function StatusVerdict({ row }) {
               "shadow-[0_0_4px_currentColor]"
             )}
           />
-          <span className="inline-flex flex-col items-start leading-tight">
-            <span className={cn("text-xs font-semibold whitespace-nowrap", meta.textClass)}>
-              {verdict.label}
-            </span>
-            {verdict.trendLabel && (
-              <span className={cn("text-[10px] font-medium whitespace-nowrap", verdict.trendTone)}>
-                {verdict.trendLabel}
-              </span>
-            )}
+          <span className={cn("text-xs font-semibold", meta.textClass)}>
+            {verdict.label}
           </span>
+          {verdict.trendLabel && (
+            <span
+              className={cn("text-[11px] font-bold", verdict.trendTone)}
+              title={verdict.trendLabel}
+            >
+              {/* Só a seta: o texto completo ("recuperando"/"desacelerando")
+                  vive no tooltip da célula, que já explica o que ela significa. */}
+              {verdict.trendLabel.trim().charAt(0)}
+            </span>
+          )}
         </span>
       </TooltipTrigger>
       <TooltipContent side="right">
@@ -114,7 +125,7 @@ function StatusVerdict({ row }) {
           )}
           {imbalancePromoted && (
             <span className="text-fg-muted">
-              Frente {row.front_imbalance.worstLabel} em {row.front_imbalance.worstPacing.toFixed(1)}% — combinado esconde o risco
+              Frente {row.front_imbalance.worstLabel} em {fmt(row.front_imbalance.worstPacing, 1)}% — combinado esconde o risco
             </span>
           )}
         </div>

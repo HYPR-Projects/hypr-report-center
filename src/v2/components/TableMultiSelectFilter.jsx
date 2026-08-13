@@ -19,6 +19,7 @@
 import { useId, useMemo, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { cn } from "../../ui/cn";
+import { CountBadge } from "../../ui/CountBadge";
 
 export function TableMultiSelectFilter({
   label,           // "Audiência" | "Tamanho" | "Formato"
@@ -88,9 +89,7 @@ export function TableMultiSelectFilter({
             {icon && <span className="shrink-0">{icon}</span>}
             <span className="truncate">{triggerLabel}</span>
             {isActive && (
-              <span className="shrink-0 inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full bg-signature text-on-signature text-[9px] font-bold tabular-nums">
-                {selected.length}
-              </span>
+              <CountBadge value={selected.length} tone="signature" />
             )}
             <svg
               width="9"

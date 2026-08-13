@@ -13,7 +13,21 @@
 //   │
 //   [RESULTADOS (CTR row + VTR row)]
 //   │
+//   [FINANCEIRO ADMIN (eCPM + TECH + investimento)]
+//   │
 //   [avatares (slot fixo) + CTA (min-width fixo)]
+//
+// ORDEM DE LEITURA
+// ──────────────────────────────────────────────────────────────────────
+// O cluster financeiro admin ficava ANTES do pacing, ocupando a faixa
+// central do card — que é onde o olho aterrissa depois do nome do cliente.
+// Só que eCPM / tech cost / investimento são referência de MARGEM: você
+// consulta quando está fechando o mês, não quando está decidindo o que
+// fazer hoje. O pacing é o que dispara ação, e estava empurrado pra
+// direita com a menor ênfase tipográfica dos três grupos.
+//
+// A ordem agora segue a urgência: identidade → o que exige ação (pacing,
+// resultados) → o que é consulta (financeiro) → o CTA.
 //
 // Decisões de design:
 //   • DSP e VID viram LINHAS próprias (label + valor + mini-bar) em vez
@@ -111,10 +125,10 @@ function EcpmDodDelta({ d1, d2, muted = false }) {
       )}
       title={`eCPM do dia: ontem R$ ${a.toFixed(2)} vs anteontem R$ ${b.toFixed(2)} — ${
         isFlat ? "estável" : isDown ? "queda (compra mais eficiente)" : "alta"
-      } de ${Math.abs(rounded).toFixed(1)}% · não exibir para o cliente`}
+      } de ${formatPct(Math.abs(rounded), 1)} · não exibir para o cliente`}
     >
       <span className="text-[9px] leading-none">{arrow}</span>
-      {Math.abs(rounded).toFixed(1)}%
+      {formatPct(Math.abs(rounded), 1)}
     </span>
   );
 }
@@ -471,7 +485,7 @@ function CampaignCardV2Inner({
               <div className="col-span-2">
                 <ResultRow
                   label="TECH"
-                  value={`${techCostPct.toFixed(1)}%`}
+                  value={formatPct(techCostPct, 1)}
                   // Tier de ABS igual ao do Diagnóstico (campanha inteira):
                   // sem isso o card pintava vermelho em 10,5% enquanto a
                   // tabela mostrava o mesmo número em amarelo.
@@ -481,200 +495,6 @@ function CampaignCardV2Inner({
             )}
           </div>
         )}
-
-        <Divider />
-
-        {/* ── eCPM REAL (admin-only, destaque) ─────────────────────────
-            Layout dual:
-              • Single-format ou fallback legado: bloco grande tintado
-                (recipe original) — uma linha visual.
-              • Mix DSP+VID: header "eCPM ADM" + 2 mini-pills LADO A LADO,
-                cada uma tintada com seu próprio tier (display vs video).
-            Tier vem de `ecpmBgClass(value, kind)` — display/displayAbs/video
-            tem réguas em ordem de grandeza diferente (R$ 0,80 é catastrófico
-            em display, ótimo em vídeo). Encerrada vira bg-surface neutro.
-            Split: cada mini-pill ≈72px (um pouco mais estreito que o single
-            96px) lado a lado, total 148px. Mesmo recipe visual do single
-            (label superior + valor centrado) — só com label do formato
-            substituindo "ECPM ADM" em cada pill. */}
-        {/* Cluster financeiro: eCPM + TECH + investimento colados com gap
-            apertado (gap-2.5) pra ler como UMA seção. O gap-4 da row só
-            separa este grupo do pacing/resultados — antes os três eram
-            filhos diretos da row e herdavam o gap-4 largo entre si, o que
-            deixava o TECH "flutuando" longe da box de investimento. */}
-        <div className="hidden md:flex items-stretch gap-2.5 shrink-0">
-        <div className={cn(
-          "flex flex-col justify-center shrink-0",
-          ecpmIsSplit ? "w-[148px]" : "w-[96px]"
-        )}>
-          {ecpmIsSplit ? (
-            <div className="flex gap-1">
-              {ecpmRows.map((row) => (
-                <div
-                  key={row.label}
-                  className={cn(
-                    "flex-1 min-w-0 px-2 py-1.5 rounded-md transition-colors",
-                    ended ? "bg-surface" : ecpmBgClass(row.value, row.kind)
-                  )}
-                >
-                  <div className="flex items-baseline gap-1 leading-none">
-                    <span className="text-[9px] uppercase tracking-[0.14em] font-bold text-fg-muted">
-                      {row.label}
-                    </span>
-                    <span
-                      className="text-[7.5px] uppercase tracking-widest font-semibold text-fg-subtle/70"
-                      title="Custo bruto do DSP / impressions × 1000 — não exibir para o cliente"
-                    >
-                      adm
-                    </span>
-                  </div>
-                  <span className={cn(
-                    "text-[12px] font-bold tabular-nums tracking-tight mt-1 block",
-                    ended ? "text-fg-subtle" : "text-fg"
-                  )}>
-                    {formatBRL(row.value)}
-                  </span>
-                  <EcpmDodDelta d1={row.d1} d2={row.d2} muted={ended} />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className={cn(
-              "px-2.5 py-1.5 rounded-md transition-colors",
-              ended ? "bg-surface" : ecpmBgClass(ecpmRows[0].value, ecpmRows[0].kind)
-            )}>
-              <div className="flex items-baseline gap-1 leading-none">
-                <span className="text-[9px] uppercase tracking-[0.14em] font-bold text-fg-muted">
-                  eCPM
-                </span>
-                <span
-                  className="text-[7.5px] uppercase tracking-widest font-semibold text-fg-subtle/70"
-                  title="Custo bruto do DSP / impressions × 1000 — não exibir para o cliente"
-                >
-                  adm
-                </span>
-              </div>
-              <span className={cn(
-                "text-[14px] font-bold tabular-nums tracking-tight mt-1 block",
-                ended ? "text-fg-subtle" : "text-fg"
-              )}>
-                {formatBRL(ecpmRows[0].value)}
-              </span>
-              <EcpmDodDelta d1={ecpmRows[0].d1} d2={ecpmRows[0].d2} muted={ended} />
-            </div>
-          )}
-        </div>
-
-        {/* ── TECH COST (admin-only) ───────────────────────────────────
-            Coluna leve colada ao eCPM (sem divisor entre os dois) — ambos
-            são métricas financeiras admin e formam um grupo visual. Sem
-            pill tintada pra não criar um segundo bloco pesado ao lado do
-            eCPM: só label "TECH adm" + valor colorido pela régua de tech
-            cost (≤8% verde / ≤10% amarelo / acima vermelho). "—" quando a
-            campanha não tem PI/budget (bonificada, sem CPM-CPCV).
-            justify-center alinha o valor com o eCPM ao lado. */}
-        <div className="flex flex-col justify-center shrink-0 w-[64px]">
-          <div className="flex items-baseline gap-1 leading-none">
-            <span className="text-[9px] uppercase tracking-[0.14em] font-bold text-fg-muted">
-              tech
-            </span>
-            <span
-              className="text-[7.5px] uppercase tracking-widest font-semibold text-fg-subtle/70"
-              title="Custo real DSP (com survey) / valor do PI cliente — não exibir para o cliente"
-            >
-              adm
-            </span>
-          </div>
-          <span className={cn(
-            "text-[14px] font-bold tabular-nums tracking-tight mt-1 block",
-            ended ? "text-fg-subtle" : (techCostPct != null ? techCostToneClass(techCostPct) : "text-fg-subtle")
-          )}>
-            {techCostPct != null ? `${techCostPct.toFixed(1)}%` : "—"}
-          </span>
-        </div>
-
-        {/* ── INVESTIMENTO (admin-only) ────────────────────────────────
-            Box dedicada com os três brutos por trás do tech cost, lifetime
-            por campanha: Investido (PI cliente contratado) → Entregue
-            (faturável já consumido, com barra de progresso) → Gasto (custo
-            real DSP com survey, numerador do tech fee). Antes vivia
-            espremido embaixo do % de TECH; agora ganha caixa própria com
-            superfície sutil e tipografia maior pra respirar. Coluna de
-            largura fixa pra alinhamento entre cards continuar consistente —
-            quando não há budget (bonificada / sem CPM-CPCV) a box some mas
-            o slot permanece. Sem divisor antes: pertence ao grupo financeiro
-            (eCPM + TECH + investimento). */}
-        <div className="flex flex-col justify-center shrink-0 w-[172px]">
-          {techCostBudget > 0 && Number.isFinite(techCostCost) && (
-            <div className={cn(
-              "rounded-lg border px-3 py-2.5",
-              ended ? "border-border/60 bg-surface/40" : "border-border/70 bg-surface/60"
-            )}>
-              <div className="flex items-baseline gap-1 leading-none mb-2">
-                <span className="text-[8.5px] uppercase tracking-[0.14em] font-bold text-fg-muted">
-                  investimento
-                </span>
-                <span
-                  className="text-[7.5px] uppercase tracking-widest font-semibold text-fg-subtle/70"
-                  title="Valores brutos por trás do tech cost — não exibir para o cliente"
-                >
-                  adm
-                </span>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                {/* Investido = total contratado (PI cliente) */}
-                <div className="flex items-baseline justify-between gap-2 leading-none">
-                  <span className="text-[9px] uppercase tracking-wide font-semibold text-fg-muted">
-                    Investido
-                  </span>
-                  <span className="text-[11px] tabular-nums text-fg-subtle">
-                    {formatBrlCompact(techCostBudget)}
-                  </span>
-                </div>
-                {/* Entregue = faturável já consumido; barra mostra % do PI */}
-                {hasConsumed && (
-                  <div className="flex flex-col gap-1">
-                    <div className="flex items-baseline justify-between gap-2 leading-none">
-                      <span className="text-[9px] uppercase tracking-wide font-semibold text-fg-muted">
-                        Entregue
-                      </span>
-                      <span className="text-[11px] tabular-nums text-fg font-bold">
-                        {formatBrlCompact(clientDelivered)}
-                      </span>
-                    </div>
-                    <div
-                      className="h-1.5 rounded-full bg-track overflow-hidden"
-                      title={`Entregue ${consumedPct.toFixed(0)}% do investido`}
-                    >
-                      <div
-                        className={cn(
-                          "h-full rounded-full transition-[width]",
-                          ended ? "bg-fg-subtle/50" : "bg-signature/70",
-                        )}
-                        style={{ width: `${consumedPct}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
-                {/* Gasto = custo real DSP (com survey) — numerador do tech fee */}
-                <div className="flex items-baseline justify-between gap-2 leading-none pt-1.5 border-t border-border/50">
-                  <span className="text-[9px] uppercase tracking-wide font-semibold text-fg-muted">
-                    Gasto
-                  </span>
-                  <span className="text-[11px] tabular-nums text-fg-subtle">
-                    {formatBrlCompact(techCostCost)}
-                  </span>
-                </div>
-              </div>
-              {/* Sinal de refaturamento — encerrada antes do previsto fatura
-                  pelo volume entregue, então o "Investido" (PI cliente) deixa
-                  de ser o valor cobrado. Tag discreta marca isso no scan. */}
-              {ended && earlyEnded && <RefatTag piOriginal={techCostBudget} />}
-            </div>
-          )}
-        </div>
-        {/* /cluster financeiro */}
-        </div>
 
         <Divider />
 
@@ -711,6 +531,216 @@ function CampaignCardV2Inner({
 
         <Divider />
 
+        {/* ── eCPM REAL (admin-only, destaque) ─────────────────────────
+            Layout dual:
+              • Single-format ou fallback legado: bloco grande tintado
+                (recipe original) — uma linha visual.
+              • Mix DSP+VID: header "eCPM ADM" + 2 mini-pills LADO A LADO,
+                cada uma tintada com seu próprio tier (display vs video).
+            Tier vem de `ecpmBgClass(value, kind)` — display/displayAbs/video
+            tem réguas em ordem de grandeza diferente (R$ 0,80 é catastrófico
+            em display, ótimo em vídeo). Encerrada vira bg-surface neutro.
+            Split: cada mini-pill ≈72px (um pouco mais estreito que o single
+            96px) lado a lado, total 148px. Mesmo recipe visual do single
+            (label superior + valor centrado) — só com label do formato
+            substituindo "ECPM ADM" em cada pill. */}
+        {/* Cluster financeiro: eCPM + TECH + investimento colados com gap
+            apertado (gap-2.5) pra ler como UMA seção. O gap-4 da row só
+            separa este grupo do pacing/resultados — antes os três eram
+            filhos diretos da row e herdavam o gap-4 largo entre si, o que
+            deixava o TECH "flutuando" longe da box de investimento. */}
+        <div className="hidden md:flex items-stretch gap-2.5 shrink-0">
+        {/* Largura FIXA em 148px independente de ter 1 ou 2 mídias.
+            Antes era 148 no split e 96 no formato único — e como o cluster
+            financeiro é ancorado à direita, os 52px de diferença mudavam a
+            posição X do valor de eCPM entre um card e o seguinte. Na rolagem
+            vertical (que é como a operação varre a lista) o número dançava.
+            No formato único a pílula agora ocupa o slot inteiro. */}
+        <div className="flex flex-col justify-center shrink-0 w-[148px]">
+          {ecpmIsSplit ? (
+            <div className="flex gap-1">
+              {ecpmRows.map((row) => (
+                <div
+                  key={row.label}
+                  className={cn(
+                    "flex-1 min-w-0 px-2 py-1.5 rounded-md transition-colors",
+                    ended ? "bg-surface" : ecpmBgClass(row.value, row.kind)
+                  )}
+                >
+                  <div className="flex items-baseline gap-1 leading-none">
+                    <span className="lbl-micro text-fg-muted">
+                      {row.label}
+                    </span>
+                    <span
+                      className="lbl-micro text-fg-subtle"
+                      title="Custo bruto do DSP / impressions × 1000 — não exibir para o cliente"
+                    >
+                      adm
+                    </span>
+                  </div>
+                  <span className={cn(
+                    "text-[14px] font-bold tabular-nums tracking-tight mt-1 block",
+                    ended ? "text-fg-subtle" : "text-fg"
+                  )}>
+                    {formatBRL(row.value)}
+                  </span>
+                  <EcpmDodDelta d1={row.d1} d2={row.d2} muted={ended} />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className={cn(
+              "px-2.5 py-1.5 rounded-md transition-colors",
+              ended ? "bg-surface" : ecpmBgClass(ecpmRows[0].value, ecpmRows[0].kind)
+            )}>
+              <div className="flex items-baseline gap-1 leading-none">
+                <span className="lbl-micro text-fg-muted">
+                  eCPM
+                </span>
+                <span
+                  className="lbl-micro text-fg-subtle"
+                  title="Custo bruto do DSP / impressions × 1000 — não exibir para o cliente"
+                >
+                  adm
+                </span>
+              </div>
+              <span className={cn(
+                "text-[14px] font-bold tabular-nums tracking-tight mt-1 block",
+                ended ? "text-fg-subtle" : "text-fg"
+              )}>
+                {formatBRL(ecpmRows[0].value)}
+              </span>
+              <EcpmDodDelta d1={ecpmRows[0].d1} d2={ecpmRows[0].d2} muted={ended} />
+            </div>
+          )}
+        </div>
+
+        {/* ── TECH COST (admin-only) ───────────────────────────────────
+            Coluna leve colada ao eCPM (sem divisor entre os dois) — ambos
+            são métricas financeiras admin e formam um grupo visual. Sem
+            pill tintada pra não criar um segundo bloco pesado ao lado do
+            eCPM: só label "TECH adm" + valor colorido pela régua de tech
+            cost (≤8% verde / ≤10% amarelo / acima vermelho). "—" quando a
+            campanha não tem PI/budget (bonificada, sem CPM-CPCV).
+
+            O `px-2 py-1.5` espelha o padding da pílula de eCPM ao lado, SEM
+            fundo. É o que faz rótulo e valor caírem na mesma linha de base dos
+            dois: antes cada coluna centralizava o próprio bloco de forma
+            independente, então o padding interno da pílula deslocava "DSP adm"
+            alguns pixels em relação a "TECH adm" — o desalinhamento mais
+            visível do card, e estrutural, não de estilo. */}
+        <div className="flex flex-col justify-center shrink-0 w-[80px]">
+          <div className="px-2 py-1.5">
+          <div className="flex items-baseline gap-1 leading-none">
+            <span className="lbl-micro text-fg-muted">
+              tech
+            </span>
+            <span
+              className="lbl-micro text-fg-subtle"
+              title="Custo real DSP (com survey) / valor do PI cliente — não exibir para o cliente"
+            >
+              adm
+            </span>
+          </div>
+          <span className={cn(
+            "text-[14px] font-bold tabular-nums tracking-tight mt-1 block",
+            ended ? "text-fg-subtle" : (techCostPct != null ? techCostToneClass(techCostPct) : "text-fg-subtle")
+          )}>
+            {techCostPct != null ? formatPct(techCostPct, 1) : "—"}
+          </span>
+          </div>
+        </div>
+
+        {/* ── INVESTIMENTO (admin-only) ────────────────────────────────
+            Box dedicada com os três brutos por trás do tech cost, lifetime
+            por campanha: Investido (PI cliente contratado) → Entregue
+            (faturável já consumido, com barra de progresso) → Gasto (custo
+            real DSP com survey, numerador do tech fee). Antes vivia
+            espremido embaixo do % de TECH; agora ganha caixa própria com
+            superfície sutil e tipografia maior pra respirar. Coluna de
+            largura fixa pra alinhamento entre cards continuar consistente —
+            quando não há budget (bonificada / sem CPM-CPCV) a box some mas
+            o slot permanece. Sem divisor antes: pertence ao grupo financeiro
+            (eCPM + TECH + investimento). */}
+        <div className="flex flex-col justify-center shrink-0 w-[172px]">
+          {techCostBudget > 0 && Number.isFinite(techCostCost) && (
+            // Sem borda: borda dentro da borda do card, com só um nível de
+            // superfície de diferença, era ruído — o terceiro tratamento
+            // visual de um cluster que já tinha pílula tintada e texto nu.
+            // Um "well" mais fundo que o card delimita o agrupamento sem
+            // desenhar uma segunda moldura.
+            <div className={cn(
+              "rounded-lg px-3 py-2.5",
+              ended ? "bg-canvas-deeper/40" : "bg-canvas-deeper/70"
+            )}>
+              <div className="flex items-baseline gap-1 leading-none mb-2">
+                <span className="lbl-micro text-fg-muted">
+                  investimento
+                </span>
+                <span
+                  className="lbl-micro text-fg-subtle"
+                  title="Valores brutos por trás do tech cost — não exibir para o cliente"
+                >
+                  adm
+                </span>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                {/* Investido = total contratado (PI cliente) */}
+                <div className="flex items-baseline justify-between gap-2 leading-none">
+                  <span className="lbl-micro text-fg-muted">
+                    Investido
+                  </span>
+                  <span className="text-[11px] tabular-nums text-fg-subtle">
+                    {formatBrlCompact(techCostBudget)}
+                  </span>
+                </div>
+                {/* Entregue = faturável já consumido; barra mostra % do PI */}
+                {hasConsumed && (
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-baseline justify-between gap-2 leading-none">
+                      <span className="lbl-micro text-fg-muted">
+                        Entregue
+                      </span>
+                      <span className="text-[11px] tabular-nums text-fg font-bold">
+                        {formatBrlCompact(clientDelivered)}
+                      </span>
+                    </div>
+                    <div
+                      className="h-1.5 rounded-full bg-track overflow-hidden"
+                      title={`Entregue ${formatPct(consumedPct, 0)} do investido`}
+                    >
+                      <div
+                        className={cn(
+                          "h-full rounded-full transition-[width]",
+                          ended ? "bg-fg-subtle/50" : "bg-signature/70",
+                        )}
+                        style={{ width: `${consumedPct}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+                {/* Gasto = custo real DSP (com survey) — numerador do tech fee */}
+                <div className="flex items-baseline justify-between gap-2 leading-none pt-1.5 border-t border-border/50">
+                  <span className="lbl-micro text-fg-muted">
+                    Gasto
+                  </span>
+                  <span className="text-[11px] tabular-nums text-fg-subtle">
+                    {formatBrlCompact(techCostCost)}
+                  </span>
+                </div>
+              </div>
+              {/* Sinal de refaturamento — encerrada antes do previsto fatura
+                  pelo volume entregue, então o "Investido" (PI cliente) deixa
+                  de ser o valor cobrado. Tag discreta marca isso no scan. */}
+              {ended && earlyEnded && <RefatTag piOriginal={techCostBudget} />}
+            </div>
+          )}
+        </div>
+        {/* /cluster financeiro */}
+        </div>
+
+        <Divider />
+
         {/* ── Owners (slot fixo) + Acessos + CTA (min-w fixo) ──────
             Mobile: ocupa a row toda (justify-between distribui avatares
             à esquerda e CTA à direita) abaixo dos KPIs.
@@ -738,7 +768,7 @@ function CampaignCardV2Inner({
                 // Encerrada: botão neutro/soft (leitura histórica, não operação)
                 ? "bg-surface text-fg-muted border border-border hover:bg-surface-strong hover:text-fg"
                 // Em vôo: CTA primário signature
-                : "bg-signature text-white hover:bg-signature-hover"
+                : "bg-signature-fill text-white hover:bg-signature-hover"
             )}
           >
             {ended ? "Histórico" : "Ver Report"}

@@ -19,7 +19,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { cn } from "../../../ui/cn";
-import { formatBRL } from "../lib/format";
+import { formatBRL, formatPct as formatPctBR } from "../lib/format";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
 
 // BRL compacto sem centavos pro tooltip de breakdown do Tech Cost. Numbers
@@ -84,12 +84,12 @@ function AnimatedValue({ value, format }) {
 
 function formatPct(value) {
   if (value == null || !Number.isFinite(value)) return "—";
-  return `${Math.round(value)}%`;
+  return formatPctBR(Math.round(value), 0);
 }
 
 function formatPctTwo(value) {
   if (value == null || !Number.isFinite(value)) return "—";
-  return `${(Math.round(value * 100) / 100).toFixed(2)}%`;
+  return formatPctBR(value, 2);
 }
 
 function tonePacing(value) {
@@ -142,8 +142,13 @@ function MetricCard({ label, value, tone = "fg", aside, footer }) {
   // hoje só pelo Tech Cost pra mostrar projeção de forma minimalista. Não
   // aumenta a altura do card.
   return (
-    <div className="rounded-xl border border-border bg-surface px-3.5 py-4 sm:px-4 sm:py-5 flex flex-col gap-2 min-w-0">
-      <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle whitespace-nowrap">
+    // justify-between + rodapé SEMPRE presente: os cards de Pacing não têm
+    // comparativo, então antes o valor colava no topo e sobrava um vazio
+    // embaixo enquanto os vizinhos tinham três andares — a faixa de oito
+    // cards não formava uma linha. Agora todos têm as mesmas três âncoras
+    // verticais (rótulo no topo, valor no meio, rodapé na base).
+    <div className="rounded-xl border border-border bg-surface px-3.5 py-4 sm:px-4 sm:py-5 flex flex-col justify-between gap-2 min-w-0">
+      <span className="lbl-section whitespace-nowrap">
         {label}
       </span>
       <div className="flex items-baseline gap-2 min-w-0">
@@ -159,11 +164,12 @@ function MetricCard({ label, value, tone = "fg", aside, footer }) {
           </span>
         )}
       </div>
-      {footer && (
-        <div className="text-[11px] text-fg-subtle leading-snug md:leading-none md:whitespace-nowrap">
-          {footer}
-        </div>
-      )}
+      {/* Sem footer, reserva a linha com um espaço não-quebrável — mantém a
+          base alinhada com os cards que têm comparativo, sem inventar um
+          texto que não existe. */}
+      <div className="text-[11px] text-fg-subtle leading-snug md:leading-none md:whitespace-nowrap">
+        {footer || " "}
+      </div>
     </div>
   );
 }
@@ -217,7 +223,7 @@ function MetricDelta({ current, previous, goodDirection = "up" }) {
   return (
     <span className={cn("inline-flex items-center gap-1 font-medium", colorClass)}>
       <span className="text-[10px] leading-none">{arrow}</span>
-      <span className="tabular-nums">{Math.abs(rounded).toFixed(1)}%</span>
+      <span className="tabular-nums">{formatPctBR(Math.abs(rounded), 1)}</span>
       <span className="text-fg-subtle font-normal">vs mês anterior</span>
     </span>
   );

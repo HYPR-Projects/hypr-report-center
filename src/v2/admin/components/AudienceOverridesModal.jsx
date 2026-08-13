@@ -205,7 +205,7 @@ export function AudienceOverridesModal({
                 type="button"
                 onClick={handleAdd}
                 disabled={!newRaw.trim() || !newName.trim() || aud.busyAudience === "__new__"}
-                className="shrink-0 rounded-md bg-signature px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+                className="shrink-0 rounded-md bg-signature-fill px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
               >
                 {aud.busyAudience === "__new__" ? "…" : "Add"}
               </button>

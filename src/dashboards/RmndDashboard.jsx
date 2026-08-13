@@ -82,7 +82,7 @@ function LegacyBaseBanner({ data, onEdit, onClear }) {
               <button
                 type="button"
                 onClick={onEdit}
-                className="px-4 py-2 rounded-lg bg-signature text-on-signature text-sm font-semibold hover:bg-signature-hover transition-colors cursor-pointer"
+                className="px-4 py-2 rounded-lg bg-signature-fill text-on-signature text-sm font-semibold hover:bg-signature-hover transition-colors cursor-pointer"
               >
                 Subir novo arquivo
               </button>

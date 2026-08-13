@@ -26,6 +26,7 @@
 import { useId, useMemo } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { cn } from "../../../ui/cn";
+import { CountBadge } from "../../../ui/CountBadge";
 
 export function OwnerFilter({ selected, onChange, teamMembers }) {
   const headerId = useId();
@@ -79,9 +80,7 @@ export function OwnerFilter({ selected, onChange, teamMembers }) {
           </svg>
           <span className="truncate">{triggerLabel}</span>
           {isActive && selectedCount > 1 && (
-            <span className="shrink-0 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full bg-signature text-on-signature text-[10px] font-bold tabular-nums">
-              {selectedCount}
-            </span>
+            <CountBadge value={selectedCount} tone="signature" />
           )}
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="opacity-60 shrink-0">
             <path d="m6 9 6 6 6-6" />

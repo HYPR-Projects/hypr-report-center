@@ -34,6 +34,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { fmt } from "../../shared/format";
 import { useThemeColors, useChartNeutral } from "../hooks/useThemeColors";
 import { useIsMobile } from "../hooks/useIsMobile";
 
@@ -41,7 +42,7 @@ const fmtBig = (v) =>
   v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M`
   : v >= 1_000 ? `${(v / 1_000).toFixed(0)}K`
   : String(v);
-const fmtPct = (v) => `${Number(v).toFixed(2)}%`;
+const fmtPct = (v) => `${fmt(Number(v), 2)}%`;
 
 export function DualChartV2({
   data,

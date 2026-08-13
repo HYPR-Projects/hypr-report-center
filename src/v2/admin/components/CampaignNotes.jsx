@@ -344,7 +344,7 @@ function Composer({ value, onChange, onSubmit, onCancelEdit, editing, sending, a
             "shrink-0 inline-flex items-center justify-center size-7 rounded-lg transition-colors",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
             canSend
-              ? "bg-signature text-on-signature hover:bg-signature-hover cursor-pointer"
+              ? "bg-signature-fill text-on-signature hover:bg-signature-hover cursor-pointer"
               : "bg-surface-strong text-fg-disabled cursor-not-allowed",
           )}
         >
@@ -373,6 +373,12 @@ export function CampaignNotes({
   shortToken,
   teamMap = {},
   className,
+  // Visual de card aplicado só no CORPO (thread + composer), não na seção
+  // inteira. Antes o AlertCampaignSheet passava o card via `className`, o que
+  // jogava o título "NOTAS INTERNAS" para DENTRO da caixa — recuado pelo
+  // padding, enquanto ALERTAS / SNAPSHOT / LINES CRÍTICAS nasciam na margem
+  // do drawer. Era o único título da coluna fora do alinhamento.
+  bodyClassName,
   autoFocus = false,
   collapsible = false,
 }) {
@@ -590,7 +596,7 @@ export function CampaignNotes({
             >
               <polyline points="3 4.5 6 7.5 9 4.5" />
             </svg>
-            <span className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle group-hover:text-fg transition-colors">
+            <span className="lbl-section group-hover:text-fg transition-colors">
               Notas internas
             </span>
             {count > 0 && (
@@ -601,7 +607,7 @@ export function CampaignNotes({
           </button>
         ) : (
           <div className="flex items-center gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
+            <span className="lbl-section">
               Notas internas
             </span>
             {count > 0 && (
@@ -621,7 +627,7 @@ export function CampaignNotes({
       </div>
 
       {open && (
-        <div className="space-y-2.5">
+        <div className={cn("space-y-2.5", bodyClassName)}>
           {state === "loading" && (
             <div className="space-y-2" aria-label="Carregando notas...">
               <Skeleton className="h-9 w-3/5" />

@@ -83,7 +83,7 @@ export function LayoutToggle({ value, onChange, className }) {
         // do SegmentedControlV2 já em uso no dashboard cliente. Em
         // light fica #F1F3F6 (perceptível contra a página #F8F9FA);
         // em dark fica #0F1419 (mais escuro que canvas, dá contraste).
-        "relative inline-flex gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border",
+        "relative inline-flex gap-0.5 p-1 rounded-lg bg-canvas-deeper border border-border",
         // Mobile: 5 botões com label estouram 375px. Sem scroll, o flex pai
         // espremia e quebrava os labels em 2 linhas ("Por\nmês"). max-w-full +
         // min-w-0 deixa o controle encolher até a largura real, overflow-x-auto
@@ -99,7 +99,7 @@ export function LayoutToggle({ value, onChange, className }) {
       <span
         data-thumb
         aria-hidden="true"
-        className="absolute top-0.5 left-0 h-7 rounded-md bg-canvas-elevated shadow-sm pointer-events-none"
+        className="absolute top-1 left-0 h-7 rounded-md bg-canvas-elevated shadow-sm pointer-events-none"
         style={thumbStyle}
       />
       {OPTIONS.map((opt, idx) => {

@@ -127,7 +127,7 @@ export default function SurveyV2({ token, data, isAdmin, adminJwt }) {
               className={
                 "px-3 py-1.5 rounded-md text-xs font-semibold transition-colors " +
                 (mode === opt.id
-                  ? "bg-signature text-white shadow-sm"
+                  ? "bg-signature-fill text-white shadow-sm"
                   : "text-fg-muted hover:text-fg")
               }
             >

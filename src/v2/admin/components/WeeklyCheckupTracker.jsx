@@ -259,7 +259,7 @@ function WeekRow({ week, done, sentAt, status, startISO, maxISO, onToggle, onDat
           "relative inline-flex items-center justify-center size-6 rounded-full shrink-0 cursor-pointer",
           "transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature/50",
           done
-            ? "bg-success text-white border border-success"
+            ? "bg-success text-on-semantic border border-success"
             : "border-2 border-border-strong text-transparent hover:border-signature",
         )}
       >

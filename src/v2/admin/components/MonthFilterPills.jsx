@@ -10,6 +10,7 @@
 
 import { useMemo } from "react";
 import { cn } from "../../../ui/cn";
+import { CountBadge } from "../../../ui/CountBadge";
 import { formatMonthLabel } from "../lib/format";
 
 export function MonthFilterPills({ campaigns, activeMonth, onChange, className }) {
@@ -58,7 +59,7 @@ function PillButton({ active, label, count, onClick }) {
       type="button"
       onClick={onClick}
       className={cn(
-        "inline-flex items-center gap-2 h-8 px-3.5 rounded-full cursor-pointer",
+        "inline-flex items-center gap-2 h-7 px-3 rounded-full cursor-pointer",
         "text-xs font-medium transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
         active
@@ -67,16 +68,7 @@ function PillButton({ active, label, count, onClick }) {
       )}
     >
       {label}
-      <span
-        className={cn(
-          "inline-flex items-center justify-center min-w-[22px] h-4 px-1.5 rounded-full text-[10px] font-bold tabular-nums",
-          active
-            ? "bg-signature/25 text-fg"
-            : "bg-surface-strong text-fg-muted"
-        )}
-      >
-        {count}
-      </span>
+      <CountBadge value={count} tone={active ? "onSignature" : "neutral"} />
     </button>
   );
 }

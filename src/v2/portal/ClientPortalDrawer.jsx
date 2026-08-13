@@ -253,7 +253,7 @@ export function ClientPortalDrawer({ open, onOpenChange, slug, displayName, clie
               <button
                 type="button"
                 onClick={load}
-                className="mt-4 h-9 px-4 rounded-lg text-[13px] font-semibold text-on-signature bg-signature hover:bg-signature-hover transition-colors"
+                className="mt-4 h-9 px-4 rounded-lg text-[13px] font-semibold text-on-signature bg-signature-fill hover:bg-signature-hover transition-colors"
               >
                 Tentar de novo
               </button>

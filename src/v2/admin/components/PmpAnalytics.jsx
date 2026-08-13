@@ -21,6 +21,7 @@
 // (margem lifetime ÷ PI) — rotulada como tal pra não confundir com a janela.
 
 import { Fragment, useMemo, useState } from "react";
+import { fmt } from "../../../shared/format";
 import * as Popover from "@radix-ui/react-popover";
 import {
   ComposedChart, Bar, Line, XAxis, YAxis,
@@ -28,6 +29,7 @@ import {
 } from "recharts";
 
 import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
+import { CountBadge } from "../../../ui/CountBadge";
 import { useThemeColors, useChartNeutral } from "../../hooks/useThemeColors";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { ChartCardV2 } from "../../components/ChartCardV2";
@@ -573,7 +575,7 @@ function Delta({ value, title }) {
   const up = pct > 0;
   const cls = flat ? "text-fg-subtle" : up ? "text-emerald-400" : "text-rose-400";
   const arrow = flat ? "→" : up ? "▲" : "▼";
-  const txt = `${up ? "+" : ""}${pct.toFixed(0)}%`;
+  const txt = `${up ? "+" : ""}${fmt(pct, 0)}%`;
   return (
     <span className={cn("inline-flex items-center gap-0.5 text-[11px] font-semibold tabular-nums shrink-0", cls)}
           title={title ? `vs ${title}` : undefined}>
@@ -1290,7 +1292,7 @@ function StatusDonut({ data }) {
             <RTooltip content={(p) => (
               <ChartTooltip {...p} rows={(pl) => pl.map((x) => {
                 const pctv = data.total > 0 ? (x.value / data.total) * 100 : 0;
-                return { name: x.name, value: `${formatBRLCompact(x.value)} · ${pctv.toFixed(0)}%`, color: colorOf(x.name) };
+                return { name: x.name, value: `${formatBRLCompact(x.value)} · ${fmt(pctv, 0)}%`, color: colorOf(x.name) };
               })} />
             )} />
           </PieChart>
@@ -1314,7 +1316,7 @@ function StatusDonut({ data }) {
                 {r.status}
                 <span className="text-fg-subtle"> · {r.count} {r.count === 1 ? "deal" : "deals"}</span>
               </span>
-              <span className="text-[13px] text-fg-muted tabular-nums w-10 text-right">{pct.toFixed(0)}%</span>
+              <span className="text-[13px] text-fg-muted tabular-nums w-10 text-right">{fmt(pct, 0)}%</span>
               <span className="text-[13px] font-semibold text-fg tabular-nums w-[92px] text-right">{formatBRLCompact(r.revenue)}</span>
             </div>
           );
@@ -1474,12 +1476,7 @@ function MultiFilter({ label, allLabel, options, selected, onChange, accent }) {
                   isAll ? "border-border text-fg" : "border-signature/50 text-fg",
                 )}>
           <span className={cn("truncate", !isAll && "font-medium")}>{summary}</span>
-          {!isAll && (
-            <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold tabular-nums shrink-0"
-                  style={{ background: "color-mix(in srgb, var(--color-signature) 20%, transparent)", color: accent }}>
-              {selected.length}
-            </span>
-          )}
+          {!isAll && <CountBadge value={selected.length} tone="onSignature" />}
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
                strokeLinecap="round" strokeLinejoin="round" className="text-fg-subtle shrink-0"><path d="m6 9 6 6 6-6" /></svg>
         </button>
