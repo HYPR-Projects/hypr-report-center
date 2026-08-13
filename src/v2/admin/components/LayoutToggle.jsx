@@ -103,12 +103,16 @@ export function LayoutToggle({ value, onChange, className }) {
       <span
         data-thumb
         aria-hidden="true"
-        // top-1 = (36 - 28) / 2, o offset que centraliza o thumb de h-7 no
-        // container de h-9. NÃO usar top-1/2 + -translate-y-1/2 aqui: o
-        // useSlidingThumb aplica `transform: translate3d(x,0,0)` via style
-        // inline pra deslizar horizontalmente, e style vence classe — a
-        // compensação vertical do Tailwind seria descartada e o thumb cairia.
-        className="absolute top-1 left-0 h-7 rounded-md bg-canvas-elevated shadow-sm pointer-events-none"
+        // top-[3px] = (34 - 28) / 2. A conta é sobre o PADDING BOX (34px: os
+        // 36 do h-9 menos as duas bordas de 1px), porque é a ele que `top` de
+        // um absolute se refere — não sobre os 36 externos. Com top-1 (4px) o
+        // thumb ficava 2px baixo: 5 de folga em cima, 3 embaixo.
+        //
+        // NÃO usar top-1/2 + -translate-y-1/2 aqui: o useSlidingThumb aplica
+        // `transform: translate3d(x,0,0)` via style inline pra deslizar na
+        // horizontal, e style vence classe — a compensação vertical do
+        // Tailwind seria descartada e o thumb cairia 14px.
+        className="absolute top-[3px] left-0 h-7 rounded-md bg-canvas-elevated shadow-sm pointer-events-none"
         style={thumbStyle}
       />
       {OPTIONS.map((opt, idx) => {
