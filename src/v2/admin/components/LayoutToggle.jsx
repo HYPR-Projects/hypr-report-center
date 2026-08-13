@@ -83,7 +83,11 @@ export function LayoutToggle({ value, onChange, className }) {
         // do SegmentedControlV2 já em uso no dashboard cliente. Em
         // light fica #F1F3F6 (perceptível contra a página #F8F9FA);
         // em dark fica #0F1419 (mais escuro que canvas, dá contraste).
-        "relative inline-flex gap-0.5 p-1 rounded-lg bg-canvas-deeper border border-border",
+        // h-9 explícito (36px) em vez de deixar a altura ser calculada:
+        // p-1 + h-7 dava 36 de conteúdo, mas a borda somava 2px por cima e o
+        // controle fechava em 38 — 2px fora da busca e do select da linha de
+        // baixo. Com h-9 e box-sizing border-box, a borda entra na conta.
+        "relative inline-flex items-center gap-0.5 h-9 px-1 rounded-lg bg-canvas-deeper border border-border",
         // Mobile: 5 botões com label estouram 375px. Sem scroll, o flex pai
         // espremia e quebrava os labels em 2 linhas ("Por\nmês"). max-w-full +
         // min-w-0 deixa o controle encolher até a largura real, overflow-x-auto
@@ -99,6 +103,11 @@ export function LayoutToggle({ value, onChange, className }) {
       <span
         data-thumb
         aria-hidden="true"
+        // top-1 = (36 - 28) / 2, o offset que centraliza o thumb de h-7 no
+        // container de h-9. NÃO usar top-1/2 + -translate-y-1/2 aqui: o
+        // useSlidingThumb aplica `transform: translate3d(x,0,0)` via style
+        // inline pra deslizar horizontalmente, e style vence classe — a
+        // compensação vertical do Tailwind seria descartada e o thumb cairia.
         className="absolute top-1 left-0 h-7 rounded-md bg-canvas-elevated shadow-sm pointer-events-none"
         style={thumbStyle}
       />

@@ -584,7 +584,13 @@ export function CampaignNotes({
             type="button"
             onClick={() => setOpen((v) => !v)}
             aria-expanded={open}
-            className="flex items-center gap-1.5 group cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature/40"
+            // -ml-4 tira o chevron do fluxo da margem: ele mede 10px + 6px de
+            // gap, então sem isso o TEXTO "Notas internas" começava 16px depois
+            // da margem esquerda do drawer — o único dos 13 títulos de seção
+            // fora da coluna. Puxando o botão, o chevron avança para a calha e
+            // o texto cai exatamente onde caem "Período", "Performance",
+            // "Brand Safety" e os outros.
+            className="flex items-center gap-1.5 -ml-4 group cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature/40"
           >
             <svg
               width="10" height="10" viewBox="0 0 12 12" aria-hidden fill="none"
