@@ -111,7 +111,15 @@ const ECPM_DOD_FLAT_PCT = 0.5; // |Δ| < 0,5% no dia = ruído → trata como est
 function EcpmDodDelta({ d1, d2, muted = false }) {
   const a = Number(d1);
   const b = Number(d2);
-  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= 0) return null;
+  // Sem os dois dias não há comparativo honesto — mas devolve um ESPAÇADOR da
+  // altura da linha, não null. Todas as colunas do cluster financeiro
+  // centralizam o próprio bloco (justify-center); se uma tem três andares
+  // (rótulo, valor, delta) e a vizinha tem dois, os rótulos e as linhas de
+  // base não coincidem. Reservar a linha é o que mantém "ECPM ADM" e
+  // "TECH ADM" no mesmo topo — mesma solução do rodapé dos cards de KPI.
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= 0) {
+    return <span aria-hidden className="block mt-1 h-[11px]" />;
+  }
   const rounded = Math.round(((a - b) / b) * 1000) / 10;
   const isFlat = Math.abs(rounded) < ECPM_DOD_FLAT_PCT;
   const isDown = rounded < 0;
@@ -623,12 +631,18 @@ function CampaignCardV2Inner({
             cost (≤8% verde / ≤10% amarelo / acima vermelho). "—" quando a
             campanha não tem PI/budget (bonificada, sem CPM-CPCV).
 
-            O `px-2 py-1.5` espelha o padding da pílula de eCPM ao lado, SEM
-            fundo. É o que faz rótulo e valor caírem na mesma linha de base dos
-            dois: antes cada coluna centralizava o próprio bloco de forma
-            independente, então o padding interno da pílula deslocava "DSP adm"
-            alguns pixels em relação a "TECH adm" — o desalinhamento mais
-            visível do card, e estrutural, não de estilo. */}
+            Alinhamento com a pílula de eCPM ao lado, que é o desalinhamento
+            mais visível do card e é estrutural, não de estilo. Precisa de DUAS
+            coisas, e a primeira sozinha não resolve:
+
+              1. o mesmo `px-2 py-1.5` da pílula (sem fundo), pra compensar o
+                 padding interno dela;
+              2. o mesmo NÚMERO DE ANDARES. O eCPM tem três (rótulo, valor,
+                 micro-delta do dia) e o TECH tinha dois — e como cada coluna
+                 centraliza o próprio bloco (`justify-center`), alturas
+                 diferentes jogam os rótulos e as linhas de base em alturas
+                 diferentes. O espaçador embaixo reserva o terceiro andar.
+                 Mesma solução do rodapé reservado nos cards de KPI. */}
         <div className="flex flex-col justify-center shrink-0 w-[80px]">
           <div className="px-2 py-1.5">
           <div className="flex items-baseline gap-1 leading-none">
@@ -648,6 +662,8 @@ function CampaignCardV2Inner({
           )}>
             {techCostPct != null ? formatPct(techCostPct, 1) : "—"}
           </span>
+          {/* Espelha a altura do micro-delta do eCPM — ver item 2 acima. */}
+          <span aria-hidden className="block mt-1 h-[11px]" />
           </div>
         </div>
 
