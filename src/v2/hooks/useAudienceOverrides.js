@@ -4,10 +4,10 @@
 //
 // Por que existe
 // ──────────────
-// A quebra "Por Audiência" do report usa o penúltimo token do line_name como
-// nome (extractAudience) — cru, exatamente como a plataforma (DSP) entregou.
-// Às vezes vem estranho ou mal separado ("SPORTS-STORE", duas variações do
-// mesmo público). O admin pode corrigir o nome aqui; a correção:
+// A quebra "Por Audiência" do report deriva o nome do line_name
+// (extractAudience) — cru, como a plataforma (DSP) entregou, só com o ruído
+// estrutural (LI-*, tier, mídia) removido. Ainda assim às vezes vem estranho
+// ou o cliente quer outro nome. O admin pode corrigir aqui; a correção:
 //   • é APLICADA no Report Center (relabel/merge da quebra, via overrideMap);
 //   • vira SEED pra IA do Client Hub (backend), que continua decidindo lá.
 //

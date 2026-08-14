@@ -24,11 +24,17 @@ def test_singularize_common_plurals():
 
 def test_extract_audience_both_conventions():
     # Kenvue-V2: MÍDIA_FRENTE_AUDIÊNCIA → público é o ÚLTIMO segmento
-    assert an.extract_audience("ID-X_HYPR_K_CPG_LISTERINE_ABS_DISPLAY_O2O_MARKETS-&-FARMACIAS") == "MARKETS-&-FARMACIAS"
+    # (separador colapsa: "MARKETS-&-FARMACIAS" e "MARKETS & FARMACIAS" viram um só)
+    assert an.extract_audience("ID-X_HYPR_K_CPG_LISTERINE_ABS_DISPLAY_O2O_MARKETS-&-FARMACIAS") == "MARKETS & FARMACIAS"
     assert an.extract_audience("ID-X_HYPR_K_SEMPRE-LIVRE_ABS_DISPLAY_O2O_STUDENTS") == "STUDENTS"
-    assert an.extract_audience("ID-X_HYPR_K_LISTERINE_ABS_DISPLAY_RMNF_FAIXA-2") == "FAIXA-2"
+    assert an.extract_audience("ID-X_HYPR_K_LISTERINE_ABS_DISPLAY_RMNF_FAIXA-2") == "FAIXA 2"
     # convenção antiga: FRENTE_AUDIÊNCIA_MÍDIA → público é o PENÚLTIMO
     assert an.extract_audience("camp_O2O_Supermercados_DISPLAY") == "Supermercados"
+    # convenção invertida: MÍDIA_AUDIÊNCIA_FRENTE (PicPay)
+    assert an.extract_audience("ID-X_HYPR_PICPAY_CPG_INST_NO-ABS_DISPLAY_CNAES_O2O") == "CNAES"
+    assert an.extract_audience("ID-X_HYPR_PICPAY_CPG_INST_NO-ABS_DISPLAY_COMPANIES_PREMIUM_O2O") == "COMPANIES"
+    # nomenclatura com "|" no lugar do "_"
+    assert an.extract_audience("ID-Z52NYU|1PD|NAT|ASAB|REG|MAX-REACH|IMP|CPM|DISP|NA|ELETRIC-CARS") == "ELETRIC CARS"
     assert an.extract_audience("semsep") == ""
 
 
@@ -38,7 +44,32 @@ def test_extract_audience_ignores_line_item_tiers():
     assert an.extract_audience("ID-X_HYPR_K_FORTNITE_ABS_DISPLAY_O2O_LUXURY_LI-TOP-PERFORMANCE") == "LUXURY"
     assert an.extract_audience("ID-X_HYPR_K_LISTERINE_DISPLAY_O2O_BAR_LI-PREMIUM-LIST") == "BAR"
     assert an.extract_audience("ID-X_HYPR_K_BABY_ABS_DISPLAY_O2O_MARKETS_PREMIUM") == "MARKETS"
-    assert an.extract_audience("ID-X_HYPR_K_NEUTROGENA_DISPLAY_OOH_REDE-2_LI-STANDARD") == "REDE-2"
+    assert an.extract_audience("ID-X_HYPR_K_NEUTROGENA_DISPLAY_OOH_REDE-2_LI-STANDARD") == "REDE 2"
+    # tier SEM prefixo LI-, com sufixo livre, e colado por hífen no segmento
+    assert an.extract_audience("ID-X_HYPR_CLARO_TELCO_FLEX_NO-ABS_DISPLAY_O2O_PME_TOP-PERFORMANCE") == "PME"
+    assert an.extract_audience("ID-X_HYPR_SIRIO_HB_CAMINHO_NO-ABS_DISPLAY_O2O_TRIPLE A_TOP-PERFORMANCE2") == "TRIPLE A"
+    assert an.extract_audience("ID-X_HYPR_C_V_X_DISPLAY_O2O_SUPERMERCADOS-LI-MAX-VIEWABLE") == "SUPERMERCADOS"
+    # tier digitado errado no DSP ("SATANDARD") não pode roubar o público
+    assert an.extract_audience("ID-X_HYPR_BOTI_HB_SERV_VIDEO_O2O_STANDARD_LOJAS-CONCORRENTES_SATANDARD") == "LOJAS CONCORRENTES"
+    # sufixo de versão/número/apelido de line item
+    assert an.extract_audience("ID-X_HYPR_BRF_FOOD_NBA_NO-ABS_DISPLAY_O2O_BASQUETEIROS_LI-TOP-PERFORMANCE_V2") == "BASQUETEIROS"
+    assert an.extract_audience("ID-X_HYPR_YDUQS_EDU_IBMEC_NO-ABS_DISPLAY_O2O_PAIS_BELO-HORIZONTE_LI-1_2") == "BELO HORIZONTE"
+    # grupo de teste (geolift) não é público de mídia
+    assert an.extract_audience("ID-X_HYPR_PEPSICO_CPG_CHAMPIONS_ABS_DISPLAY_O2O_1FST-PARTY_BASELINE") == "1FST PARTY"
+
+
+def test_extract_audience_survives_dirty_separators():
+    # underscore sobrando no fim / duplicado no meio não podem virar rótulo
+    assert an.extract_audience("ID-X_HYPR_PATRIA_FIN_B2B_NO-ABS_DISPLAY_O2O_PREMIUM_LI-1_") == "PREMIUM"
+    assert an.extract_audience("ID-X_HYPR_BRF_FOOD_DELINE_NO-ABS_DISPLAY_O2O_SHOPPERS_LI-1_") == "SHOPPERS"
+    assert an.extract_audience("ID-X_HYPR_YDUQS_EDU_IBMEC_NO-ABS_DISPLAY_O2O_ALUNOS_RJ_DESKTOP__LI-1") == "RJ"
+
+
+def test_extract_audience_premium_is_public_when_alone():
+    # PREMIUM é AMBÍGUO: tier quando há público melhor na line, público quando
+    # é a única coisa que sobra (caso Pátria — 3 audiências viravam "O2O").
+    assert an.extract_audience("ID-X_HYPR_PATRIA_FIN_B2B_NO-ABS_DISPLAY_O2O_PREMIUM_LI-1-MAX-VIEWS") == "PREMIUM"
+    assert an.extract_audience("ID-X_HYPR_NISSAN_AUTO_X_DISPLAY_O2O_MOBILITY_PREMIUM_LI-TOP-PERFORMANCE") == "MOBILITY"
 
 
 def test_extract_audience_front_fallback_when_no_public():
@@ -47,6 +78,9 @@ def test_extract_audience_front_fallback_when_no_public():
     assert an.extract_audience("ID-X_..._SEMPRE-LIVRE_ABS_DISPLAY_OOH") == "OOH"
     assert an.extract_audience("ID-X_..._BABY-PROMO_DISPLAY_GROUNDFLOW_LI-STANDARD") == "GROUNDFLOW"
     assert an.extract_audience("ID-X_..._SAO-JOAO_VIDEO_OOH_LI-STANDARD") == "OOH"
+    assert an.extract_audience("ID-X_HYPR_C_V_X_DISPLAY_O2O_LI-TOP-PERFORMANCE") == "O2O"
+    # frente mais específica no meio do caminho vence a âncora
+    assert an.extract_audience("ID-X_HYPR_LOREAL_HB_GARNIER_DISPLAY_O2O_GROUNDFLOW_LI-STANDARD") == "GROUNDFLOW"
 
 
 def test_plural_accent_case_collapse_to_one_group():

@@ -8,7 +8,7 @@
 // pipeline).
 //
 // Filtros (todos opcionais, combinam como AND, empty = "todos"):
-//   1. Audiência     → extractAudience(line_name)  — penúltimo segmento
+//   1. Audiência     → extractAudience(line_name)  — público ancorado na frente
 //   2. Line          → line_name completo
 //   3. Linha Criativa→ getCreativeLineKey(row)     — creative_name - size
 //   4. Tamanho       → creative_size               — "300x250", "970x250"

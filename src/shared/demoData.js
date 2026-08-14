@@ -128,9 +128,9 @@ const DELIVERY_MULT = {
   ooh_video:   1.06,
 };
 
-// Audiências por frente — geram os line_names (extractAudience pega o
-// segundo-último token do split por "_"). Distribuído pra dar variedade
-// no chart "Por Audiência".
+// Audiências por frente — geram os line_names no formato
+// `DEMO_<frente>_<audiência>_<mídia>`, que é o que `extractAudience` lê.
+// Distribuído pra dar variedade no chart "Por Audiência".
 const AUDIENCES = {
   o2o_display: ["Premium", "Lifestyle", "Bargain"],
   ooh_display: ["Cobertura", "Awareness"],

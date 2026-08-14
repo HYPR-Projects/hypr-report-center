@@ -3,9 +3,10 @@ Normalização e unificação de audiências (Portal do Cliente · aba Analytics
 
 Por que existe
 --------------
-A audiência de uma campanha é o penúltimo segmento do `line_name`
-(convenção HYPR: `campanha_O2O_Supermercados_DISPLAY` → "Supermercados"),
-exatamente como `extractAudience` no front (src/shared/aggregations.js).
+A audiência de uma campanha sai do `line_name` (convenção HYPR:
+`..._DISPLAY_O2O_SUPERMERCADOS_LI-1` → "SUPERMERCADOS") — ver
+`extract_audience` abaixo, que ESPELHA `extractAudience` no front
+(src/shared/aggregations.js).
 
 O problema: o mesmo público é cadastrado mês a mês com pequenas variações
 ("Supermercado", "supermercados", "SUPERMERCADO", "Supermercádo") e às vezes
@@ -165,53 +166,142 @@ def prettify(label):
     return " ".join(out)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
 # Tokens ESTRUTURAIS no line_name (chave normalizada) que NÃO são audiência.
-# Frentes (core products), mídias e identificadores genéricos de line item.
-# Usados p/ "pular" ao extrair o público — que costuma ser o último segmento real.
-_FRONTS = {"o2o", "ooh", "groundflow", "rmnf", "rmnd"}
-_MEDIA = {"display", "video", "pdooh", "dooh"}
-# TIERS/qualidade de LINE ITEM no fim do nome — NÃO são audiência (a audiência é
-# o segmento ANTES). Ex.: '..._O2O_MARKETS_LI-1', '..._O2O_LUXURY_PREMIUM',
-# '..._OOH_REDE-2_LI-STANDARD'. 'LI-*' é pego por prefixo em `_structural`.
-_TIER = {"premium", "top performance", "premium list", "standard"}
-_GENERIC = {"li standard", "li", "abs", "padrao", "default", "geral", "todos", "all"}
-_STRUCTURAL = _FRONTS | _MEDIA | _TIER | _GENERIC
-# Nunca são audiência, NEM como rótulo (mídia + tiers + grupos de survey).
+# ESPELHA `extractAudience` em src/shared/aggregations.js — qualquer mudança
+# aqui tem que ir lá também (report e portal precisam quebrar igual).
+# ─────────────────────────────────────────────────────────────────────────────
+_FRONTS = {"o2o", "ooh", "pdooh", "dooh", "groundflow", "rmnf", "rmnd"}
+_MEDIA = {"display", "video", "ctv", "olv", "audio", "native", "banner", "pdooh", "dooh"}
+# Ruído estrutural que aparece SOZINHO num segmento: device, tier de line item,
+# grupo de teste (geolift), meta/KPI e genéricos.
+_NOISE = {
+    "desktop", "mobile", "tablet", "smartphone", "app", "web",
+    "standard", "top", "performance", "low", "high", "medium", "list", "viewable",
+    "baseline", "exposto", "expostos", "controle", "control", "holdout", "geolift",
+    "cpm", "cpc", "cpv", "cpcv", "vtr", "ctr",
+    "abs", "no abs", "na", "n a", "all", "todos", "geral", "padrao", "default", "hypr",
+}
+# Família de tier de line item, com os sufixos que o CS inventa: LI-1,
+# LI-TOP-PERFORMANCE, TOP-PERFORMANCE-LOW, TOP-PERFORMANCE2, MAX-VIEWS…
+_TIER_RE = re.compile(
+    r"^(li|top performance|premium list|s[ei]te?list|max (views?|viewable)|boost( cpm)?)(?![a-z])"
+)
+# Tier digitado errado no DSP ("SATANDARD", "PERFORMACE") — distância 1.
+_TIER_TYPO = ("standard", "performance", "viewable", "sitelist")
+# Tier AMBÍGUO: PREMIUM/PRIME é público na Pátria e tier na Nissan. Só vira
+# audiência se a line não tiver nada melhor.
+_SOFT_TIER = {"premium", "prime"}
+# Tier colado com hífen no fim do segmento: "SUPERMERCADOS-LI-MAX-VIEWABLE".
+_GLUED_TIER_RE = re.compile(r"-LI-[A-Za-z0-9.\-]*$", re.IGNORECASE)
+# Nunca são audiência, NEM como rótulo (mídia + tier + grupos de survey).
 # Frentes ficam de FORA — viram rótulo de fallback quando a line não tem público.
-_NEVER_AUDIENCE = _MEDIA | _TIER | {"control", "controle", "exposto", "pos venda", "pos"}
+_NEVER_AUDIENCE = _MEDIA | _NOISE | {"pos venda", "pos"}
 
 
-def _structural(seg):
-    """Token estrutural (frente/mídia/tier de line/genérico) — não é público."""
-    k = normalize_key(seg)
-    # 'li ' cobre os tiers de line item: LI-1, LI-TOP-PERFORMANCE, LI-PREMIUM-LIST…
-    return k in _STRUCTURAL or k.startswith("li ")
+def _strip_glued_tier(seg):
+    return _GLUED_TIER_RE.sub("", str(seg or ""))
+
+
+def _edit_distance_1(a, b):
+    """True se a e b diferem por no máximo 1 edição (sem Levenshtein completo)."""
+    if a == b:
+        return True
+    s, l = (a, b) if len(a) <= len(b) else (b, a)
+    if len(l) - len(s) > 1:
+        return False
+    i = j = diff = 0
+    while i < len(s) and j < len(l):
+        if s[i] == l[j]:
+            i += 1
+            j += 1
+            continue
+        diff += 1
+        if diff > 1:
+            return False
+        if len(s) == len(l):
+            i += 1
+        j += 1
+    return diff + (len(l) - j) + (len(s) - i) <= 1
+
+
+def _structural(k):
+    """Chave normalizada de segmento estrutural (tier/mídia/device/genérico)."""
+    if not k:
+        return True                                   # vazio ("__" ou "_" final)
+    if _TIER_RE.match(k):
+        return True
+    if re.fullmatch(r"\d+|v\d+|l\d+|cpm ?\d+", k):     # "_2", "_V2", "_L1", "CPM50"
+        return True
+    if k in _MEDIA or k in _NOISE:
+        return True
+    return len(k) >= 6 and any(_edit_distance_1(k, w) for w in _TIER_TYPO)
+
+
+def _scan_for_audience(segs, keys, start, end):
+    """Varre [start..end] de trás pra frente e devolve o 1º público real ('' se
+    não achar). Precedência: público de verdade > tier ambíguo (PREMIUM) >
+    outra FRENTE no caminho ('..._O2O_GROUNDFLOW_LI-STANDARD' → Groundflow)."""
+    soft = front = ""
+    for i in range(end, max(start, 0) - 1, -1):
+        k = keys[i]
+        if _structural(k):
+            continue
+        if k in _FRONTS:
+            front = front or segs[i]
+            continue
+        if k in _SOFT_TIER:
+            soft = soft or segs[i]
+            continue
+        label = _clean_label(segs[i])
+        if label:
+            return label
+    return _clean_label(soft or front)
+
+
+def _clean_label(seg):
+    """Rótulo cru limpo: sem tier colado, separadores colapsados, borda podada.
+    NÃO mexe na caixa — quem decide o display é `prettify`/`group_audiences`."""
+    s = re.sub(r"[\s_-]+", " ", _strip_glued_tier(seg))
+    return re.sub(r"^[^\w]+|[^\w]+$", "", s).strip()
 
 
 def extract_audience(line_name):
-    """Extrai a AUDIÊNCIA (público-alvo) do line_name, robusto às DUAS
-    convenções de nomenclatura HYPR:
-      • MÍDIA_FRENTE_AUDIÊNCIA (Kenvue-V2): público = ÚLTIMO segmento
-        (ex.: '..._DISPLAY_O2O_MARKETS-&-FARMACIAS' → 'MARKETS-&-FARMACIAS').
-      • FRENTE_AUDIÊNCIA_MÍDIA (antiga):     público = PENÚLTIMO segmento
-        (ex.: 'camp_O2O_Supermercados_DISPLAY' → 'Supermercados').
+    """Extrai a AUDIÊNCIA (público-alvo) do line_name.
 
-    Estratégia: varre do fim e devolve o 1º segmento que NÃO é estrutural —
-    cobre as duas convenções e impede a frente (O2O/OOH) de virar "audiência".
-    Se a line não tem público próprio (só frente+mídia, ex.: '..._DISPLAY_OOH'
-    ou '..._GROUNDFLOW_LI-STANDARD'), rotula pela FRENTE (Groundflow/RMNF/O2O/
-    OOH) p/ não perder volume — nunca pela mídia. '' se nada reconhecível."""
-    segs = [s for s in str(line_name or "").split("_") if s]
+    Ancora na FRENTE (O2O/OOH/Groundflow), que separa os metadados da campanha
+    (anunciante, vertical, praça) do targeting, e varre de trás pra frente
+    pulando segmento estrutural (LI-*, tier, mídia, device, número solto, vazio):
+
+      1. região DEPOIS da frente  — convenção atual (`..._DISPLAY_O2O_BANCOS_LI-1`)
+      2. região ANTES da frente   — convenção invertida (`..._DISPLAY_CNAES_O2O`),
+         só com a mídia como fronteira (sem ela não dá pra saber onde acabam os
+         metadados e a varredura pegaria nome de campanha como público)
+      3. nada? rotula pela própria FRENTE — nunca pela mídia
+      4. sem frente no nome: varre do fim até a mídia
+
+    '' se nada reconhecível."""
+    # "|" aparece no lugar do "_" em algumas nomenclaturas (ID-X|1PD|NAT|…),
+    # às vezes MISTURADO com "_" na mesma line — separa pelos dois.
+    segs = re.split(r"[_|]", str(line_name or ""))
     if len(segs) < 2:
-        return ""  # sem estrutura "_-separada" → não há padrão de audiência
-    cands = [segs[-1], segs[-2]]
-    for cand in cands:
-        if not _structural(cand):
-            return cand
-    for s in reversed(segs):
-        if normalize_key(s) in _FRONTS:
-            return s
-    return ""
+        return ""
+    keys = [normalize_key(_strip_glued_tier(s)) for s in segs]
+
+    front_idx = next((i for i, k in enumerate(keys) if k in _FRONTS), -1)
+    media_idx = next((i for i, k in enumerate(keys) if k in _MEDIA), -1)
+
+    if front_idx >= 0:
+        after = _scan_for_audience(segs, keys, front_idx + 1, len(segs) - 1)
+        if after:
+            return after
+        if 0 <= media_idx < front_idx:
+            before = _scan_for_audience(segs, keys, media_idx + 1, front_idx - 1)
+            if before:
+                return before
+        return _clean_label(segs[front_idx])
+
+    return _scan_for_audience(segs, keys, media_idx + 1 if media_idx >= 0 else 0, len(segs) - 1)
 
 
 def _is_ignorable(label):

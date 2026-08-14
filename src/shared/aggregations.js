@@ -47,24 +47,11 @@ function rangeCoversWindow(range, startStr, endStr) {
 }
 
 /**
- * Extrai o segundo-último token de um line_name "_-separado".
- * Convenção HYPR: o segmento antes do final identifica a audiência.
- * Ex.: "campaign_O2O_Heineken_DISPLAY" → "Heineken"
- *
- * Exportada porque componentes que enriquecem rows por audiência
- * (ex.: FormatBreakdownTableV2 quando agrupa por audience) precisam
- * resolver a chave do mesmo jeito que `groupByAudience` faz aqui.
- */
-export const extractAudience = (lineName) => {
-  const parts = (lineName || "").split("_");
-  return parts.length >= 2 ? parts[parts.length - 2] : "N/A";
-};
-
-/**
  * Chave de comparação de audiência — espelha `normalize_key` do backend
  * (backend/audience_normalize.py): minúscula, sem acento, sem pontuação,
  * espaço único. Usada pra casar um rótulo cru com o mapa de override
- * (que vem keyed por essa mesma normalização).
+ * (que vem keyed por essa mesma normalização) e pra classificar os
+ * segmentos do line_name em `extractAudience`.
  */
 export const normAudienceKey = (label) =>
   String(label || "")
@@ -74,6 +61,169 @@ export const normAudienceKey = (label) =>
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+/**
+ * ─── Extração de AUDIÊNCIA do line_name ──────────────────────────────────
+ *
+ * A regra antiga era "pega o penúltimo token do `_`". Funciona no formato
+ * canônico (`..._DISPLAY_O2O_BANCOS_LI-1`) e quebra em tudo que foge dele —
+ * e foge muito, porque o nome é digitado à mão no DSP:
+ *
+ *   ..._O2O_PREMIUM_LI-1_              → "LI-1"        (underscore sobrando)
+ *   ..._O2O_ALUNOS_RJ_DESKTOP__LI-1    → ""            (underscore duplo)
+ *   ..._O2O_LI-TOP-PERFORMANCE         → "O2O"         (frente virando público)
+ *   ..._DISPLAY_CNAES_O2O              → "DISPLAY"     (frente no fim)
+ *   ..._DISPLAY_COMPANIES_PREMIUM_O2O  → "PREMIUM"     (tier virando público)
+ *   ..._OOH_HYPR_X_GEOFENCING_TOP_PERFORMANCE_LOW → "PERFORMANCE"
+ *   ..._O2O_SUPERMERCADOS-LI-MAX-VIEWABLE         → "O2O" (tier colado)
+ *
+ * Estratégia nova — ancora na FRENTE (O2O/OOH/Groundflow), que é o divisor
+ * entre "metadados da campanha" (anunciante, vertical, praça) e "targeting":
+ *
+ *   1. Varre a região DEPOIS da frente, do fim pro começo, pulando segmento
+ *      estrutural (LI-*, mídia, device, tier, número solto, vazio).
+ *   2. Não achou? Varre a região ANTES da frente, limitada pela mídia —
+ *      cobre a convenção invertida `..._DISPLAY_CNAES_O2O`.
+ *   3. Não achou? Rotula pela própria FRENTE (line sem público próprio),
+ *      nunca pela mídia.
+ *   4. Sem frente no nome: varre do fim até a mídia.
+ *
+ * Tier "PREMIUM" é AMBÍGUO (é público na Pátria, tier na Nissan): guardamos
+ * como fallback e só usamos se nada melhor aparecer — `..._O2O_PREMIUM_LI-1`
+ * devolve PREMIUM, `..._O2O_MOBILITY_PREMIUM_LI-1` devolve MOBILITY.
+ *
+ * Exportada porque componentes que enriquecem rows por audiência (ex.:
+ * FormatBreakdownTableV2 quando agrupa por audience) e o filtro global
+ * precisam resolver a chave do mesmo jeito que `groupByAudience` faz aqui.
+ */
+
+// Frentes (core products). Âncora da varredura — e rótulo de último recurso.
+const _AUD_FRONT = new Set(["o2o", "ooh", "pdooh", "dooh", "groundflow", "rmnf", "rmnd"]);
+// Mídia. Delimita o fim dos metadados da campanha na varredura reversa.
+const _AUD_MEDIA = new Set(["display", "video", "ctv", "olv", "audio", "native", "banner", "dooh", "pdooh"]);
+// Ruído estrutural: device, tier/qualidade de line item, genéricos. Cobre os
+// segmentos que aparecem SOZINHOS (a família "LI-*"/"TOP-PERFORMANCE-*" vai no
+// regex abaixo, porque tem variação infinita de sufixo).
+const _AUD_NOISE = new Set([
+  // device/canal
+  "desktop", "mobile", "tablet", "smartphone", "app", "web",
+  // tier/qualidade de line item
+  "standard", "top", "performance", "low", "high", "medium", "list", "viewable",
+  // grupo de teste (geolift/brand lift) — não é público de mídia
+  "baseline", "exposto", "expostos", "controle", "control", "holdout", "geolift",
+  // meta/KPI da line
+  "cpm", "cpc", "cpv", "cpcv", "vtr", "ctr",
+  // genéricos
+  "abs", "no abs", "na", "n a", "all", "todos", "geral", "padrao", "default", "hypr",
+]);
+// Família de tier de line item, com todos os sufixos que o CS inventa:
+// LI-1, LI-TOP-PERFORMANCE, TOP-PERFORMANCE, TOP-PERFORMANCE-LOW,
+// TOP-PERFORMANCE2, LI-1-MAX-VIEWS, MAX-VIEWABLE, PREMIUM-LIST, BOOST-CPM.
+// `(?![a-z])` evita comer palavra que só COMEÇA igual ("LIST", "LOJAS").
+const _AUD_TIER_RE = /^(li|top performance|premium list|s[ei]te?list|max (views?|viewable)|boost( cpm)?)(?![a-z])/;
+// Tier digitado errado no DSP ("SATANDARD", "PERFORMACE") — distância 1 do
+// vocabulário de tier. Sem isso o typo vira "audiência" e rouba a line real.
+const _AUD_TIER_TYPO = ["standard", "performance", "viewable", "sitelist"];
+// Tier ambíguo: só vira audiência se a line não tiver nada melhor.
+const _AUD_SOFT = new Set(["premium", "prime"]);
+
+/** Tier colado com hífen no fim do segmento: "SUPERMERCADOS-LI-MAX-VIEWABLE". */
+const _stripGluedTier = (seg) => String(seg || "").replace(/-LI-[A-Za-z0-9.-]*$/i, "");
+
+/** Distância de edição <= 1 (só isso — não precisa do Levenshtein completo). */
+const _editDistance1 = (a, b) => {
+  if (a === b) return true;
+  const [s, l] = a.length <= b.length ? [a, b] : [b, a];
+  if (l.length - s.length > 1) return false;
+  let i = 0, j = 0, diff = 0;
+  while (i < s.length && j < l.length) {
+    if (s[i] === l[j]) { i++; j++; continue; }
+    if (++diff > 1) return false;
+    if (s.length === l.length) i++;
+    j++;
+  }
+  return diff + (l.length - j) + (s.length - i) <= 1;
+};
+
+/** Segmento que nunca é público-alvo (inclui vazio de "__" / "_" final). */
+const _isAudNoise = (k) => {
+  if (!k) return true;
+  if (_AUD_TIER_RE.test(k)) return true;                // LI-*, TOP-PERFORMANCE-*, MAX-VIEWS…
+  if (/^\d+$/.test(k)) return true;                     // sufixo numérico solto: "…_LI-1_2"
+  if (/^v\d+$/.test(k)) return true;                    // versão da line: "…_LI-1_V2"
+  if (/^l\d+$/.test(k)) return true;                    // apelido de line item: "…_GEN-Z_L1"
+  if (/^cpm\s?\d+$/.test(k)) return true;               // CPM50
+  if (_AUD_MEDIA.has(k) || _AUD_NOISE.has(k)) return true;
+  return k.length >= 6 && _AUD_TIER_TYPO.some((w) => _editDistance1(k, w));
+};
+
+/**
+ * Rótulo de exibição canônico: CAIXA ALTA, separadores colapsados em espaço,
+ * pontuação de borda removida. Colapsa as variações do mesmo público que hoje
+ * viram DUAS linhas na quebra ("LUXURY-LIFE" × "LUXURY LIFE",
+ * "RRS-JOALHERIAS-" × "RRS-JOALHERIAS", "Controle" × "CONTROLE").
+ * Espelha `normalize_key`, então overrides já salvos continuam casando.
+ */
+export const canonAudienceLabel = (label) =>
+  String(label || "")
+    .replace(/[\s_-]+/g, " ")
+    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")
+    .trim()
+    .toUpperCase();
+
+/**
+ * Varre [from..to] de trás pra frente e devolve o 1º público real ("" se não
+ * achar). Precedência: público de verdade > tier ambíguo (PREMIUM) > outra
+ * FRENTE no meio do caminho (`..._O2O_GROUNDFLOW_LI-STANDARD` → Groundflow,
+ * que é mais informativo que a âncora O2O).
+ */
+const _scanForAudience = (segs, keys, from, to) => {
+  let soft = "";
+  let front = "";
+  for (let i = to; i >= Math.max(from, 0); i--) {
+    const k = keys[i];
+    if (_isAudNoise(k)) continue;
+    if (_AUD_FRONT.has(k)) {
+      if (!front) front = segs[i];
+      continue;
+    }
+    if (_AUD_SOFT.has(k)) {
+      if (!soft) soft = segs[i];
+      continue;
+    }
+    const label = canonAudienceLabel(_stripGluedTier(segs[i]));
+    if (label) return label;
+  }
+  return canonAudienceLabel(_stripGluedTier(soft || front));
+};
+
+export const extractAudience = (lineName) => {
+  // `|` aparece no lugar do `_` em algumas nomenclaturas (ID-X|1PD|NAT|…).
+  const segs = String(lineName || "").split(/[_|]/);
+  if (segs.length < 2) return "N/A";
+  const keys = segs.map((s) => normAudienceKey(_stripGluedTier(s)));
+
+  const frontIdx = keys.findIndex((k) => _AUD_FRONT.has(k));
+  const mediaIdx = keys.findIndex((k) => _AUD_MEDIA.has(k));
+
+  if (frontIdx >= 0) {
+    // 1) público DEPOIS da frente — convenção atual (…_DISPLAY_O2O_BANCOS_LI-1)
+    const after = _scanForAudience(segs, keys, frontIdx + 1, segs.length - 1);
+    if (after) return after;
+    // 2) público ANTES da frente — convenção invertida (…_DISPLAY_CNAES_O2O).
+    //    SÓ com a mídia como fronteira: sem ela não dá pra saber onde acabam
+    //    anunciante/vertical/praça, e a varredura pegaria metadado como público.
+    if (mediaIdx >= 0 && mediaIdx < frontIdx) {
+      const before = _scanForAudience(segs, keys, mediaIdx + 1, frontIdx - 1);
+      if (before) return before;
+    }
+    // 3) line sem público próprio → rotula pela frente (nunca pela mídia)
+    return canonAudienceLabel(segs[frontIdx]) || "N/A";
+  }
+
+  // 4) sem frente reconhecível: do fim até a mídia (ou até o começo)
+  return _scanForAudience(segs, keys, mediaIdx >= 0 ? mediaIdx + 1 : 0, segs.length - 1) || "N/A";
+};
 
 /**
  * Resolve o nome de exibição de uma audiência crua aplicando o override do
@@ -238,7 +388,10 @@ export const groupByCreativeName = (rows, numeratorKey, denomKey, rateKey, overr
 export const groupByAudience = (rows, numeratorKey, denomKey, rateKey, overrideMap = null) =>
   Object.values(rows.reduce((acc, r) => {
     const raw = extractAudience(r.line_name);
-    if (/survey/i.test(raw) || raw === "N/A") return acc;
+    // Survey (exposto/controle) não é público de mídia — testa o line_name
+    // inteiro, não só o rótulo extraído: em `..._SURVEY_AWARENESS_CONTROLE`
+    // o marcador "SURVEY" não está no segmento que vira rótulo.
+    if (/survey/i.test(r.line_name || "") || /survey/i.test(raw) || raw === "N/A") return acc;
     // Agrupa pelo nome RESOLVIDO (override do admin): dois rótulos crus que o
     // admin renomeou pro mesmo nome FUNDEM aqui (rename = merge). `_rawLabels`
     // guarda os rótulos crus que alimentam o grupo — usados pra salvar/reverter
