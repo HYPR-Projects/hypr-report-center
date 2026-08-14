@@ -5,7 +5,7 @@
 // (multi-select), e exporta CSV.
 //
 // Filtros (multi-select, todos opcionais, combinam como AND):
-//   - Audiência: extractAudience(line_name) → penúltimo token do _
+//   - Audiência: extractAudience(line_name) → público ancorado na frente (O2O/OOH)
 //   - Line:      line_name completo         → label encurtado (…_últ3 segs)
 //   - Tamanho:   creative_size              → "300x250", "970x250", ...
 //   - Formato:   media_type                 → DISPLAY / VIDEO
@@ -67,7 +67,7 @@ const ROW_LIMIT = 200;
 
 export function DataTableV2({ detail, campaignName }) {
   // Filtros multi-select. Cada um é independente — empty = "todos".
-  //   audience: extractAudience(line_name) → token do penúltimo segmento
+  //   audience: extractAudience(line_name) → público ancorado na frente (O2O/OOH)
   //   line:     line_name completo         → match exato
   //   size:     creative_size              → "300x250", "970x250", etc.
   //   format:   media_type                 → DISPLAY / VIDEO
