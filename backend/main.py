@@ -908,6 +908,13 @@ ALLOWED_ORIGINS = [
     "http://localhost:5175",
     "https://report.hypr.mobi",
     "https://www.report.hypr.mobi",
+    # Espelho de marca (2026-08): o MESMO deploy do front atende também em
+    # report.hyprgrid.ai. O .mobi segue canônico e ninguém é redirecionado —
+    # os dois hostnames falam com ESTA função. Sem a entrada aqui o host novo
+    # sobe a tela e não carrega dado nenhum: o navegador bloqueia a resposta
+    # por CORS e o sintoma é "relatório vazio", não erro de rede.
+    "https://report.hyprgrid.ai",
+    "https://www.report.hyprgrid.ai",
 ]
 
 # Previews do Vercel — cada PR e cada branch geram um subdomínio único.
