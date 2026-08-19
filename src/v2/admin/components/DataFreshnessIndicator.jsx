@@ -96,9 +96,10 @@ function daysBehindBr(maxDateIso, serverNowIso) {
 
 // Tone do indicador a partir das fontes + do consolidado + relógio do servidor.
 //
-// `sources` = aterrissagem REAL por fonte (tabelas tratadas). `unifiedMax` =
-// frescor do output consolidado que os reports consomem. Cruzar os dois é o que
-// permite contar a história certa e gatear o botão Reconstruir:
+// `sources` = aterrissagem REAL por fonte, medida no que a DSP escreve (camada
+// raw, com a tratada só como piso — ver query_source_landings no backend).
+// `unifiedMax` = frescor do output consolidado que os reports consomem. Cruzar os
+// dois é o que permite contar a história certa e gatear o botão Reconstruir:
 //   - fonte parada (landing > 1d)  → upstream; reconstruir NÃO resolve.
 //   - unified atrasado mas fontes prontas → consolidação pendente; reconstruir RESOLVE.
 function deriveStatus(sources, unifiedMax, serverNowIso) {
@@ -109,8 +110,10 @@ function deriveStatus(sources, unifiedMax, serverNowIso) {
   if (hour < CUTOFF_HOUR_BR) {
     return { tone: "neutral", summary: "Aguardando rollup 06h", blockers: [], rebuildHelps: false };
   }
-  // Fontes que não entregaram D-1 na sua própria tratada (verdade por-fonte —
-  // não some por janela, não contamina as outras).
+  // Fontes que não entregaram D-1 na própria camada raw (verdade por-fonte — não
+  // some por janela, não contamina as outras e não depende do build das 06h ter
+  // rodado: era o que fazia o painel culpar as 4 DSPs quando só a consolidação
+  // havia falhado, incidente de 2026-08-19).
   const blockers = sources.filter((s) => {
     const d = daysBehindBr(s.max_date, serverNowIso);
     return d != null && d > 1;

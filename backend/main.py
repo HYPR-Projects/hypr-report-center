@@ -5638,15 +5638,40 @@ def query_data_freshness():
     return out
 
 
-# Fontes → tabela TRATADA por-fonte (prod_assets.<t>_daily_performance_metrics)
-# + coluna de data e se ela é STRING (precisa SAFE_CAST). Diferente de
-# query_data_freshness (que lê o OUTPUT consolidado `unified`), aqui medimos a
-# aterrissagem REAL de cada fonte no seu próprio modelo dbt — verdade por-fonte,
-# independente do unified. Crucial porque: (a) uma fonte travada (ex: DV360 sem
-# export) skipa o unified e, lendo só o unified, TODAS as fontes parecem velhas;
-# (b) uma fonte parada há +Nd some da janela do unified e deixa de alarmar. Ler
-# a tratada distingue "fonte não entregou" (reconstruir é inútil) de "fontes
-# prontas, só o unified atrasou" (reconstruir resolve).
+# Aterrissagem por fonte, medida na camada RAW (a que a DSP escreve) com a
+# TRATADA como piso. Duas camadas porque nenhuma sozinha diz a verdade:
+#
+# - Só a TRATADA (como era até 2026-08-19) mede um OUTPUT do build das 06h. Se o
+#   build não roda, as 4 tratadas param juntas e o painel acusa "as 4 fontes não
+#   entregaram D-1" — foi o que aconteceu no incidente de 19/08: Amazon,
+#   StackAdapt e Yahoo tinham entregado D-1 na staging às 05h e o DV360 chegou
+#   atrasado às 08h13; quem não entregou foi a CONSOLIDAÇÃO. Diagnóstico invertido
+#   manda o operador cobrar as DSPs em vez de olhar o Dagster.
+# - Só a RAW não serve de piso: as tabelas do DV360 em hypr_dv360 são efêmeras
+#   (o delete_dv360_staging_tables_job apaga às 22h) e a staging da Amazon é
+#   sobrescrita, então à noite a raw "regride" e a fonte pareceria parada.
+#
+# MAX(raw, tratada) resolve os dois: nunca regride e enxerga a fonte antes da
+# consolidação. A lista de raws é ESPELHO do FRESHNESS_06AM_SOURCES do
+# all_sources_ready_sensor (hyprster/models/dbt_assets.py) — o painel tem de
+# medir exatamente o que o gate do build mede; se mudar lá, muda aqui.
+_SOURCE_RAW_TABLES = [
+    ("Amazon",     "staging", "amazon_daily_performance_metrics",     "date"),
+    ("StackAdapt", "staging", "stackadapt_campaign_daily_metrics",    "date"),
+    ("Yahoo",      "staging", "yahoo_dsp_daily_performance_metrics",  "date"),
+]
+
+# DV360 fica FORA da query acima: é wildcard sobre tabelas efêmeras e, quando
+# nenhuma casa (entre o delete das 22h e o export da madrugada), o BigQuery
+# devolve 400/BadRequest — que numa UNION derrubaria a leitura das outras fontes
+# também. Vai em consulta isolada, com o erro tratado como "raw ausente".
+# (O mesmo BadRequest não-tratado matou o sensor do Dagster em 19/08.)
+_DV360_RAW_WILDCARD = ("hypr_dv360", "dv360_daily_performance_metrics_dv360_*", "date")
+
+# Tabela TRATADA por-fonte (prod_assets.<t>_daily_performance_metrics) — o piso
+# descrito acima. Cada fonte é medida no seu próprio modelo dbt, nunca no
+# `unified` (query_data_freshness), senão uma fonte travada contamina o frescor
+# das outras e uma fonte parada há +Nd some da janela e deixa de alarmar.
 _SOURCE_LANDING_TABLES = [
     ("DV360",      "dv360_daily_performance_metrics",      "date", False),
     ("Amazon",     "amazon_daily_performance_metrics",     "date", False),
@@ -5665,13 +5690,40 @@ _SOURCE_LANDING_TABLES = [
 ]
 
 
-def query_source_landings():
-    """MAX(date) por fonte nas tabelas TRATADAS — aterrissagem real por DSP.
+# Data type-agnóstico: serve para coluna DATE, TIMESTAMP ou STRING sem depender
+# do tipo físico de cada staging (mesma tática do sensor do Dagster).
+def _max_date_expr(col: str) -> str:
+    return f"MAX(SAFE_CAST(SUBSTR(CAST({col} AS STRING), 1, 10) AS DATE))"
 
-    Cada fonte é medida na sua própria `prod_assets.<t>_daily_performance_metrics`
-    (não no `unified`), então uma fonte que atrasa não contamina o frescor das
-    outras nem some por estar fora de janela. Devolve [{source, max_date}].
-    Região US (mesma constraint das demais). Cacheado com o mesmo TTL.
+
+def _query_dv360_raw_landing():
+    """MAX(date) no export nativo do DV360 (wildcard efêmero em hypr_dv360).
+
+    Devolve None quando o wildcard não casa com nenhuma tabela — estado NORMAL
+    entre o delete das 22h e o export da madrugada, e o estado de "o export não
+    veio" durante o dia. Nunca propaga o erro: o piso da tratada cobre.
+    """
+    dataset, table, col = _DV360_RAW_WILDCARD
+    sql = (
+        f"SELECT {_max_date_expr(col)} AS max_date "
+        f"FROM `{PROJECT_ID}.{dataset}.{table}`"
+    )
+    try:
+        rows = list(bq.query(sql, job_config=bigquery.QueryJobConfig(), location="US").result())
+        return rows[0]["max_date"] if rows else None
+    except Exception as e:
+        logger.info("DV360 raw landing indisponível (wildcard vazio ou erro): %s", e)
+        return None
+
+
+def query_source_landings():
+    """Aterrissagem real por DSP = MAX(camada raw, camada tratada).
+
+    A raw é o que a fonte escreve (staging / hypr_dv360) e responde "a DSP
+    entregou D-1?" sem depender do build das 06h; a tratada entra como piso para
+    a raw efêmera não fazer a fonte regredir à noite. Devolve
+    [{source, max_date}]. Região US (mesma constraint das demais). Cacheado com o
+    mesmo TTL.
     """
     cached = _cache_get(_source_landings_cache, "all", _DATA_FRESHNESS_CACHE_TTL)
     if cached is not None:
@@ -5683,12 +5735,36 @@ def query_source_landings():
             f'SELECT "{label}" AS source, MAX({expr}) AS max_date '
             f"FROM `{PROJECT_ID}.{DATASET_ASSETS}.{table}`"
         )
+    for label, dataset, table, col in _SOURCE_RAW_TABLES:
+        selects.append(
+            f'SELECT "{label}" AS source, {_max_date_expr(col)} AS max_date '
+            f"FROM `{PROJECT_ID}.{dataset}.{table}`"
+        )
     sql = "\nUNION ALL\n".join(selects)
+
     rows = bq.query(sql, job_config=bigquery.QueryJobConfig(), location="US").result()
+
+    best = {}
+    for r in rows:
+        if not r["max_date"]:
+            continue
+        cur = best.get(r["source"])
+        if cur is None or r["max_date"] > cur:
+            best[r["source"]] = r["max_date"]
+    # Serial de propósito: query_source_landings já roda DENTRO do _query_pool
+    # (endpoint dsp_health), e submeter ao mesmo pool aqui é o padrão de pool
+    # aninhado que envenenou a instância no incidente de 2026-08-04. A consulta
+    # é pequena (o export do dia tem ~35k linhas) e o resultado fica 5 min em
+    # cache.
+    dv360_raw = _query_dv360_raw_landing()
+    if dv360_raw and (best.get("DV360") is None or dv360_raw > best["DV360"]):
+        best["DV360"] = dv360_raw
+
+    labels = [label for label, _, _, _ in _SOURCE_LANDING_TABLES]
     out = [
-        {"source": r["source"],
-         "max_date": r["max_date"].isoformat() if r["max_date"] else None}
-        for r in rows
+        {"source": label,
+         "max_date": best[label].isoformat() if best.get(label) else None}
+        for label in labels
     ]
     out.sort(key=lambda r: r["source"])
     _cache_set(_source_landings_cache, "all", out)
