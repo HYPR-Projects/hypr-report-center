@@ -134,6 +134,9 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   const canSync = isFeatureAdmin(user);
 
   const [lines, setLines] = useState([]);
+  // Ledger de execuções do sync por fonte (pmp_sync_runs). Vem no mesmo
+  // payload das lines; alimenta o painel de frescor do header.
+  const [syncRuns, setSyncRuns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   // Card da planilha Google do compplan — fechado por default pra não
@@ -288,8 +291,9 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     setLoading(true); setError(null);
     try {
       // include_archived=true porque a view Histórico precisa ver tudo
-      const list = await listPmpLines({ includeArchived: true, onlyActive: false });
+      const { lines: list, syncRuns: runs } = await listPmpLines({ includeArchived: true, onlyActive: false });
       setLines(list);
+      setSyncRuns(runs);
     } catch (e) {
       console.error("[pmp v3]", e);
       setError(e.message || "Erro ao carregar lines");
@@ -621,11 +625,15 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     return [...ys].sort((a, b) => b - a);
   }, [lines]);
 
-  // Frescor por fonte de curadoria. O pmp_lines_enriched já traz last_synced_at
-  // e last_delivery_day por (source, line_id), então basta agrupar as lines por
-  // fonte e tirar o MAX de cada uma. O indicador do header lista uma seção por
-  // fonte presente — assim dá pra ver, ex., que o Xandr sincronizou hoje mas o
-  // PubMatic travou, coisa que o número global antigo escondia.
+  // Frescor por fonte de curadoria. Duas afirmações INDEPENDENTES por fonte:
+  //   • o JOB rodou?    → ledger pmp_sync_runs (lastRunAt/status/erro)
+  //   • houve ENTREGA?  → last_delivery_day das lines
+  // Antes só existia a segunda, derivada do `last_synced_at` das linhas de
+  // entrega — e como o conector pula dias zerados, deal encerrado congelava o
+  // indicador (falso alarme) e sync quebrado ficava idêntico a deal encerrado
+  // (alarme que nunca toca). Foi assim que o 401 da PubMatic passou 3 dias
+  // despercebido em ago/26. `lastSyncedAt` continua indo como fallback pra
+  // quando o backend ainda não tiver o ledger.
   const SOURCE_NOTES = {
     pubmatic: "Reporting com lag de D-2/D-3 — a última entrega fica atrás do sync.",
   };
@@ -639,10 +647,29 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
       if (l.last_synced_at && (!s.lastSyncedAt || l.last_synced_at > s.lastSyncedAt)) s.lastSyncedAt = l.last_synced_at;
       if (l.last_delivery_day && (!s.latestDeliveryDay || l.last_delivery_day > s.latestDeliveryDay)) s.latestDeliveryDay = l.last_delivery_day;
     }
+    // Fonte que só existe no ledger (ex: sync falhando ANTES de criar qualquer
+    // line) também precisa aparecer — senão a fonte quebrada some do painel.
+    for (const r of syncRuns) {
+      const key = r.source || "xandr";
+      if (!by.has(key)) by.set(key, { key, lastSyncedAt: null, latestDeliveryDay: null, linesCount: 0 });
+    }
+    const runByKey = new Map(syncRuns.map((r) => [r.source || "xandr", r]));
     return Array.from(by.values())
       .sort((a, b) => a.key.localeCompare(b.key))
-      .map((s) => ({ ...s, label: SOURCE_LABELS[s.key] || s.key, note: SOURCE_NOTES[s.key] }));
-  }, [lines]);
+      .map((s) => {
+        const run = runByKey.get(s.key);
+        return {
+          ...s,
+          label: SOURCE_LABELS[s.key] || s.key,
+          note: SOURCE_NOTES[s.key],
+          lastRunAt:     run?.last_run_at || null,
+          lastRunStatus: run?.last_run_status || null,
+          lastError:     run?.last_error || null,
+          lastOkAt:      run?.last_ok_at || null,
+          credential:    run?.credential || null,
+        };
+      });
+  }, [lines, syncRuns]);
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const onSync = async () => {

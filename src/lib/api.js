@@ -1543,7 +1543,10 @@ export async function getReportAuditLog({ short_token, limit = 50 }) {
 // API redesenhada em volta de Line Items (a unidade real do negócio).
 // Substitui o `pmp_deals*` da v1 progressivamente.
 
-/** Lista de lines enriquecidas (line + IO + Command + delivery + health). */
+/** Lista de lines enriquecidas (line + IO + Command + delivery + health).
+ *  Devolve `{ lines, syncRuns }` — `syncRuns` é o ledger de execuções do sync
+ *  por fonte (pmp_sync_runs), que o painel de frescor usa pra saber se o JOB
+ *  rodou. Backend antigo (sem o ledger) responde sem a chave → syncRuns = []. */
 export async function listPmpLines({ includeArchived = false, onlyActive = true } = {}) {
   const jwt = await getOrIssueAdminJwt();
   const qs = new URLSearchParams({ action: "pmp_lines_list" });
@@ -1558,7 +1561,7 @@ export async function listPmpLines({ includeArchived = false, onlyActive = true 
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
   if (!Array.isArray(d?.lines)) throw new Error("malformed response: lines missing");
-  return d.lines;
+  return { lines: d.lines, syncRuns: Array.isArray(d?.sync_runs) ? d.sync_runs : [] };
 }
 
 /** Métricas de delivery agregadas por line dentro de [dateFrom, dateTo].

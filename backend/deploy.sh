@@ -104,6 +104,14 @@ PUBMATIC_USER=$(extract_env "PUBMATIC_USER")
 PUBMATIC_USER=$(read_secret_if_missing "PUBMATIC_USER" "$PUBMATIC_USER")
 PUBMATIC_PASS=$(extract_env "PUBMATIC_PASS")
 PUBMATIC_PASS=$(read_secret_if_missing "PUBMATIC_PASS" "$PUBMATIC_PASS")
+# Segundo conjunto de credenciais (chain de fallback do pubmatic_curate). Existe
+# porque um usuário de API da PubMatic pode perder o acesso do lado deles sem
+# aviso — foi o que travou o sync por 3 dias em ago/26. Com o par ALT no
+# ambiente, o conector troca de credencial sozinho e registra no ledger.
+PUBMATIC_USER_ALT=$(extract_env "PUBMATIC_USER_ALT")
+PUBMATIC_USER_ALT=$(read_secret_if_missing "PUBMATIC_USER_ALT" "$PUBMATIC_USER_ALT")
+PUBMATIC_PASS_ALT=$(extract_env "PUBMATIC_PASS_ALT")
+PUBMATIC_PASS_ALT=$(read_secret_if_missing "PUBMATIC_PASS_ALT" "$PUBMATIC_PASS_ALT")
 
 # PMP_SCHEDULER_SECRET — segredo compartilhado entre Cloud Scheduler e a
 # Cloud Function pra autenticar o cron job sem JWT admin. Gerado uma vez,
@@ -262,6 +270,12 @@ if [ -n "$PUBMATIC_USER" ]; then
 fi
 if [ -n "$PUBMATIC_PASS" ]; then
   echo "PUBMATIC_PASS: '${PUBMATIC_PASS}'" >> "$ENV_FILE"
+fi
+if [ -n "$PUBMATIC_USER_ALT" ]; then
+  echo "PUBMATIC_USER_ALT: '${PUBMATIC_USER_ALT}'" >> "$ENV_FILE"
+fi
+if [ -n "$PUBMATIC_PASS_ALT" ]; then
+  echo "PUBMATIC_PASS_ALT: '${PUBMATIC_PASS_ALT}'" >> "$ENV_FILE"
 fi
 if [ -n "$PMP_SCHEDULER_SECRET" ]; then
   echo "PMP_SCHEDULER_SECRET: '${PMP_SCHEDULER_SECRET}'" >> "$ENV_FILE"
