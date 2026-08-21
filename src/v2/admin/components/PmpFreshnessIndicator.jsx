@@ -5,26 +5,35 @@
 // /admin/pmp. Permite o admin validar de manhã se o cron diário das 04h BRT
 // rodou com sucesso em CADA fonte, sem precisar abrir o BQ ou checar row a row.
 //
-// Multi-fonte: o `pmp_lines_enriched` já calcula `last_synced_at` e
-// `last_delivery_day` agrupados por (source, line_id), então cada fonte tem
-// seu próprio frescor. O popover lista uma seção por fonte presente; o dot do
-// gatilho reflete o PIOR estado entre elas (pra alertar quando qualquer fonte
-// atrasa). PubMatic tem lag de reporting (D-2/D-3) na entrega, mas o
-// `last_synced_at` marca quando o sync rodou — então a régua abaixo (baseada
-// em last_synced_at) vale igual pras duas fontes.
+// Multi-fonte: o popover lista uma seção por fonte; o dot do gatilho reflete o
+// PIOR estado entre elas (pra alertar quando qualquer fonte atrasa).
+//
+// O QUE ESTE INDICADOR MEDE (e o que ele NÃO mede)
+// ------------------------------------------------
+// Mede a EXECUÇÃO do sync, lida do ledger `pmp_sync_runs` (`lastRunAt` +
+// `lastRunStatus` + `lastError`), não a chegada de entrega nova.
+//
+// Até ago/26 ele lia `last_synced_at` das LINHAS DE ENTREGA, e isso confundia
+// duas coisas diferentes nos dois sentidos:
+//   • deal encerrado (nenhuma row tocada) parecia "sync atrasada" — falso alarme;
+//   • sync QUEBRADO (401 da PubMatic, 19–21/08) ficava idêntico a deal
+//     encerrado — o alarme que importava nunca tocou, e um deal novo entregando
+//     ~R$32k passou 3 dias fora do hub.
+// Agora "o job rodou" e "o deal entregou" são duas linhas separadas no popover.
 //
 // Diferente do DataFreshnessIndicator do menu admin: aquele lê
-// unified_daily_performance_metrics (delivery DV360/Xandr/StackAdapt). Este
-// usa o `last_synced_at` por line já carregado na página — derivado do
-// sync PMP específico.
+// unified_daily_performance_metrics (delivery DV360/Xandr/StackAdapt).
 //
 // Régua (hora-local America/Sao_Paulo), aplicada por fonte:
-//   • Sync com data BR == hoje                       → verde (ok)
-//   • Antes do cutoff 05h e sem sync de hoje         → cinza (aguardando)
-//   • Após cutoff, sync = ontem                      → amarelo (warn)
-//   • Após cutoff, sync ≥ 2 dias atrás               → vermelho (error)
+//   • Último run com status de erro                  → vermelho (mostra o erro)
+//   • Run bem-sucedido com data BR == hoje           → verde (ok)
+//   • Antes do cutoff 05h e sem run de hoje          → cinza (aguardando)
+//   • Após cutoff, último run OK = ontem             → amarelo (warn)
+//   • Após cutoff, último run OK ≥ 2 dias atrás      → vermelho (error)
 //
 // Cutoff 05h cobre o cron de 04h + margem pro report do Xandr terminar.
+// Sem ledger (backend antigo), cai no `lastSyncedAt` das lines — comportamento
+// antigo, degradado mas nunca quebrado.
 
 import { useMemo } from "react";
 import * as Popover from "@radix-ui/react-popover";
@@ -63,22 +72,42 @@ function fmtBrDate(iso) {
   return m ? `${m[3]}/${m[2]}` : String(iso);
 }
 
-function deriveStatus(lastSyncedAt) {
-  if (!lastSyncedAt) return { tone: "neutral", summary: "Sem dados de sync" };
+function daysBetweenBr(fromIso, toDate) {
+  const a = new Date(`${brDateString(fromIso)}T00:00:00Z`);
+  const b = new Date(`${brDateString(toDate)}T00:00:00Z`);
+  return Math.round((b - a) / 86_400_000);
+}
+
+// `src` = { lastRunAt, lastRunStatus, lastOkAt, lastSyncedAt }.
+// A falha do último run domina qualquer régua de data: um sync que rodou hoje
+// e ESTOUROU não é "base atualizada hoje".
+function deriveStatus(src) {
   const now = new Date();
-  const today = brDateString(now);
-  const syncDay = brDateString(lastSyncedAt);
-  if (syncDay === today) return { tone: "ok", summary: "Base atualizada hoje" };
+  const { lastRunAt, lastRunStatus, lastOkAt } = src;
+
+  if (lastRunStatus === "error") {
+    const behind = lastOkAt ? daysBetweenBr(lastOkAt, now) : null;
+    return {
+      tone: "error",
+      summary: behind == null
+        ? "Sync falhando — nunca completou"
+        : `Sync falhando há ${behind} ${behind === 1 ? "dia" : "dias"}`,
+    };
+  }
+
+  // Sem ledger: fallback pro sinal antigo (synced_at das linhas de entrega).
+  const ref = lastOkAt || lastRunAt || src.lastSyncedAt;
+  if (!ref) return { tone: "neutral", summary: "Sem dados de sync" };
+
+  const daysBehind = daysBetweenBr(ref, now);
+  if (daysBehind <= 0) return { tone: "ok", summary: "Sync rodou hoje" };
   if (brHour(now) < CUTOFF_HOUR_BR) {
     return { tone: "neutral", summary: "Aguardando sync matinal" };
   }
-  const a = new Date(`${syncDay}T00:00:00Z`);
-  const b = new Date(`${today}T00:00:00Z`);
-  const daysBehind = Math.round((b - a) / 86_400_000);
   if (daysBehind === 1) {
-    return { tone: "warn", summary: "Sync de ontem — cron pode ter falhado" };
+    return { tone: "warn", summary: "Último sync foi ontem — cron pode ter falhado" };
   }
-  return { tone: "error", summary: `Sync atrasada (${daysBehind} dias)` };
+  return { tone: "error", summary: `Sem sync há ${daysBehind} dias` };
 }
 
 const TONE_CLASSES = {
@@ -103,10 +132,11 @@ export function PmpFreshnessIndicator({
   onSync, syncing = false,
   className,
 }) {
-  // Cada fonte: { key, label, lastSyncedAt, latestDeliveryDay, linesCount, note }.
+  // Cada fonte: { key, label, lastRunAt, lastRunStatus, lastError, lastOkAt,
+  //               credential, lastSyncedAt, latestDeliveryDay, linesCount, note }.
   // Anexa o status derivado por fonte e o tone agregado do gatilho.
   const withStatus = useMemo(
-    () => sources.map((s) => ({ ...s, status: deriveStatus(s.lastSyncedAt) })),
+    () => sources.map((s) => ({ ...s, status: deriveStatus(s) })),
     [sources],
   );
   const aggTone = useMemo(
@@ -184,12 +214,32 @@ export function PmpFreshnessIndicator({
                     {s.status.summary}
                   </p>
                   <ul className="py-1">
-                    <Row label="Última execução" value={s.lastSyncedAt ? fmtBrDateTime(s.lastSyncedAt) : "—"} />
+                    <Row
+                      label="Última execução"
+                      value={fmtBrDateTime(s.lastRunAt || s.lastSyncedAt)}
+                    />
+                    {s.lastRunStatus === "error" && (
+                      <Row label="Último sync OK" value={s.lastOkAt ? fmtBrDateTime(s.lastOkAt) : "nunca"} />
+                    )}
                     <Row label="Última entrega" value={fmtBrDate(s.latestDeliveryDay)} />
                     {s.linesCount != null && (
                       <Row label="Lines sincronizadas" value={String(s.linesCount)} />
                     )}
                   </ul>
+                  {/* O erro cru da API é o que responde "por que parou?" sem
+                      abrir o Cloud Logging — vale a feiura de mostrar inteiro. */}
+                  {s.lastRunStatus === "error" && s.lastError && (
+                    <p className="mx-4 mb-2 rounded-md bg-danger/10 px-2 py-1.5 text-[10.5px]
+                                  leading-snug text-danger break-words font-mono">
+                      {s.lastError.length > 240 ? `${s.lastError.slice(0, 240)}…` : s.lastError}
+                    </p>
+                  )}
+                  {s.lastRunStatus === "ok" && s.credential && s.credential !== "primary" && (
+                    <p className="px-4 pb-2 text-[10.5px] text-warning leading-snug">
+                      Autenticado pela credencial de fallback ({s.credential}) — a primária
+                      precisa ser reativada no seat.
+                    </p>
+                  )}
                   {s.note && (
                     <p className="px-4 pb-2 text-[10.5px] text-fg-subtle leading-snug">{s.note}</p>
                   )}

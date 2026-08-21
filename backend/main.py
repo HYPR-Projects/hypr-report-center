@@ -59,6 +59,8 @@ import pmp_lines
 import pmp_groups
 import compplan_sheet
 import xandr_curate
+import pubmatic_curate
+import pmp_sync_runs
 import audience_normalize
 import audience_ai
 import bq_client
@@ -192,6 +194,13 @@ _performers_period_cache = {} # "from|to" -> (timestamp, list[campaign])
 _DATA_FRESHNESS_CACHE_TTL = 300
 _data_freshness_cache = {}  # "all" -> (timestamp, list[{source, max_date, ...}])
 _source_landings_cache = {}  # "all" -> (timestamp, list[{source, max_date}])
+# Janela do sync PubMatic (dias). O reporting da PubMatic tem lag de D-2/D-3 e
+# revisa dias já fechados, então a janela precisa ser folgada o bastante pra
+# reprocessar o passado recente E pra cobrir alguns dias de cron falho sem
+# perder entrega (o 401 de 19–21/08/2026 passou batido por 3 dias; com 14 dias
+# de janela o primeiro sync bom já teria recuperado tudo — o que faltou foi
+# alguém SABER, daí o ledger `pmp_sync_runs`).
+PUBMATIC_LOOKBACK_DAYS = 21
 # Central de DSPs (admin): saúde de entrega por fonte. Mesmo racional do
 # freshness — dado cosmético/diagnóstico, TTL curto, sem invalidação manual.
 _DSP_HEALTH_CACHE_TTL = 300
@@ -3946,7 +3955,12 @@ def report_data(request):
             include_archived = (request.args.get("include_archived") or "").lower() in ("1","true","yes")
             only_active      = (request.args.get("only_active") or "1").lower() in ("1","true","yes")
             lines = pmp_lines.list_lines(include_archived=include_archived, only_active=only_active)
-            return (jsonify({"lines": lines}), 200, headers)
+            # Ledger de execuções junto no mesmo payload: o painel de frescor
+            # precisa saber se o JOB rodou, coisa que as lines não contam.
+            return (jsonify({
+                "lines": lines,
+                "sync_runs": pmp_sync_runs.latest_by_source(),
+            }), 200, headers)
         except Exception as e:
             logger.exception(f"[ERROR pmp_lines_list] {e}")
             return (jsonify({"error": str(e)}), 500, headers)
@@ -4182,20 +4196,51 @@ def report_data(request):
             body = request.get_json(silent=True) or {}
             interval = (body.get("report_interval") or "last_7_days").strip()
             advertiser_id = 5472841  # HYPR — único advertiser do member 13053
-            io_res     = xandr_curate.sync_insertion_orders(advertiser_id=advertiser_id)
-            line_res   = xandr_curate.sync_line_items(advertiser_id=advertiser_id)
-            deliv_res  = xandr_curate.sync_delivery_by_line(report_interval=interval)
+            # Toda execução (das DUAS fontes) vira uma row no ledger
+            # `pmp_sync_runs`, sucesso ou falha. É o que o painel de frescor lê:
+            # sem isso, "o job rodou" era inferido do `synced_at` das linhas de
+            # entrega — proxy que congela em deal encerrado e, pior, fica
+            # IDÊNTICO quando o sync falha (ver pmp_sync_runs.py).
+            xandr_t0 = datetime.now(timezone.utc)
+            try:
+                io_res     = xandr_curate.sync_insertion_orders(advertiser_id=advertiser_id)
+                line_res   = xandr_curate.sync_line_items(advertiser_id=advertiser_id)
+                deliv_res  = xandr_curate.sync_delivery_by_line(report_interval=interval)
+            except Exception as xe:
+                pmp_sync_runs.record(source="xandr", started_at=xandr_t0, status="error",
+                                     window=interval, actor=actor, error=str(xe))
+                raise
+            pmp_sync_runs.record(
+                source="xandr", started_at=xandr_t0, status="ok",
+                rows_processed=(deliv_res or {}).get("rows_processed"),
+                deals_touched=(deliv_res or {}).get("lines_touched"),
+                window=interval, actor=actor,
+            )
             # PubMatic (2ª fonte de curadoria) — best-effort: uma falha aqui NÃO
             # pode derrubar o sync da Xandr, que é o caminho crítico. Só roda se
-            # as credenciais estiverem configuradas (PUBMATIC_USER/PASS).
+            # alguma credencial da chain estiver configurada.
             pubmatic_res = None
-            if os.environ.get("PUBMATIC_USER") and os.environ.get("PUBMATIC_PASS"):
+            if pubmatic_curate.is_configured():
+                pm_t0 = datetime.now(timezone.utc)
+                pm_window = f"últimos {PUBMATIC_LOOKBACK_DAYS} dias"
                 try:
-                    import pubmatic_curate
-                    pubmatic_res = pubmatic_curate.sync_delivery(lookback_days=14)
+                    pubmatic_res = pubmatic_curate.sync_delivery(
+                        lookback_days=PUBMATIC_LOOKBACK_DAYS)
+                    pmp_sync_runs.record(
+                        source="pubmatic", started_at=pm_t0, status="ok",
+                        rows_processed=pubmatic_res.get("rows_processed"),
+                        deals_touched=pubmatic_res.get("deals_touched"),
+                        window=pubmatic_res.get("window") or pm_window,
+                        actor=actor, credential=pubmatic_res.get("credential"),
+                    )
                 except Exception as pe:
                     logger.warning(f"[pmp_sync_v2 pubmatic] {pe}")
                     pubmatic_res = {"error": str(pe)}
+                    pmp_sync_runs.record(
+                        source="pubmatic", started_at=pm_t0, status="error",
+                        window=pm_window, actor=actor,
+                        credential=pubmatic_curate.credential_label(), error=str(pe),
+                    )
             # Recopia o espelho de checklists do Command ANTES do refresh, senão
             # checklists novos nunca chegam ao espelho e a auto-vinculação fica cega.
             mirror_res = pmp_lines.sync_checklists_mirror()

@@ -12,6 +12,17 @@ Autenticação (2 passos, host api.pubmatic.com)
 ----------------------------------------------
   POST /v1/developer-integrations/developer/token
     body {"apiProduct":"PUBLISHER","userName","password"} → Bearer (accessToken).
+
+  CHAIN DE CREDENCIAIS (desde 21/08/2026) — a credencial primária começou a
+  devolver 401 AUTH_FAILED em 19/08 sem nenhuma mudança do nosso lado (acesso
+  de API do usuário no seat da PubMatic). O sync ficou 3 dias parado em
+  silêncio: o `except` do pmp_sync_v2 é best-effort (não pode derrubar o Xandr)
+  e o painel de frescor lia o `synced_at` das linhas de entrega, que não muda
+  quando o sync nem chega a rodar. Duas defesas nasceram daí:
+    1. `CREDENTIAL_SETS` — tenta o par ALT quando o primário falha na auth;
+    2. `pmp_sync_runs` — ledger de execuções que o painel passa a ler.
+  A chain compra tempo; ela NÃO substitui consertar a credencial primária (o
+  painel avisa em amarelo quando o fallback assume).
   O Bearer vale 60 dias; a doc recomenda refresh via PUT /refreshToken a cada
   55d. Aqui NÃO gerenciamos o refresh token: geramos o Bearer a partir das
   credenciais e CACHEAMOS em memória do processo (igual xandr_curate.get_token).
@@ -60,6 +71,8 @@ from typing import List, Optional
 
 from google.cloud import bigquery as _bq
 
+import bq_client
+
 logger = logging.getLogger(__name__)
 
 # ── Constantes de API ─────────────────────────────────────────────────────────
@@ -75,16 +88,32 @@ SOURCE = "pubmatic"
 REPORT_DIMENSIONS = "dealMetaId,date"
 REPORT_METRICS = "paidImpressions,spend,transactionRevenue,dataRevenue,clicks"
 
+# ── Credenciais (chain) ───────────────────────────────────────────────────────
+# Ordem de tentativa. O 2º conjunto não é redundância decorativa: em 19/08/2026
+# a credencial primária começou a devolver 401 AUTH_FAILED no /developer/token
+# (usuário sem acesso de API no seat — não é senha errada nossa, é mudança do
+# lado da PubMatic) e o sync ficou 3 dias parado em silêncio, com um deal novo
+# entregando fora do hub. Com a chain, uma credencial revogada custa um WARNING
+# no ledger em vez de dias de base congelada.
+CREDENTIAL_SETS = [
+    ("primary", "PUBMATIC_USER",     "PUBMATIC_PASS"),
+    ("alt",     "PUBMATIC_USER_ALT", "PUBMATIC_PASS_ALT"),
+]
+
 # ── Cache de token (process-local, igual xandr_curate) ─────────────────────────
 _cached_token: Optional[str] = None
 _cached_token_exp_ms: float = 0.0
+# Rótulo do conjunto de credenciais que autenticou por último — vai pro ledger
+# (`pmp_sync_runs.credential`) pra o operador ver quando o fallback assumiu.
+_cached_cred_label: Optional[str] = None
 # Bearer vale 60d; renovamos MUITO antes (6h) — o custo de re-gerar é baixo e
 # nos protege de servir um token perto do vencimento numa instância antiga.
 # O que importa é NUNCA gerar por request (limite 200/20min desabilita a conta).
 _TOKEN_TTL_MS = 6 * 60 * 60 * 1000
 
 # ── BQ ─────────────────────────────────────────────────────────────────────────
-_bq_client = _bq.Client()
+# Client compartilhado (timeout obrigatório + pool dimensionado) — ver bq_client.py.
+_bq_client = bq_client.get_client()
 _PROJECT = os.environ.get("GCP_PROJECT", "site-hypr")
 _DATASET = "prod_assets"
 
@@ -94,32 +123,34 @@ class PubMaticError(RuntimeError):
     pass
 
 
-def _env(name: str) -> str:
-    val = os.environ.get(name)
-    if not val:
-        raise PubMaticError(
-            f"Variável de ambiente '{name}' não definida. Configure no Secret "
-            f"Manager e re-deploye a Cloud Function (ver deploy.sh)."
-        )
-    return val
+def available_credentials() -> list:
+    """Conjuntos de credenciais efetivamente configurados, na ordem da chain."""
+    out = []
+    for label, user_env, pass_env in CREDENTIAL_SETS:
+        user, pwd = os.environ.get(user_env), os.environ.get(pass_env)
+        if user and pwd:
+            out.append((label, user, pwd))
+    return out
+
+
+def is_configured() -> bool:
+    """True se ao menos um conjunto de credenciais está no ambiente."""
+    return bool(available_credentials())
+
+
+def credential_label() -> Optional[str]:
+    """Qual conjunto autenticou por último (None se ainda não autenticou)."""
+    return _cached_cred_label
 
 
 # ── Auth ────────────────────────────────────────────────────────────────────────
-def get_token(force_refresh: bool = False) -> str:
-    """Retorna um Bearer válido, re-gerando das credenciais se o cache expirou.
-
-    Cache em memória do processo (sobrevive entre requests da mesma instância
-    da Cloud Function). NUNCA chamar por request — ver limite de 200/20min.
-    """
-    global _cached_token, _cached_token_exp_ms
-    now_ms = time.time() * 1000
-    if not force_refresh and _cached_token and now_ms < _cached_token_exp_ms:
-        return _cached_token
-
+def _request_token(user: str, password: str) -> str:
+    """Uma tentativa de emissão de Bearer. Levanta PubMaticError com o corpo
+    da resposta (o AUTH_FAILED da PubMatic só é diagnosticável pelo corpo)."""
     body = json.dumps({
         "apiProduct": "PUBLISHER",
-        "userName": _env("PUBMATIC_USER"),
-        "password": _env("PUBMATIC_PASS"),
+        "userName": user,
+        "password": password,
     }).encode("utf-8")
     req = urllib.request.Request(BASE_URL + TOKEN_PATH, data=body, method="POST")
     req.add_header("Content-Type", "application/json")
@@ -135,10 +166,51 @@ def get_token(force_refresh: bool = False) -> str:
     token = payload.get("accessToken")
     if not token:
         raise PubMaticError(f"Auth sem accessToken na resposta: {list(payload)}")
-    _cached_token = token
-    _cached_token_exp_ms = now_ms + _TOKEN_TTL_MS
-    logger.info("[pubmatic] novo Bearer emitido (cache TTL %dh)", _TOKEN_TTL_MS // 3_600_000)
     return token
+
+
+def get_token(force_refresh: bool = False) -> str:
+    """Retorna um Bearer válido, percorrendo a chain de credenciais.
+
+    Cache em memória do processo (sobrevive entre requests da mesma instância
+    da Cloud Function). NUNCA chamar por request — ver limite de 200/20min.
+    Se a primeira credencial falhar na AUTENTICAÇÃO, tenta a próxima e loga
+    qual assumiu; se todas falharem, levanta com o erro de cada uma (senão o
+    operador vê só a última e acha que só existe uma credencial).
+    """
+    global _cached_token, _cached_token_exp_ms, _cached_cred_label
+    now_ms = time.time() * 1000
+    if not force_refresh and _cached_token and now_ms < _cached_token_exp_ms:
+        return _cached_token
+
+    creds = available_credentials()
+    if not creds:
+        raise PubMaticError(
+            "Nenhuma credencial PubMatic configurada (PUBMATIC_USER/PASS ou "
+            "PUBMATIC_USER_ALT/PASS_ALT). Configure no Secret Manager e "
+            "re-deploye a Cloud Function (ver deploy.sh)."
+        )
+
+    failures = []
+    for label, user, pwd in creds:
+        try:
+            token = _request_token(user, pwd)
+        except PubMaticError as e:
+            failures.append(f"{label}({user}): {e}")
+            logger.warning("[pubmatic] credencial '%s' falhou na auth: %s", label, e)
+            continue
+        _cached_token = token
+        _cached_token_exp_ms = now_ms + _TOKEN_TTL_MS
+        _cached_cred_label = label
+        if failures:
+            logger.warning("[pubmatic] autenticado com a credencial de fallback "
+                           "'%s' — a(s) anterior(es) precisam de conserto no seat", label)
+        logger.info("[pubmatic] novo Bearer emitido via '%s' (cache TTL %dh)",
+                    label, _TOKEN_TTL_MS // 3_600_000)
+        return token
+
+    raise PubMaticError("Todas as credenciais PubMatic falharam na auth → "
+                        + " | ".join(failures))
 
 
 # ── HTTP GET (reporting) ──────────────────────────────────────────────────────
@@ -227,6 +299,20 @@ def _int(v) -> int:
         return int(float(v)) if v not in (None, "") else 0
     except (TypeError, ValueError):
         return 0
+
+
+# A API às vezes devolve um placeholder no lugar do publisherDealId
+# (ex: "Name is not available (735537)"), tipicamente em deal recém-criado.
+# Gravar isso polui o external_deal_id e some com o id legível de verdade —
+# melhor devolver None e deixar o COALESCE do MERGE preservar o que já existe.
+_DEAL_ID_RE = re.compile(r"^[A-Z0-9]+-[A-Z0-9]+-[A-Z0-9]+$", re.IGNORECASE)
+
+
+def _clean_deal_id(v) -> Optional[str]:
+    txt = str(v).strip() if v not in (None, "") else ""
+    if not txt or not _DEAL_ID_RE.match(txt):
+        return None
+    return txt
 
 
 def fetch_delivery_rows(start_date: date, end_date: date) -> tuple[list, dict]:
@@ -319,7 +405,7 @@ def fetch_delivery_rows(start_date: date, end_date: date) -> tuple[list, dict]:
         # curator_margin_pct da API; no PubMatic derivamos da própria entrega.
         dm = deal_meta.get(line_id)
         if dm is None:
-            ext = str(r[idx["publisherDealId"]]) if has_pub_deal else None
+            ext = _clean_deal_id(r[idx["publisherDealId"]]) if has_pub_deal else None
             dm = {
                 "external_deal_id": ext,
                 "deal_name": name_map.get(str(deal_meta_id)) or name_map.get(deal_meta_id),
@@ -347,11 +433,19 @@ def fetch_delivery_rows(start_date: date, end_date: date) -> tuple[list, dict]:
 # ── Upsert (load → staging → MERGE), com `source` na chave ────────────────────
 def _upsert_via_staging(target_table: str, rows: list, key_columns: list,
                         schema: list, update_cols: list,
-                        timestamp_col: Optional[str] = None) -> dict:
+                        timestamp_col: Optional[str] = None,
+                        update_exprs: Optional[dict] = None) -> dict:
     """Idêntico em espírito ao xandr_curate._upsert_via_staging, mas a chave do
     MERGE inclui `source` (composta (source, line_id[, day])).
 
     Preserva colunas manuais do alvo (só sobrescreve update_cols).
+
+    `update_exprs` sobrescreve a expressão do UPDATE de uma coluna específica
+    (o INSERT continua usando S.<col>). Serve pras colunas em que "o que veio
+    agora" NÃO é a verdade completa — ex.: `start_date`, que é o 1º dia de
+    entrega DENTRO DA JANELA sincronizada; sem LEAST contra o valor já gravado,
+    a data de início do deal andava pra frente a cada sync conforme a janela
+    deslizava (o deal 735537 tinha start_date=03/08 com entrega desde 31/07).
     """
     import uuid
     staging_name = f"_pmp_pm_staging_{uuid.uuid4().hex[:8]}"
@@ -386,7 +480,8 @@ def _upsert_via_staging(target_table: str, rows: list, key_columns: list,
             raise PubMaticError(f"staging insert errors em {target_table}: {errors[:3]}")
 
         on_clauses = " AND ".join(f"T.{c} = S.{c}" for c in key_columns)
-        upd_set = ", ".join(f"{c} = S.{c}" for c in update_cols)
+        exprs = update_exprs or {}
+        upd_set = ", ".join(f"{c} = {exprs.get(c, f'S.{c}')}" for c in update_cols)
         if timestamp_col:
             upd_set += f", {timestamp_col} = CURRENT_TIMESTAMP()"
         insert_cols = key_columns + update_cols + ([timestamp_col] if timestamp_col else [])
@@ -450,11 +545,25 @@ def _ensure_masters(deal_meta: dict) -> int:
             _bq.SchemaField("start_date", "DATE"),
             _bq.SchemaField("curator_margin_pct", "NUMERIC"),
         ],
-        # line_name/external_deal_id/start_date/curator_margin_pct vêm da fonte.
-        # customer_override só é semeado (o admin pode sobrescrever depois — por
-        # isso NÃO está aqui, senão o sync desfaria a edição manual). state
-        # reflete presença no report.
-        update_cols=["line_name", "external_deal_id", "state", "start_date", "curator_margin_pct"],
+        # customer_override entra aqui (e não fora do MERGE) porque o
+        # `_upsert_via_staging` só escreve o que está em update_cols — inclusive
+        # no INSERT. Ficando de fora, ele nunca era gravado e todo deal PubMatic
+        # nascia sem cliente (753376/686804 estavam assim). Com o COALESCE
+        # abaixo ele é SEMENTE: preenche o vazio, nunca sobrescreve edição manual.
+        update_cols=["line_name", "external_deal_id", "customer_override",
+                     "state", "start_date", "curator_margin_pct"],
+        # O que a janela sincronizada NÃO enxerga não pode apagar o que já está
+        # gravado: start_date é o 1º dia de entrega DA JANELA (LEAST preserva o
+        # início real do deal), e line_name/external_deal_id/margin_pct vêm
+        # vazios quando a API não devolve o displayValue ou o deal ainda não
+        # somou receita no recorte.
+        update_exprs={
+            "start_date":         "LEAST(COALESCE(T.start_date, S.start_date), S.start_date)",
+            "line_name":          "COALESCE(S.line_name, T.line_name)",
+            "external_deal_id":   "COALESCE(S.external_deal_id, T.external_deal_id)",
+            "curator_margin_pct": "COALESCE(S.curator_margin_pct, T.curator_margin_pct)",
+            "customer_override":  "COALESCE(T.customer_override, S.customer_override)",
+        },
         timestamp_col="last_synced_at",
     )
     return len(rows)
@@ -515,5 +624,8 @@ def sync_delivery(start_date: Optional[date] = None,
         "masters_upserted": masters,
         "duration_sec":   round(time.time() - t0, 2),
         "window":         window,
+        # Qual credencial da chain autenticou — o ledger guarda pra o operador
+        # ver quando o fallback assumiu (sinal de credencial pra consertar).
+        "credential":     credential_label(),
         "synced_at":      datetime.now(timezone.utc).isoformat(),
     }
