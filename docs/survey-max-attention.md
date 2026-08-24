@@ -113,11 +113,24 @@ ID-FXR5US_HYPR_LOREAL_..._SURVEY_AWARENESS_CONTROLE
    ^^^^^^ short_token da campanha            ^^^^^^^^ controle | exposto
 ```
 
-Campanha vem do token, lado vem do sufixo, e a pergunta casa por título com a
-mesma régua dos rótulos. O modal abre já sabendo o que conectar — botão
-"Conectar automaticamente" resolve a campanha inteira, e cada slot tem
-sugestão de um clique. **Sugestão nunca vira configuração sozinha**: o admin
-confirma, e o `mismatch` acima cobre o caso de a sugestão estar errada.
+Campanha vem do token e lado vem do sufixo. Mas o nome **não diz qual
+pergunta** o criativo coletou — e no Tap to Choose de pergunta única o evento
+nem carrega título. Numa campanha com Ad Recall e Preferência, os dois
+criativos de controle são igualmente "FXR5US, controle", e a primeira versão
+sugeria o mesmo para os dois slots.
+
+Quem desempata são as **opções**: `Sim/Não/Talvez` não casa com
+`Marca A/Marca B`. A sugestão exige evidência de que é a mesma pergunta —
+opções batendo com as do Typeform daquele lado (comparadas com a mesma régua
+que soma os rótulos depois), ou título de pergunta casando com o nome do
+bloco. Sem nenhuma das duas, não sugere: a lista fica pro admin, porque aí
+não há como saber e chutar é pior.
+
+O modal abre sabendo o que conectar — botão "Conectar automaticamente"
+resolve a campanha inteira, e cada slot tem sugestão de um clique, que diz
+POR QUE está sugerindo ("opções batem com o Typeform"). **Sugestão nunca vira
+configuração sozinha**: o admin confirma, e o `mismatch` acima cobre o caso
+de a sugestão estar errada.
 
 ## Ligar (uma vez)
 

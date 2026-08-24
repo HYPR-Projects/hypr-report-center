@@ -280,6 +280,13 @@ def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
           {name_expr}                     AS creative_name,
           {token_expr}                    AS short_token,
           {questions_expr}                AS questions,
+          -- Opções da pesquisa. É o que identifica QUAL pergunta o criativo
+          -- coletou: no Tap to Choose de pergunta única não há título, e sem
+          -- isto o front só sabia o lado (controle/exposto) — então sugeria o
+          -- mesmo criativo pra toda pergunta da campanha. Um "Sim/Não/Talvez"
+          -- não casa com um "Marca A/Marca B", e é essa comparação que separa
+          -- Ad Recall de Preferência.
+          ARRAY_AGG(DISTINCT option IGNORE NULLS ORDER BY option LIMIT 20) AS options,
           {weight}                        AS responses,
           MIN(responded_at)               AS first_at,
           MAX(responded_at)               AS last_at
@@ -303,6 +310,7 @@ def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
             "creative_name": display_name,
             "short_token": row_token,
             "questions": list(r["questions"] or []),
+            "options": list(r["options"] or []),
             "responses": int(r["responses"] or 0),
             "first_at": r["first_at"].isoformat() if r["first_at"] else None,
             "last_at": r["last_at"].isoformat() if r["last_at"] else None,
