@@ -2901,8 +2901,18 @@ def report_data(request):
         except maxattention.NotConfigured as e:
             return (jsonify({"error": str(e), "configured": False}), 501, headers)
         except Exception as e:
+            # Mensagem REAL pro admin, não um genérico. Este endpoint é
+            # admin-only, então não há o que proteger — e o genérico já custou
+            # uma rodada inteira: o erro do BigQuery ("DISTINCT and LIMIT")
+            # dizia exatamente qual era o defeito, e ficou só no log de uma
+            # Cloud Function que quem estava diagnosticando não conseguia ler.
+            # Erro que só o log conhece é erro invisível.
             logger.error(f"[ERROR maxattention_list_creatives] {e}")
-            return (jsonify({"error": "Erro ao listar criativos do Max Attention"}), 502, headers)
+            return (
+                jsonify({"error": f"Erro ao listar criativos do Max Attention: {e}"}),
+                502,
+                headers,
+            )
 
     # Sem auth, deliberadamente — e pelo mesmo motivo do typeform_proxy: o
     # report é lido por cliente sem JWT, e o que sai aqui é contagem
@@ -2932,6 +2942,9 @@ def report_data(request):
         except maxattention.NotConfigured as e:
             return (jsonify({"error": str(e), "configured": False}), 501, headers)
         except Exception as e:
+            # Aqui o genérico FICA: diferente da listagem, este endpoint é
+            # aberto (o report roda no navegador do cliente), então detalhe de
+            # erro interno não deve sair. O log continua tendo tudo.
             logger.error(f"[ERROR maxattention_results] {creative_id}: {e}")
             return (jsonify({"error": "Erro ao buscar respostas do Max Attention"}), 502, headers)
 
