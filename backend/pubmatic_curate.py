@@ -23,11 +23,42 @@ Autenticação (2 passos, host api.pubmatic.com)
     2. `pmp_sync_runs` — ledger de execuções que o painel passa a ler.
   A chain compra tempo; ela NÃO substitui consertar a credencial primária (o
   painel avisa em amarelo quando o fallback assume).
+
   O Bearer vale 60 dias; a doc recomenda refresh via PUT /refreshToken a cada
   55d. Aqui NÃO gerenciamos o refresh token: geramos o Bearer a partir das
   credenciais e CACHEAMOS em memória do processo (igual xandr_curate.get_token).
   O limite perigoso é 200 gerações de token em 20min → conta desabilitada;
   por isso o cache é obrigatório, não conveniência.
+
+  A chain acima cobria só a falha de AUTENTICAÇÃO. Uma credencial que autentica
+  e SÓ ENTÃO descobre que perdeu acesso ao Data Provider Analytics (401/403 no
+  report, não no token) derrubava o sync sem nunca tentar a próxima — o mesmo
+  modo de falha do seat, um degrau adiante. `_report_get` agora faz a chain
+  andar também nesse degrau (ver `_ReportAuthError`).
+
+JANELA DE COLETA — por que a base vivia 2 dias atrás (24/08/2026)
+-----------------------------------------------------------------
+Sintoma reportado: o hub mostrava "entrega há 2d" pro deal do TIM
+(PM-ZZCX-5733) enquanto a Media Console da PubMatic, no filtro "Yesterday",
+mostrava R$ 12.480,53 / 369k imps. Nada estava quebrado — nem credencial, nem
+cron, nem MERGE. Era a JANELA:
+
+  1. o sync rodava 1x/dia, às 04h BRT;
+  2. a essa hora a PubMatic ainda não fechou D-1 e devolve a linha ZERADA;
+  3. o conector pula dias zerados de propósito (senão o último dia zerado
+     viraria `last_delivery_day` e o deal apareceria "no ar" sem ter entregue);
+  4. logo D-1 NUNCA entrava no dia em que devia — só no run do dia seguinte.
+
+Estado estacionário: base sempre ~2 dias atrás, com o job 100% verde. Duas
+correções, porque o par "não coletar" + "não perceber" é o que faz isso voltar:
+  • `pmp_sync_pubmatic` (endpoint PubMatic-only) re-roda 4x/dia (10/14/18/22h
+    BRT, ver deploy.sh). A janela de lookback é folgada, então cada re-run
+    reprocessa o passado recente e fecha D-1 no MESMO dia em que a PubMatic o
+    fecha, em vez de esperar o cron da madrugada seguinte.
+  • `fetch_delivery_rows` passa a MEDIR o atraso (`api_last_day`, `lag_days`,
+    `trailing_zero_days`) e a gravá-lo no ledger, e o painel de frescor alarma
+    em cima disso. O fix de 21/08 tornou visível "o job quebrou"; faltava
+    "o job rodou e o dado está velho" — que é exatamente este caso.
 
 Reporting (host api.pubmatic.com)
 ---------------------------------
@@ -88,6 +119,25 @@ SOURCE = "pubmatic"
 REPORT_DIMENSIONS = "dealMetaId,date"
 REPORT_METRICS = "paidImpressions,spend,transactionRevenue,dataRevenue,clicks"
 
+# BRT = UTC-3, fixo (o Brasil abandonou o horário de verão em 2019). Offset
+# literal em vez de ZoneInfo de propósito: `zoneinfo` depende do tzdata do
+# sistema, que container slim não garante, e um ImportError aqui derrubaria o
+# corte D-1 inteiro. Mesmo racional do BRT_OFFSET em main.py.
+BRT = timezone(timedelta(hours=-3))
+
+
+def today_brt() -> date:
+    """Data de hoje em horário de Brasília.
+
+    Era `date.today()` — que numa Cloud Function é UTC. A variável até se
+    chamava `today_brt`, mas entre 21h e 24h BRT o UTC já é amanhã: o corte D-1
+    deixava passar o dia CORRENTE brasileiro, gravando um dia parcial como dia
+    de entrega fechado. Inofensivo enquanto o único run era às 04h; virou bug
+    de verdade com o re-sync das 22h.
+    """
+    return datetime.now(BRT).date()
+
+
 # ── Credenciais (chain) ───────────────────────────────────────────────────────
 # Ordem de tentativa. O 2º conjunto não é redundância decorativa: em 19/08/2026
 # a credencial primária começou a devolver 401 AUTH_FAILED no /developer/token
@@ -112,15 +162,32 @@ _cached_cred_label: Optional[str] = None
 _TOKEN_TTL_MS = 6 * 60 * 60 * 1000
 
 # ── BQ ─────────────────────────────────────────────────────────────────────────
-# Client compartilhado (timeout obrigatório + pool dimensionado) — ver bq_client.py.
-_bq_client = bq_client.get_client()
 _PROJECT = os.environ.get("GCP_PROJECT", "site-hypr")
 _DATASET = "prod_assets"
+
+
+def _bq_client():
+    """Client compartilhado (timeout obrigatório + pool dimensionado) — ver
+    bq_client.py. Resolvido na 1ª chamada, não no import: o parsing e o corte
+    D-1 deste módulo são funções puras e passaram a ser cobertos por teste, e
+    `bigquery.Client()` no import exige credencial default só pra importar.
+    """
+    return bq_client.get_client()
 
 
 class PubMaticError(RuntimeError):
     """Erros específicos da integração PubMatic (auth, report, parsing)."""
     pass
+
+
+class _ReportAuthError(PubMaticError):
+    """401/403 no endpoint de REPORT — a credencial autenticou e foi recusada
+    na leitura. Separado do PubMaticError genérico porque só este merece
+    re-tentativa: Bearer novo primeiro, depois o próximo par da chain."""
+
+    def __init__(self, code: int, body: str):
+        super().__init__(f"HTTP {code} GET dataprovider: {body[:400]}")
+        self.code = code
 
 
 def available_credentials() -> list:
@@ -169,7 +236,7 @@ def _request_token(user: str, password: str) -> str:
     return token
 
 
-def get_token(force_refresh: bool = False) -> str:
+def get_token(force_refresh: bool = False, skip_labels: tuple = ()) -> str:
     """Retorna um Bearer válido, percorrendo a chain de credenciais.
 
     Cache em memória do processo (sobrevive entre requests da mesma instância
@@ -177,14 +244,24 @@ def get_token(force_refresh: bool = False) -> str:
     Se a primeira credencial falhar na AUTENTICAÇÃO, tenta a próxima e loga
     qual assumiu; se todas falharem, levanta com o erro de cada uma (senão o
     operador vê só a última e acha que só existe uma credencial).
+
+    `skip_labels` exclui pares já recusados NO REPORT (autenticaram, mas não
+    podem ler o Data Provider Analytics). Passar skip_labels implica refresh:
+    o cache guarda justamente o token do par que acabou de ser recusado.
     """
     global _cached_token, _cached_token_exp_ms, _cached_cred_label
     now_ms = time.time() * 1000
-    if not force_refresh and _cached_token and now_ms < _cached_token_exp_ms:
+    if not force_refresh and not skip_labels and _cached_token \
+            and now_ms < _cached_token_exp_ms:
         return _cached_token
 
-    creds = available_credentials()
+    creds = [c for c in available_credentials() if c[0] not in skip_labels]
     if not creds:
+        if skip_labels:
+            raise PubMaticError(
+                "Nenhuma credencial PubMatic restante na chain — recusadas: "
+                + ", ".join(skip_labels)
+            )
         raise PubMaticError(
             "Nenhuma credencial PubMatic configurada (PUBMATIC_USER/PASS ou "
             "PUBMATIC_USER_ALT/PASS_ALT). Configure no Secret Manager e "
@@ -214,33 +291,77 @@ def get_token(force_refresh: bool = False) -> str:
 
 
 # ── HTTP GET (reporting) ──────────────────────────────────────────────────────
-def _report_get(params: dict, timeout: int = 90) -> dict:
-    """GET no Data Provider Analytics API. Devolve o JSON parsed.
+def _report_get_once(url: str, token: str, timeout: int) -> dict:
+    """Uma tentativa de GET no report com um Bearer específico.
 
-    Levanta PubMaticError em HTTP != 2xx (inclui o 400 de combinação inválida
-    de dimensions/metrics, útil pra debug).
+    401/403 vira `_ReportAuthError` (re-tentável); todo o resto vira
+    PubMaticError direto — inclui o 400 de combinação inválida de
+    dimensions/metrics, cujo corpo é o que diagnostica o problema.
     """
-    url = (f"{BASE_URL}/v1/analytics/data/dataprovider/{ACCOUNT_ID}"
-           f"?{urllib.parse.urlencode(params)}")
     req = urllib.request.Request(url, method="GET")
     req.add_header("accept", "application/json")
-    req.add_header("authorization", f"Bearer {get_token()}")
+    req.add_header("authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
-        # 401 pode ser token expirado numa instância antiga — 1 retry com refresh.
         raw = e.read().decode("utf-8", "ignore")
-        if e.code == 401:
-            logger.warning("[pubmatic] 401 no report; refresh de token e 1 retry")
-            req2 = urllib.request.Request(url, method="GET")
-            req2.add_header("accept", "application/json")
-            req2.add_header("authorization", f"Bearer {get_token(force_refresh=True)}")
-            with urllib.request.urlopen(req2, timeout=timeout) as r:
-                return json.loads(r.read())
+        if e.code in (401, 403):
+            raise _ReportAuthError(e.code, raw)
         raise PubMaticError(f"HTTP {e.code} GET dataprovider: {raw[:400]}")
     except urllib.error.URLError as e:
         raise PubMaticError(f"Falha de rede GET dataprovider: {e}")
+
+
+def _report_get(params: dict, timeout: int = 90) -> dict:
+    """GET no Data Provider Analytics API. Devolve o JSON parsed.
+
+    Escada de re-tentativa em cima de 401/403 (e SÓ dela):
+      1. token em cache — o caminho normal;
+      2. Bearer novo do MESMO par — cobre token velho numa instância antiga;
+      3. próximo par da chain — cobre a credencial que autentica mas perdeu
+         acesso ao Data Provider Analytics. Este degrau não existia: a chain
+         do `get_token` só troca de par quando a AUTH falha, então uma
+         permissão revogada no seat (o mesmo evento de 19/08, um passo adiante)
+         derrubava o sync com a credencial ALT parada ali do lado.
+
+    O erro final lista o que cada credencial respondeu — senão o operador vê só
+    a última e conclui que existe uma credencial só.
+    """
+    url = (f"{BASE_URL}/v1/analytics/data/dataprovider/{ACCOUNT_ID}"
+           f"?{urllib.parse.urlencode(params)}")
+
+    try:
+        return _report_get_once(url, get_token(), timeout)
+    except _ReportAuthError as e:
+        logger.warning("[pubmatic] HTTP %d no report; refresh de Bearer e 1 retry",
+                       e.code)
+
+    rejected: List[str] = []
+    failures: List[str] = []
+    while True:
+        try:
+            token = get_token(force_refresh=True, skip_labels=tuple(rejected))
+        except PubMaticError as e:
+            failures.append(str(e))
+            break
+        # Depois do get_token, `credential_label()` é o par que de fato emitiu
+        # este Bearer — é ele que entra em `rejected` se o report o recusar.
+        label = credential_label()
+        try:
+            return _report_get_once(url, token, timeout)
+        except _ReportAuthError as e:
+            failures.append(f"{label}: {e}")
+            if not label or label in rejected:
+                # Sem rótulo pra excluir, o próximo loop repetiria a mesma
+                # credencial pra sempre. Para aqui.
+                break
+            rejected.append(label)
+            logger.warning("[pubmatic] credencial '%s' recusada NO REPORT "
+                           "(HTTP %d) — avançando a chain", label, e.code)
+
+    raise PubMaticError("Report rejeitou a chain de credenciais → "
+                        + " | ".join(failures))
 
 
 # ── Parsing do nome do deal → cliente ─────────────────────────────────────────
@@ -315,14 +436,30 @@ def _clean_deal_id(v) -> Optional[str]:
     return txt
 
 
-def fetch_delivery_rows(start_date: date, end_date: date) -> tuple[list, dict]:
+def fetch_delivery_rows(start_date: date, end_date: date) -> tuple[list, dict, dict]:
     """Puxa o report diário por deal no intervalo [start, end].
 
-    Retorna (rows, deal_meta) onde:
+    Retorna (rows, deal_meta, stats) onde:
       rows: lista de dicts prontos pro upsert em pmp_line_delivery_daily
       deal_meta: {line_id(dealMetaId): {"external_deal_id","deal_name"}} pros masters
+      stats: o que a coleta ENXERGOU, pro ledger e pro painel de frescor
 
     POLÍTICA D-1 (igual Xandr): descarta o dia corrente (BRT), que é parcial.
+
+    Sobre `stats` — o que ele existe pra responder
+    ----------------------------------------------
+    Descartar dia zerado está certo (dia zerado gravado viraria
+    `last_delivery_day` e o deal apareceria "no ar" sem ter entregue). O erro
+    era descartar em SILÊNCIO: um `logger.info` com a contagem não distingue
+    "o deal parou de entregar" de "a PubMatic ainda não fechou o dia" — e é
+    essa segunda que deixou a base do TIM 2 dias atrás com o job verde.
+
+      api_last_day        último dia com dado REAL na resposta (≠ 0)
+      expected_last_day   D-1 em BRT: o dia que a fonte já deveria ter fechado
+      lag_days            expected_last_day − api_last_day. 0 = em dia.
+      trailing_zero_days  dias zerados NO FIM da janela (a assinatura do lag
+                          de reporting; zerados no MEIO são deal pausado, e
+                          esses não contam pro alarme)
     """
     params = {
         "dimensions": REPORT_DIMENSIONS,
@@ -349,11 +486,21 @@ def fetch_delivery_rows(start_date: date, end_date: date) -> tuple[list, dict]:
     # displayValue.dealMetaId mapeia dealMetaId → nome do deal.
     name_map = ((payload.get("displayValue") or {}).get("dealMetaId")) or {}
 
-    today_brt = date.today()
+    today = today_brt()
+    # D-1, ou o fim da janela pedida se ela para antes. O `min` importa pra
+    # backfill de intervalo antigo: sem ele, sincronizar [01/07, 07/07] hoje
+    # reportaria ~7 semanas de "atraso" — a fonte não está atrasada, a janela é
+    # que era estreita, e um número mentiroso no ledger vira alarme ignorado.
+    expected_last_day = min(end_date, today - timedelta(days=1))
     rows: List[dict] = []
     deal_meta: dict = {}
     skipped_today = 0
     skipped_empty = 0
+    # Dias que a API DEVOLVEU (dentro do recorte D-1) e dias em que ela
+    # devolveu algo diferente de zero. A diferença entre o topo dos dois é o
+    # atraso de reporting.
+    days_seen: set = set()
+    days_with_data: set = set()
 
     for r in payload.get("rows") or []:
         deal_meta_id = r[idx["dealMetaId"]]
@@ -367,9 +514,10 @@ def fetch_delivery_rows(start_date: date, end_date: date) -> tuple[list, dict]:
             day_iso = datetime.strptime(day_raw, "%Y-%m-%d").date()
         except ValueError:
             continue
-        if day_iso >= today_brt:   # D-1: ignora dia corrente (parcial)
+        if day_iso >= today:   # D-1: ignora dia corrente (parcial)
             skipped_today += 1
             continue
+        days_seen.add(day_iso)
 
         imps = _int(r[idx["paidImpressions"]])
         spend = _num(r[idx["spend"]])
@@ -383,6 +531,7 @@ def fetch_delivery_rows(start_date: date, end_date: date) -> tuple[list, dict]:
         if imps == 0 and spend == 0 and transaction_rev == 0:
             skipped_empty += 1
             continue
+        days_with_data.add(day_iso)
 
         rows.append({
             "line_id":                line_id,
@@ -423,11 +572,36 @@ def fetch_delivery_rows(start_date: date, end_date: date) -> tuple[list, dict]:
         sm = dm.pop("_sum_margin", 0.0)
         dm["margin_pct"] = round(sm / sr * 100, 2) if sr > 0 else None
 
+    api_last_day = max(days_with_data) if days_with_data else None
+    lag_days = (expected_last_day - api_last_day).days if api_last_day else None
+    # Zerados NO FIM da janela: conta pra trás de D-1 enquanto o dia aparece na
+    # resposta mas sem dado. É a assinatura do lag de reporting. Zerado no MEIO
+    # da janela é deal pausado e não entra na conta.
+    trailing_zero_days = 0
+    probe = expected_last_day
+    while probe in days_seen and probe not in days_with_data:
+        trailing_zero_days += 1
+        probe -= timedelta(days=1)
+
     if skipped_today:
         logger.info("[pubmatic] descartadas %d linhas do dia corrente (D-1)", skipped_today)
     if skipped_empty:
         logger.info("[pubmatic] descartadas %d linhas de dias zerados", skipped_empty)
-    return rows, deal_meta
+    if lag_days:
+        logger.warning("[pubmatic] fonte atrasada: último dia com dado %s, "
+                       "esperado %s (lag %dd, %d dia(s) zerado(s) no fim da janela)",
+                       api_last_day, expected_last_day, lag_days, trailing_zero_days)
+
+    stats = {
+        "api_last_day":       api_last_day.isoformat() if api_last_day else None,
+        "expected_last_day":  expected_last_day.isoformat(),
+        "lag_days":           lag_days,
+        "trailing_zero_days": trailing_zero_days,
+        "days_with_data":     len(days_with_data),
+        "rows_skipped_empty": skipped_empty,
+        "rows_skipped_today": skipped_today,
+    }
+    return rows, deal_meta, stats
 
 
 # ── Upsert (load → staging → MERGE), com `source` na chave ────────────────────
@@ -452,7 +626,7 @@ def _upsert_via_staging(target_table: str, rows: list, key_columns: list,
     staging_ref = _bq.TableReference.from_string(f"{_PROJECT}.{_DATASET}.{staging_name}")
     table = _bq.Table(staging_ref, schema=schema)
     table.expires = datetime.now(timezone.utc) + timedelta(hours=1)
-    _bq_client.create_table(table)
+    _bq_client().create_table(table)
     try:
         rows_json = []
         for r in rows:
@@ -475,7 +649,7 @@ def _upsert_via_staging(target_table: str, rows: list, key_columns: list,
                 else:
                     out[f.name] = v
             rows_json.append(out)
-        errors = _bq_client.insert_rows_json(table, rows_json)
+        errors = _bq_client().insert_rows_json(table, rows_json)
         if errors:
             raise PubMaticError(f"staging insert errors em {target_table}: {errors[:3]}")
 
@@ -495,10 +669,10 @@ def _upsert_via_staging(target_table: str, rows: list, key_columns: list,
             WHEN MATCHED THEN UPDATE SET {upd_set}
             WHEN NOT MATCHED THEN INSERT ({", ".join(insert_cols)}) VALUES ({", ".join(insert_vals)})
         """
-        _bq_client.query(merge_sql).result()
+        _bq_client().query(merge_sql).result()
     finally:
         try:
-            _bq_client.delete_table(staging_ref, not_found_ok=True)
+            _bq_client().delete_table(staging_ref, not_found_ok=True)
         except Exception as e:
             logger.warning("[pubmatic] falhou deletando staging %s: %s", staging_name, e)
     return {"merged": len(rows)}
@@ -576,16 +750,21 @@ def sync_delivery(start_date: Optional[date] = None,
 
     Sem datas explícitas, usa janela [hoje-lookback, hoje] (o fetch descarta
     o dia corrente por D-1). Não recria tabelas; assume migração 001 aplicada.
+
+    Idempotente por construção (MERGE por (source, line_id, day)), então rodar
+    várias vezes ao dia só custa 1 request de report — é o que o
+    `pmp-pubmatic-refresh` faz pra fechar D-1 no dia em que a PubMatic o fecha,
+    em vez de no cron da madrugada seguinte.
     """
     t0 = time.time()
     if not end_date:
-        end_date = date.today()
+        end_date = today_brt()
     if not start_date:
         start_date = end_date - timedelta(days=lookback_days)
     window = f"{start_date.isoformat()} → {end_date.isoformat()}"
     logger.info("[pubmatic] sync delivery iniciado (window=%s)", window)
 
-    rows, deal_meta = fetch_delivery_rows(start_date, end_date)
+    rows, deal_meta, stats = fetch_delivery_rows(start_date, end_date)
     logger.info("[pubmatic] %d linhas diárias, %d deals", len(rows), len(deal_meta))
 
     masters = _ensure_masters(deal_meta)
@@ -628,4 +807,135 @@ def sync_delivery(start_date: Optional[date] = None,
         # ver quando o fallback assumiu (sinal de credencial pra consertar).
         "credential":     credential_label(),
         "synced_at":      datetime.now(timezone.utc).isoformat(),
+        # Frescor do DADO (≠ frescor do job). Sobe pro ledger e daí pro painel:
+        # é a única forma de "rodou com sucesso mas a base está velha" virar um
+        # alarme em vez de uma pergunta no Slack.
+        **stats,
+    }
+
+
+# ── Auditoria: o que a API diz × o que está na nossa base ─────────────────────
+# Tolerância relativa pra comparar dinheiro. A API devolve float e nós gravamos
+# NUMERIC arredondado em 4 casas; 0,5% absorve isso sem esconder divergência
+# real (um dia faltando aparece como 100%).
+_AUDIT_REL_TOL = 0.005
+_AUDIT_ABS_TOL = 0.01
+
+
+def _delivery_from_bq(start_date: date, end_date: date) -> dict:
+    """{(line_id, day): {imps, revenue, margin}} do que ESTÁ gravado."""
+    sql = f"""
+        SELECT line_id, day,
+               SUM(imps)            AS imps,
+               SUM(curator_revenue) AS revenue,
+               SUM(curator_margin)  AS margin
+        FROM `{_PROJECT}.{_DATASET}.pmp_line_delivery_daily`
+        WHERE source = @source AND day BETWEEN @start AND @end
+        GROUP BY line_id, day
+    """
+    job = _bq_client().query(sql, job_config=_bq.QueryJobConfig(
+        query_parameters=[
+            _bq.ScalarQueryParameter("source", "STRING", SOURCE),
+            _bq.ScalarQueryParameter("start", "DATE", start_date),
+            _bq.ScalarQueryParameter("end", "DATE", end_date),
+        ]))
+    return {
+        (int(r["line_id"]), r["day"].isoformat()): {
+            "imps":    int(r["imps"] or 0),
+            "revenue": float(r["revenue"] or 0),
+            "margin":  float(r["margin"] or 0),
+        }
+        for r in job.result()
+    }
+
+
+def _close_enough(a: float, b: float) -> bool:
+    diff = abs(a - b)
+    return diff <= _AUDIT_ABS_TOL or diff <= _AUDIT_REL_TOL * max(abs(a), abs(b), 1.0)
+
+
+def audit_window(lookback_days: int = 14, max_findings: int = 200) -> dict:
+    """Reconcilia a API da PubMatic contra `pmp_line_delivery_daily`.
+
+    Existe porque "a base da PubMatic não está atualizada" era, até aqui, uma
+    afirmação que só se conferia abrindo o BQ e a Media Console lado a lado —
+    e por isso virava discussão em vez de diagnóstico. Aqui é um GET.
+
+    Classifica cada divergência (`kind`):
+      missing_in_bq   a API tem entrega no dia e nós não temos a row
+                      → coleta perdeu o dia (a falha que gera o "há 2d")
+      value_mismatch  os dois têm a row, com números diferentes
+                      → restate da fonte que não reprocessamos (ou janela curta)
+      extra_in_bq     nós temos a row e a API não reporta mais nada no dia
+                      → restate pra zero; o MERGE não apaga, então fica órfã
+
+    NÃO escreve nada: é diagnóstico. O conserto de `missing_in_bq` e
+    `value_mismatch` é rodar o sync (o MERGE é idempotente); `extra_in_bq`
+    precisa de decisão humana, porque apagar entrega é irreversível.
+    """
+    t0 = time.time()
+    end_date = today_brt()
+    start_date = end_date - timedelta(days=lookback_days)
+
+    api_rows, deal_meta, stats = fetch_delivery_rows(start_date, end_date)
+    api = {
+        (r["line_id"], r["day"].isoformat()): r
+        for r in api_rows
+    }
+    # A janela do fetch é cortada em D-1; comparar contra o BQ além disso
+    # marcaria todo dia corrente como extra_in_bq.
+    bq_end = end_date - timedelta(days=1)
+    stored = _delivery_from_bq(start_date, bq_end)
+
+    def _label(line_id):
+        m = deal_meta.get(line_id) or {}
+        return m.get("external_deal_id") or m.get("deal_name") or str(line_id)
+
+    findings = []
+    for key in sorted(set(api) | set(stored), key=lambda k: (k[1], k[0]), reverse=True):
+        line_id, day = key
+        a, b = api.get(key), stored.get(key)
+        if a and not b:
+            findings.append({
+                "kind": "missing_in_bq", "line_id": line_id, "deal": _label(line_id),
+                "day": day, "api_revenue": round(float(a["curator_revenue"]), 2),
+                "api_imps": a["imps"], "bq_revenue": None, "bq_imps": None,
+            })
+        elif b and not a:
+            findings.append({
+                "kind": "extra_in_bq", "line_id": line_id, "deal": _label(line_id),
+                "day": day, "api_revenue": None, "api_imps": None,
+                "bq_revenue": round(b["revenue"], 2), "bq_imps": b["imps"],
+            })
+        elif a and b and not (
+            _close_enough(float(a["curator_revenue"]), b["revenue"])
+            and _close_enough(float(a["curator_margin"]), b["margin"])
+            and a["imps"] == b["imps"]
+        ):
+            findings.append({
+                "kind": "value_mismatch", "line_id": line_id, "deal": _label(line_id),
+                "day": day, "api_revenue": round(float(a["curator_revenue"]), 2),
+                "api_imps": a["imps"], "bq_revenue": round(b["revenue"], 2),
+                "bq_imps": b["imps"],
+            })
+
+    by_kind: dict = {}
+    for f in findings:
+        by_kind[f["kind"]] = by_kind.get(f["kind"], 0) + 1
+
+    return {
+        "source":            SOURCE,
+        "window":            f"{start_date.isoformat()} → {bq_end.isoformat()}",
+        "api_day_rows":      len(api),
+        "bq_day_rows":       len(stored),
+        "clean":             not findings,
+        "findings_by_kind":  by_kind,
+        # Truncado: numa base recém-quebrada isso pode ser milhares de rows, e
+        # a resposta serve pra DIAGNOSTICAR (o padrão aparece nas primeiras),
+        # não pra ser a lista de conserto.
+        "findings":          findings[:max_findings],
+        "findings_truncated": max(0, len(findings) - max_findings),
+        "freshness":         stats,
+        "credential":        credential_label(),
+        "duration_sec":      round(time.time() - t0, 2),
     }

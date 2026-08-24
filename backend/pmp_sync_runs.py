@@ -23,6 +23,23 @@ uma row aqui, com erro e credencial usada. O painel passa a ler daqui, então
 "o cron rodou" e "o deal entregou" viram duas afirmações independentes — que
 é o que elas sempre foram.
 
+Terceira afirmação, adicionada em 24/08/2026
+────────────────────────────────────────────
+"O job rodou" ainda não é "a base está fresca". O sync da PubMatic rodava verde
+todo dia às 04h e a base vivia 2 dias atrás, porque a essa hora a fonte ainda
+não fechou D-1 e o conector (com razão) pula dia zerado. Ninguém tinha como
+ver isso: o ledger só dizia que a execução terminou bem.
+
+Agora a execução também carrega o FRESCOR DA FONTE — `api_last_day` (último dia
+em que a API tinha dado real) e `lag_days` (quantos dias atrás de D-1 isso
+está). É o que permite o painel alarmar em "rodou com sucesso e o dado está
+velho", que é o estado em que este pipeline passa a maior parte do tempo quando
+quebra de leve.
+
+`status='skipped'` também é novo: PubMatic sem credencial no ambiente fazia o
+`pmp_sync_v2` pular o bloco INTEIRO, sem row nenhuma — silêncio idêntico ao que
+o ledger nasceu pra matar, entrando por outra porta.
+
 Contrato
 ────────
   record(source=..., started_at=..., status=..., ...) → grava 1 row (best-effort:
@@ -60,8 +77,9 @@ SCHEMA = [
     bigquery.SchemaField("source",         "STRING"),
     bigquery.SchemaField("started_at",     "TIMESTAMP"),
     bigquery.SchemaField("finished_at",    "TIMESTAMP"),
-    # 'ok' | 'error'. Sem 'running': o sync é síncrono e curto; uma row só é
-    # gravada no fim, então "sem row" == "não rodou".
+    # 'ok' | 'error' | 'skipped' (não rodou por falta de credencial). Sem
+    # 'running': o sync é síncrono e curto; uma row só é gravada no fim, então
+    # "sem row" == "nem foi tentado".
     bigquery.SchemaField("status",         "STRING"),
     bigquery.SchemaField("rows_processed", "INT64"),
     bigquery.SchemaField("deals_touched",  "INT64"),
@@ -73,6 +91,20 @@ SCHEMA = [
     bigquery.SchemaField("credential",     "STRING"),
     bigquery.SchemaField("error",          "STRING"),
     bigquery.SchemaField("duration_sec",   "FLOAT64"),
+    # ── Frescor da FONTE (≠ frescor do job) ──────────────────────────────────
+    # Último dia em que a API tinha dado real, e a distância disso até D-1.
+    # NULL nas fontes que ainda não reportam frescor (o painel degrada).
+    bigquery.SchemaField("api_last_day",   "DATE"),
+    bigquery.SchemaField("lag_days",       "INT64"),
+]
+
+# Colunas adicionadas DEPOIS que a tabela já existia em produção. `ensure_table`
+# sai cedo quando a tabela existe, então sem isto o insert das novas colunas
+# falharia calado (insert_rows_json rejeita campo desconhecido) — o ledger
+# perderia exatamente a informação que ele foi estendido pra carregar.
+_ADDED_COLUMNS = [
+    ("api_last_day", "DATE"),
+    ("lag_days",     "INT64"),
 ]
 
 # Cache do painel: a query é barata (tabela minúscula, particionada), mas o
@@ -82,13 +114,33 @@ _CACHE_TTL_S = 60
 
 
 def ensure_table() -> None:
-    """Cria a tabela se não existir. Idempotente e barato (get_table cacheado
-    pelo próprio BQ client; erro de permissão sobe pro caller)."""
+    """Cria a tabela se não existir e converge o schema. Idempotente e barato
+    (erro de permissão sobe pro caller)."""
     try:
-        bq.get_table(_FQ)
-        return
+        existing = bq.get_table(_FQ)
     except Exception:
-        pass
+        existing = None
+
+    if existing is not None:
+        have = {f.name for f in existing.schema}
+        adds = [(n, t) for n, t in _ADDED_COLUMNS if n not in have]
+        if adds:
+            # ADD COLUMN IF NOT EXISTS é barato e não reescreve a tabela.
+            # Best-effort: se falhar (permissão), o `record` abaixo cai no
+            # modo compatível e grava sem as colunas novas em vez de perder a
+            # row inteira — um ledger degradado ainda vale mais que nenhum.
+            try:
+                bq.query(
+                    f"ALTER TABLE `{_FQ}` "
+                    + ", ".join(f"ADD COLUMN IF NOT EXISTS {n} {t}" for n, t in adds)
+                ).result()
+                logger.info("[pmp_sync_runs] colunas adicionadas: %s",
+                            [n for n, _ in adds])
+            except Exception as e:
+                logger.warning("[pmp_sync_runs] falhou adicionando colunas %s: %s",
+                               [n for n, _ in adds], e)
+        return
+
     table = bigquery.Table(_FQ, schema=SCHEMA)
     table.time_partitioning = bigquery.TimePartitioning(
         type_=bigquery.TimePartitioningType.DAY, field="started_at"
@@ -106,9 +158,15 @@ def record(source: str,
            window: Optional[str] = None,
            actor: Optional[str] = None,
            credential: Optional[str] = None,
-           error: Optional[str] = None) -> None:
+           error: Optional[str] = None,
+           api_last_day: Optional[str] = None,
+           lag_days: Optional[int] = None) -> None:
     """Grava uma execução. Best-effort: exceção aqui é logada, nunca propagada
-    (o ledger observa o sync, não pode derrubá-lo)."""
+    (o ledger observa o sync, não pode derrubá-lo).
+
+    `status` ∈ {'ok','error','skipped'}. `api_last_day`/`lag_days` são o frescor
+    da FONTE (vêm do conector) — só quem sabe medir preenche.
+    """
     try:
         ensure_table()
         finished = datetime.now(timezone.utc)
@@ -129,10 +187,23 @@ def record(source: str,
             # bastam pro diagnóstico e mantêm a row legível na UI.
             "error":          (str(error)[:1000] if error else None),
             "duration_sec":   round((finished - started_at).total_seconds(), 2),
+            "api_last_day":   api_last_day,
+            "lag_days":       int(lag_days) if lag_days is not None else None,
         }
         errors = bq.insert_rows_json(_FQ, [row])
         if errors:
-            logger.warning("[pmp_sync_runs] insert errors: %s", errors[:2])
+            # Causa provável: as colunas de frescor não existem nesta tabela
+            # (ALTER falhou por permissão). Re-tenta sem elas — perder o frescor
+            # é ruim, perder a row inteira é o silêncio que o ledger combate.
+            legacy = {k: v for k, v in row.items()
+                      if k not in ("api_last_day", "lag_days")}
+            retry = bq.insert_rows_json(_FQ, [legacy])
+            if retry:
+                logger.warning("[pmp_sync_runs] insert errors: %s", errors[:2])
+            else:
+                logger.warning("[pmp_sync_runs] row gravada SEM as colunas de "
+                               "frescor (schema antigo?): %s", errors[:1])
+                _cache.clear()
         else:
             _cache.clear()
     except Exception as e:
@@ -143,7 +214,12 @@ def latest_by_source(days: int = 90) -> List[dict]:
     """Última execução (e última bem-sucedida) por fonte, dentro de `days`.
 
     Retorna [{source, last_run_at, last_run_status, last_error, last_ok_at,
-              rows_processed, deals_touched, actor, credential, duration_sec}].
+              rows_processed, deals_touched, actor, credential, duration_sec,
+              api_last_day, lag_days}].
+
+    `api_last_day`/`lag_days` vêm do último run BEM-SUCEDIDO, não do último run:
+    um run que falhou não mediu frescor nenhum, e herdar NULL dele apagaria do
+    painel o atraso que continua lá.
     Falha de leitura devolve [] — o painel degrada pro modo antigo em vez de
     quebrar a página inteira.
     """
@@ -153,7 +229,40 @@ def latest_by_source(days: int = 90) -> List[dict]:
     if hit and now - hit[0] < _CACHE_TTL_S:
         return hit[1]
 
-    sql = f"""
+    for with_freshness in (True, False):
+        sql = _latest_sql(with_freshness)
+        try:
+            job = bq.query(sql, job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("days", "INT64", days)]
+            ))
+            out = []
+            for r in job.result():
+                d = dict(r)
+                for k in ("last_run_at", "last_ok_at", "api_last_day"):
+                    if d.get(k) is not None:
+                        d[k] = d[k].isoformat()
+                out.append(d)
+            _cache[key] = (now, out)
+            return out
+        except Exception as e:
+            # 1ª volta: provavelmente a tabela ainda não tem as colunas de
+            # frescor (ALTER pendente ou sem permissão). Cai pro SQL legado em
+            # vez de devolver [] — o painel perde o atraso, não o ledger todo.
+            if with_freshness:
+                logger.info("[pmp_sync_runs] SQL com frescor falhou (%s); "
+                            "tentando o legado", e)
+                continue
+            logger.warning("[pmp_sync_runs] falhou lendo runs: %s", e)
+            return []
+    return []
+
+
+def _latest_sql(with_freshness: bool) -> str:
+    ok_cols = ("source, started_at AS last_ok_at, api_last_day, lag_days"
+               if with_freshness else "source, started_at AS last_ok_at")
+    ok_select = ("o.last_ok_at,\n          o.api_last_day,\n          o.lag_days"
+                 if with_freshness else "o.last_ok_at")
+    return f"""
         WITH runs AS (
           SELECT *
           FROM `{_FQ}`
@@ -166,8 +275,11 @@ def latest_by_source(days: int = 90) -> List[dict]:
           ) WHERE rn = 1
         ),
         last_ok AS (
-          SELECT source, MAX(started_at) AS last_ok_at
-          FROM runs WHERE status = 'ok' GROUP BY source
+          SELECT * EXCEPT(rn) FROM (
+            SELECT {ok_cols},
+                   ROW_NUMBER() OVER (PARTITION BY source ORDER BY started_at DESC) AS rn
+            FROM runs WHERE status = 'ok'
+          ) WHERE rn = 1
         )
         SELECT
           r.source,
@@ -179,23 +291,7 @@ def latest_by_source(days: int = 90) -> List[dict]:
           r.actor,
           r.credential,
           r.duration_sec,
-          o.last_ok_at
+          {ok_select}
         FROM last_run r
         LEFT JOIN last_ok o USING (source)
     """
-    try:
-        job = bq.query(sql, job_config=bigquery.QueryJobConfig(
-            query_parameters=[bigquery.ScalarQueryParameter("days", "INT64", days)]
-        ))
-        out = []
-        for r in job.result():
-            d = dict(r)
-            for k in ("last_run_at", "last_ok_at"):
-                if d.get(k) is not None:
-                    d[k] = d[k].isoformat()
-            out.append(d)
-        _cache[key] = (now, out)
-        return out
-    except Exception as e:
-        logger.warning("[pmp_sync_runs] falhou lendo runs: %s", e)
-        return []

@@ -385,6 +385,51 @@ if [ -n "$PMP_SCHEDULER_SECRET" ] && [ -n "$XANDR_CURATE_USER" ]; then
   echo "  ✓ Job recriado ($SCHEDULER_SCHEDULE $SCHEDULER_TZ → $SCHEDULER_URI)"
 fi
 
+# ── 5a. Cloud Scheduler: pmp-pubmatic-refresh ────────────────────────────────
+# Re-sync SÓ da PubMatic, 4x/dia (10/14/18/22h BRT), além do cron das 04h.
+#
+# Motivo (24/08/2026): o hub mostrava "entrega há 2d" pro deal do TIM enquanto
+# a Media Console da PubMatic mostrava a entrega de ontem. Nada estava quebrado
+# — era a HORA da coleta. Às 04h BRT a PubMatic ainda não fechou D-1 e devolve
+# a linha zerada; o conector descarta dia zerado de propósito (senão o deal
+# apareceria "no ar" sem ter entregue nada); logo D-1 só entrava no run da
+# madrugada SEGUINTE. Em regime permanente: base 2 dias atrás, job 100% verde.
+#
+# Barato de propósito: 1 request de report + MERGE idempotente + refresh da
+# enriched (~250 linhas). Não toca no Xandr, que é o caminho caro e já roda de
+# madrugada. O Bearer é cacheado 6h em memória, então 4 runs/dia não chegam
+# perto do limite de 200 gerações de token em 20min da PubMatic.
+#
+# Não substitui o cron das 04h: aquele é o full sync (IOs, line items, Xandr,
+# espelho de checklists). Este só puxa a PubMatic de novo, mais tarde.
+if [ -n "$PMP_SCHEDULER_SECRET" ]; then
+  echo ""
+  echo "▸ Garantindo Cloud Scheduler pmp-pubmatic-refresh..."
+
+  PM_JOB="pmp-pubmatic-refresh"
+  PM_URI="https://${REGION}-site-hypr.cloudfunctions.net/${FUNCTION_NAME}?action=pmp_sync_pubmatic"
+
+  if gcloud scheduler jobs describe "$PM_JOB" \
+        --location="$REGION" --project=site-hypr >/dev/null 2>&1; then
+    gcloud scheduler jobs delete "$PM_JOB" \
+      --location="$REGION" --project=site-hypr --quiet >/dev/null
+  fi
+
+  gcloud scheduler jobs create http "$PM_JOB" \
+    --location="$REGION" \
+    --project=site-hypr \
+    --schedule="0 10,14,18,22 * * *" \
+    --time-zone="America/Sao_Paulo" \
+    --uri="$PM_URI" \
+    --http-method=POST \
+    --headers="Content-Type=application/json,X-Scheduler-Secret=${PMP_SCHEDULER_SECRET}" \
+    --message-body='{}' \
+    --attempt-deadline=300s \
+    --description="Re-sync PubMatic (fecha D-1 no dia em que a fonte fecha)" \
+    >/dev/null
+  echo "  ✓ Job recriado (0 10,14,18,22 * * * America/Sao_Paulo → $PM_URI)"
+fi
+
 # ── 5b. Cloud Scheduler: auto-freeze-daily ───────────────────────────────────
 # Cron diário 09:30 BRT (depois do rebuild das 06h, do sync das 08h e dos
 # alertas das 09h) que congela campanhas maduras (encerradas há 8–45 dias,

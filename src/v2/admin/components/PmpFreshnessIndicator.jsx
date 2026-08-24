@@ -8,28 +8,52 @@
 // Multi-fonte: o popover lista uma seção por fonte; o dot do gatilho reflete o
 // PIOR estado entre elas (pra alertar quando qualquer fonte atrasa).
 //
-// O QUE ESTE INDICADOR MEDE (e o que ele NÃO mede)
-// ------------------------------------------------
-// Mede a EXECUÇÃO do sync, lida do ledger `pmp_sync_runs` (`lastRunAt` +
-// `lastRunStatus` + `lastError`), não a chegada de entrega nova.
+// O QUE ESTE INDICADOR MEDE
+// -------------------------
+// DUAS perguntas independentes por fonte, porque em ago/26 as duas estiveram
+// erradas por motivos opostos:
 //
-// Até ago/26 ele lia `last_synced_at` das LINHAS DE ENTREGA, e isso confundia
-// duas coisas diferentes nos dois sentidos:
+//   1. O JOB rodou?    → ledger `pmp_sync_runs` (lastRunAt/lastRunStatus/lastError)
+//   2. O DADO chegou?  → `apiLastDay`/`lagDays` do ledger, com o
+//                        `latestDeliveryDay` das lines como fallback
+//
+// Até ago/26 só existia um sinal, e ele era `last_synced_at` das LINHAS DE
+// ENTREGA — que confundia as duas nos dois sentidos:
 //   • deal encerrado (nenhuma row tocada) parecia "sync atrasada" — falso alarme;
 //   • sync QUEBRADO (401 da PubMatic, 19–21/08) ficava idêntico a deal
 //     encerrado — o alarme que importava nunca tocou, e um deal novo entregando
 //     ~R$32k passou 3 dias fora do hub.
-// Agora "o job rodou" e "o deal entregou" são duas linhas separadas no popover.
+// O ledger resolveu (1). Ficou faltando (2), e em 24/08 ela cobrou: o job da
+// PubMatic rodava VERDE todo dia e a base vivia 2 dias atrás (às 04h BRT a
+// fonte ainda não fechou D-1, e o conector descarta dia zerado). O painel
+// mostrava "Sync rodou hoje" com um "Última entrega" desatualizado ao lado —
+// dado informativo que nunca virava alerta. Agora o atraso de DADO tem régua
+// própria e mexe no dot.
+//
+// O falso alarme de deal encerrado NÃO volta: quem decide se há atraso de dado
+// é `expectsDelivery`, que a página só liga quando existe deal que DEVERIA
+// estar entregando. Fonte 100% encerrada não alarma, por construção.
 //
 // Diferente do DataFreshnessIndicator do menu admin: aquele lê
 // unified_daily_performance_metrics (delivery DV360/Xandr/StackAdapt).
 //
-// Régua (hora-local America/Sao_Paulo), aplicada por fonte:
+// Régua do JOB (hora-local America/Sao_Paulo), aplicada por fonte:
 //   • Último run com status de erro                  → vermelho (mostra o erro)
+//   • Último run 'skipped' (sem credencial)          → vermelho (não rodou)
 //   • Run bem-sucedido com data BR == hoje           → verde (ok)
 //   • Antes do cutoff 05h e sem run de hoje          → cinza (aguardando)
 //   • Após cutoff, último run OK = ontem             → amarelo (warn)
 //   • Após cutoff, último run OK ≥ 2 dias atrás      → vermelho (error)
+//
+// Régua do DADO (só quando `expectsDelivery`), aplicada sobre o mesmo dot:
+//   • dado até D-1                                   → não mexe (em dia)
+//   • dado em D-2                                    → amarelo
+//   • dado em D-3 ou mais velho                      → vermelho
+//
+// D-2 é amarelo e não verde de propósito: é exatamente o estado em que a base
+// ficou parada por semanas sem ninguém ver. É também o estado que o
+// `pmp-pubmatic-refresh` (4x/dia) existe pra evitar — se ele estiver de pé,
+// amarelo aqui significa que a PRÓPRIA fonte atrasou, o que é informação.
 //
 // Cutoff 05h cobre o cron de 04h + margem pro report do Xandr terminar.
 // Sem ledger (backend antigo), cai no `lastSyncedAt` das lines — comportamento
@@ -41,6 +65,13 @@ import { cn } from "../../../ui/cn";
 
 const TZ_BR = "America/Sao_Paulo";
 const CUTOFF_HOUR_BR = 5;
+
+// Régua do atraso de DADO, em dias atrás de D-1. Constante nomeada porque é o
+// número que precisa de ajuste se algum dia se confirmar que a API de reporting
+// de uma fonte fecha D-1 mais tarde que a UI dela: aí o conserto é mexer aqui,
+// não na lógica. Hoje 1 dia = amarelo porque foi exatamente em D-2 que a base
+// da PubMatic ficou parada por semanas sem ninguém ver.
+const DATA_LAG_WARN_DAYS = 1;
 
 function brDateString(iso) {
   const d = iso ? new Date(iso) : new Date();
@@ -78,7 +109,61 @@ function daysBetweenBr(fromIso, toDate) {
   return Math.round((b - a) / 86_400_000);
 }
 
-// `src` = { lastRunAt, lastRunStatus, lastOkAt, lastSyncedAt }.
+// Dia BR de hoje como "YYYY-MM-DD", pra comparar com as datas DATE que o
+// backend manda (api_last_day, last_delivery_day) sem passar por Date/UTC —
+// que é onde essa comparação erra por um dia.
+function brToday() {
+  return brDateString(null);
+}
+
+function addDaysIso(iso, delta) {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
+}
+
+// Distância em dias entre duas datas "YYYY-MM-DD" (b − a).
+function daysBetweenIso(a, b) {
+  return Math.round(
+    (new Date(`${b}T00:00:00Z`) - new Date(`${a}T00:00:00Z`)) / 86_400_000,
+  );
+}
+
+// ATRASO DE DADO. Quantos dias o dado mais recente está atrás de D-1 (o dia que
+// a fonte já deveria ter fechado). Retorna null quando não há como afirmar.
+//
+// `apiLastDay` (do ledger) é a medida boa: é o último dia em que a API TINHA
+// dado, medido no próprio sync. `latestDeliveryDay` (das lines) é o fallback
+// pra quando o backend ainda não reporta frescor — pior, porque não distingue
+// "a fonte não fechou o dia" de "os deals pararam de entregar".
+//
+// Por isso só roda com `expectsDelivery`: sem a garantia de que existe deal que
+// DEVERIA estar entregando, este número mede fim de campanha, não atraso — e
+// era justamente esse falso alarme que o ledger tinha acabado de matar.
+function deriveDataLag(src) {
+  if (!src.expectsDelivery) return null;
+
+  // Caminho bom: frescor medido pelo próprio sync, contra a resposta da API.
+  if (src.lagDays != null && src.apiLastDay) {
+    return { days: Math.max(0, src.lagDays), day: src.apiLastDay };
+  }
+  // O ledger reportou frescor e não achou NENHUM dia com dado na janela toda.
+  // Não é atraso — é conta sem entrega nenhuma acontecendo. Nada a afirmar.
+  if (src.hasFreshness) return null;
+
+  // Backend sem frescor no ledger: cai no last_delivery_day das lines. Pior
+  // sinal (não separa "fonte atrasou" de "os deals pararam"), mas melhor que
+  // não ter nenhum.
+  if (!src.latestDeliveryDay) return null;
+  const expected = addDaysIso(brToday(), -1);   // D-1
+  return {
+    days: Math.max(0, daysBetweenIso(src.latestDeliveryDay, expected)),
+    day: src.latestDeliveryDay,
+  };
+}
+
+// `src` = { lastRunAt, lastRunStatus, lastOkAt, lastSyncedAt, apiLastDay,
+//           lagDays, latestDeliveryDay, expectsDelivery }.
 // A falha do último run domina qualquer régua de data: um sync que rodou hoje
 // e ESTOUROU não é "base atualizada hoje".
 function deriveStatus(src) {
@@ -95,19 +180,38 @@ function deriveStatus(src) {
     };
   }
 
+  // 'skipped' = o sync nem foi tentado (sem credencial no ambiente). Antes isso
+  // não gerava row nenhuma e a fonte simplesmente não tinha status.
+  if (lastRunStatus === "skipped") {
+    return { tone: "error", summary: "Sync não executado — credencial ausente" };
+  }
+
   // Sem ledger: fallback pro sinal antigo (synced_at das linhas de entrega).
   const ref = lastOkAt || lastRunAt || src.lastSyncedAt;
   if (!ref) return { tone: "neutral", summary: "Sem dados de sync" };
 
   const daysBehind = daysBetweenBr(ref, now);
-  if (daysBehind <= 0) return { tone: "ok", summary: "Sync rodou hoje" };
-  if (brHour(now) < CUTOFF_HOUR_BR) {
-    return { tone: "neutral", summary: "Aguardando sync matinal" };
+  if (daysBehind > 0) {
+    if (brHour(now) < CUTOFF_HOUR_BR) {
+      return { tone: "neutral", summary: "Aguardando sync matinal" };
+    }
+    if (daysBehind === 1) {
+      return { tone: "warn", summary: "Último sync foi ontem — cron pode ter falhado" };
+    }
+    return { tone: "error", summary: `Sem sync há ${daysBehind} dias` };
   }
-  if (daysBehind === 1) {
-    return { tone: "warn", summary: "Último sync foi ontem — cron pode ter falhado" };
+
+  // O job está em dia. Falta a outra metade: o DADO chegou?
+  // Este é o estado que passou semanas invisível — "Sync rodou hoje" em verde
+  // com a base 2 dias atrás. Um job saudável não é evidência de base fresca.
+  const lag = deriveDataLag(src);
+  if (lag && lag.days >= DATA_LAG_WARN_DAYS) {
+    const d = fmtBrDate(lag.day);
+    return lag.days === DATA_LAG_WARN_DAYS
+      ? { tone: "warn",  summary: `Sync ok, mas o dado para em ${d} (1 dia atrás)` }
+      : { tone: "error", summary: `Sync ok, mas o dado para em ${d} (${lag.days} dias atrás)` };
   }
-  return { tone: "error", summary: `Sem sync há ${daysBehind} dias` };
+  return { tone: "ok", summary: "Sync rodou hoje · dado em dia" };
 }
 
 const TONE_CLASSES = {
@@ -133,10 +237,11 @@ export function PmpFreshnessIndicator({
   className,
 }) {
   // Cada fonte: { key, label, lastRunAt, lastRunStatus, lastError, lastOkAt,
-  //               credential, lastSyncedAt, latestDeliveryDay, linesCount, note }.
+  //               credential, lastSyncedAt, latestDeliveryDay, apiLastDay,
+  //               lagDays, expectsDelivery, linesCount, note }.
   // Anexa o status derivado por fonte e o tone agregado do gatilho.
   const withStatus = useMemo(
-    () => sources.map((s) => ({ ...s, status: deriveStatus(s) })),
+    () => sources.map((s) => ({ ...s, status: deriveStatus(s), dataLag: deriveDataLag(s) })),
     [sources],
   );
   const aggTone = useMemo(
@@ -222,6 +327,18 @@ export function PmpFreshnessIndicator({
                       <Row label="Último sync OK" value={s.lastOkAt ? fmtBrDateTime(s.lastOkAt) : "nunca"} />
                     )}
                     <Row label="Última entrega" value={fmtBrDate(s.latestDeliveryDay)} />
+                    {/* Frescor da FONTE, medido pelo próprio sync: até onde a
+                        API tinha dado. Separado de "Última entrega" porque um
+                        deal pode ter só parado de entregar — o que responde
+                        "a base está atrasada?" é este. */}
+                    {s.apiLastDay && (
+                      <Row
+                        label="Dado da fonte até"
+                        value={s.dataLag && s.dataLag.days >= 1
+                          ? `${fmtBrDate(s.apiLastDay)} · ${s.dataLag.days}d atrás`
+                          : `${fmtBrDate(s.apiLastDay)} · em dia`}
+                      />
+                    )}
                     {s.linesCount != null && (
                       <Row label="Lines sincronizadas" value={String(s.linesCount)} />
                     )}
@@ -268,7 +385,8 @@ export function PmpFreshnessIndicator({
           )}
 
           <div className="px-4 py-2 border-t border-border text-[10.5px] text-fg-subtle leading-snug">
-            Cron diário às 04h · referência <span className="font-medium">ontem</span>.
+            Cron às 04h · PubMatic re-sincroniza 10/14/18/22h ·
+            {" "}referência <span className="font-medium">ontem</span>.
             {" "}Falha → reportar no #data-pipelines.
           </div>
         </Popover.Content>
