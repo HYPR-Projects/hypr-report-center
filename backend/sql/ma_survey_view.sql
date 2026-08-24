@@ -27,27 +27,50 @@
 --
 -- Dedupe NÃO é opcional
 -- ---------------------
--- Com DOIS escritores e re-export sobreposto por desenho, o event_id só
--- dedupa dentro da janela do streaming buffer. Todo leitor da plataforma
--- aplica o mesmo QUALIFY abaixo. Sem ele, resposta repetida vira resposta a
--- mais e o total que vai pro cliente infla sem erro nenhum — o pior tipo de
--- defeito num número de relatório.
+-- O lake tem DOIS escritores (o cron de export do Postgres e o Worker de
+-- ingestão do Cloudflare) e re-export sobreposto é parte do desenho — o
+-- event_id é o insertId, que dedupa só dentro da janela do streaming buffer.
+-- Sem dedupe, resposta repetida vira resposta a mais e o total do relatório
+-- do cliente infla em silêncio.
+--
+-- Mas o COMO importa: a versão anterior desta view deduplicava com
+-- `QUALIFY ROW_NUMBER() OVER (PARTITION BY event_id ...)`, e isso quebrou
+-- tudo em produção:
+--
+--   Cannot query over table 'creative_events_raw' without a filter over
+--   column(s) 'occurred_at' that can be used for partition elimination
+--
+-- A tabela exige filtro de partição, e função de janela é BARREIRA de
+-- otimização: o filtro que o Report Center põe do lado de fora não desce
+-- até o scan, então o BigQuery não elimina partição nenhuma e recusa a
+-- query. Não era só a conferência — era toda chamada do report.
+--
+-- Duas defesas, e as duas são de propósito:
+--
+--   1. SELECT DISTINCT no lugar do QUALIFY. Duplicata de re-export é a
+--      MESMA linha (os dois escritores montam a linha do mesmo registro,
+--      pelo mesmo `mapEventRowToLake`), diferindo só em `created_at`, que
+--      não sai daqui — então DISTINCT colapsa exatamente o que o QUALIFY
+--      colapsava. Sendo agregação por chave, o filtro de fora desce e a
+--      poda de partição e de cluster volta a valer.
+--   2. Filtro de partição DENTRO da view. Independe do otimizador: mesmo
+--      que um consumidor esqueça o filtro dele, o scan já nasce podado.
+--
+-- A janela interna de 730 dias é teto, não recorte de produto: pesquisa de
+-- campanha vive semanas. Se um dia precisar de mais, é aqui que muda.
+--
+-- Ressalva honesta do DISTINCT: se o lake tivesse o mesmo event_id com
+-- payloads DIFERENTES, o QUALIFY escolheria um e o DISTINCT manteria os
+-- dois. Não acontece por construção (mesma origem, mesmo mapeamento), e a
+-- troca compra de volta a poda que a tabela exige.
 --
 -- Custo
 -- -----
--- O filtro por event_type casa com a chave de cluster, então a varredura fica
--- nos blocos de survey_answer. O Report Center sempre filtra por período
--- (poda partição), no detalhe filtra por creative_id, cacheia 5–10 min e
--- ainda impõe teto de bytes por query.
+-- Com a poda restaurada: filtro por event_type casa com a chave de cluster,
+-- o filtro de período do Report Center poda partição, e o detalhe por
+-- creative_id poda cluster. O report ainda cacheia 5–10 min e impõe teto de
+-- bytes por query.
 
--- Ordem importa: o BigQuery valida as tabelas referenciadas na hora de criar
--- a view, então rodar isto antes do primeiro tick do cron da plataforma (que
--- é quem cria a `creatives_dim`) falharia com "Not found: Table". Este CREATE
--- é o mesmo da plataforma, com IF NOT EXISTS — vira no-op assim que ela
--- criar, e a ordem de quem roda primeiro deixa de importar.
---
--- Quem MANTÉM esse schema é a plataforma (`creatives-dim-bq.ts`); aqui é só
--- um piso pra destravar a criação da view.
 CREATE TABLE IF NOT EXISTS `site-hypr.prod_analytics.creatives_dim` (
   creative_id   STRING NOT NULL,
   creative_name STRING,
@@ -62,17 +85,21 @@ CLUSTER BY creative_id;
 
 CREATE OR REPLACE VIEW `site-hypr.prod_analytics.ma_survey_responses` AS
 WITH answers AS (
-  SELECT
+  -- DISTINCT, não QUALIFY: ver "Dedupe NÃO é opcional" acima. `created_at`
+  -- fica DE FORA de propósito — é a única coluna em que duas gravações do
+  -- mesmo evento diferem, e mantê-la aqui anularia o dedupe.
+  SELECT DISTINCT
     event_id,
     creative_id,
     JSON_VALUE(metadata, '$.questionText') AS question,
     JSON_VALUE(metadata, '$.optionLabel')  AS option,
-    occurred_at                            AS responded_at,
-    created_at
+    occurred_at                            AS responded_at
   FROM `site-hypr.prod_analytics.creative_events_raw`
   WHERE event_type = 'survey_answer'
-  QUALIFY event_id IS NULL
-       OR ROW_NUMBER() OVER (PARTITION BY event_id ORDER BY created_at) = 1
+    -- Filtro de partição DENTRO da view: a tabela exige um, e depender do
+    -- filtro do consumidor é depender de o otimizador conseguir empurrá-lo
+    -- pra cá. Teto de 730 dias.
+    AND occurred_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 730 DAY)
 )
 SELECT
   a.creative_id,

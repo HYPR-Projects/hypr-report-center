@@ -129,6 +129,9 @@ pode rodar mesmo que o cron da plataforma ainda não tenha ticado (sem isso o
 `CREATE VIEW` falharia com "Not found: Table", porque o BigQuery valida as
 referências na criação).
 
+`CREATE OR REPLACE` — rodar de novo é seguro e é o conserto padrão quando a
+view muda.
+
 **4. Dar leitura em `prod_analytics` pra service account da Cloud Function**
 
 ```bash
@@ -202,6 +205,30 @@ O risco não é volume de dado, é **query por pageview**: `maxattention_results
 
 Do lado da plataforma, a dimensão usa load job (gratuito) com gate de frescor
 por metadata: ~24 recargas/dia, custo zero nos demais ticks.
+
+## A view precisa podar partição
+
+`creative_events_raw` exige filtro em `occurred_at` (`require_partition_filter`).
+A primeira versão da view deduplicava com `QUALIFY ROW_NUMBER() OVER (...)` e
+isso derrubou tudo em produção:
+
+```
+Cannot query over table 'creative_events_raw' without a filter over
+column(s) 'occurred_at' that can be used for partition elimination
+```
+
+Função de janela é barreira de otimização: o filtro de período que o Report
+Center põe do lado de fora não desce até o scan, então o BigQuery não elimina
+partição e recusa a query — toda chamada do report, não só a de conferência.
+
+A view atual resolve com duas defesas: `SELECT DISTINCT` no lugar do `QUALIFY`
+(dedupa o mesmo caso, sem barreira, então filtro de fora volta a podar
+partição e cluster) e um filtro de partição **dentro** da view, que não
+depende do otimizador.
+
+Se um dia alguém for mexer nessa view: qualquer coisa que introduza janela,
+ordenação global ou agregação que não seja por chave derruba a poda de novo.
+O sintoma é exatamente a mensagem acima.
 
 ## Quando um número parecer errado
 
