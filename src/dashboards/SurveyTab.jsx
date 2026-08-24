@@ -174,7 +174,12 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
                       <div style={{fontSize:16,fontWeight:600,color}}>{l.rel>=0?"+":""}{l.rel}%</div>
                     </div>
                   </div>
-                  {l.sig && (
+                  {/* Margem de erro e significância são a régua com que a HYPR
+                      julga o próprio número — inclusive quando ela diz "não
+                      concluir". Sai da visão do cliente; o gate é aqui, e não
+                      no cálculo, porque `l.sig` continua alimentando o título
+                      e a leitura interna. */}
+                  {isAdmin && l.sig && (
                     <div
                       title={
                         l.sig.tone === "muted"
@@ -477,8 +482,12 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
                 <div style={{fontSize:13,fontWeight:700,color:C.blue,textTransform:"uppercase",letterSpacing:1.5}}>
                   {q.nome||`Pergunta ${i+1}`}
                 </div>
-                <SourceBadges sources={q.sources}/>
-                <ReconciliationNote reconciliation={q.reconciliation} isAdmin={isAdmin}/>
+                {/* De qual base veio a resposta é decisão de metodologia da
+                    HYPR, não informação de relatório: pro cliente a pergunta
+                    é uma só, com um total só. As pílulas de fonte e o aviso de
+                    reconciliação entre bases ficam do lado de dentro. */}
+                {isAdmin && <SourceBadges sources={q.sources}/>}
+                {isAdmin && <ReconciliationNote reconciliation={q.reconciliation}/>}
               </div>
               {isAdmin && (
                 <div style={{fontSize:11,color:mt,whiteSpace:"nowrap"}}>
@@ -560,10 +569,13 @@ function SourceBadges({ sources }) {
   );
 }
 
-// Aviso de reconciliação entre bases. O cliente só vê o caso grave
-// (bases divergentes — somar ali seria inventar número); o admin vê o
-// detalhe de cada decisão, que é o que permite corrigir na origem.
-function ReconciliationNote({ reconciliation, isAdmin }) {
+// Aviso de reconciliação entre bases — SÓ pro admin (o chamador já gateia).
+// Já foi visível pro cliente no caso grave, na ideia de que "bases
+// divergentes" fosse uma proteção contra ler um total mal somado. Não era:
+// quem corrige divergência de base é a HYPR, na origem, e o aviso ainda
+// entregava ao cliente o que a decisão de esconder a fonte quer esconder —
+// que existe mais de uma base. Some pros dois motivos de uma vez.
+function ReconciliationNote({ reconciliation }) {
   if (!reconciliation) return null;
   const sides = [
     { key: "ctrl", label: "Controle", rec: reconciliation.ctrl },
@@ -576,7 +588,6 @@ function ReconciliationNote({ reconciliation, isAdmin }) {
     : sides.some((s) => s.rec.status === "partial")
       ? "partial"
       : "ok";
-  if (worst === "ok" && !isAdmin) return null;
 
   const tint = worst === "mismatch"
     ? { fg:"#C0392B", bg:"#C0392B14", bd:"#C0392B40" }
