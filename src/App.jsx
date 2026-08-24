@@ -21,6 +21,10 @@ import {
 import { initGoogleAuth, requestSilentSignIn } from "./shared/googleAuth";
 import { lookupShare } from "./lib/api";
 import { isDemoToken } from "./shared/demoData";
+import {
+  parseAdminPath, pathFor, writeStoredView,
+  SECTION_PMP, SECTION_CLIENT,
+} from "./v2/admin/shell/navConfig";
 
 // ── Code-splitting ──────────────────────────────────────────────────────
 // Cada rota é um chunk próprio, EXCETO o ClientPasswordScreen — esse é
@@ -160,16 +164,40 @@ function AppRoutes() {
   // client-facing, NÃO expõe nenhum dado interno (custo/margem/tech cost).
   const clientPortalMatch = path.match(/^\/c\/([A-Za-z0-9_-]+)\/?$/);
   const clientPortalShareId = clientPortalMatch ? clientPortalMatch[1] : null;
-  // Rota /admin/client/:slug — drilldown do cliente. Único caso de "deep
-  // link" admin com path-param. Não usamos React Router porque o app
-  // tem só duas rotas profundas (esta + /report/) e o overhead da lib
-  // não vale o ganho.
-  const adminClientMatch = path.match(/^\/admin\/client\/([a-z0-9-]+)\/?$/i);
-  const adminClientSlug  = adminClientMatch ? adminClientMatch[1].toLowerCase() : null;
-  // Rota /admin/pmp — análise de deals de pagamento (PMP). Substitui a
-  // planilha "HYPR Product Performance" no Google Sheets. Mesmo gate
-  // do CampaignMenu (sessão admin @hypr.mobi).
-  const isAdminPmp = path === "/admin/pmp" || path === "/admin/pmp/";
+  // ── Rotas admin ────────────────────────────────────────────────────────
+  // Cada VIEW admin tem caminho próprio agora:
+  //
+  //   /admin/reports/{mes,clientes,lista,performers,diagnostico}
+  //   /admin/pmp/{lista,no-ar,carteira,historico,analytics}
+  //   /admin/client/:slug
+  //
+  // Antes, a view escolhida vivia só em `localStorage` — o rail marcaria
+  // `aria-current` num estado que a URL não conhece, o refresh podia cair
+  // noutra view, voltar/avançar não navegava e não existia link
+  // compartilhável pra "Diagnóstico". `parseAdminPath` centraliza o
+  // reconhecimento e devolve o path canônico quando a URL veio numa forma
+  // legada (`/` e `/admin/pmp` continuam funcionando — todo bookmark
+  // antigo é normalizado, não quebrado).
+  //
+  // Segue sem React Router: são 11 rotas declarativas resolvidas por
+  // regex em navConfig, e o app já fazia pushState à mão.
+  const adminRoute = (!isClient && !clientPortalShareId) ? parseAdminPath(path) : null;
+  const adminClientSlug = adminRoute?.section === SECTION_CLIENT ? adminRoute.slug : null;
+
+  // Normalização da URL. Quando a rota chegou numa forma legada (`/`,
+  // `/admin/pmp`) ou com slug desconhecido (link velho, typo),
+  // `parseAdminPath` já resolveu qual view renderizar — só o endereço na
+  // barra é que está desatualizado. Corrigir com `replaceState`, sem
+  // disparar popstate: o render corrente JÁ está certo, então re-renderizar
+  // seria trabalho jogado fora. E `replace` (não `push`) porque empilhar
+  // faria o botão voltar cair na forma legada, que normalizaria de novo —
+  // um laço em que voltar nunca sai da página.
+  const canonicalPath = adminRoute?.canonical || null;
+  useEffect(() => {
+    if (!canonicalPath) return;
+    if (window.location.pathname === canonicalPath) return;
+    window.history.replaceState({}, "", canonicalPath + window.location.search + window.location.hash);
+  }, [canonicalPath]);
   // Quando o cliente desbloqueia, guardamos o short_token resolvido pelo
   // backend (que pode diferir do `clientToken` da URL no formato novo
   // /report/{share_id}). O state inicial é populado do localStorage para
@@ -413,30 +441,28 @@ function AppRoutes() {
   };
 
   // Navegação client-side leve. Usa history.pushState pra evitar full
-  // reload — drilldown e back ficam instantâneos. Quando React Router
-  // entrar (eventualmente), substitui isso.
-  const goToClient = (slug) => {
-    window.history.pushState({}, "", `/admin/client/${slug}`);
+  // reload — trocar de view e voltar ficam instantâneos.
+  //
+  // `replace` existe pra normalização de URL: quando alguém abre `/` ou
+  // `/admin/pmp` (formas legadas), a URL é reescrita pro caminho canônico
+  // SEM empilhar uma entrada no histórico. Empilhar faria o botão voltar
+  // do browser cair de volta na forma legada, que normalizaria de novo —
+  // um laço em que voltar nunca sai da página.
+  const navigate = (to, { replace = false } = {}) => {
+    if (replace) window.history.replaceState({}, "", to);
+    else         window.history.pushState({}, "", to);
     // Força re-render do App lendo location.pathname.
     window.dispatchEvent(new PopStateEvent("popstate"));
   };
-  const goHome = () => {
-    window.history.pushState({}, "", "/");
-    window.dispatchEvent(new PopStateEvent("popstate"));
-  };
 
-  // Rota /admin/pmp — análise de deals PMP. Mesma topbar do menu,
-  // botão "Voltar" leva pro CampaignMenu (goHome). Aberta a todos os
-  // admins (somente-leitura por padrão): edição é gateada por
-  // PMP_EDITORS e o "Sincronizar agora" por FEATURE_ADMINS — a mesma
-  // regra do "Reconstruir agora" do menu. Só os REBUILDS são restritos.
-  if (isAdminPmp) {
-    return (
-      <Suspense fallback={<RouteSuspense />}>
-        <PmpDealsPage user={user} onLogout={onLogout} onBackToMenu={goHome} />
-      </Suspense>
-    );
-  }
+  const goToClient = (slug) => navigate(`/admin/client/${slug}`);
+
+  // Navegação de view a partir do rail. Persiste a escolha (pra que a
+  // próxima entrada em `/` caia na mesma view) e empurra o path canônico.
+  const goToView = (section, layout) => {
+    writeStoredView(section, layout);
+    navigate(pathFor(section, layout));
+  };
 
   // Drilldown do cliente. `key={slug}` força remount quando o slug muda
   // (ex: navegação via back+forward entre dois clientes), zerando state
@@ -450,18 +476,38 @@ function AppRoutes() {
           slug={adminClientSlug}
           user={user}
           onLogout={onLogout}
-          onBack={goHome}
+          onNavigateView={goToView}
           onOpenReport={onOpenReport}
         />
       </Suspense>
     );
   }
 
+  // Rota /admin/pmp/:view — análise de deals PMP. Aberta a todos os admins
+  // (somente-leitura por padrão): edição é gateada por PMP_EDITORS e o
+  // "Sincronizar agora" por FEATURE_ADMINS — a mesma regra do "Reconstruir
+  // agora" do menu. Só os REBUILDS são restritos.
+  if (adminRoute?.section === SECTION_PMP) {
+    return (
+      <Suspense fallback={<RouteSuspense />}>
+        <PmpDealsPage
+          user={user}
+          onLogout={onLogout}
+          layout={adminRoute.layout}
+          onNavigateView={goToView}
+        />
+      </Suspense>
+    );
+  }
+
+  // Reports — a rota raiz do admin.
   return (
     <Suspense fallback={<RouteSuspense />}>
       <CampaignMenu
         user={user}
         onLogout={onLogout}
+        layout={adminRoute?.layout || "month"}
+        onNavigateView={goToView}
         onOpenReport={onOpenReport}
         onOpenClient={goToClient}
       />

@@ -30,6 +30,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
+import { AdminRailRow, StatusDot } from "../shell/AdminNavItem";
 import { cn } from "../../../ui/cn";
 import { getDataFreshness, getRebuildStatus, triggerUnifiedRebuild } from "../../../lib/api";
 import { isFeatureAdmin } from "../../../shared/auth";
@@ -153,7 +154,7 @@ const TONE_CLASSES = {
   neutral: { dot: "bg-fg-subtle", text: "text-fg-subtle", ring: "ring-border" },
 };
 
-export function DataFreshnessIndicator({ className, user }) {
+export function DataFreshnessIndicator({ className, user, variant = "icon" }) {
   // Reconstrução manual é restrita à lista FEATURE_ADMINS. Demais admins
   // veem o status das bases mas não o botão "Reconstruir agora".
   const canRebuild = isFeatureAdmin(user);
@@ -292,44 +293,73 @@ export function DataFreshnessIndicator({ className, user }) {
     : "error"
   ];
 
+  const isRail = variant === "rail";
+  // Meta da linha do rail: a hora do último rollup consolidado. É o número
+  // que a operação procura ("já rodou hoje?") e cabe em 5 caracteres —
+  // então vale o espaço à direita do rótulo. Enquanto carrega, fica vazio
+  // em vez de "—": o dot já está pulsando e dizer "sem dado" seria mentira.
+  const railMeta = state.loading
+    ? undefined
+    : (state.unifiedMax ? formatRailClock(state.unifiedMax) : undefined);
+
   return (
     <Popover.Root>
       <Popover.Trigger asChild>
-        <button
-          type="button"
-          aria-label={`Status das bases — ${status.summary}`}
-          title={status.summary}
-          className={cn(
-            "inline-flex items-center justify-center size-9 rounded-full",
-            "border border-border bg-surface text-fg-muted",
-            "hover:border-border-strong hover:bg-surface-strong hover:text-fg",
-            "transition-[colors,transform] duration-150 cursor-pointer",
-            "active:scale-90",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
-            className,
-          )}
-        >
-          {/* Ícone database em currentColor + dot de status sobreposto.
-              Loading vira pulse no dot pra dar feedback sem placeholder
-              feio. */}
-          <span className="relative inline-flex">
-            <DatabaseIcon />
-            <span
-              aria-hidden
-              className={cn(
-                "absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-surface",
-                tone.dot,
-                state.loading && "animate-pulse",
-              )}
-            />
-          </span>
-        </button>
+        {isRail ? (
+          // Variante de rail: linha nomeada com dot de severidade e a hora
+          // do último rollup à direita. No header antigo isto era um
+          // botão-ícone de 36px indistinguível dos outros três — você
+          // precisava passar o mouse pra saber o que era.
+          <AdminRailRow
+            label="Estado das bases"
+            iconNode={<StatusDot toneClass={tone.dot} pulse={state.loading} />}
+            meta={railMeta}
+            tipHint={status.summary}
+            // O nome acessível começa com o rótulo VISÍVEL ("Estado das
+            // bases") — WCAG 2.5.3: controle por voz usa o que se lê na tela.
+            aria-label={`Estado das bases — ${status.summary}`}
+            title={status.summary}
+          />
+        ) : (
+          <button
+            type="button"
+            // O nome acessível começa com o rótulo VISÍVEL ("Estado das
+            // bases") — WCAG 2.5.3: controle por voz usa o que se lê na tela.
+            aria-label={`Estado das bases — ${status.summary}`}
+            title={status.summary}
+            className={cn(
+              "inline-flex items-center justify-center size-9 rounded-full",
+              "border border-border bg-surface text-fg-muted",
+              "hover:border-border-strong hover:bg-surface-strong hover:text-fg",
+              "transition-[colors,transform] duration-150 cursor-pointer",
+              "active:scale-90",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
+              className,
+            )}
+          >
+            {/* Ícone database em currentColor + dot de status sobreposto.
+                Loading vira pulse no dot pra dar feedback sem placeholder
+                feio. */}
+            <span className="relative inline-flex">
+              <DatabaseIcon />
+              <span
+                aria-hidden
+                className={cn(
+                  "absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-surface",
+                  tone.dot,
+                  state.loading && "animate-pulse",
+                )}
+              />
+            </span>
+          </button>
+        )}
       </Popover.Trigger>
 
       <Popover.Portal>
         <Popover.Content
+          side={isRail ? "right" : "bottom"}
           sideOffset={8}
-          align="end"
+          align={isRail ? "start" : "end"}
           collisionPadding={16}
           className={cn(
             "z-50 w-[280px] max-w-[calc(100vw-32px)]",
@@ -506,4 +536,28 @@ function DatabaseIcon() {
       <path d="M3 12a9 3 0 0 0 18 0" />
     </svg>
   );
+}
+
+/**
+ * Hora (HH:MM) do rollup consolidado, no fuso de São Paulo — o mesmo em que
+ * a operação pensa. Recebe o que o backend devolve em `unifiedMax`, que pode
+ * ser uma data (YYYY-MM-DD, sem hora) ou um timestamp completo; no primeiro
+ * caso não há hora pra mostrar e devolvemos a data curta.
+ */
+function formatRailClock(value) {
+  if (!value) return undefined;
+  const raw = String(value);
+  // "2026-08-24" → sem componente de hora.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return `${raw.slice(8, 10)}/${raw.slice(5, 7)}`;
+  }
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return undefined;
+  try {
+    return d.toLocaleTimeString("pt-BR", {
+      hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo",
+    });
+  } catch {
+    return undefined;
+  }
 }

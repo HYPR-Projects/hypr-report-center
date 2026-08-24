@@ -573,7 +573,7 @@ function Delta({ value, title }) {
   const pct = value * 100;
   const flat = Math.abs(pct) < 0.5;
   const up = pct > 0;
-  const cls = flat ? "text-fg-subtle" : up ? "text-emerald-400" : "text-rose-400";
+  const cls = flat ? "text-fg-subtle" : up ? "text-success" : "text-danger";
   const arrow = flat ? "→" : up ? "▲" : "▼";
   const txt = `${up ? "+" : ""}${fmt(pct, 0)}%`;
   return (
@@ -753,14 +753,14 @@ function ContractProgress({ rows, metric, accent }) {
                   no mobile). O detalhe em R$ vai pra linha própria abaixo. */}
               <div className="flex items-baseline justify-between gap-2 mb-1.5">
                 <span className="text-[13px] font-medium text-fg truncate min-w-0" title={r.name}>{r.name}</span>
-                <span className={cn("text-[13px] font-semibold tabular-nums shrink-0", over ? "text-emerald-400" : "text-fg")}>
+                <span className={cn("text-[13px] font-semibold tabular-nums shrink-0", over ? "text-success" : "text-fg")}>
                   {over && <span aria-hidden>▲ </span>}{formatRatioPct(ratio, 1)}
                 </span>
               </div>
               <div className="relative">
                 <div className="h-2 rounded-full bg-track overflow-hidden">
                   <div className="h-full rounded-full transition-[width] duration-500"
-                       style={{ width: `${width}%`, background: over ? "var(--color-emerald-500, #10b981)" : accent }} />
+                       style={{ width: `${width}%`, background: over ? "var(--color-success)" : accent }} />
                 </div>
                 {/* Tracinho da meta de 85% (margem). Fica por cima da barra,
                     fora do overflow-hidden pra cruzar o trilho inteiro. */}
@@ -967,7 +967,7 @@ function MonthlyLedger({ ledger, accent }) {
                       </Td>
                       <Td className="text-right tabular-nums">
                         {r.pi > 0
-                          ? <span className="text-emerald-600 dark:text-emerald-400" title={formatBRL(r.cohortMargin)}>
+                          ? <span className="text-success" title={formatBRL(r.cohortMargin)}>
                               <EntriesHover row={r} mode="marginInMonth">{formatBRLCompact(r.cohortMargin)}</EntriesHover>
                             </span>
                           : <span className="text-fg-subtle">—</span>}
@@ -975,7 +975,7 @@ function MonthlyLedger({ ledger, accent }) {
                       <Td className="text-right tabular-nums">
                         {r.pi > 0 ? (
                           <>
-                            <div className={cn("font-semibold", r.open > 0 ? "text-amber-600 dark:text-amber-300" : "text-fg-subtle")}
+                            <div className={cn("font-semibold", r.open > 0 ? "text-warning" : "text-fg-subtle")}
                                  title={`PI − Receita Bruta já entregue por essa safra = ${formatBRL(r.open)}`}>
                               {r.open > 0
                                 ? <EntriesHover row={r} mode="open">{formatBRLCompact(r.open)}</EntriesHover>
@@ -998,7 +998,7 @@ function MonthlyLedger({ ledger, accent }) {
                       <Td className="text-right tabular-nums">
                         {r.margin > 0 ? (
                           <>
-                            <div className="font-semibold text-emerald-600 dark:text-emerald-400" title={formatBRL(r.margin)}>{formatBRLCompact(r.margin)}</div>
+                            <div className="font-semibold text-success" title={formatBRL(r.margin)}>{formatBRLCompact(r.margin)}</div>
                             {r.marginPct != null && <div className="text-[10.5px] text-fg-subtle font-normal">{formatRatioPct(r.marginPct, 0)} margem</div>}
                           </>
                         ) : <span className="text-fg-subtle">—</span>}
@@ -1052,11 +1052,11 @@ function MonthlyLedger({ ledger, accent }) {
                   <EntriesHover row={totals} mode="inMonth" monthLabel="todo o período">{formatBRLCompact(totals.cohortRevenue)}</EntriesHover>
                   <div className="text-[10.5px] text-fg-subtle font-normal">{formatRatioPct(totals.cohortPct, 0)} do PI</div>
                 </Td>
-                <Td className={cn(FOOT, "text-right text-emerald-600 dark:text-emerald-400 tabular-nums")} title={formatBRL(totals.cohortMargin)}>
+                <Td className={cn(FOOT, "text-right text-success tabular-nums")} title={formatBRL(totals.cohortMargin)}>
                   <EntriesHover row={totals} mode="marginInMonth" monthLabel="todo o período">{formatBRLCompact(totals.cohortMargin)}</EntriesHover>
                 </Td>
                 <Td className={cn(FOOT, "text-right tabular-nums")} title={`Total ainda a receber: ${formatBRL(totals.open)}`}>
-                  <span className={totals.open > 0 ? "text-amber-600 dark:text-amber-300" : "text-fg-subtle"}>
+                  <span className={totals.open > 0 ? "text-warning" : "text-fg-subtle"}>
                     {totals.open > 0
                       ? <EntriesHover row={totals} mode="open" monthLabel="todo o período">{formatBRLCompact(totals.open)}</EntriesHover>
                       : formatBRLCompact(totals.open)}
@@ -1065,7 +1065,7 @@ function MonthlyLedger({ ledger, accent }) {
                 </Td>
                 <Td className={FOOT}><CycleBar row={totals} accent={accent} /></Td>
                 <Td className={cn(FOOT, DIV, "text-right text-fg tabular-nums")} title={formatBRL(totals.revenue)}>{formatBRLCompact(totals.revenue)}</Td>
-                <Td className={cn(FOOT, "text-right text-emerald-600 dark:text-emerald-400 tabular-nums")} title={formatBRL(totals.margin)}>
+                <Td className={cn(FOOT, "text-right text-success tabular-nums")} title={formatBRL(totals.margin)}>
                   {formatBRLCompact(totals.margin)}
                   {totals.marginPct != null && <div className="text-[10.5px] text-fg-subtle font-normal">{formatRatioPct(totals.marginPct, 0)} margem</div>}
                 </Td>
@@ -1083,7 +1083,7 @@ function MonthlyLedger({ ledger, accent }) {
           <span className="w-3 h-1.5 rounded-full" style={{ background: accent, opacity: 0.4 }} aria-hidden /> consumido depois
         </span>
         <span className="inline-flex items-center gap-1.5">
-          <span className="w-3 h-1.5 rounded-full bg-amber-500/60" aria-hidden /> em aberto
+          <span className="w-3 h-1.5 rounded-full bg-warning/60" aria-hidden /> em aberto
         </span>
         <span className="ml-auto">
           Em aberto = PI − Receita Bruta já entregue por aquela safra.
@@ -1123,7 +1123,7 @@ const HOVER_MODES = {
     title: (m) => `Margem HYPR dentro de ${m}`,
     value: (e) => e.marginInMonth,
     sub: (e) => (e.revenueInMonth > 0 ? `${formatRatioPct(e.marginInMonth / e.revenueInMonth, 0)} de margem` : null),
-    tone: "text-emerald-600 dark:text-emerald-400",
+    tone: "text-success",
     keep: (e) => e.marginInMonth > 0.01,
     footer: "Margem no mês",
     empty: "Nenhum PI dessa safra entregou dentro do próprio mês.",
@@ -1132,7 +1132,7 @@ const HOVER_MODES = {
     title: (m) => `Em aberto de ${m}`,
     value: (e) => e.open,
     sub: (e) => `entregue ${formatBRLCompact(e.revenueLife)} de ${formatBRLCompact(e.pi)}`,
-    tone: "text-amber-600 dark:text-amber-300",
+    tone: "text-warning",
     keep: (e) => e.open > 0.01,
     footer: "Total em aberto",
     empty: "Todos os PIs dessa safra já entregaram o contratado.",
@@ -1263,13 +1263,13 @@ function CycleBar({ row, accent }) {
   const over = (row.overCount || 0) > 0;
   return (
     <div className="flex items-center gap-1.5">
-      <div className="flex h-2 w-[92px] rounded-full overflow-hidden bg-amber-500/25">
+      <div className="flex h-2 w-[92px] rounded-full overflow-hidden bg-warning/25">
         {inMonth > 0 && <span style={{ width: `${inMonth * 100}%`, background: accent }} />}
         {later > 0 && <span style={{ width: `${later * 100}%`, background: accent, opacity: 0.4 }} />}
-        {open > 0 && <span style={{ width: `${open * 100}%` }} className="bg-amber-500/60" />}
+        {open > 0 && <span style={{ width: `${open * 100}%` }} className="bg-warning/60" />}
       </div>
       {over && (
-        <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400"
+        <span className="text-[10px] font-semibold text-success"
               title={`${row.overCount} ${row.overCount === 1 ? "PI entregou" : "PIs entregaram"} mais que o contratado`}>▲</span>
       )}
     </div>

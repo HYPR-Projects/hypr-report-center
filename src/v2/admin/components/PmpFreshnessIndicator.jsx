@@ -61,6 +61,7 @@
 
 import { useMemo } from "react";
 import * as Popover from "@radix-ui/react-popover";
+import { AdminRailRow, StatusDot } from "../shell/AdminNavItem";
 import { cn } from "../../../ui/cn";
 
 const TZ_BR = "America/Sao_Paulo";
@@ -242,6 +243,7 @@ export function PmpFreshnessIndicator({
   sources = [],
   onSync, syncing = false,
   className,
+  variant = "icon",
 }) {
   // Cada fonte: { key, label, lastRunAt, lastRunStatus, lastError, lastOkAt,
   //               credential, lastSyncedAt, latestDeliveryDay, apiLastDay,
@@ -262,40 +264,55 @@ export function PmpFreshnessIndicator({
     ? `Sync das fontes de curadoria (${withStatus.length})`
     : `Sync ${withStatus[0]?.label || "PMP"} — ${withStatus[0]?.status.summary || "sem dados"}`;
 
+  const isRail = variant === "rail";
+
   return (
     <Popover.Root>
       <Popover.Trigger asChild>
-        <button
-          type="button"
-          aria-label={triggerLabel}
-          title={triggerLabel}
-          className={cn(
-            "inline-flex items-center justify-center size-9 rounded-full",
-            "border border-border bg-surface text-fg-muted",
-            "hover:border-border-strong hover:bg-surface-strong hover:text-fg",
-            "transition-[colors,transform] duration-150 cursor-pointer",
-            "active:scale-90",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
-            className,
-          )}
-        >
-          <span className="relative inline-flex">
-            <DatabaseIcon />
-            <span
-              aria-hidden
-              className={cn(
-                "absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-surface",
-                tone.dot,
-              )}
-            />
-          </span>
-        </button>
+        {isRail ? (
+          <AdminRailRow
+            label="Sync das curadorias"
+            iconNode={<StatusDot toneClass={tone.dot} pulse={syncing} />}
+            meta={syncing ? "…" : (multi ? withStatus.length : undefined)}
+            tipHint={triggerLabel}
+            // Começa pelo rótulo visível (WCAG 2.5.3 — Label in Name).
+            aria-label={`Sync das curadorias — ${triggerLabel}`}
+            title={triggerLabel}
+          />
+        ) : (
+          <button
+            type="button"
+            aria-label={triggerLabel}
+            title={triggerLabel}
+            className={cn(
+              "inline-flex items-center justify-center size-9 rounded-full",
+              "border border-border bg-surface text-fg-muted",
+              "hover:border-border-strong hover:bg-surface-strong hover:text-fg",
+              "transition-[colors,transform] duration-150 cursor-pointer",
+              "active:scale-90",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
+              className,
+            )}
+          >
+            <span className="relative inline-flex">
+              <DatabaseIcon />
+              <span
+                aria-hidden
+                className={cn(
+                  "absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-surface",
+                  tone.dot,
+                )}
+              />
+            </span>
+          </button>
+        )}
       </Popover.Trigger>
 
       <Popover.Portal>
         <Popover.Content
+          side={isRail ? "right" : "bottom"}
           sideOffset={8}
-          align="end"
+          align={isRail ? "start" : "end"}
           collisionPadding={16}
           className={cn(
             "z-50 w-[300px] max-w-[calc(100vw-32px)]",

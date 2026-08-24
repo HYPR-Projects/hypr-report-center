@@ -143,7 +143,7 @@ function Th({ children, align = "left", sortable = false, active = false, dir, o
       scope="col"
       className={cn(
         "sticky top-0 z-10 bg-canvas-deeper",
-        "px-2 py-2.5",
+        "px-2 py-2.5 dense:py-1.5",
         "text-[10px] font-bold uppercase tracking-wider text-fg-subtle",
         "border-b border-border",
         "whitespace-nowrap",
@@ -199,7 +199,7 @@ function Td({ children, align = "left", className, tabular = false, title }) {
   return (
     <td
       className={cn(
-        "px-2 py-2.5",
+        "px-2 py-2.5 dense:py-1.5",
         "text-xs text-fg",
         "border-b border-border/40",
         "whitespace-nowrap",

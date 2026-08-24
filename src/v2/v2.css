@@ -48,6 +48,30 @@
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 /* ───────────────────────────────────────────────────────────
+ * Variants do shell admin
+ * ───────────────────────────────────────────────────────────
+ * Mesma estratégia da `dark:` acima — um atributo no <html>
+ * (aplicado pelo script anti-FOUC do index.html e mantido em
+ * sync pelo useShellState) governa uma variant declarada.
+ *
+ * `rail-collapsed:` — o rail lateral está encolhido pra 68px.
+ *   Rótulos e contagens somem, tooltip aparece, badges viram
+ *   ponto no canto do ícone. Usar isto em vez de duplicar cada
+ *   item em duas árvores de JSX: um item só, dois estados.
+ *
+ *   Uso: `<span className="rail-collapsed:hidden">Por mês</span>`
+ *
+ * `dense:` — densidade compacta. Afeta só padding vertical de
+ *   linha em tabelas e cards; nunca tamanho de fonte (encolher
+ *   o corpo do texto pra caber mais linha é o tipo de densidade
+ *   que cansa a vista em turno inteiro de operação).
+ *
+ *   Uso: `<td className="py-2.5 dense:py-1.5">`
+ */
+@custom-variant rail-collapsed (&:where([data-rail="collapsed"] *));
+@custom-variant dense (&:where([data-density="dense"] *));
+
+/* ───────────────────────────────────────────────────────────
  * TopProgressBar — barra de refetch (ClientDashboardV2)
  * ───────────────────────────────────────────────────────────
  * Stripe signature de 33% de largura desliza horizontalmente em
@@ -358,3 +382,24 @@
     transform: none;
   }
 }
+
+/* ───────────────────────────────────────────────────────────
+ * Densidade das linhas — nota
+ * ───────────────────────────────────────────────────────────
+ * A densidade compacta é aplicada pela variant `dense:`
+ * declarada no topo deste arquivo, utilitária por utilitária no
+ * JSX (`py-2.5 dense:py-1.5`), e não por seletor global aqui.
+ *
+ * Por quê: um seletor global teria que adivinhar QUAIS paddings
+ * são "de linha". As tabelas do PMP têm células, cabeçalhos
+ * sticky, cards de grupo, banners e rodapés no mesmo container —
+ * comprimir todos deixaria o banner de aviso colado no texto e o
+ * cabeçalho de mês colado no primeiro card. Declarar por
+ * utilitária é mais verboso e é a única forma de errar menos.
+ *
+ * A regra que governa a densidade: mexe em PADDING, nunca em
+ * tamanho de fonte. Encolher o corpo do texto pra caber mais
+ * linha cansa a vista em turno inteiro — e estes números são
+ * dinheiro, lidos em conferência. O ganho vem do espaço morto
+ * entre as linhas, que é de onde ele deve vir.
+ */

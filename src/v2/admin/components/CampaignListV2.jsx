@@ -93,7 +93,7 @@ export function CampaignListV2({ campaigns, onOpen, onOpenReport, teamMap = {} }
           {/* Header */}
           <div
             className={cn(
-              "grid gap-2 px-4 py-2.5 bg-surface-strong border-b border-border",
+              "grid gap-2 px-4 py-2.5 dense:py-1.5 bg-surface-strong border-b border-border",
               "text-[10px] uppercase tracking-widest font-bold text-fg-subtle",
               GRID
             )}
@@ -194,7 +194,9 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
       onMouseLeave={() => cancelPrefetch(short_token)}
       onFocus={() => schedulePrefetch(short_token)}
       className={cn(
-        "grid gap-2 items-center px-4 py-2.5 border-b border-border last:border-0",
+        // Densidade compacta: 10px → 6px de padding vertical. A fonte não
+        // muda — o ganho vem do espaço morto, que é de onde deve vir.
+        "grid gap-2 items-center px-4 py-2.5 dense:py-1.5 border-b border-border last:border-0",
         "text-[12px] cursor-pointer transition-colors",
         // hover/focus precisam ser visíveis em LIGHT (onde signature-soft
         // já tem alpha 0.12 — dividir mais virava ~0.05 invisível).

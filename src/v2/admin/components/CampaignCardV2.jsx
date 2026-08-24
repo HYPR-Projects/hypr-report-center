@@ -411,7 +411,15 @@ function CampaignCardV2Inner({
             saúde da campanha sem precisar abrir drawer.
           • Desktop (md+): row horizontal com colunas dedicadas e dividers
             verticais (UX original — operação faz scan vertical). */}
-      <div className="flex flex-col md:flex-row md:items-stretch gap-3 md:gap-4 px-4 md:px-5 py-3.5">
+      {/* @container: as colunas do card decidem pela largura DO CARD, não
+          pela do viewport.
+          Isto passou a importar quando o rail entrou: com ele aberto, um
+          viewport de 1440px dá ~1150px de card; colapsado, ~1330px. As
+          colunas fixas somam ~758px, então no primeiro caso a coluna de
+          identidade cai pra ~216px e "Airlicium — SP, RJ e Nordeste" trunca
+          em "Airlicium — S...". Breakpoint de viewport não distingue os dois
+          casos — o rail muda a largura sem mudar o viewport. */}
+      <div className="@container flex flex-col md:flex-row md:items-stretch gap-3 md:gap-4 px-4 md:px-5 py-3.5 dense:py-2.5">
         {/* ── Marca + campanha + datas ───────────────────────────────
             self-center vale só pra desktop (flex-row, eixo cruzado é vertical).
             No mobile (flex-col), self-center colapsava a largura horizontal e
@@ -557,7 +565,19 @@ function CampaignCardV2Inner({
             separa este grupo do pacing/resultados — antes os três eram
             filhos diretos da row e herdavam o gap-4 largo entre si, o que
             deixava o TECH "flutuando" longe da box de investimento. */}
-        <div className="hidden md:flex items-stretch gap-2.5 shrink-0">
+        {/* Limiar MEDIDO, não estimado. As colunas fixas do card somam
+            ~1060px com este cluster; abaixo disso a coluna de identidade cai
+            pra 80-100px e "Airlicium — SP, RJ e Nordeste" vira "Airlicium —
+            S...". Acima, ela fica com 240px+ e respira.
+
+            1250px é a largura do CONTENT BOX do container (`container-type:
+            inline-size` mede o content box), ou seja, 40px menos que a
+            largura externa da row por causa do `px-5`. Em viewport de 1440px:
+            rail aberto dá 1102px → esconde; rail colapsado dá 1282px →
+            mostra. Colapsar o rail (⌘\) é o que traz o cluster de volta no
+            laptop, que é exatamente pra isso que o controle existe. Os
+            números completos continuam no drawer da campanha. */}
+        <div className="hidden @min-[1250px]:flex items-stretch gap-2.5 shrink-0">
         {/* Largura FIXA em 148px independente de ter 1 ou 2 mídias.
             Antes era 148 no split e 96 no formato único — e como o cluster
             financeiro é ancorado à direita, os 52px de diferença mudavam a

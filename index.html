@@ -75,6 +75,26 @@
         } catch(e) {}
         document.documentElement.setAttribute('data-theme', 'dark');
       })();
+
+      // Anti-FOUC do shell admin. Mesmo mecanismo do tema, mesmo motivo: o
+      // rail e a densidade são lidos do localStorage pelo React, e sem
+      // aplicar os atributos ANTES da primeira pintura o layout salta —
+      // o rail nasce com 248px, o React lê "colapsado" e encolhe pra 68px
+      // no frame seguinte, arrastando a coluna de conteúdo inteira.
+      //
+      // Os defaults são os do useShellState: rail expandido, densidade
+      // confortável. Se o storage estiver bloqueado, o catch mantém os
+      // atributos nos defaults e nada quebra.
+      (function(){
+        var rail = 'expanded';
+        var density = 'cozy';
+        try {
+          if (localStorage.getItem('hypr.admin.railCollapsed') === '1') rail = 'collapsed';
+          if (localStorage.getItem('hypr.admin.density') === 'dense') density = 'dense';
+        } catch(e) {}
+        document.documentElement.setAttribute('data-rail', rail);
+        document.documentElement.setAttribute('data-density', density);
+      })();
     </script>
   </head>
   <body>

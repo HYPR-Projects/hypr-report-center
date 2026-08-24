@@ -190,7 +190,7 @@ export function GroupLinesModal({ open, onOpenChange, line, onGroupCreated }) {
                         key={key}
                         className={cn(
                           "flex items-start gap-3 p-3 rounded-md border transition-colors cursor-pointer",
-                          conflictGroup ? "border-rose-500/20 bg-rose-500/5 cursor-not-allowed opacity-60"
+                          conflictGroup ? "border-danger/20 bg-danger/5 cursor-not-allowed opacity-60"
                           : checked     ? "border-signature/40 bg-signature/5"
                           :               "border-border hover:bg-surface/50",
                         )}
@@ -230,7 +230,7 @@ export function GroupLinesModal({ open, onOpenChange, line, onGroupCreated }) {
                               </span>
                             )}
                             {conflictGroup && (
-                              <span className="text-[10px] text-rose-400 font-medium">
+                              <span className="text-[10px] text-danger font-medium">
                                 já no grupo {c.current_group_name || c.current_group_id}
                               </span>
                             )}
@@ -250,7 +250,7 @@ export function GroupLinesModal({ open, onOpenChange, line, onGroupCreated }) {
             </div>
 
             {error && (
-              <div className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
+              <div className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
                 {error}
               </div>
             )}

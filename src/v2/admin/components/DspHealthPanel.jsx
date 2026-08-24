@@ -15,6 +15,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
+import { AdminRailRow, StatusDot } from "../shell/AdminNavItem";
 import { cn } from "../../../ui/cn";
 import { getDspHealth } from "../../../lib/api";
 import { SparklineV2 } from "../../components/SparklineV2";
@@ -72,7 +73,7 @@ function sourceTone(s, referenceDate) {
   return "ok";
 }
 
-export function DspHealthPanel({ className, onOpenReport }) {
+export function DspHealthPanel({ className, onOpenReport, variant = "icon" }) {
   const [state, setState] = useState({ loading: true, error: null, payload: null });
   const cancelRef = useRef({ cancelled: false });
 
@@ -142,41 +143,60 @@ export function DspHealthPanel({ className, onOpenReport }) {
         ? `${model.stoppedTotal} campanha${model.stoppedTotal > 1 ? "s" : ""} sem entrega ontem`
         : "Há fonte com atraso de entrega";
 
+  const isRail = variant === "rail";
+  // Meta da linha: quantas campanhas pararam de entregar. Zero não mostra
+  // número — o dot verde já diz que está tudo bem, e um "0" ao lado de um
+  // rótulo lê como métrica quebrada.
+  const railBadge = isRail && model?.stoppedTotal ? model.stoppedTotal : undefined;
+
   return (
     <Popover.Root>
       <Popover.Trigger asChild>
-        <button
-          type="button"
-          aria-label={`Saúde das DSPs — ${summary}`}
-          title={summary}
-          className={cn(
-            "inline-flex items-center justify-center size-9 rounded-full",
-            "border border-border bg-surface text-fg-muted",
-            "hover:border-border-strong hover:bg-surface-strong hover:text-fg",
-            "transition-[colors,transform] duration-150 cursor-pointer",
-            "active:scale-90",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
-            className,
-          )}
-        >
-          <span className="relative inline-flex">
-            <PulseIcon />
-            <span
-              aria-hidden
-              className={cn(
-                "absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-surface",
-                tone.dot,
-                state.loading && "animate-pulse",
-              )}
-            />
-          </span>
-        </button>
+        {isRail ? (
+          <AdminRailRow
+            label="Saúde das DSPs"
+            iconNode={<StatusDot toneClass={tone.dot} pulse={state.loading} />}
+            badge={railBadge}
+            badgeTone={model?.worst === "error" ? "danger" : "warning"}
+            tipHint={summary}
+            aria-label={`Saúde das DSPs — ${summary}`}
+            title={summary}
+          />
+        ) : (
+          <button
+            type="button"
+            aria-label={`Saúde das DSPs — ${summary}`}
+            title={summary}
+            className={cn(
+              "inline-flex items-center justify-center size-9 rounded-full",
+              "border border-border bg-surface text-fg-muted",
+              "hover:border-border-strong hover:bg-surface-strong hover:text-fg",
+              "transition-[colors,transform] duration-150 cursor-pointer",
+              "active:scale-90",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
+              className,
+            )}
+          >
+            <span className="relative inline-flex">
+              <PulseIcon />
+              <span
+                aria-hidden
+                className={cn(
+                  "absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-surface",
+                  tone.dot,
+                  state.loading && "animate-pulse",
+                )}
+              />
+            </span>
+          </button>
+        )}
       </Popover.Trigger>
 
       <Popover.Portal>
         <Popover.Content
+          side={isRail ? "right" : "bottom"}
           sideOffset={8}
-          align="end"
+          align={isRail ? "start" : "end"}
           collisionPadding={16}
           className={cn(
             "z-50 w-[360px] max-w-[calc(100vw-32px)]",

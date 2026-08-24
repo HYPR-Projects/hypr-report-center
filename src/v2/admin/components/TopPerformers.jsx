@@ -282,16 +282,49 @@ function PerformerRow({ rank, performer, displayName, scorePrev, onClick }) {
   );
 }
 
-export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
-  const [role, setRole] = useState("cs");
+/**
+ * Leaderboard de CS/CP.
+ *
+ * ── Controles: controlados OU internos ──────────────────────────────────
+ * `role` e `preset`/`custom` aceitam ser controlados de fora. Quando a
+ * página passa os valores (é o que o CampaignMenuV2 faz), eles viram chips
+ * na FilterBar junto de todos os outros filtros do admin, e os controles
+ * internos não renderizam.
+ *
+ * Isso existe porque esta era a ÚNICA view do menu que escondia a barra de
+ * filtros por completo (`layout !== "performers"` no antigo toolbar) e
+ * desenhava dois controles próprios em geometrias que não existiam em
+ * nenhum outro lugar. O usuário perdia a barra ao entrar aqui e a
+ * recuperava ao sair — impossível construir modelo mental de onde os
+ * controles moram.
+ *
+ * Sem as props, o componente segue autossuficiente (útil isolado, e evita
+ * que o único caller vire acoplamento obrigatório).
+ */
+export function PerformersLayout({
+  campaigns, teamMap = {}, onOpenReport,
+  role: roleProp, onRoleChange,
+  preset: presetProp, onPresetChange,
+  custom: customProp, onCustomChange,
+}) {
+  const [roleInner, setRoleInner] = useState("cs");
   const [snapshots, setSnapshots] = useState(() => loadSnapshots());
   const [selected, setSelected] = useState(null); // performer email selecionado
 
   // Filtro de período. preset="now" (default) usa props.campaigns sem fetch
   // — comportamento original mantido. Qualquer outro preset dispara fetch ao
   // backend e re-agrega métricas dentro da janela.
-  const [preset, setPreset] = useState("now");
-  const [custom, setCustom] = useState({ from: "", to: "" });
+  const [presetInner, setPresetInner] = useState("now");
+  const [customInner, setCustomInner] = useState({ from: "", to: "" });
+
+  // Controlado quando a prop existe; interno caso contrário.
+  const controlled = roleProp != null;
+  const role   = controlled ? roleProp   : roleInner;
+  const preset = presetProp != null ? presetProp : presetInner;
+  const custom = customProp != null ? customProp : customInner;
+  const setRole   = onRoleChange   || setRoleInner;
+  const setPreset = onPresetChange || setPresetInner;
+  const setCustom = onCustomChange || setCustomInner;
   const [periodCampaigns, setPeriodCampaigns] = useState(null); // null = não fetcheado ainda
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState(null);
@@ -419,17 +452,19 @@ export function PerformersLayout({ campaigns, teamMap = {}, onOpenReport }) {
             {subtitleSuffix}
           </p>
         </div>
-        <RoleToggle value={role} onChange={setRole} />
+        {!controlled && <RoleToggle value={role} onChange={setRole} />}
       </div>
 
-      {/* Filtro de período */}
-      <PeriodPicker
-        preset={preset}
-        onPresetChange={setPreset}
-        custom={custom}
-        onCustomChange={setCustom}
-        ariaLabel="Período do ranking"
-      />
+      {/* Filtro de período — só quando os controles NÃO estão na FilterBar. */}
+      {!controlled && (
+        <PeriodPicker
+          preset={preset}
+          onPresetChange={setPreset}
+          custom={custom}
+          onCustomChange={setCustom}
+          ariaLabel="Período do ranking"
+        />
+      )}
 
       {/* Lista */}
       {fetchError ? (
