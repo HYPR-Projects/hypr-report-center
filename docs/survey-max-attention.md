@@ -230,6 +230,26 @@ Se um dia alguém for mexer nessa view: qualquer coisa que introduza janela,
 ordenação global ou agregação que não seja por chave derruba a poda de novo.
 O sintoma é exatamente a mensagem acima.
 
+## Diagnóstico em um comando
+
+```bash
+bash backend/scripts/check_ma_survey.sh          # visão geral
+bash backend/scripts/check_ma_survey.sh FXR5US   # detalhe de uma campanha
+```
+
+Roda as verificações em ordem (view responde → dimensão carregou → nomes
+seguem a convenção → foto do que o report vai somar) e para na primeira que
+falhar, dizendo o que fazer. Só leitura.
+
+Quem tem `gcloud` na mão nem sempre é quem sabe ler o resultado — e a
+alternativa era colar terminal de um lado pro outro. Um comando, uma saída,
+com o veredito escrito.
+
+**Sem `gcloud` na mão?** O mesmo script roda no CI: Actions → "Verificar
+survey do Max Attention" → Run workflow, com o token da campanha como
+entrada opcional. Depende da credencial GCP no repo — a mesma do
+`deploy-backend.yml`, que hoje **não** está configurada.
+
 ## Quando um número parecer errado
 
 1. **Pergunta sem respostas do Max Attention** → o rótulo do evento

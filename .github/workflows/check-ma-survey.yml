@@ -1,0 +1,90 @@
+# Diagnóstico da integração de survey do Max Attention, rodando no CI.
+#
+# ─── POR QUE ESTE ARQUIVO EXISTE ──────────────────────────────────────
+# Ligar essa integração exigiu quatro rodadas de "rode este comando e cole a
+# saída aqui", porque a verificação toca BigQuery e ninguém que estava
+# diagnosticando tinha acesso a ele — nem a sessão de desenvolvimento, nem o
+# CI. Cada pergunta simples ("a dimensão carregou?") custava um ida-e-volta
+# humano, e três defeitos reais (poda de partição, tabela vazia se declarando
+# fresca, cron sem agendamento) só apareceram nessas rodadas.
+#
+# Com credencial no repo, quem estiver investigando dispara isto e lê o
+# resultado no log do Actions. O humano sai do meio.
+#
+# Roda `backend/scripts/check_ma_survey.sh`, que é o MESMO script que se roda
+# na mão — uma fonte de verdade só, em vez de queries divergindo entre o
+# runbook e o CI.
+#
+# ─── PRÉ-REQUISITO ────────────────────────────────────────────────────
+# A mesma credencial GCP do deploy-backend.yml, que hoje NÃO está configurada
+# (é por isso que aquele workflow nunca rodou):
+#
+#   Opção A (recomendada, sem chave de longa duração):
+#     variáveis do repo GCP_WORKLOAD_IDENTITY_PROVIDER e GCP_DEPLOY_SERVICE_ACCOUNT
+#   Opção B:
+#     secret do repo GCP_SA_KEY com o JSON da service account
+#
+# A conta precisa de bigquery.jobUser no projeto e leitura em prod_analytics.
+# Só leitura: este workflow não altera nada.
+
+name: Verificar survey do Max Attention
+
+on:
+  workflow_dispatch:
+    inputs:
+      short_token:
+        description: "Token da campanha (ex: FXR5US). Vazio = visão geral."
+        required: false
+        type: string
+
+concurrency:
+  group: check-ma-survey
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Falha cedo e legível. Sem isto, a ausência de credencial vira um erro
+      # de permissão do gcloud lá na frente, que manda debugar a coisa errada.
+      - name: Conferir se há credencial configurada
+        env:
+          WIF_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          if [ -n "$WIF_PROVIDER" ] || [ -n "$SA_KEY" ]; then
+            echo "Credencial presente."
+          else
+            echo "::error::Nenhuma credencial GCP configurada — este workflow não tem como consultar o BigQuery."
+            echo "::error::Opção A: variáveis do repo GCP_WORKLOAD_IDENTITY_PROVIDER e GCP_DEPLOY_SERVICE_ACCOUNT"
+            echo "::error::Opção B: secret do repo GCP_SA_KEY"
+            exit 1
+          fi
+
+      - name: Autenticar no GCP (Workload Identity Federation)
+        if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Autenticar no GCP (chave de service account)
+        if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER == ''
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: site-hypr
+
+      - name: Diagnóstico
+        run: bash backend/scripts/check_ma_survey.sh "${{ inputs.short_token }}"
