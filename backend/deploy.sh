@@ -76,6 +76,10 @@ CRON_SECRET=$(extract_env "CRON_SECRET")
 SENDGRID_API_KEY=$(extract_env "SENDGRID_API_KEY")
 SHEETS_ALERT_FROM=$(extract_env "SHEETS_ALERT_FROM")
 ACCESS_TRACKING_IP_SALT=$(extract_env "ACCESS_TRACKING_IP_SALT")
+# MA_SURVEY_VIEW — view do BigQuery com as respostas da pesquisa nativa do
+# Max Attention (Tap to Choose). Sem ela, o report segue só com Typeform e
+# a seção de Max Attention some do modal de survey; não é erro.
+MA_SURVEY_VIEW=$(extract_env "MA_SURVEY_VIEW")
 
 # Xandr Curate API — capturamos da revisão ativa OU lemos do Secret Manager.
 # Existem nesse jeito (não como --set-secrets) por consistência com o resto:
@@ -203,6 +207,13 @@ else
   echo "    Configure: gcloud functions deploy report_data --gen2 --region=southamerica-east1 \\"
   echo "                 --update-env-vars ACCESS_TRACKING_IP_SALT=\$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 fi
+if [ -n "$MA_SURVEY_VIEW" ]; then
+  echo "  ✓ MA_SURVEY_VIEW capturado"
+else
+  echo "  ℹ MA_SURVEY_VIEW ausente — survey do Max Attention desligado (só Typeform/VideoAsk)"
+  echo "    Para ligar: gcloud functions deploy report_data --gen2 --region=southamerica-east1 \\"
+  echo "                  --update-env-vars MA_SURVEY_VIEW=projeto.dataset.view"
+fi
 if [ -n "$XANDR_CURATE_USER" ] && [ -n "$XANDR_CURATE_PASS" ] && [ -n "$XANDR_CURATE_MEMBER_ID" ]; then
   echo "  ✓ XANDR_CURATE_{USER,PASS,MEMBER_ID} capturados (PMP sync habilitado)"
 else
@@ -255,6 +266,9 @@ if [ -n "$SHEETS_ALERT_FROM" ]; then
 fi
 if [ -n "$ACCESS_TRACKING_IP_SALT" ]; then
   echo "ACCESS_TRACKING_IP_SALT: '${ACCESS_TRACKING_IP_SALT}'" >> "$ENV_FILE"
+fi
+if [ -n "$MA_SURVEY_VIEW" ]; then
+  echo "MA_SURVEY_VIEW: '${MA_SURVEY_VIEW}'" >> "$ENV_FILE"
 fi
 if [ -n "$XANDR_CURATE_USER" ]; then
   echo "XANDR_CURATE_USER: '${XANDR_CURATE_USER}'" >> "$ENV_FILE"

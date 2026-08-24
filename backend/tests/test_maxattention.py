@@ -1,0 +1,76 @@
+"""
+Testes das partes puras do leitor do Max Attention: validação da view
+(entra direto no SQL, então o formato é conferido antes) e a convenção de
+nome dos criativos, que é o que amarra criativo → campanha → lado quando
+a plataforma não devolve short_token.
+"""
+import pytest
+
+import maxattention as ma
+
+
+@pytest.fixture(autouse=True)
+def clean_env(monkeypatch):
+    monkeypatch.delenv("MA_SURVEY_VIEW", raising=False)
+    ma._COLUMNS_CACHE.clear()
+
+
+def test_sem_env_a_falha_diz_o_que_configurar():
+    assert ma.is_configured() is False
+    with pytest.raises(ma.NotConfigured) as e:
+        ma.survey_view()
+    assert "MA_SURVEY_VIEW" in str(e.value)
+    assert "creative_id" in str(e.value)
+
+
+def test_view_valida_passa_e_perde_as_crases(monkeypatch):
+    monkeypatch.setenv("MA_SURVEY_VIEW", "`site-hypr.prod_assets.ma_survey_responses`")
+    assert ma.survey_view() == "site-hypr.prod_assets.ma_survey_responses"
+    assert ma.is_configured() is True
+
+
+@pytest.mark.parametrize("bad", [
+    "prod_assets.ma_survey",                 # faltando projeto
+    "site-hypr.prod_assets.v; DROP TABLE x", # injeção
+    "site-hypr.prod_assets.v WHERE 1=1",
+    "a.b.c.d",
+    "  ",
+])
+def test_view_malformada_e_recusada(monkeypatch, bad):
+    # O nome da tabela não pode ser parâmetro no BQ — ele é interpolado no
+    # SQL. Então qualquer coisa fora de `projeto.dataset.view` para aqui.
+    monkeypatch.setenv("MA_SURVEY_VIEW", bad)
+    with pytest.raises(ma.NotConfigured):
+        ma.survey_view()
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("ID-FXR5US_HYPR_LOREAL_LA-ROCHE-POSAY_SURVEY_AWARENESS_CONTROLE", "controle"),
+    ("ID-FXR5US_HYPR_LOREAL_LA-ROCHE-POSAY_SURVEY_AWARENESS_EXPOSTO", "exposto"),
+    ("hypr_loreal_controle_abr26", "controle"),
+    ("HYPR_LOREAL_AIRLICIUM_VIDEO-IN-DISPLAY_300x250", None),
+    ("", None),
+    (None, None),
+])
+def test_detect_side_le_a_convencao_de_nome(name, expected):
+    assert ma.detect_side(name) == expected
+
+
+def test_detect_side_nao_chuta_em_palavra_parecida():
+    # "contrato"/"centro" não são "controle". Sugestão errada de lado custa
+    # mais caro que sugestão nenhuma — o admin confirma na UI.
+    assert ma.detect_side("HYPR_CONTRATO_LOREAL") is None
+    assert ma.detect_side("HYPR_CENTRO_SP") is None
+
+
+@pytest.mark.parametrize("name,token,expected", [
+    ("ID-FXR5US_HYPR_LOREAL_SURVEY_CONTROLE", "FXR5US", True),
+    ("ID-FXR5US_HYPR_LOREAL_SURVEY_CONTROLE", "fxr5us", True),
+    ("ID-NZLDUV_HYPR_LOREAL_COR-E-TOM", "FXR5US", False),
+    # Token só casa como palavra inteira — senão "FXR5U" acharia "FXR5US"
+    # e o admin veria criativo de outra campanha no dropdown.
+    ("ID-FXR5USX_HYPR_LOREAL", "FXR5US", False),
+    ("qualquer coisa", "", False),
+])
+def test_token_in_name_casa_palavra_inteira(name, token, expected):
+    assert ma.token_in_name(name, token) is expected

@@ -1200,6 +1200,57 @@ export async function fetchTypeformViaProxy(formUrl, range = null) {
   return data;
 }
 
+// ── Max Attention (pesquisa nativa do Tap to Choose) ─────────────────────────
+
+/**
+ * Lista criativos do Max Attention com resposta de survey. Admin-only —
+ * enumera a base inteira. Com `shortToken`, devolve só os da campanha:
+ * pela coluna quando a view amarra, senão pela convenção de nome
+ * ("ID-FXR5US_..."), e cada item diz em `match` qual dos dois foi.
+ *
+ * Devolve { creatives: [{creative_id, creative_name, questions, responses,
+ * first_at, last_at, side, match}] }.
+ *
+ * Quando MA_SURVEY_VIEW não está configurada no backend, a resposta vem
+ * 501 com `configured: false` — o caller mostra "não configurado" em vez
+ * de "erro", que são coisas diferentes pro admin.
+ */
+export async function listMaxAttentionCreatives({ shortToken = "", days } = {}) {
+  const jwt = await getOrIssueAdminJwt();
+  const params = new URLSearchParams({ action: "maxattention_list_creatives" });
+  if (shortToken) params.set("short_token", shortToken);
+  if (days) params.set("days", String(days));
+  const r = await fetch(`${API_URL}?${params.toString()}`, { headers: adminAuthHeaders(jwt) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const err = new Error(d?.error || `HTTP ${r.status}`);
+    err.notConfigured = d?.configured === false;
+    throw err;
+  }
+  return d;
+}
+
+/**
+ * Respostas por opção de um criativo do Max Attention. Devolve o MESMO
+ * shape do proxy do Typeform ({ type: "choice", counts, total,
+ * first_response_at, last_response_at }) — é o que permite ao report
+ * somar as duas bases sem saber de qual delas veio cada pedaço.
+ *
+ * Sem JWT, como o typeform_proxy: o report roda no navegador do cliente.
+ * `range` filtra por período em horário de Brasília, igual ao Typeform,
+ * pra que o mesmo filtro signifique o mesmo intervalo nas duas bases.
+ */
+export async function fetchMaxAttentionResults(creativeId, { question = "", range = null } = {}) {
+  const params = new URLSearchParams({ action: "maxattention_results", creative_id: creativeId });
+  if (question) params.set("question", question);
+  if (range?.from) params.set("date_from", range.from);
+  if (range?.to)   params.set("date_to",   range.to);
+  const r = await fetch(`${API_URL}?${params.toString()}`);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
+  return data;
+}
+
 // ── Negotiation (Sales Center) ───────────────────────────────────────────────
 
 /**

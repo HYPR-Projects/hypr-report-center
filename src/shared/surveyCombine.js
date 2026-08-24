@@ -25,7 +25,7 @@
 // abril soma com "sim" de maio pelo mesmo critério que faz o Typeform
 // somar com o Max Attention. Um eixo não sabe do outro.
 
-import { fetchTypeformViaProxy } from "../lib/api";
+import { fetchTypeformViaProxy, fetchMaxAttentionResults } from "../lib/api";
 import {
   parseSurveyConfig,
   sumCounts,
@@ -58,6 +58,22 @@ export async function loadSurveyQuestions(surveyJson, rangeParam) {
       if (part.source === "typeform") {
         const data = await fetchTypeformData(part.url || part.formId);
         return data ? { ...data, source: "typeform", label: SOURCE_LABELS.typeform } : null;
+      }
+      // Max Attention amarrado a um criativo é buscado ao vivo, com o
+      // mesmo filtro de período do Typeform. `counts` embutido continua
+      // valendo como fallback (config antiga, ou intake manual).
+      if (part.source === "maxattention" && part.creativeId) {
+        const data = await fetchMaxAttentionResults(part.creativeId, {
+          question: part.question || "",
+          range: rangeParam,
+        });
+        return data
+          ? {
+              ...data,
+              source: "maxattention",
+              label: part.creativeName || SOURCE_LABELS.maxattention,
+            }
+          : null;
       }
       const counts = part.counts || {};
       const total = Number(part.total);
