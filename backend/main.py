@@ -63,6 +63,7 @@ import pubmatic_curate
 import pmp_sync_runs
 import audience_normalize
 import audience_ai
+import maxattention
 import bq_client
 
 logger = logging.getLogger(__name__)
@@ -2866,6 +2867,73 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR save_survey] {e}")
             return (jsonify({"error": "Erro ao salvar survey"}), 500, headers)
+
+    # ── Endpoints: pesquisa nativa do Max Attention (Tap to Choose) ──────────
+    # Mesma pergunta de Brand Lift roda no Typeform E na mídia da HYPR; o
+    # report soma as duas. Estes dois endpoints são o lado "de onde vem o
+    # dado" dessa soma — a reconciliação de rótulos entre bases é do front
+    # (src/shared/surveySources.js).
+    #
+    # `maxattention_results` devolve DE PROPÓSITO o mesmo shape do
+    # typeform_proxy ({type, counts, total, first/last_response_at}), pra
+    # que o pipeline do report não precise saber qual base respondeu.
+    #
+    # Sem MA_SURVEY_VIEW configurada, respondem 501 com a instrução do que
+    # falta — silêncio aqui viraria "o Max Attention não aparece" sem
+    # ninguém saber por quê.
+    if request.method == "GET" and request.args.get("action") == "maxattention_list_creatives":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        token = request.args.get("short_token", "").strip()
+        days = request.args.get("days") or maxattention.DEFAULT_LOOKBACK_DAYS
+        cache_key = f"{token}|{days}"
+        if request.args.get("refresh") == "true":
+            with _cache_lock:
+                _ma_creatives_cache.pop(cache_key, None)
+        cached = _cache_get(_ma_creatives_cache, cache_key, _MA_CREATIVES_TTL)
+        if cached is not None:
+            return (jsonify(cached), 200, headers)
+        try:
+            creatives = maxattention.list_creatives(short_token=token, days=days)
+            payload = {"creatives": creatives}
+            _cache_set(_ma_creatives_cache, cache_key, payload)
+            return (jsonify(payload), 200, headers)
+        except maxattention.NotConfigured as e:
+            return (jsonify({"error": str(e), "configured": False}), 501, headers)
+        except Exception as e:
+            logger.error(f"[ERROR maxattention_list_creatives] {e}")
+            return (jsonify({"error": "Erro ao listar criativos do Max Attention"}), 502, headers)
+
+    # Sem auth, deliberadamente — e pelo mesmo motivo do typeform_proxy: o
+    # report é lido por cliente sem JWT, e o que sai aqui é contagem
+    # agregada de um criativo que o caller já precisa saber o id pra pedir.
+    # A LISTAGEM acima continua admin-only: ela enumera a base inteira, que
+    # é informação de outra ordem.
+    if request.method == "GET" and request.args.get("action") == "maxattention_results":
+        creative_id = request.args.get("creative_id", "").strip()
+        if not creative_id:
+            return (jsonify({"error": "creative_id é obrigatório"}), 400, headers)
+        question = request.args.get("question", "").strip() or None
+        date_from = request.args.get("date_from", "").strip()
+        date_to = request.args.get("date_to", "").strip()
+        cache_key = f"{creative_id}|{question or ''}|{date_from}|{date_to}"
+        cached = _cache_get(_ma_results_cache, cache_key, _MA_RESULTS_TTL)
+        if cached is not None:
+            return (jsonify(cached), 200, headers)
+        try:
+            data = maxattention.fetch_results(
+                creative_id,
+                question=question,
+                date_from=date_from,
+                date_to=date_to,
+            )
+            _cache_set(_ma_results_cache, cache_key, data)
+            return (jsonify(data), 200, headers)
+        except maxattention.NotConfigured as e:
+            return (jsonify({"error": str(e), "configured": False}), 501, headers)
+        except Exception as e:
+            logger.error(f"[ERROR maxattention_results] {creative_id}: {e}")
+            return (jsonify({"error": "Erro ao buscar respostas do Max Attention"}), 502, headers)
 
     # ── Endpoint: proxy Typeform API (evita CORS) ────────────────────────────
     # Aceita `form_url` (URL pública do form, modo preferido) ou `form_id`
@@ -11286,6 +11354,22 @@ def _fetch_typeform_form_def(form_id, token):
 _TYPEFORM_LIST_TTL = 300  # 5 min — listagem muda pouco no horizonte de uma sessão
 _TYPEFORM_META_TTL = 600  # 10 min — definição de form muda menos ainda
 _typeform_meta_cache = {}  # form_id -> (timestamp, payload)
+
+# ── Cache do Max Attention ──────────────────────────────────────────────────
+# `maxattention_results` é chamado no RENDER do report, por cliente, por
+# pergunta — não é um fluxo de admin. Sem cache, cada abertura de report vira
+# N queries no BigQuery, e a conta cresce com audiência em vez de crescer com
+# dado novo. Com 5 min, uma campanha vista 200×/dia custa ~pouquíssimas
+# queries, e a defasagem é irrelevante pra uma pesquisa que acumula resposta
+# ao longo de semanas.
+#
+# O cache de resultado é keyed por (criativo, pergunta, período): dois clientes
+# vendo o mesmo report batem na mesma entrada, e o filtro de período do admin
+# não contamina a visão do cliente.
+_MA_RESULTS_TTL = 300     # 5 min
+_MA_CREATIVES_TTL = 600   # 10 min — listagem é admin, e a dimensão recarrega ~1×/h
+_ma_results_cache = {}    # "creative|question|from|to" -> (timestamp, payload)
+_ma_creatives_cache = {}  # "token|days" -> (timestamp, payload)
 
 # Cache do report_analytics — endpoint pesado (7 queries BQ paralelas).
 # Hit cacheia a estrutura completa do modal por 60s. Cobre o caso comum
