@@ -33,6 +33,11 @@ apontada por env. O SQL dela está em `backend/sql/ma_survey_view.sql`.
     creative_id    STRING     NOT NULL  -- id do criativo na plataforma
     option         STRING     NOT NULL  -- opção escolhida
     responded_at   TIMESTAMP  NOT NULL  -- quando a resposta veio
+    session_id     STRING               -- opcional, mas MUITO recomendado:
+                                        --   sem ele contamos EVENTO, e quem
+                                        --   recarrega a peça responde de novo.
+                                        --   Medido na FXR5US: 383 eventos
+                                        --   contra 265 respondentes.
     creative_name  STRING               -- opcional: nome do criativo. É
                                         --   ele que carrega token e lado
                                         --   ("ID-FXR5US_..._CONTROLE");
@@ -174,6 +179,31 @@ def token_in_name(creative_name, short_token):
 
 # ── Queries ─────────────────────────────────────────────────────────────────
 
+def _weight_expr(has_session_col, has_responses_col):
+    """Como uma resposta é CONTADA.
+
+    Sessão distinta primeiro, e não é detalhe: contar evento infla a base
+    porque quem recarrega a peça emite `survey_answer` de novo. Medido na
+    campanha FXR5US: 383 eventos contra 265 respondentes — 45% a mais.
+
+    Isso desce direto no lift (proporção de PESSOAS, não de toques) e na
+    significância, que assume n de respondentes independentes: com n inflado
+    a confiança sai superestimada, que é o erro pior dos dois. A régua é a
+    mesma do brand lift do AdBolt (`surveyLift.ts`): "o denominador correto
+    da proporção é respondentes — usar a soma inflaria n".
+
+    Sessão que responde duas coisas diferentes (recarregou e mudou de ideia)
+    conta uma vez em cada opção. Pegar só a primeira exigiria função de
+    janela, que derruba a poda de partição da view — troca ruim por um caso
+    de borda raro.
+    """
+    if has_session_col:
+        return "COUNT(DISTINCT session_id)"
+    if has_responses_col:
+        return "SUM(COALESCE(responses, 1))"
+    return "COUNT(*)"
+
+
 def _client():
     return bq_client.get_client()
 
@@ -208,10 +238,10 @@ def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
     # A view pode ou não ter short_token/responses. Em vez de duas versões
     # do SQL, resolvemos com SELECT * num CTE e checagem de coluna no
     # schema — assim a mesma query serve pros dois contratos.
-    has_token_col, has_responses_col, has_name_col, has_question_col = _view_columns(view)
+    has_token_col, has_responses_col, has_name_col, has_question_col, has_session_col = _view_columns(view)
 
     token_expr = "ANY_VALUE(short_token)" if has_token_col else "CAST(NULL AS STRING)"
-    weight = "SUM(COALESCE(responses, 1))" if has_responses_col else "COUNT(*)"
+    weight = _weight_expr(has_session_col, has_responses_col)
     # Sem nome, o criativo se identifica pelo id — a UI ainda lista, só não
     # consegue sugerir campanha/lado sozinha.
     name_expr = "ANY_VALUE(creative_name)" if has_name_col else "CAST(NULL AS STRING)"
@@ -289,8 +319,8 @@ def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
 
 
 def _view_columns(view):
-    """(short_token, responses, creative_name, question) — quais colunas
-    opcionais a view expõe. Lido do schema uma vez por instância."""
+    """(short_token, responses, creative_name, question, session_id) — quais
+    colunas opcionais a view expõe. Lido do schema uma vez por instância."""
     cached = _COLUMNS_CACHE.get(view)
     if cached is not None:
         return cached
@@ -306,6 +336,7 @@ def _view_columns(view):
         "responses" in names,
         "creative_name" in names,
         "question" in names,
+        "session_id" in names,
     )
     _COLUMNS_CACHE[view] = result
     return result
@@ -326,8 +357,8 @@ def fetch_results(creative_id, question=None, date_from=None, date_to=None):
     ao mesmo filtro, senão a soma compara períodos diferentes.
     """
     view = survey_view()
-    _, has_responses_col, _, has_question_col = _view_columns(view)
-    weight = "SUM(COALESCE(responses, 1))" if has_responses_col else "COUNT(*)"
+    _, has_responses_col, _, has_question_col, has_session_col = _view_columns(view)
+    weight = _weight_expr(has_session_col, has_responses_col)
 
     where = ["creative_id = @creative_id"]
     params = [bigquery.ScalarQueryParameter("creative_id", "STRING", str(creative_id))]

@@ -57,6 +57,28 @@ base, dois rótulos são duas opções distintas por construção.
 Testes em `src/shared/surveySources.test.js` (`npm test`), incluindo os casos
 que precisam **falhar** em fundir.
 
+## A unidade é RESPONDENTE, não toque
+
+O evento `survey_answer` é emitido por montagem da peça, não por sessão:
+quem recarrega responde de novo. Medido na campanha FXR5US: **383 eventos
+contra 265 respondentes**, 45% a mais. O painel do Max Attention mostra os
+dois números em telas diferentes — o funil diz respondentes, a distribuição
+por opção conta evento.
+
+O report conta **sessão distinta**, por dois motivos:
+
+- lift é proporção de **pessoas**, não de toques;
+- o teste de significância assume `n` de respondentes independentes — com
+  `n` inflado a confiança sai superestimada, que é o pior dos dois erros,
+  porque faz ruído parecer resultado.
+
+É a mesma régua do brand lift do AdBolt (`surveyLift.ts`): *"o denominador
+correto da proporção é respondentes — usar a soma inflaria n"*.
+
+Sessão que responde duas coisas diferentes (recarregou e mudou de ideia)
+conta uma vez em cada opção. Pegar só a primeira exigiria função de janela,
+que derruba a poda de partição da view — troca ruim por um caso raro.
+
 ## O lift diz se é real
 
 Antes, "+3,2 pp" com 4.000 respondentes e "+3,2 pp" com 40 saíam idênticos na

@@ -91,6 +91,14 @@ WITH answers AS (
   SELECT DISTINCT
     event_id,
     creative_id,
+    -- Sessão do respondente. Existe porque contar EVENTO infla a base: um
+    -- respondente que recarrega a peça emite `survey_answer` de novo (o
+    -- guard da origem é por montagem, não por sessão). Medido na campanha
+    -- FXR5US: 383 eventos contra 265 respondentes — 45% a mais.
+    -- Quem consome decide a unidade; o report conta sessão distinta, porque
+    -- lift é proporção de PESSOAS e o teste de significância assume n de
+    -- respondentes independentes.
+    session_id,
     JSON_VALUE(metadata, '$.questionText') AS question,
     JSON_VALUE(metadata, '$.optionLabel')  AS option,
     occurred_at                            AS responded_at
@@ -111,6 +119,7 @@ SELECT
   -- Center (`match: "short_token"`); NULL quando o nome não segue a convenção,
   -- e aí o admin escolhe o criativo na lista.
   REGEXP_EXTRACT(UPPER(COALESCE(d.creative_name, '')), r'^ID-([A-Z0-9]{4,10})_') AS short_token,
+  a.session_id,
   a.question,
   a.option,
   a.responded_at
