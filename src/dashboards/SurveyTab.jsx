@@ -9,6 +9,7 @@ import { parseSurveyConfig, fmtClientRange } from "../shared/surveyConfig";
 import { loadSurveyQuestions, combineSurveyQuestions } from "../shared/surveyCombine";
 import { fmt } from "../shared/format";
 import { SOURCE_LABELS, SOURCE_TINTS, reconciliationSummary } from "../shared/surveySources";
+import { liftSignificance, significanceLabel } from "../shared/surveyStats";
 
 // Quando `combinedItems` é passado (array de {short_token, label, survey}),
 // o SurveyTab opera em modo AGREGADO: busca cada mês, soma as contagens
@@ -120,7 +121,16 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
       const ep = expPct[i]  ?? 0;
       const abs=Math.round((ep-cp)*10)/10;
       const rel=cp>0?Math.round((abs/cp)*1000)/10:0;
-      return{key:k,abs,rel,isFocus:k===focusRow};
+      // O teste vai na CONTAGEM BRUTA, não em ctrlPct/expPct: aqueles já
+      // passaram por Math.round e perderam justamente a precisão que o
+      // teste mede.
+      const sig = significanceLabel(liftSignificance({
+        ctrlN: ctrlTot,
+        ctrlPositive: ctrlMap?.[k] ?? 0,
+        expN: expTot,
+        expPositive: expMap?.[k] ?? 0,
+      }));
+      return{key:k,abs,rel,sig,isFocus:k===focusRow};
     }) : [];
     return(
       <div key={qIdx} style={{border:`1px solid ${bdr}`,borderRadius:12,padding:20,marginBottom:16,background:bgCard}}>
@@ -164,6 +174,21 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
                       <div style={{fontSize:16,fontWeight:600,color}}>{l.rel>=0?"+":""}{l.rel}%</div>
                     </div>
                   </div>
+                  {l.sig && (
+                    <div
+                      title={
+                        l.sig.tone === "muted"
+                          ? "Amostra abaixo do piso da HYPR (60 respostas por célula). O número aparece, mas não sustenta conclusão."
+                          : "Teste z de duas proporções, bicaudal, 95% de confiança — a mesma régua do brand lift do AdBolt."
+                      }
+                      style={{
+                        marginTop:8,fontSize:10.5,fontWeight:600,letterSpacing:0.2,cursor:"help",
+                        color: l.sig.tone === "good" ? "#2ECC71" : l.sig.tone === "warn" ? "#E0A21E" : mt,
+                      }}
+                    >
+                      {l.sig.tone === "good" ? "✓ " : l.sig.tone === "warn" ? "≈ " : "· "}{l.sig.text}
+                    </div>
+                  )}
                 </div>
               );
             })}
