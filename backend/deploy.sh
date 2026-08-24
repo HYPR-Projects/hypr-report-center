@@ -208,6 +208,24 @@ if [ -n "$XANDR_CURATE_USER" ] && [ -n "$XANDR_CURATE_PASS" ] && [ -n "$XANDR_CU
 else
   echo "  ⚠ XANDR_CURATE_* ausentes — sync de PMP deals desabilitado"
 fi
+# PubMatic era capturado em SILÊNCIO: o deploy não dizia se a 2ª fonte de
+# curadoria ia subir com credencial ou sem. Justo a fonte cujo incidente de
+# ago/26 foi inteiro sobre "parou e ninguém soube" — e cuja perda de credencial
+# num deploy só apareceria horas depois, no painel. Agora fala, igual ao Xandr.
+if [ -n "$PUBMATIC_USER" ] && [ -n "$PUBMATIC_PASS" ]; then
+  if [ -n "$PUBMATIC_USER_ALT" ] && [ -n "$PUBMATIC_PASS_ALT" ]; then
+    echo "  ✓ PUBMATIC_{USER,PASS} + par ALT capturados (chain de fallback ativa)"
+  else
+    echo "  ⚠ PUBMATIC_{USER,PASS} capturados, mas SEM o par ALT"
+    echo "    A chain de fallback fica inativa: uma credencial revogada do lado"
+    echo "    da PubMatic derruba o sync até alguém reconfigurar (foi o 401 de 19/08)."
+  fi
+elif [ -n "$PUBMATIC_USER_ALT" ] && [ -n "$PUBMATIC_PASS_ALT" ]; then
+  echo "  ⚠ só o par ALT do PubMatic capturado — a credencial primária sumiu do ambiente"
+else
+  echo "  ⚠ PUBMATIC_* ausentes — sync da PubMatic DESABILITADO (o Xandr segue normal)"
+  echo "    O ledger vai registrar 'skipped' e o painel marca a fonte em vermelho."
+fi
 if [ -n "$PMP_SCHEDULER_SECRET" ]; then
   echo "  ✓ PMP_SCHEDULER_SECRET capturado"
 fi
