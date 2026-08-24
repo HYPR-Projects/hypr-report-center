@@ -103,6 +103,35 @@ else
   echo "    bash backend/scripts/check_ma_survey.sh FXR5US"
 fi
 
+# ── 5. O BACKEND DEPLOYADO responde? ────────────────────────────────────────
+# Até aqui só provamos o BigQuery. Mas os dois últimos defeitos desta
+# integração (DISTINCT+LIMIT e o teto de bytes) moravam no backend, e o
+# BigQuery estava perfeito — a view respondia e o modal não. Testar só a view
+# dá "TUDO DE PÉ" com o produto quebrado.
+FN="${MA_FUNCTION_URL:-https://southamerica-east1-site-hypr.cloudfunctions.net/report_data}"
+CID=$(q "SELECT creative_id FROM \`$VIEW\`
+         WHERE responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+         GROUP BY creative_id ORDER BY COUNT(*) DESC LIMIT 1")
+
 echo
-echo "✓ TUDO DE PÉ. Abra o modal de survey da campanha: o botão"
-echo "  'Conectar automaticamente' deve aparecer."
+if [ -z "$CID" ]; then
+  echo "⚠ Sem criativo pra testar o backend — pulando."
+else
+  echo "▸ Backend deployado (o endpoint que o report do cliente chama):"
+  BODY=$(curl -s --max-time 30 "$FN?action=maxattention_results&creative_id=$CID" || echo '{"error":"sem resposta"}')
+  if echo "$BODY" | grep -q '"counts"'; then
+    TOT=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("total","?"))' 2>/dev/null || echo "?")
+    echo "  ✓ responde — total de $TOT no criativo $CID"
+  else
+    echo "  ✗ BACKEND NÃO RESPONDEU O ESPERADO:"
+    echo "$BODY" | head -c 600
+    echo
+    echo "  → O BigQuery está de pé (os passos acima passaram); o problema é o"
+    echo "    backend. Confira se o deploy saiu: cd backend && bash deploy.sh"
+    exit 1
+  fi
+fi
+
+echo
+echo "✓ TUDO DE PÉ — BigQuery e backend. Abra o modal de survey da campanha:"
+echo "  o botão 'Conectar automaticamente' deve aparecer."
