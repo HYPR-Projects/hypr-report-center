@@ -233,10 +233,24 @@ O risco não é volume de dado, é **query por pageview**: `maxattention_results
   batem na mesma entrada);
 - `use_query_cache` ligado — segunda linha de defesa quando a instância morre
   num cold start;
-- teto de bytes por query (32 GiB de **estimativa**). Generoso de propósito:
-  o BigQuery aplica o teto sobre a estimativa, que considera poda de partição
-  mas **não** de cluster. Cap apertado mataria query que custa centavos — foi
-  o que zerou um painel na plataforma.
+- teto de bytes por query (32 GiB). Ele já fez o trabalho dele: a primeira
+  versão da LISTAGEM batia nele com `bytesBilledLimitExceeded`, e estava
+  certo — eram 34 GiB por abertura de modal.
+
+**A chave de cluster decide o custo.** `creative_events_raw` é clusterizada
+por `(creative_id, event_type)`. Filtrar só por `event_type` — a SEGUNDA
+chave — quase não poda:
+
+| Query | Filtra por | Custo |
+|---|---|---|
+| `fetch_results` (detalhe) | `creative_id` (chave líder) | barato desde sempre |
+| `list_creatives` (listagem) | era só `event_type` | 34 GiB, barrado pelo teto |
+
+A listagem passou a resolver a campanha **antes**, na `creatives_dim` —
+centenas de linhas, alguns KB — e só então consulta o lake com
+`creative_id IN UNNEST(...)`, que cai na chave líder. Sem campanha (caminho
+manual) não há como podar por criativo, e aí o que segura o custo é a
+janela: 30 dias.
 
 Do lado da plataforma, a dimensão usa load job (gratuito) com gate de frescor
 por metadata: ~24 recargas/dia, custo zero nos demais ticks.
