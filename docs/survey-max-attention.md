@@ -77,6 +77,10 @@ confirma, e o `mismatch` acima cobre o caso de a sugestão estar errada.
 1. **Deploy do o2o-platform** com a branch da dimensão. `creatives_dim` nasce
    sozinha no primeiro tick do cron de export.
 2. **Criar a view**: `bq query --use_legacy_sql=false < backend/sql/ma_survey_view.sql`
+   — o arquivo cria antes um `creatives_dim` vazio com `IF NOT EXISTS`, então
+   pode rodar mesmo que o cron da plataforma ainda não tenha ticado (sem isso
+   o `CREATE VIEW` falharia com "Not found: Table", porque o BigQuery valida
+   as referências na criação).
 3. **Permissão**: `bigquery.dataViewer` em `prod_analytics` para a service
    account do Report Center (hoje ela lê só `prod_prod_hypr_reporthub` e
    `prod_assets`).
