@@ -1225,6 +1225,14 @@ export async function listMaxAttentionCreatives({ shortToken = "", days } = {}) 
   if (!r.ok) {
     const err = new Error(d?.error || `HTTP ${r.status}`);
     err.notConfigured = d?.configured === false;
+    // 400 aqui significa BACKEND ANTIGO, não erro de uso: esta action não tem
+    // nenhum parâmetro obrigatório, então ela nunca responde 400. Quando o
+    // backend não conhece a action, a requisição atravessa os handlers e cai
+    // no fallback genérico do main.py, que exige `?token=` e responde 400 —
+    // e o admin via "Parâmetro 'token' é obrigatório", que não diz nada sobre
+    // o que realmente aconteceu. O front publica no merge e a Cloud Function
+    // é deploy manual, então essa janela de defasagem é normal e esperada.
+    err.staleBackend = r.status === 400;
     throw err;
   }
   return d;
