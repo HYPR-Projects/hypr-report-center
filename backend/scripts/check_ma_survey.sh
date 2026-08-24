@@ -77,15 +77,20 @@ fi
 echo
 if [ -n "$TOKEN" ]; then
   echo "▸ Campanha $TOKEN — o que o report vai somar:"
-  q "SELECT creative_name, option, COUNT(*) AS respostas
+  echo "  (respondentes = sessões distintas, que é o que o report conta;"
+  echo "   eventos conta toque, e infla quem recarrega a peça)"
+  q "SELECT creative_name, option,
+            COUNT(DISTINCT session_id) AS respondentes,
+            COUNT(*) AS eventos
      FROM \`$VIEW\`
      WHERE responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
        AND short_token = '$(echo "$TOKEN" | tr -cd '[:alnum:]')'
-     GROUP BY 1, 2 ORDER BY respostas DESC" | column -t -s,
+     GROUP BY 1, 2 ORDER BY respondentes DESC" | column -t -s,
   echo
   echo "  Esperado: nomes terminando em _CONTROLE e _EXPOSTO, com as mesmas opções"
   echo "  dos dois lados. Opção que só aparece de um lado vira aviso no report,"
   echo "  não erro."
+  echo "  'eventos' bem maior que 'respondentes' é normal — é gente recarregando."
 else
   echo "▸ Top criativos com resposta (30d):"
   q "SELECT COALESCE(creative_name, CONCAT('(sem nome) ', creative_id)) AS criativo,
