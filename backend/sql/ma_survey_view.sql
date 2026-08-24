@@ -40,6 +40,26 @@
 -- (poda partição), no detalhe filtra por creative_id, cacheia 5–10 min e
 -- ainda impõe teto de bytes por query.
 
+-- Ordem importa: o BigQuery valida as tabelas referenciadas na hora de criar
+-- a view, então rodar isto antes do primeiro tick do cron da plataforma (que
+-- é quem cria a `creatives_dim`) falharia com "Not found: Table". Este CREATE
+-- é o mesmo da plataforma, com IF NOT EXISTS — vira no-op assim que ela
+-- criar, e a ordem de quem roda primeiro deixa de importar.
+--
+-- Quem MANTÉM esse schema é a plataforma (`creatives-dim-bq.ts`); aqui é só
+-- um piso pra destravar a criação da view.
+CREATE TABLE IF NOT EXISTS `site-hypr.prod_analytics.creatives_dim` (
+  creative_id   STRING NOT NULL,
+  creative_name STRING,
+  template_slug STRING,
+  client_name   STRING,
+  status        STRING,
+  deleted       BOOL,
+  updated_at    TIMESTAMP,
+  synced_at     TIMESTAMP
+)
+CLUSTER BY creative_id;
+
 CREATE OR REPLACE VIEW `site-hypr.prod_analytics.ma_survey_responses` AS
 WITH answers AS (
   SELECT
