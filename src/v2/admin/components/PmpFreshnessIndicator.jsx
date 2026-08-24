@@ -211,7 +211,14 @@ function deriveStatus(src) {
       ? { tone: "warn",  summary: `Sync ok, mas o dado para em ${d} (1 dia atrás)` }
       : { tone: "error", summary: `Sync ok, mas o dado para em ${d} (${lag.days} dias atrás)` };
   }
-  return { tone: "ok", summary: "Sync rodou hoje · dado em dia" };
+  // "dado em dia" só quando o atraso foi MEDIDO e deu zero. Sem medida — fonte
+  // que não reporta frescor (Xandr), ou ledger ainda sem as colunas — o painel
+  // afirma só o que sabe: que o job rodou. Um indicador que criado justamente
+  // pra parar de dizer "está tudo bem" sobre dado que ele não olhou não pode
+  // reintroduzir a mesma afirmação um degrau adiante.
+  return lag
+    ? { tone: "ok", summary: "Sync rodou hoje · dado em dia" }
+    : { tone: "ok", summary: "Sync rodou hoje" };
 }
 
 const TONE_CLASSES = {
