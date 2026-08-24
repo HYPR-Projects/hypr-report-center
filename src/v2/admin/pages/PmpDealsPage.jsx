@@ -69,6 +69,40 @@ import { isFeatureAdmin } from "../../../shared/auth";
 
 const ALL = "__ALL__";
 
+// Data BR de N dias atrás, como "YYYY-MM-DD" — mesma grandeza das colunas DATE
+// que o backend devolve (start_date, end_date, last_delivery_day).
+function isoDaysAgo(n) {
+  const br = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+  const d = new Date(`${br}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+// Status workflow que são decisão HUMANA de "está fora do ar".
+const OFF_AIR_STATUSES = new Set(["Finalizado", "Cancelado", "Pausado"]);
+
+// Esta line DEVERIA ter entregue em `day`? Alimenta o `expectsDelivery` do
+// painel de frescor: sem pelo menos uma line assim, atraso de dado não é
+// alarme, é fim de campanha.
+//
+// Julga por FLIGHT e WORKFLOW, nunca por dado de entrega — de propósito.
+// `delivery_status` e `effectiveStatus` derivam do `last_delivery_day`, então
+// usá-los aqui faria o alarme se auto-desarmar exatamente quando o atraso
+// cresce: uma base 10 dias velha rebaixa a line pra 'stopped', que sairia da
+// conta e apagaria o alerta justo no caso mais grave.
+function shouldBeDelivering(line, day) {
+  if (!line || line.is_archived) return false;
+  if (OFF_AIR_STATUSES.has(line.status)) return false;
+  if (line.state === "inactive") return false;
+  // Sem start_date não há como afirmar que o flight já começou.
+  if (!line.start_date || line.start_date > day) return false;
+  // end_date nulo = flight aberto (deal PubMatic sem checklist vinculado).
+  if (line.end_date && line.end_date < day) return false;
+  return true;
+}
+
 // Sobrepõe nas lines as métricas agregadas DENTRO da janela escolhida
 // (cost/revenue/margem/imps), tipo filtro de Excel. PI e margem configurada
 // ficam intactos (contrato, não filtram). Lines sem delivery na janela viram
@@ -625,33 +659,45 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     return [...ys].sort((a, b) => b - a);
   }, [lines]);
 
-  // Frescor por fonte de curadoria. Duas afirmações INDEPENDENTES por fonte:
-  //   • o JOB rodou?    → ledger pmp_sync_runs (lastRunAt/status/erro)
-  //   • houve ENTREGA?  → last_delivery_day das lines
-  // Antes só existia a segunda, derivada do `last_synced_at` das linhas de
+  // Frescor por fonte de curadoria. TRÊS afirmações INDEPENDENTES por fonte:
+  //   • o JOB rodou?      → ledger pmp_sync_runs (lastRunAt/status/erro)
+  //   • o DADO chegou?    → api_last_day/lag_days do ledger (frescor da fonte)
+  //   • houve ENTREGA?    → last_delivery_day das lines
+  // Antes só existia a terceira, derivada do `last_synced_at` das linhas de
   // entrega — e como o conector pula dias zerados, deal encerrado congelava o
   // indicador (falso alarme) e sync quebrado ficava idêntico a deal encerrado
   // (alarme que nunca toca). Foi assim que o 401 da PubMatic passou 3 dias
   // despercebido em ago/26. `lastSyncedAt` continua indo como fallback pra
   // quando o backend ainda não tiver o ledger.
+  //
+  // A segunda entrou em 24/08: o job da PubMatic rodava verde e a base ficava
+  // 2 dias atrás (às 04h BRT a fonte não fechou D-1, e dia zerado é
+  // descartado). "Rodou" nunca foi o mesmo que "está fresco".
   const SOURCE_NOTES = {
-    pubmatic: "Reporting com lag de D-2/D-3 — a última entrega fica atrás do sync.",
+    pubmatic: "Sync às 04h + re-sync 10/14/18/22h — a fonte fecha D-1 ao longo do dia.",
   };
   const syncSources = useMemo(() => {
     const by = new Map();
+    const blank = (key) => ({
+      key, lastSyncedAt: null, latestDeliveryDay: null, linesCount: 0,
+      expectsDelivery: false,
+    });
+    // D-1: o dia que a fonte já deveria ter fechado.
+    const expectedDay = isoDaysAgo(1);
     for (const l of lines) {
       const key = l.source || "xandr";
       let s = by.get(key);
-      if (!s) { s = { key, lastSyncedAt: null, latestDeliveryDay: null, linesCount: 0 }; by.set(key, s); }
+      if (!s) { s = blank(key); by.set(key, s); }
       s.linesCount += 1;
       if (l.last_synced_at && (!s.lastSyncedAt || l.last_synced_at > s.lastSyncedAt)) s.lastSyncedAt = l.last_synced_at;
       if (l.last_delivery_day && (!s.latestDeliveryDay || l.last_delivery_day > s.latestDeliveryDay)) s.latestDeliveryDay = l.last_delivery_day;
+      if (shouldBeDelivering(l, expectedDay)) s.expectsDelivery = true;
     }
     // Fonte que só existe no ledger (ex: sync falhando ANTES de criar qualquer
     // line) também precisa aparecer — senão a fonte quebrada some do painel.
     for (const r of syncRuns) {
       const key = r.source || "xandr";
-      if (!by.has(key)) by.set(key, { key, lastSyncedAt: null, latestDeliveryDay: null, linesCount: 0 });
+      if (!by.has(key)) by.set(key, blank(key));
     }
     const runByKey = new Map(syncRuns.map((r) => [r.source || "xandr", r]));
     return Array.from(by.values())
@@ -667,6 +713,11 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
           lastError:     run?.last_error || null,
           lastOkAt:      run?.last_ok_at || null,
           credential:    run?.credential || null,
+          apiLastDay:    run?.api_last_day || null,
+          lagDays:       run?.lag_days ?? null,
+          // Distingue "o ledger mediu e não há dado" de "este backend nem sabe
+          // medir" — o indicador trata os dois casos de forma diferente.
+          hasFreshness:  !!run && "api_last_day" in run,
         };
       });
   }, [lines, syncRuns]);

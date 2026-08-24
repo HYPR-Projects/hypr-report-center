@@ -201,6 +201,53 @@ _source_landings_cache = {}  # "all" -> (timestamp, list[{source, max_date}])
 # de janela o primeiro sync bom já teria recuperado tudo — o que faltou foi
 # alguém SABER, daí o ledger `pmp_sync_runs`).
 PUBMATIC_LOOKBACK_DAYS = 21
+
+
+def _run_pubmatic_sync(actor):
+    """Roda o sync PubMatic e registra a tentativa no ledger. Devolve o dict de
+    resultado (ou {"error": ...}). NUNCA levanta: as duas chamadas são
+    best-effort dentro de jobs maiores.
+
+    Extraído do `pmp_sync_v2` porque virou dois chamadores: o cron da madrugada
+    (junto do Xandr) e o `pmp-pubmatic-refresh`, que re-roda durante o dia. Esse
+    segundo é o conserto do sintoma "entrega há 2d": às 04h BRT a PubMatic ainda
+    não fechou D-1 e devolve o dia zerado, que o conector (com razão) descarta —
+    então D-1 só entrava no run do dia seguinte. Ver o cabeçalho de
+    pubmatic_curate.py.
+
+    O `skipped` também nasce aqui: sem credencial no ambiente, o bloco antigo
+    era pulado sem gravar row nenhuma, e a fonte sumia do painel de frescor —
+    o mesmo silêncio que o ledger existe pra matar, entrando por outra porta.
+    """
+    t0 = datetime.now(timezone.utc)
+    window = f"últimos {PUBMATIC_LOOKBACK_DAYS} dias"
+    if not pubmatic_curate.is_configured():
+        msg = ("Nenhuma credencial PubMatic no ambiente (PUBMATIC_USER/PASS ou "
+               "PUBMATIC_USER_ALT/PASS_ALT) — sync não executado.")
+        logger.warning("[pmp_sync pubmatic] %s", msg)
+        pmp_sync_runs.record(source="pubmatic", started_at=t0, status="skipped",
+                             window=window, actor=actor, error=msg)
+        return {"skipped": msg}
+    try:
+        res = pubmatic_curate.sync_delivery(lookback_days=PUBMATIC_LOOKBACK_DAYS)
+    except Exception as pe:
+        logger.warning(f"[pmp_sync pubmatic] {pe}")
+        pmp_sync_runs.record(
+            source="pubmatic", started_at=t0, status="error", window=window,
+            actor=actor, credential=pubmatic_curate.credential_label(), error=str(pe),
+        )
+        return {"error": str(pe)}
+    pmp_sync_runs.record(
+        source="pubmatic", started_at=t0, status="ok",
+        rows_processed=res.get("rows_processed"),
+        deals_touched=res.get("deals_touched"),
+        window=res.get("window") or window,
+        actor=actor, credential=res.get("credential"),
+        # Frescor da FONTE: "rodou com sucesso" e "a base está em dia" são
+        # afirmações diferentes, e era só a primeira que chegava ao painel.
+        api_last_day=res.get("api_last_day"), lag_days=res.get("lag_days"),
+    )
+    return res
 # Central de DSPs (admin): saúde de entrega por fonte. Mesmo racional do
 # freshness — dado cosmético/diagnóstico, TTL curto, sem invalidação manual.
 _DSP_HEALTH_CACHE_TTL = 300
@@ -3944,10 +3991,15 @@ def report_data(request):
     #   GET  ?action=pmp_suggest_links&line_id=...     → fuzzy match Command
     #   POST ?action=pmp_link_command                  → PUT code no Xandr + local
     #   POST ?action=pmp_sync_v2                       → orquestra full sync
+    #   POST ?action=pmp_sync_pubmatic                 → re-sync só da PubMatic
+    #   GET  ?action=pmp_pubmatic_audit&days=N         → diff API × BQ (auditoria)
     #
     # `pmp_sync_v2` é o endpoint que o Cloud Scheduler dispara 1x/dia às 04:00
     # BRT (header X-Scheduler-Secret, body {"report_interval":"last_7_days"}).
-    # Setup do job é mantido idempotente em backend/deploy.sh.
+    # `pmp_sync_pubmatic` é o mesmo secret, 4x/dia, e existe porque às 04h a
+    # PubMatic ainda não fechou D-1 — sozinho, o cron da madrugada deixava a
+    # base 2 dias atrás em regime permanente. Setup dos dois jobs é mantido
+    # idempotente em backend/deploy.sh.
     if request.method == "GET" and request.args.get("action") == "pmp_lines_list":
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
@@ -4217,30 +4269,9 @@ def report_data(request):
                 window=interval, actor=actor,
             )
             # PubMatic (2ª fonte de curadoria) — best-effort: uma falha aqui NÃO
-            # pode derrubar o sync da Xandr, que é o caminho crítico. Só roda se
-            # alguma credencial da chain estiver configurada.
-            pubmatic_res = None
-            if pubmatic_curate.is_configured():
-                pm_t0 = datetime.now(timezone.utc)
-                pm_window = f"últimos {PUBMATIC_LOOKBACK_DAYS} dias"
-                try:
-                    pubmatic_res = pubmatic_curate.sync_delivery(
-                        lookback_days=PUBMATIC_LOOKBACK_DAYS)
-                    pmp_sync_runs.record(
-                        source="pubmatic", started_at=pm_t0, status="ok",
-                        rows_processed=pubmatic_res.get("rows_processed"),
-                        deals_touched=pubmatic_res.get("deals_touched"),
-                        window=pubmatic_res.get("window") or pm_window,
-                        actor=actor, credential=pubmatic_res.get("credential"),
-                    )
-                except Exception as pe:
-                    logger.warning(f"[pmp_sync_v2 pubmatic] {pe}")
-                    pubmatic_res = {"error": str(pe)}
-                    pmp_sync_runs.record(
-                        source="pubmatic", started_at=pm_t0, status="error",
-                        window=pm_window, actor=actor,
-                        credential=pubmatic_curate.credential_label(), error=str(pe),
-                    )
+            # pode derrubar o sync da Xandr, que é o caminho crítico. Sem
+            # credencial, vira um run 'skipped' no ledger (não um silêncio).
+            pubmatic_res = _run_pubmatic_sync(actor)
             # Recopia o espelho de checklists do Command ANTES do refresh, senão
             # checklists novos nunca chegam ao espelho e a auto-vinculação fica cega.
             mirror_res = pmp_lines.sync_checklists_mirror()
@@ -4267,6 +4298,82 @@ def report_data(request):
             return (jsonify({"error": str(xe)}), 502, headers)
         except Exception as e:
             logger.exception(f"[ERROR pmp_sync_v2] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    # Re-sync SÓ da PubMatic (+ refresh da enriched). Roda 4x/dia pelo
+    # Cloud Scheduler `pmp-pubmatic-refresh`, e é o conserto do sintoma que
+    # abriu esta investigação: o hub mostrava "entrega há 2d" pro deal do TIM
+    # enquanto a Media Console mostrava a entrega de ontem. Não era credencial
+    # nem cron quebrado — era a hora da coleta. Às 04h BRT a PubMatic devolve
+    # D-1 zerado, o conector descarta dia zerado (senão o deal apareceria "no
+    # ar" sem ter entregue) e D-1 só entrava no run seguinte. Rodando de novo
+    # às 10/14/18/22h, D-1 entra no dia em que a fonte o fecha.
+    #
+    # Não toca no Xandr de propósito: o report do Xandr é o caminho caro e ele
+    # já roda de madrugada. Aqui é 1 request de report + MERGE idempotente.
+    if request.method == "POST" and request.args.get("action") == "pmp_sync_pubmatic":
+        scheduler_secret_env = os.environ.get("PMP_SCHEDULER_SECRET", "")
+        provided_secret = request.headers.get("X-Scheduler-Secret", "")
+        is_scheduler = bool(scheduler_secret_env) and provided_secret == scheduler_secret_env
+        actor = "scheduler" if is_scheduler else None
+        if not is_scheduler:
+            admin = authenticate_admin(request)
+            if not admin:
+                return (jsonify({"error": "Não autorizado"}), 401, headers)
+            actor = admin.get("email", "unknown")
+        try:
+            pubmatic_res = _run_pubmatic_sync(actor)
+            # A UI lê a pmp_lines_enriched, não a tabela de entrega — sem o
+            # refresh o dado novo entra no BQ e não aparece na tela, que é
+            # justamente a classe de falha ("cron verde, tela velha") que o
+            # comentário do scheduler v1 no deploy.sh já registra.
+            pmp_lines.refresh_enriched_table()
+            # O compplan espelha a mesma entrega; deixá-lo esperando as 04h
+            # seria consertar metade. Best-effort, como no pmp_sync_v2.
+            try:
+                compplan_res = compplan_sheet.sync_if_connected()
+            except Exception as ce:
+                logger.warning(f"[pmp_sync_pubmatic compplan push] {ce}")
+                compplan_res = {"error": str(ce)}
+            return (jsonify({
+                "actor": actor,
+                "pubmatic": pubmatic_res,
+                "view_refreshed": True,
+                "compplan_sheet": compplan_res,
+            }), 200, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_sync_pubmatic] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    # Auditoria PubMatic: diff entre o que a API reporta e o que está gravado
+    # em pmp_line_delivery_daily, na janela pedida.
+    #
+    # Existe porque "a base da PubMatic não está atualizada" só se conferia
+    # abrindo o BQ e a Media Console lado a lado — e por isso virava discussão
+    # em vez de diagnóstico. Read-only: classifica (missing_in_bq /
+    # value_mismatch / extra_in_bq) e não conserta nada. missing_in_bq e
+    # value_mismatch somem rodando o sync (MERGE idempotente); extra_in_bq
+    # precisa de decisão humana, porque apagar entrega é irreversível.
+    if request.method == "GET" and request.args.get("action") == "pmp_pubmatic_audit":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        if not pubmatic_curate.is_configured():
+            return (jsonify({"error": "Nenhuma credencial PubMatic configurada"}),
+                    503, headers)
+        try:
+            try:
+                days = int(request.args.get("days") or 14)
+            except ValueError:
+                days = 14
+            # Teto na janela: a auditoria é 1 request de report + 1 query, mas
+            # uma janela enorme estoura o attempt-deadline sem responder nada.
+            days = max(1, min(days, 90))
+            return (jsonify(pubmatic_curate.audit_window(lookback_days=days)),
+                    200, headers)
+        except pubmatic_curate.PubMaticError as pe:
+            return (jsonify({"error": str(pe)}), 502, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_pubmatic_audit] {e}")
             return (jsonify({"error": str(e)}), 500, headers)
 
     # ── Endpoints: Compplan Sheet (admin) ────────────────────────────────────
