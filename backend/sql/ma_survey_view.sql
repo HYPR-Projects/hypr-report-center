@@ -12,12 +12,15 @@
 --
 --   site-hypr.prod_analytics.creative_events_raw
 --     particionada por DIA em occurred_at, clusterizada por
---     creative_id + event_type. Escrita por dois produtores: o cron de
---     export (Postgres → BQ) e o Worker de ingestão do Cloudflare.
+--     creative_id + event_type. Quem escreve na prática é o Worker de
+--     ingestão do Cloudflare: existe uma rota de export (Postgres → BQ) no
+--     repo da plataforma, mas ela NÃO tem job no Cloud Scheduler.
 --
 --   site-hypr.prod_analytics.creatives_dim
---     creative_id → creative_name. Recarregada ~1×/h por load job no mesmo
---     cron de export (o lake de eventos não guarda nome de peça).
+--     creative_id → creative_name. Recarregada ~1×/h por load job dentro do
+--     cron `rollup-creative-events` (o lake de eventos não guarda nome de
+--     peça). Já morou no `export-events-bq` e nunca carregava, justamente
+--     porque aquela rota não é agendada.
 --
 -- A resposta declarada é o evento `survey_answer`, 1× por sessão, com o
 -- rótulo escolhido em metadata.optionLabel (truncado em 120 chars na origem).
@@ -27,8 +30,8 @@
 --
 -- Dedupe NÃO é opcional
 -- ---------------------
--- O lake tem DOIS escritores (o cron de export do Postgres e o Worker de
--- ingestão do Cloudflare) e re-export sobreposto é parte do desenho — o
+-- O lake é escrito pelo Worker de ingestão, e o desenho prevê um segundo
+-- produtor (a rota de export do Postgres) com re-export sobreposto — o
 -- event_id é o insertId, que dedupa só dentro da janela do streaming buffer.
 -- Sem dedupe, resposta repetida vira resposta a mais e o total do relatório
 -- do cliente infla em silêncio.
@@ -137,13 +140,17 @@ WHERE a.option IS NOT NULL AND TRIM(a.option) != '';
 --
 -- Validar depois de criar:
 --
---   SELECT creative_name, short_token, option, COUNT(*) AS respostas
+--   SELECT creative_name, short_token, option,
+--          COUNT(DISTINCT session_id) AS respondentes
 --   FROM `site-hypr.prod_analytics.ma_survey_responses`
 --   WHERE responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
 --     AND short_token = 'FXR5US'
 --   GROUP BY 1, 2, 3
---   ORDER BY respostas DESC;
+--   ORDER BY respondentes DESC;
 --
 -- O que esperar: uma linha por opção, por criativo, e os nomes terminando em
 -- _CONTROLE / _EXPOSTO. Se `creative_name` vier NULL em tudo, a dimensão
--- ainda não carregou (ou o cron de export não rodou desde o deploy).
+-- ainda não carregou (ou o `rollup-creative-events` não rodou desde o deploy
+-- da plataforma).
+--
+-- Mais fácil que rodar isto na mão: `bash backend/scripts/check_ma_survey.sh`.
