@@ -86,7 +86,8 @@ tela — e a leitura natural de um número verde grande é "funcionou". Somar
 bases tornou isso mais urgente: a soma muda o `n`, e `n` é exatamente o que
 decide se a diferença significa alguma coisa.
 
-Cada card de lift agora traz uma linha:
+Cada card de lift traz uma linha — **só na visão HYPR** (ver
+"Quem vê o quê" abaixo):
 
 | O que aparece | Quando |
 |---|---|
@@ -316,13 +317,42 @@ erro interno não sai de lá. O log continua tendo tudo nos dois casos.
 1. **Pergunta sem respostas do Max Attention** → o rótulo do evento
    (`metadata.optionLabel`) mudou de nome na origem, ou a view não enxerga o
    criativo. Rode a query de validação no fim do `ma_survey_view.sql`.
-2. **Total maior do que deveria** → dedupe. A view precisa do
-   `QUALIFY ROW_NUMBER() OVER (PARTITION BY event_id)`; sem ele, re-export
-   sobreposto conta duas vezes.
-3. **Badge "bases divergentes"** → as duas bases não são a mesma pergunta.
-   O report está certo em não somar; confira o criativo vinculado.
+2. **Total maior do que deveria** → dedupe. A view precisa do `SELECT
+   DISTINCT` (com `created_at` fora do SELECT); sem ele, re-export sobreposto
+   conta duas vezes. Não troque por `QUALIFY ROW_NUMBER()`: função de janela é
+   barreira de otimização e derruba a poda de partição que a tabela exige —
+   está explicado no cabeçalho do `ma_survey_view.sql`.
+3. **Badge "bases divergentes"** (visão HYPR) → as duas bases não são a mesma
+   pergunta. O report está certo em não somar; confira o criativo vinculado.
+   O cliente não vê este aviso — se ele reportar número estranho, abra o
+   report como admin antes de investigar o BigQuery.
 4. **Criativo aparece pelo id, sem nome** → `creatives_dim` ainda não
    carregou (recarrega ~1×/h) ou o cron de export não rodou desde o deploy.
+
+## Quem vê o quê
+
+O relatório tem duas audiências no mesmo componente (`SurveyTab`, chaveado por
+`isAdmin`), e a linha entre elas não é sobre confidencialidade — é sobre o que
+cada um pode FAZER com a informação:
+
+| Elemento | Cliente | HYPR |
+|---|---|---|
+| Pergunta, opções, percentuais, lift | ✅ | ✅ |
+| Pílulas de fonte (`Standard Survey + Max Attention`) | — | ✅ |
+| Aviso de reconciliação (`bases somadas`, `bases divergentes`) | — | ✅ |
+| Significância e margem de erro (`±4,3 pp`) | — | ✅ |
+| Totais por célula (`1.013 ctrl · 388 exp`) | — | ✅ |
+
+De qual base veio a resposta é decisão de metodologia: pro cliente a pergunta
+é uma só, com um total só, e "veio metade do Max Attention" não muda nada que
+ele possa decidir. A margem de erro é a régua com que a HYPR julga o próprio
+número — inclusive quando ela diz "não concluir" —, e no relatório do cliente
+`amostra baixa` ao lado de um lift verde vira ruído, não cautela.
+
+O gate é sempre no **render**, nunca no cálculo: `liftSignificance` continua
+rodando pros dois, e é o mesmo objeto que alimenta a leitura interna. Quem
+mexer aqui não deve "otimizar" pulando o cálculo pro cliente — o número na
+tela do cliente e o número que a HYPR audita têm que sair da mesma conta.
 
 ## Arquivos
 
