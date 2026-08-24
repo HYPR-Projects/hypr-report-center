@@ -285,6 +285,18 @@ survey do Max Attention" → Run workflow, com o token da campanha como
 entrada opcional. Depende da credencial GCP no repo — a mesma do
 `deploy-backend.yml`, que hoje **não** está configurada.
 
+## O erro precisa chegar em quem consegue agir
+
+`maxattention_list_creatives` é admin-only e devolve a mensagem **real** do
+BigQuery no corpo do erro. Não é descuido: o genérico
+("Erro ao listar criativos") custou uma rodada inteira — o BigQuery dizia
+exatamente qual era o defeito (`DISTINCT and LIMIT`), e isso ficou só no log
+de uma Cloud Function que quem estava diagnosticando não conseguia abrir.
+
+`maxattention_results` mantém o genérico, e a diferença é proposital: aquele
+endpoint é aberto (o report roda no navegador do cliente), então detalhe de
+erro interno não sai de lá. O log continua tendo tudo nos dois casos.
+
 ## Quando um número parecer errado
 
 1. **Pergunta sem respostas do Max Attention** → o rótulo do evento
