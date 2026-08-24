@@ -99,36 +99,91 @@ confirma, e o `mismatch` acima cobre o caso de a sugestão estar errada.
 
 ## Ligar (uma vez)
 
-1. **Deploy do o2o-platform** com a branch da dimensão. `creatives_dim` nasce
-   sozinha no primeiro tick do cron de export.
-2. **Criar a view**: `bq query --use_legacy_sql=false < backend/sql/ma_survey_view.sql`
-   — o arquivo cria antes um `creatives_dim` vazio com `IF NOT EXISTS`, então
-   pode rodar mesmo que o cron da plataforma ainda não tenha ticado (sem isso
-   o `CREATE VIEW` falharia com "Not found: Table", porque o BigQuery valida
-   as referências na criação).
-3. **Permissão**: `bigquery.dataViewer` em `prod_analytics` para a service
-   account do Report Center (hoje ela lê só `prod_prod_hypr_reporthub` e
-   `prod_assets`).
-4. **Env + deploy do backend**, numa tacada só:
+Tudo abaixo roda no repo **`hypr-report-center`** — não no `o2o-platform`.
+Confundir os dois dá `cd: no such file or directory: backend`.
 
-   ```bash
-   cd backend
-   MA_SURVEY_VIEW_INIT=site-hypr.prod_analytics.ma_survey_responses bash deploy.sh
-   ```
+Numa máquina com `gcloud` autenticado em `site-hypr`. Cole bloco a bloco, sem
+comentário na mesma linha do comando: no zsh interativo `#` NÃO é comentário
+por padrão (`INTERACTIVE_COMMENTS` vem desligado), e um `# nota` colado junto
+vira argumento do `gcloud`.
 
-   O `INIT` só é necessário na primeira vez: dali em diante o `deploy.sh`
-   captura o valor da revisão viva e o repassa sozinho. Evite criar a
-   variável com um `gcloud functions deploy --update-env-vars` avulso — o
-   bloco no topo do `deploy.sh` explica por quê (deploy com flag de env pode
-   fazer a revisão nascer sem as OUTRAS variáveis, que são secrets fora do
-   git).
+**1. Repo certo, atualizado**
 
-   O deploy do backend não sai no merge: é disparo manual, pelo workflow
-   "Deploy backend (Cloud Function)" ou rodando o `deploy.sh` de uma máquina
-   com `gcloud` autenticado em `site-hypr`.
+```bash
+cd ~/Desktop/"Jojo projects"
+[ -d hypr-report-center ] || git clone https://github.com/HYPR-Projects/hypr-report-center.git
+cd hypr-report-center && git checkout main && git pull
+```
 
-Sem o passo 4 nada quebra: os endpoints respondem 501 dizendo o que falta, a
-seção some do modal e o Typeform segue como sempre.
+**2. Deploy da plataforma** — só confira que já saiu (Vercel publica no merge
+da `o2o-platform`). É o cron dela que cria a `creatives_dim`.
+
+**3. Criar a view**
+
+```bash
+bq query --use_legacy_sql=false --project_id=site-hypr < backend/sql/ma_survey_view.sql
+```
+
+O arquivo cria antes uma `creatives_dim` vazia com `IF NOT EXISTS`, então
+pode rodar mesmo que o cron da plataforma ainda não tenha ticado (sem isso o
+`CREATE VIEW` falharia com "Not found: Table", porque o BigQuery valida as
+referências na criação).
+
+**4. Dar leitura em `prod_analytics` pra service account da Cloud Function**
+
+```bash
+SA=$(gcloud functions describe report_data --gen2 --region=southamerica-east1 --format='value(serviceConfig.serviceAccountEmail)')
+echo "$SA"
+```
+
+```bash
+bq show --format=prettyjson site-hypr:prod_analytics > /tmp/ds.json
+python3 - "$SA" <<'PYEOF'
+import json, sys
+sa = sys.argv[1]
+ds = json.load(open("/tmp/ds.json"))
+acc = ds.setdefault("access", [])
+if not any(a.get("userByEmail") == sa and a.get("role") == "READER" for a in acc):
+    acc.append({"role": "READER", "userByEmail": sa})
+json.dump(ds, open("/tmp/ds.json", "w"), indent=2)
+print("READER concedido a", sa)
+PYEOF
+bq update --source /tmp/ds.json site-hypr:prod_analytics
+```
+
+Grant no DATASET, não no projeto: a SA precisa ler `prod_analytics` e mais
+nada. `roles/bigquery.dataViewer` no projeto inteiro resolveria numa linha e
+abriria todo o `site-hypr` de brinde.
+
+**5. Deploy do backend + env, numa tacada**
+
+```bash
+cd backend
+MA_SURVEY_VIEW_INIT=site-hypr.prod_analytics.ma_survey_responses bash deploy.sh
+```
+
+O `INIT` só é necessário na primeira vez: dali em diante o `deploy.sh` captura
+o valor da revisão viva e repassa sozinho. Evite criar a variável com um
+`gcloud functions deploy --update-env-vars` avulso — o bloco no topo do
+`deploy.sh` explica por quê (deploy com flag de env pode fazer a revisão
+nascer sem as OUTRAS variáveis, que são secrets fora do git).
+
+O deploy do backend não sai no merge: é disparo manual, pelo workflow "Deploy
+backend (Cloud Function)" — que hoje falha por não haver credencial GCP
+configurada no repo — ou pelo `deploy.sh` como acima.
+
+**6. Conferir**
+
+```bash
+bq query --use_legacy_sql=false --project_id=site-hypr 'SELECT creative_name, short_token, option, COUNT(*) AS respostas FROM `site-hypr.prod_analytics.ma_survey_responses` WHERE responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY) AND short_token = "FXR5US" GROUP BY 1,2,3 ORDER BY respostas DESC'
+```
+
+Esperado: uma linha por opção, por criativo, com nomes terminando em
+`_CONTROLE` / `_EXPOSTO`. `creative_name` NULL em tudo = a dimensão ainda não
+carregou (ou o cron de export da plataforma não rodou desde o deploy dela).
+
+Parar antes do passo 5 não quebra nada: os endpoints respondem 501 dizendo o
+que falta, a seção some do modal e o Typeform segue como sempre.
 
 ## Custo
 
