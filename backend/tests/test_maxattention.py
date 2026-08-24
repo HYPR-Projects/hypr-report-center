@@ -26,6 +26,7 @@ def test_unidade_de_contagem_prefere_sessao(session, responses, esperado):
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     monkeypatch.delenv("MA_SURVEY_VIEW", raising=False)
+    monkeypatch.delenv("MA_CREATIVES_DIM", raising=False)
     ma._COLUMNS_CACHE.clear()
 
 
@@ -88,3 +89,31 @@ def test_detect_side_nao_chuta_em_palavra_parecida():
 ])
 def test_token_in_name_casa_palavra_inteira(name, token, expected):
     assert ma.token_in_name(name, token) is expected
+
+
+def test_dimensao_deriva_do_dataset_da_view(monkeypatch):
+    # Uma env a menos pra configurar: a dimensão mora no mesmo dataset da
+    # view, e é ela que resolve a campanha antes de tocar o lake.
+    monkeypatch.setenv("MA_SURVEY_VIEW", "site-hypr.prod_analytics.ma_survey_responses")
+    assert ma.creatives_dim_table() == "site-hypr.prod_analytics.creatives_dim"
+
+
+def test_dimensao_aceita_override(monkeypatch):
+    monkeypatch.setenv("MA_SURVEY_VIEW", "site-hypr.prod_analytics.ma_survey_responses")
+    monkeypatch.setenv("MA_CREATIVES_DIM", "outro.dataset.criativos")
+    assert ma.creatives_dim_table() == "outro.dataset.criativos"
+
+
+def test_dimensao_override_malformado_e_recusado(monkeypatch):
+    # Mesmo motivo da view: o nome entra interpolado no SQL.
+    monkeypatch.setenv("MA_SURVEY_VIEW", "site-hypr.prod_analytics.ma_survey_responses")
+    monkeypatch.setenv("MA_CREATIVES_DIM", "dataset.tabela; DROP TABLE x")
+    with pytest.raises(ma.NotConfigured):
+        ma.creatives_dim_table()
+
+
+def test_janela_sem_campanha_e_curta():
+    # Sem token não há como podar por creative_id (a chave LÍDER do cluster),
+    # então o período é o que segura o custo.
+    assert ma.UNSCOPED_LOOKBACK_DAYS <= 60
+    assert ma.UNSCOPED_LOOKBACK_DAYS < ma.DEFAULT_LOOKBACK_DAYS

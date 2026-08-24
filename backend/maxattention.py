@@ -104,6 +104,11 @@ MAX_BYTES_BILLED = str(32 * 1024 ** 3)  # 32 GiB de ESTIMATIVA
 # mesma agregação não passam no BigQuery.
 MAX_OPTIONS_LISTED = 20
 
+# Janela usada quando a listagem NÃO tem campanha pra podar por criativo.
+# Curta de propósito: sem o filtro de creative_id o scan é largo, e este é o
+# caminho manual (o modal sempre manda o token).
+UNSCOPED_LOOKBACK_DAYS = 30
+
 # Teto de linhas agregadas devolvidas por criativo. Uma pergunta com mais
 # de 500 opções distintas não é uma pergunta — é dado sujo, e o corte
 # aparece explícito na resposta em vez de virar um total silenciosamente
@@ -137,6 +142,25 @@ def survey_view():
             "Esperado 'projeto.dataset.view'."
         )
     return raw
+
+
+def creatives_dim_table():
+    """Tabela de criativos, no MESMO dataset da view.
+
+    Existe porque a listagem precisa resolver "quais criativos são desta
+    campanha" ANTES de tocar o lake. Ver `list_creatives` pro porquê.
+
+    Derivada da view em vez de virar env nova (uma variável a menos pra
+    configurar e pra alguém esquecer num deploy); `MA_CREATIVES_DIM`
+    sobrescreve se um dia os dois morarem em datasets diferentes.
+    """
+    override = os.environ.get("MA_CREATIVES_DIM", "").strip().strip("`")
+    if override:
+        if not _VIEW_RE.match(override):
+            raise NotConfigured(f"MA_CREATIVES_DIM inválida ({override!r}).")
+        return override
+    project, dataset, _ = survey_view().split(".")
+    return f"{project}.{dataset}.creatives_dim"
 
 
 def is_configured():
@@ -210,6 +234,33 @@ def _weight_expr(has_session_col, has_responses_col):
     return "COUNT(*)"
 
 
+def _creative_ids_for_token(token, limit=500):
+    """Criativos de uma campanha, resolvidos na DIMENSÃO (não no lake).
+
+    Alguns KB contra dezenas de GB: a dimensão tem uma linha por criativo,
+    enquanto o lake tem uma por evento. E é o que devolve a chave líder do
+    cluster pro filtro seguinte.
+
+    Casa pela convenção de nome ("ID-FXR5US_..."), que é a mesma regra que a
+    view usa pra derivar `short_token`.
+    """
+    dim = creatives_dim_table()
+    sql = f"""
+        SELECT creative_id
+        FROM `{dim}`
+        WHERE REGEXP_CONTAINS(UPPER(COALESCE(creative_name, '')), @token_re)
+        LIMIT {int(limit)}
+    """
+    params = [
+        bigquery.ScalarQueryParameter(
+            "token_re", "STRING",
+            r"(^|[^A-Z0-9])" + re.escape(token.strip().upper()) + r"([^A-Z0-9]|$)",
+        )
+    ]
+    rows = _client().query(sql, job_config=_job_config(params)).result()
+    return [r["creative_id"] for r in rows if r["creative_id"]]
+
+
 def _client():
     return bq_client.get_client()
 
@@ -259,26 +310,31 @@ def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
 
     where = ["responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)"]
     params = [bigquery.ScalarQueryParameter("days", "INT64", days)]
+
+    # Filtrar por creative_id é o que torna esta query viável.
+    #
+    # `creative_events_raw` é clusterizada por (creative_id, event_type). A
+    # primeira versão desta listagem filtrava só por event_type — a SEGUNDA
+    # chave — e por isso quase não podava: 34 GiB por abertura de modal, que
+    # o teto de bytes barrou (`bytesBilledLimitExceeded`), com razão.
+    #
+    # A campanha é resolvida antes, na `creatives_dim`, que tem centenas de
+    # linhas e custa alguns KB. Com os ids em mãos, o filtro cai na chave
+    # LÍDER do cluster e o scan encolhe pra fração do que era.
     if token:
-        # Coluna quando existe, convenção de nome sempre — um criativo
-        # nomeado certo não some só porque a view não amarra a campanha.
-        clauses = []
-        if has_name_col:
-            clauses.append(r"REGEXP_CONTAINS(UPPER(creative_name), @token_re)")
-            params.append(
-                bigquery.ScalarQueryParameter(
-                    "token_re", "STRING",
-                    r"(^|[^A-Z0-9])" + re.escape(token.upper()) + r"([^A-Z0-9]|$)",
-                )
-            )
-        if has_token_col:
-            clauses.append("UPPER(short_token) = @token")
-            params.append(bigquery.ScalarQueryParameter("token", "STRING", token.upper()))
-        # Sem nome NEM coluna de token não há como filtrar por campanha — em
-        # vez de devolver a base inteira fingindo que filtrou, devolve tudo da
-        # janela e a UI deixa o admin escolher.
-        if clauses:
-            where.append("(" + " OR ".join(clauses) + ")")
+        ids = _creative_ids_for_token(token)
+        if not ids:
+            # Nenhum criativo desta campanha: devolver [] é a resposta certa,
+            # e evita varrer o lake pra descobrir o mesmo.
+            return []
+        where.append("creative_id IN UNNEST(@ids)")
+        params.append(bigquery.ArrayQueryParameter("ids", "STRING", ids))
+    else:
+        # Sem campanha não há como podar por criativo. Em vez de varrer a
+        # janela inteira, encolhe o período: é caminho manual (o modal sempre
+        # manda o token) e serve pra "o que respondeu recentemente".
+        days = min(days, UNSCOPED_LOOKBACK_DAYS)
+        params[0] = bigquery.ScalarQueryParameter("days", "INT64", days)
 
     sql = f"""
         SELECT
