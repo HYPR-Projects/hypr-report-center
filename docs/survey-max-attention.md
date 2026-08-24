@@ -80,9 +80,23 @@ confirma, e o `mismatch` acima cobre o caso de a sugestão estar errada.
 3. **Permissão**: `bigquery.dataViewer` em `prod_analytics` para a service
    account do Report Center (hoje ela lê só `prod_prod_hypr_reporthub` e
    `prod_assets`).
-4. **Env**: `MA_SURVEY_VIEW=site-hypr.prod_analytics.ma_survey_responses`
-   (já preservada pelo `backend/deploy.sh` — sem isso ela sumiria no deploy
-   seguinte).
+4. **Env + deploy do backend**, numa tacada só:
+
+   ```bash
+   cd backend
+   MA_SURVEY_VIEW_INIT=site-hypr.prod_analytics.ma_survey_responses bash deploy.sh
+   ```
+
+   O `INIT` só é necessário na primeira vez: dali em diante o `deploy.sh`
+   captura o valor da revisão viva e o repassa sozinho. Evite criar a
+   variável com um `gcloud functions deploy --update-env-vars` avulso — o
+   bloco no topo do `deploy.sh` explica por quê (deploy com flag de env pode
+   fazer a revisão nascer sem as OUTRAS variáveis, que são secrets fora do
+   git).
+
+   O deploy do backend não sai no merge: é disparo manual, pelo workflow
+   "Deploy backend (Cloud Function)" ou rodando o `deploy.sh` de uma máquina
+   com `gcloud` autenticado em `site-hypr`.
 
 Sem o passo 4 nada quebra: os endpoints respondem 501 dizendo o que falta, a
 seção some do modal e o Typeform segue como sempre.
