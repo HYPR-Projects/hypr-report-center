@@ -247,8 +247,9 @@ function findPartnerForm(formId, formsById, forms) {
 // aparece nomeada na tela antes de valer.
 const MA_QUESTION_THRESHOLD = 0.62;
 
-// Melhor pergunta do criativo pro nome do bloco. Sem nome no bloco ou com
-// uma pergunta só, devolve a única (ou nada) — não força casamento.
+// Melhor pergunta do criativo pro nome do bloco. Criativo sem pergunta
+// declarada (pergunta única) devolve "" — o backend então soma todas as
+// respostas dele, que é exatamente o certo aí.
 function matchMaQuestion(creative, blockNome) {
   const questions = creative?.questions || [];
   if (questions.length <= 1) return questions[0] || "";
@@ -263,12 +264,17 @@ function matchMaQuestion(creative, blockNome) {
   return bestScore >= MA_QUESTION_THRESHOLD ? best : "";
 }
 
-// Criativos que servem pra um slot: o lado bate (ou o nome não diz nada,
-// e aí cabe nos dois) e o criativo tem alguma pergunta.
+// Criativos que servem pra um slot: o lado bate, ou o nome não diz nada e
+// aí cabe nos dois.
+//
+// Não exigimos que o criativo declare perguntas: no Tap to Choose de
+// pergunta única o evento não carrega título de pergunta (só o rótulo da
+// resposta), então `questions` vem vazio — e é justamente o caso mais
+// comum. Lista vazia significa "a pergunta do criativo", não "sem dado".
 function maCandidatesForSide(creatives, sideKey) {
   const wanted = sideKey === "ctrl" ? "controle" : "exposto";
   return (creatives || []).filter(
-    (c) => c && (c.side === wanted || c.side == null) && (c.questions || []).length > 0,
+    (c) => c && (c.side === wanted || c.side == null),
   );
 }
 

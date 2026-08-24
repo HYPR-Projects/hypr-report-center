@@ -18,19 +18,31 @@ já devolve, e o resto do pipeline segue igual.
 
 Contrato de entrada: uma VIEW, não uma tabela
 ---------------------------------------------
-A plataforma (platform.hypr.mobi) tem o schema dela, que muda no ritmo
-dela. Em vez de acoplar o Report Center a nomes de coluna de outro
-produto, dependemos de UMA view com contrato fixo, apontada por env:
+A fonte é o lake de eventos que a plataforma (o2o-platform) já drena pro
+BigQuery no MESMO projeto — `site-hypr.prod_analytics.creative_events_raw`,
+evento `survey_answer`, rótulo em `metadata.optionLabel`. Mas o schema
+daquele lake é da plataforma e muda no ritmo dela, e há uma regra de
+leitura que não dá pra esquecer (dedupe por event_id: o lake tem dois
+escritores e re-export sobreposto é parte do desenho).
+
+Por isso não lemos a tabela: dependemos de UMA view com contrato fixo,
+apontada por env. O SQL dela está em `backend/sql/ma_survey_view.sql`.
 
     MA_SURVEY_VIEW = "projeto.dataset.view"
 
     creative_id    STRING     NOT NULL  -- id do criativo na plataforma
-    creative_name  STRING     NOT NULL  -- nome completo do criativo
-    question       STRING     NOT NULL  -- título da pergunta
     option         STRING     NOT NULL  -- opção escolhida
     responded_at   TIMESTAMP  NOT NULL  -- quando a resposta veio
-    short_token    STRING               -- opcional: campanha, se a
-                                        --   plataforma souber amarrar
+    creative_name  STRING               -- opcional: nome do criativo. É
+                                        --   ele que carrega token e lado
+                                        --   ("ID-FXR5US_..._CONTROLE");
+                                        --   sem ele o vínculo é manual.
+    question       STRING               -- opcional: título da pergunta.
+                                        --   Só existe em criativo de
+                                        --   múltiplas perguntas; no Tap
+                                        --   to Choose de pergunta única
+                                        --   vem NULL, e está certo.
+    short_token    STRING               -- opcional: campanha
     responses      INT64                -- opcional: se a view já vier
                                         --   agregada. Ausente/NULL = 1
                                         --   linha por resposta.
@@ -173,34 +185,48 @@ def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
     # A view pode ou não ter short_token/responses. Em vez de duas versões
     # do SQL, resolvemos com SELECT * num CTE e checagem de coluna no
     # schema — assim a mesma query serve pros dois contratos.
-    has_token_col, has_responses_col = _view_columns(view)
+    has_token_col, has_responses_col, has_name_col, has_question_col = _view_columns(view)
 
     token_expr = "ANY_VALUE(short_token)" if has_token_col else "CAST(NULL AS STRING)"
     weight = "SUM(COALESCE(responses, 1))" if has_responses_col else "COUNT(*)"
+    # Sem nome, o criativo se identifica pelo id — a UI ainda lista, só não
+    # consegue sugerir campanha/lado sozinha.
+    name_expr = "ANY_VALUE(creative_name)" if has_name_col else "CAST(NULL AS STRING)"
+    questions_expr = (
+        "ARRAY_AGG(DISTINCT question IGNORE NULLS ORDER BY question)"
+        if has_question_col
+        else "CAST([] AS ARRAY<STRING>)"
+    )
 
     where = ["responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)"]
     params = [bigquery.ScalarQueryParameter("days", "INT64", days)]
     if token:
         # Coluna quando existe, convenção de nome sempre — um criativo
         # nomeado certo não some só porque a view não amarra a campanha.
-        clauses = [r"REGEXP_CONTAINS(UPPER(creative_name), @token_re)"]
+        clauses = []
+        if has_name_col:
+            clauses.append(r"REGEXP_CONTAINS(UPPER(creative_name), @token_re)")
+            params.append(
+                bigquery.ScalarQueryParameter(
+                    "token_re", "STRING",
+                    r"(^|[^A-Z0-9])" + re.escape(token.upper()) + r"([^A-Z0-9]|$)",
+                )
+            )
         if has_token_col:
             clauses.append("UPPER(short_token) = @token")
-        where.append("(" + " OR ".join(clauses) + ")")
-        params.append(
-            bigquery.ScalarQueryParameter(
-                "token_re", "STRING", r"(^|[^A-Z0-9])" + re.escape(token.upper()) + r"([^A-Z0-9]|$)"
-            )
-        )
-        if has_token_col:
             params.append(bigquery.ScalarQueryParameter("token", "STRING", token.upper()))
+        # Sem nome NEM coluna de token não há como filtrar por campanha — em
+        # vez de devolver a base inteira fingindo que filtrou, devolve tudo da
+        # janela e a UI deixa o admin escolher.
+        if clauses:
+            where.append("(" + " OR ".join(clauses) + ")")
 
     sql = f"""
         SELECT
           creative_id,
-          ANY_VALUE(creative_name)        AS creative_name,
+          {name_expr}                     AS creative_name,
           {token_expr}                    AS short_token,
-          ARRAY_AGG(DISTINCT question IGNORE NULLS ORDER BY question) AS questions,
+          {questions_expr}                AS questions,
           {weight}                        AS responses,
           MIN(responded_at)               AS first_at,
           MAX(responded_at)               AS last_at
@@ -216,10 +242,12 @@ def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
     out = []
     for r in rows:
         name = r["creative_name"] or ""
+        # Sem nome, o id é o rótulo — nunca uma string vazia na UI.
+        display_name = name or str(r["creative_id"])
         row_token = r["short_token"]
         out.append({
             "creative_id": r["creative_id"],
-            "creative_name": name,
+            "creative_name": display_name,
             "short_token": row_token,
             "questions": list(r["questions"] or []),
             "responses": int(r["responses"] or 0),
@@ -238,18 +266,24 @@ def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
 
 
 def _view_columns(view):
-    """(tem short_token, tem responses) — lido do schema, cacheado por instância."""
+    """(short_token, responses, creative_name, question) — quais colunas
+    opcionais a view expõe. Lido do schema uma vez por instância."""
     cached = _COLUMNS_CACHE.get(view)
     if cached is not None:
         return cached
     table = _client().get_table(view)
     names = {f.name for f in table.schema}
-    missing = {"creative_id", "creative_name", "question", "option", "responded_at"} - names
+    missing = {"creative_id", "option", "responded_at"} - names
     if missing:
         raise NotConfigured(
             f"View {view} não tem as colunas obrigatórias: {', '.join(sorted(missing))}."
         )
-    result = ("short_token" in names, "responses" in names)
+    result = (
+        "short_token" in names,
+        "responses" in names,
+        "creative_name" in names,
+        "question" in names,
+    )
     _COLUMNS_CACHE[view] = result
     return result
 
@@ -269,12 +303,12 @@ def fetch_results(creative_id, question=None, date_from=None, date_to=None):
     ao mesmo filtro, senão a soma compara períodos diferentes.
     """
     view = survey_view()
-    _, has_responses_col = _view_columns(view)
+    _, has_responses_col, _, has_question_col = _view_columns(view)
     weight = "SUM(COALESCE(responses, 1))" if has_responses_col else "COUNT(*)"
 
     where = ["creative_id = @creative_id"]
     params = [bigquery.ScalarQueryParameter("creative_id", "STRING", str(creative_id))]
-    if question:
+    if question and has_question_col:
         where.append("question = @question")
         params.append(bigquery.ScalarQueryParameter("question", "STRING", str(question)))
     if re.match(r"^\d{4}-\d{2}-\d{2}$", date_from or ""):
