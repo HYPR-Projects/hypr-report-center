@@ -1,0 +1,125 @@
+# Deploy da Cloud Function do backend (report_data, GCP site-hypr).
+#
+# Por que existe
+# ─────────────
+# O frontend publica sozinho no merge (Vercel). O backend não tinha caminho
+# nenhum fora de uma máquina com gcloud autenticado — e em 24/08/2026 isso
+# custou caro: o fix de frescor da PubMatic foi mergeado, o painel novo subiu
+# na hora, e a correção da COLETA ficou parada esperando alguém abrir o laptop.
+# Metade de um conserto em produção é pior que nenhum: a tela passa a dizer
+# que está tudo certo com o pipeline ainda quebrado.
+#
+# Disparo é MANUAL de propósito (workflow_dispatch). Deploy de produção deve
+# ser um ato explícito, e o repo mergeia direto na main — auto-deploy em push
+# transformaria todo merge que toca backend/ numa publicação sem querer.
+# Para ligar auto-deploy depois, bastam três linhas:
+#   push:
+#     branches: [main]
+#     paths: ['backend/**']
+
+name: Deploy backend (Cloud Function)
+
+on:
+  workflow_dispatch:
+
+# Dois deploys simultâneos brigariam pelo traffic split da mesma revisão.
+# cancel-in-progress fica FALSE: cancelar um deploy no meio é pior que enfileirar.
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write      # necessário pro Workload Identity Federation
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Falha cedo e com mensagem legível. Sem isto, a ausência de credencial
+      # aparece como um erro de permissão do gcloud lá na frente, que manda o
+      # operador debugar a coisa errada.
+      - name: Conferir se há credencial configurada
+        # Os valores vão por `env`, não interpolados no script: o JSON da
+        # service account tem aspas e quebras de linha, e injetá-lo direto
+        # dentro de `[ -n "..." ]` produziria bash inválido.
+        env:
+          WIF_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          if [ -n "$WIF_PROVIDER" ]; then
+            echo "Auth: Workload Identity Federation"
+          elif [ -n "$SA_KEY" ]; then
+            echo "Auth: chave de service account (considere migrar pra WIF)"
+          else
+            echo "::error::Nenhuma credencial GCP configurada."
+            echo "::error::Opção A (recomendada, sem chave de longa duração):"
+            echo "::error::  variáveis do repo GCP_WORKLOAD_IDENTITY_PROVIDER e GCP_DEPLOY_SERVICE_ACCOUNT"
+            echo "::error::Opção B: secret do repo GCP_SA_KEY com o JSON da service account"
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --quiet --upgrade pip
+          pip install --quiet -r backend/requirements.txt -r backend/requirements-dev.txt
+
+      # Autenticação ANTES dos testes de propósito: vários módulos do backend
+      # constroem o client do BigQuery no import, então sem credencial a suíte
+      # nem chega a colher — foi exatamente o que impediu de rodá-la inteira
+      # durante o desenvolvimento deste fix.
+      - name: Autenticar no GCP (Workload Identity Federation)
+        if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Autenticar no GCP (chave de service account)
+        if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER == ''
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: site-hypr
+
+      # Gate de verdade: falhou, não publica. Um gate que dá pra pular não é gate.
+      - name: Rodar a suíte de testes
+        working-directory: backend
+        run: python -m pytest tests/ -q
+
+      # O deploy.sh é auto-suficiente: captura os secrets da revisão VIVA
+      # (extract_env) e cai no Secret Manager quando falta, então o CI não
+      # precisa carregar PUBMATIC_*, XANDR_* nem PMP_SCHEDULER_SECRET.
+      # Ele também reconcilia os Cloud Schedulers de forma idempotente.
+      - name: Deploy
+        working-directory: backend
+        run: bash deploy.sh
+
+      # Confirma que a revisão nova SERVE, não só que subiu. O healthz exercita
+      # o ThreadPool (ver main.py) e devolve 503 quando ele não responde — é o
+      # mesmo probe que o liveness usa.
+      - name: Smoke check (?action=healthz)
+        run: |
+          URL="https://southamerica-east1-site-hypr.cloudfunctions.net/report_data?action=healthz"
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /tmp/health.txt -w '%{http_code}' --max-time 30 "$URL" || echo 000)
+            echo "tentativa $i → HTTP $code"
+            if [ "$code" = "200" ]; then
+              cat /tmp/health.txt; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::healthz não respondeu 200 após o deploy — verificar a revisão no Cloud Run"
+          cat /tmp/health.txt || true
+          exit 1
