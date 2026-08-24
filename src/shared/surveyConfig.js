@@ -14,6 +14,19 @@
 //      Permite o admin escolher um período pra exibir ao cliente sem
 //      afetar a visão de inspeção interna.
 //
+//   4. v4 (multi-fonte por lado) — cada lado pode declarar `ctrlParts` /
+//      `expParts`: um ARRAY de fontes que são somadas entre si. Nasceu da
+//      pesquisa nativa do Max Attention (etapa de survey do Tap to Choose),
+//      que roda em paralelo ao Typeform com a mesma pergunta e as mesmas
+//      opções — o cliente quer um número só. Cada parte é
+//      `{source, ...campos daquela fonte}`; a reconciliação de rótulos e a
+//      soma ficam em `surveySources.js`.
+//
+//      Os campos de fonte única (`ctrlSource`/`ctrlUrl`/`ctrlCounts`…)
+//      continuam sendo escritos espelhando a PRIMEIRA parte, pra que um
+//      leitor anterior a v4 ainda renderize algo correto (uma base em vez
+//      de todas) em vez de quebrar.
+//
 // Dentro de `questions[i]` cada item agora aceita também `tipo: "videoask"`
 // com `ctrlCounts`/`expCounts` embutidos (contagens já parseadas do XLSX
 // exportado da plataforma, sem chamada de API em runtime). Quando `tipo`
@@ -116,25 +129,71 @@ export function sumCounts(counts) {
 // Sem campo *Source nem tipo, default = "typeform".
 export function getSideSource(q, side) {
   if (!q) return "typeform";
+  const parts = side === "ctrl" ? q.ctrlParts : q.expParts;
+  if (Array.isArray(parts) && parts.length && parts[0]?.source) return parts[0].source;
   const field = side === "ctrl" ? "ctrlSource" : "expSource";
   if (q[field] === "typeform" || q[field] === "videoask") return q[field];
   if (q.tipo === "videoask") return "videoask";
   return "typeform";
 }
 
-// Diz se o lado tem dado utilizável pra renderizar (URL/form do Typeform
-// ou contagens do VideoAsk não-zero). Permite lados opcionais — pergunta
-// com só Controle, ou só Exposto, ainda é válida (sem cálculo de lift).
-export function hasSideData(q, side) {
-  if (!q) return false;
-  const source = getSideSource(q, side);
-  if (source === "videoask") {
-    const counts = side === "ctrl" ? q.ctrlCounts : q.expCounts;
-    return sumCounts(counts) > 0;
+// Diz se UMA parte (uma fonte de um lado) tem dado utilizável.
+// Fontes com contagens embutidas (videoask, maxattention manual) precisam
+// de contagem > 0; fontes de API (typeform, maxattention por criativo)
+// precisam do identificador.
+export function partHasData(part) {
+  if (!part) return false;
+  if (sumCounts(part.counts) > 0) return true;
+  if (part.source === "typeform") return !!(part.formId || part.url);
+  if (part.source === "maxattention") return !!(part.creativeId || part.lineId);
+  return false;
+}
+
+// Fontes de um lado, sempre como ARRAY, na ordem em que somam.
+//
+// Schema v4 lê `ctrlParts`/`expParts`. Schemas anteriores (fonte única por
+// lado) são projetados numa lista de 1 elemento, então todo chamador pode
+// assumir array e o resto do pipeline não precisa saber qual versão gerou
+// o blob.
+export function getSideParts(q, side) {
+  if (!q) return [];
+  const raw = side === "ctrl" ? q.ctrlParts : q.expParts;
+  if (Array.isArray(raw) && raw.length) {
+    return raw
+      .map((p) => (p && typeof p === "object" ? { ...p, source: p.source || "typeform" } : null))
+      .filter((p) => partHasData(p));
   }
-  const url = side === "ctrl" ? q.ctrlUrl : q.expUrl;
-  const formId = side === "ctrl" ? q.ctrlFormId : q.expFormId;
-  return !!(formId || url);
+
+  const source = getSideSource(q, side);
+  const pick = (ctrlKey, expKey) => (side === "ctrl" ? q[ctrlKey] : q[expKey]);
+
+  if (source === "videoask") {
+    const counts = pick("ctrlCounts", "expCounts");
+    const part = {
+      source: "videoask",
+      counts: counts || {},
+      total: sumCounts(counts),
+      fileName: pick("ctrlFileName", "expFileName") || "",
+      question: pick("ctrlQuestion", "expQuestion") || "",
+      firstAt: pick("ctrlFirstAt", "expFirstAt") || null,
+      lastAt: pick("ctrlLastAt", "expLastAt") || null,
+    };
+    return partHasData(part) ? [part] : [];
+  }
+
+  const part = {
+    source: "typeform",
+    url: pick("ctrlUrl", "expUrl") || "",
+    formId: pick("ctrlFormId", "expFormId") || "",
+  };
+  return partHasData(part) ? [part] : [];
+}
+
+// Diz se o lado tem dado utilizável pra renderizar — em qualquer uma das
+// suas fontes. Permite lados opcionais: pergunta com só Controle, ou só
+// Exposto, ainda é válida (sem cálculo de lift).
+export function hasSideData(q, side) {
+  return getSideParts(q, side).length > 0;
 }
 
 // Pergunta renderizável: pelo menos UM lado preenchido. Com os dois lados

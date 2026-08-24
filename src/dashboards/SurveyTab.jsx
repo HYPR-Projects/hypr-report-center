@@ -8,6 +8,7 @@ import { ymd } from "../shared/dateFilter";
 import { parseSurveyConfig, fmtClientRange } from "../shared/surveyConfig";
 import { loadSurveyQuestions, combineSurveyQuestions } from "../shared/surveyCombine";
 import { fmt } from "../shared/format";
+import { SOURCE_LABELS, SOURCE_TINTS, reconciliationSummary } from "../shared/surveySources";
 
 // Quando `combinedItems` é passado (array de {short_token, label, survey}),
 // o SurveyTab opera em modo AGREGADO: busca cada mês, soma as contagens
@@ -452,6 +453,7 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
                   {q.nome||`Pergunta ${i+1}`}
                 </div>
                 <SourceBadges sources={q.sources}/>
+                <ReconciliationNote reconciliation={q.reconciliation} isAdmin={isAdmin}/>
               </div>
               {isAdmin && (
                 <div style={{fontSize:11,color:mt,whiteSpace:"nowrap"}}>
@@ -480,35 +482,102 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
 };
 
 // Badge inline da fonte de cada lado da pergunta. Pra Typeform/Typeform
-// (caso comum) escondemos badges — sem ruído. Pra mistos ou só-VideoAsk,
-// renderizamos pra deixar claro de onde vieram os dados.
-const SOURCE_LABEL = { typeform: "Standard Survey", videoask: "Video Survey" };
-const SOURCE_TINT  = {
-  typeform: { fg: "#3397B9", bg: "#3397B918", bd: "#3397B940" },
-  videoask: { fg: "#8E44AD", bg: "#8E44AD18", bd: "#8E44AD40" },
-};
+// (caso comum) escondemos badges — sem ruído. Pra mistos, só-VideoAsk ou
+// lados com MAIS DE UMA fonte somada, renderizamos: quando o número na
+// tela é a soma de duas bases, o leitor tem que saber disso.
+const SOURCE_LABEL = SOURCE_LABELS;
+const SOURCE_TINT  = SOURCE_TINTS;
+
+// `sources` de cada lado é uma lista (multi-fonte). Normaliza o formato
+// antigo (string) pra não depender da versão do dado em memória.
+const asList = (v) => (v == null ? [] : Array.isArray(v) ? v.filter(Boolean) : [v]);
+
 function SourceBadges({ sources }) {
   if (!sources) return null;
-  const c = sources.ctrl, e = sources.exp;
-  // Caso default: typeform×typeform — nada a mostrar
-  if ((c === "typeform" || c == null) && (e === "typeform" || e == null)) return null;
-  const pill = (label, kind) => {
+  const c = asList(sources.ctrl);
+  const e = asList(sources.exp);
+  const isPlainTypeform = (l) => l.length === 0 || (l.length === 1 && l[0] === "typeform");
+  // Caso default: typeform×typeform, uma base de cada lado — nada a mostrar
+  if (isPlainTypeform(c) && isPlainTypeform(e)) return null;
+
+  const pill = (label, kind, key) => {
     const t = SOURCE_TINT[kind] || SOURCE_TINT.typeform;
     return (
-      <span style={{
+      <span key={key} style={{
         fontSize:10,fontWeight:700,letterSpacing:0.6,textTransform:"uppercase",
         color:t.fg,background:t.bg,border:`1px solid ${t.bd}`,borderRadius:999,padding:"2px 7px",
       }}>{label}</span>
     );
   };
-  // Mesmo source nos 2 lados → 1 pílula só
-  if (c && e && c === e) return pill(SOURCE_LABEL[c], c);
-  // Mixed ou single-side
-  return (
-    <span style={{display:"inline-flex",gap:6,alignItems:"center"}}>
-      {c && pill(`Ctrl: ${SOURCE_LABEL[c]}`, c)}
-      {e && pill(`Exp: ${SOURCE_LABEL[e]}`, e)}
+  // Um lado com N fontes vira N pílulas encostadas, com "+" entre elas —
+  // a soma fica explícita ("Standard Survey + Max Attention").
+  const stack = (list, prefix) => (
+    <span style={{display:"inline-flex",gap:4,alignItems:"center"}}>
+      {list.map((kind, i) => (
+        <span key={`${prefix}-${kind}-${i}`} style={{display:"inline-flex",gap:4,alignItems:"center"}}>
+          {i > 0 && <span style={{fontSize:10,color:C.muted,fontWeight:700}}>+</span>}
+          {pill(i === 0 && prefix ? `${prefix}: ${SOURCE_LABEL[kind] || kind}` : (SOURCE_LABEL[kind] || kind), kind, `${prefix}-${kind}-${i}`)}
+        </span>
+      ))}
     </span>
+  );
+
+  // Mesmas fontes nos 2 lados → um conjunto só de pílulas, sem prefixo
+  const sameBothSides =
+    c.length && e.length && c.length === e.length && c.every((v, i) => v === e[i]);
+  if (sameBothSides) return stack(c, "");
+
+  return (
+    <span style={{display:"inline-flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+      {c.length > 0 && stack(c, "Ctrl")}
+      {e.length > 0 && stack(e, "Exp")}
+    </span>
+  );
+}
+
+// Aviso de reconciliação entre bases. O cliente só vê o caso grave
+// (bases divergentes — somar ali seria inventar número); o admin vê o
+// detalhe de cada decisão, que é o que permite corrigir na origem.
+function ReconciliationNote({ reconciliation, isAdmin }) {
+  if (!reconciliation) return null;
+  const sides = [
+    { key: "ctrl", label: "Controle", rec: reconciliation.ctrl },
+    { key: "exp",  label: "Exposto",  rec: reconciliation.exp },
+  ].filter((s) => s.rec && s.rec.status !== "single");
+  if (!sides.length) return null;
+
+  const worst = sides.some((s) => s.rec.status === "mismatch")
+    ? "mismatch"
+    : sides.some((s) => s.rec.status === "partial")
+      ? "partial"
+      : "ok";
+  if (worst === "ok" && !isAdmin) return null;
+
+  const tint = worst === "mismatch"
+    ? { fg:"#C0392B", bg:"#C0392B14", bd:"#C0392B40" }
+    : worst === "partial"
+      ? { fg:"#B7791F", bg:"#B7791F14", bd:"#B7791F40" }
+      : { fg:C.muted, bg:"transparent", bd:"transparent" };
+
+  const title = sides
+    .map((s) => `${s.label}: ${reconciliationSummary(s.rec) || "bases somadas sem divergência"}`)
+    .join("\n");
+
+  const text = worst === "mismatch"
+    ? "bases divergentes"
+    : worst === "partial"
+      ? "respostas sem par entre bases"
+      : "bases somadas";
+
+  return (
+    <span
+      title={title}
+      style={{
+        fontSize:10,fontWeight:700,letterSpacing:0.6,textTransform:"uppercase",
+        color:tint.fg,background:tint.bg,border:`1px solid ${tint.bd}`,
+        borderRadius:999,padding:"2px 7px",cursor:"help",
+      }}
+    >{text}</span>
   );
 }
 
