@@ -57,6 +57,31 @@ base, dois rótulos são duas opções distintas por construção.
 Testes em `src/shared/surveySources.test.js` (`npm test`), incluindo os casos
 que precisam **falhar** em fundir.
 
+## O lift diz se é real
+
+Antes, "+3,2 pp" com 4.000 respondentes e "+3,2 pp" com 40 saíam idênticos na
+tela — e a leitura natural de um número verde grande é "funcionou". Somar
+bases tornou isso mais urgente: a soma muda o `n`, e `n` é exatamente o que
+decide se a diferença significa alguma coisa.
+
+Cada card de lift agora traz uma linha:
+
+| O que aparece | Quando |
+|---|---|
+| `✓ significante a 95% · ±2,1 pp` | teste z de duas proporções passa |
+| `≈ dentro da margem de erro · ±4,3 pp` | tem amostra, a diferença não se sustenta |
+| `· amostra baixa — menos de 60 por célula` | abaixo do piso: **não se conclui nada** |
+
+A régua não foi inventada aqui: é a mesma de
+`o2o-platform/src/modules/adbolt/services/surveyLift.ts` — piso de 60
+respostas por célula (regra de negócio da HYPR, registrada lá com data) e
+teste z bicaudal a 95%. Duas telas da HYPR discordando sobre o mesmo estudo
+seria pior que nenhuma das duas falar.
+
+O teste roda na **contagem bruta**, nunca na porcentagem já arredondada que
+aparece no gráfico — arredondar antes de testar joga fora justamente a
+precisão que o teste mede. Testes em `src/shared/surveyStats.test.js`.
+
 ## Como o vínculo é sugerido
 
 O nome do criativo já carrega tudo:
@@ -143,6 +168,7 @@ por metadata: ~24 recargas/dia, custo zero nos demais ticks.
 | `backend/sql/ma_survey_view.sql` | o contrato entre os dois produtos |
 | `backend/maxattention.py` | leitor BigQuery + convenção de nome |
 | `src/shared/surveySources.js` | reconciliação de rótulos e soma |
+| `src/shared/surveyStats.js` | significância do lift (piso 60 + z-test 95%) |
 | `src/shared/surveyConfig.js` | schema do `survey_data` (v1 → v4) |
 | `src/shared/surveyCombine.js` | busca por fonte + agregação entre meses |
 | `src/components/modals/SurveyModal.jsx` | setup e pareamento automático |
