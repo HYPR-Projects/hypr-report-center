@@ -9,6 +9,20 @@ import pytest
 import maxattention as ma
 
 
+@pytest.mark.parametrize("session,responses,esperado", [
+    # Sessão distinta ganha de tudo: é a unidade que o lift e o teste de
+    # significância assumem (proporção de PESSOAS).
+    (True,  True,  "COUNT(DISTINCT session_id)"),
+    (True,  False, "COUNT(DISTINCT session_id)"),
+    # Sem sessão, view já agregada manda.
+    (False, True,  "SUM(COALESCE(responses, 1))"),
+    # Sem nada, sobra contar evento — infla a base, mas é o que há.
+    (False, False, "COUNT(*)"),
+])
+def test_unidade_de_contagem_prefere_sessao(session, responses, esperado):
+    assert ma._weight_expr(session, responses) == esperado
+
+
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     monkeypatch.delenv("MA_SURVEY_VIEW", raising=False)
