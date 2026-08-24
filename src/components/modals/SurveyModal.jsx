@@ -351,9 +351,13 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
   const [forms, setForms] = useState([]);            // [{id,title,last_updated_at,display_url}]
   const [formsError, setFormsError] = useState("");
   // Criativos do Max Attention desta campanha. `maStatus`:
-  //   "loading" | "ready" | "off" (MA_SURVEY_VIEW não configurada) | "error"
-  // "off" e "error" são coisas diferentes: em "off" a seção some (não há o
-  // que oferecer), em "error" o admin precisa saber que falhou.
+  //   "loading" | "ready"
+  //   "off"    — MA_SURVEY_VIEW não configurada: a seção some, não há o que
+  //              oferecer e não há nada que o admin possa fazer.
+  //   "stale"  — backend ainda não atualizado (o front publica no merge, a
+  //              Cloud Function é deploy manual). Aviso neutro: não é falha
+  //              de nada, é uma janela de defasagem que se fecha sozinha.
+  //   "error"  — falhou de verdade; o admin precisa ver o motivo.
   const [maCreatives, setMaCreatives] = useState([]);
   const [maStatus, setMaStatus] = useState("loading");
   const [maError, setMaError] = useState("");
@@ -498,6 +502,8 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
         setMaStatus("ready");
       } else if (maResp.reason?.notConfigured) {
         setMaStatus("off");
+      } else if (maResp.reason?.staleBackend) {
+        setMaStatus("stale");
       } else {
         setMaStatus("error");
         setMaError(maResp.reason?.message || "Falha ao listar criativos do Max Attention");
@@ -881,6 +887,17 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
           }}
         >
           ⚠ Não consegui listar os forms do Typeform ({formsError}). Use o modo <em>colar URL</em> para continuar.
+        </div>
+      )}
+
+      {!loading && maStatus === "stale" && (
+        <div style={{
+          marginBottom: 12, padding: "8px 10px", borderRadius: 8,
+          border: `1px solid ${modalBdr}`, background: inputBg,
+          fontSize: 11.5, color: muted, lineHeight: 1.5,
+        }}>
+          Max Attention indisponível: o backend ainda não foi atualizado com esta
+          versão. Some sozinho no próximo deploy — o Typeform segue normal.
         </div>
       )}
 
