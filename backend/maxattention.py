@@ -81,6 +81,18 @@ logger = logging.getLogger(__name__)
 # olhar 180 dias mantém o dropdown curto e a query barata.
 DEFAULT_LOOKBACK_DAYS = 180
 
+# Teto de bytes que uma query daqui pode bilar. Guardrail contra varredura
+# catastrófica (view apontada errada, filtro que não podou partição), NÃO
+# controle de custo fino.
+#
+# Generoso de propósito, e a razão vem do próprio o2o-platform: o BigQuery
+# aplica esse cap sobre a ESTIMATIVA, e a estimativa considera poda de
+# PARTIÇÃO mas não de CLUSTER. Nossas duas queries filtram por período
+# (partição, entra na estimativa) e a de detalhe ainda filtra por creative_id
+# (cluster, só reduz o custo real). Um cap apertado mataria query que custa
+# centavos. Lá, um cap apertado zerou painel em produção.
+MAX_BYTES_BILLED = str(32 * 1024 ** 3)  # 32 GiB de ESTIMATIVA
+
 # Teto de linhas agregadas devolvidas por criativo. Uma pergunta com mais
 # de 500 opções distintas não é uma pergunta — é dado sujo, e o corte
 # aparece explícito na resposta em vez de virar um total silenciosamente
@@ -166,6 +178,17 @@ def _client():
     return bq_client.get_client()
 
 
+def _job_config(params):
+    return bigquery.QueryJobConfig(
+        query_parameters=params,
+        maximum_bytes_billed=MAX_BYTES_BILLED,
+        # Cache de query do BigQuery: resultado idêntico dentro de 24h não
+        # re-varre nem cobra. Some com o TTL do backend, é a segunda linha de
+        # defesa quando o cache em memória da instância morre num cold start.
+        use_query_cache=True,
+    )
+
+
 def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
     """
     Criativos com resposta de survey na janela, mais recentes primeiro.
@@ -237,7 +260,7 @@ def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
         LIMIT {limit}
     """
 
-    rows = _client().query(sql, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
+    rows = _client().query(sql, job_config=_job_config(params)).result()
 
     out = []
     for r in rows:
@@ -331,9 +354,7 @@ def fetch_results(creative_id, question=None, date_from=None, date_to=None):
         LIMIT {MAX_OPTIONS + 1}
     """
 
-    rows = list(
-        _client().query(sql, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
-    )
+    rows = list(_client().query(sql, job_config=_job_config(params)).result())
 
     truncated = len(rows) > MAX_OPTIONS
     if truncated:

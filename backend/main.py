@@ -2884,12 +2884,20 @@ def report_data(request):
     if request.method == "GET" and request.args.get("action") == "maxattention_list_creatives":
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
+        token = request.args.get("short_token", "").strip()
+        days = request.args.get("days") or maxattention.DEFAULT_LOOKBACK_DAYS
+        cache_key = f"{token}|{days}"
+        if request.args.get("refresh") == "true":
+            with _cache_lock:
+                _ma_creatives_cache.pop(cache_key, None)
+        cached = _cache_get(_ma_creatives_cache, cache_key, _MA_CREATIVES_TTL)
+        if cached is not None:
+            return (jsonify(cached), 200, headers)
         try:
-            creatives = maxattention.list_creatives(
-                short_token=request.args.get("short_token", "").strip(),
-                days=request.args.get("days") or maxattention.DEFAULT_LOOKBACK_DAYS,
-            )
-            return (jsonify({"creatives": creatives}), 200, headers)
+            creatives = maxattention.list_creatives(short_token=token, days=days)
+            payload = {"creatives": creatives}
+            _cache_set(_ma_creatives_cache, cache_key, payload)
+            return (jsonify(payload), 200, headers)
         except maxattention.NotConfigured as e:
             return (jsonify({"error": str(e), "configured": False}), 501, headers)
         except Exception as e:
@@ -2905,13 +2913,21 @@ def report_data(request):
         creative_id = request.args.get("creative_id", "").strip()
         if not creative_id:
             return (jsonify({"error": "creative_id é obrigatório"}), 400, headers)
+        question = request.args.get("question", "").strip() or None
+        date_from = request.args.get("date_from", "").strip()
+        date_to = request.args.get("date_to", "").strip()
+        cache_key = f"{creative_id}|{question or ''}|{date_from}|{date_to}"
+        cached = _cache_get(_ma_results_cache, cache_key, _MA_RESULTS_TTL)
+        if cached is not None:
+            return (jsonify(cached), 200, headers)
         try:
             data = maxattention.fetch_results(
                 creative_id,
-                question=request.args.get("question", "").strip() or None,
-                date_from=request.args.get("date_from", "").strip(),
-                date_to=request.args.get("date_to", "").strip(),
+                question=question,
+                date_from=date_from,
+                date_to=date_to,
             )
+            _cache_set(_ma_results_cache, cache_key, data)
             return (jsonify(data), 200, headers)
         except maxattention.NotConfigured as e:
             return (jsonify({"error": str(e), "configured": False}), 501, headers)
@@ -11338,6 +11354,22 @@ def _fetch_typeform_form_def(form_id, token):
 _TYPEFORM_LIST_TTL = 300  # 5 min — listagem muda pouco no horizonte de uma sessão
 _TYPEFORM_META_TTL = 600  # 10 min — definição de form muda menos ainda
 _typeform_meta_cache = {}  # form_id -> (timestamp, payload)
+
+# ── Cache do Max Attention ──────────────────────────────────────────────────
+# `maxattention_results` é chamado no RENDER do report, por cliente, por
+# pergunta — não é um fluxo de admin. Sem cache, cada abertura de report vira
+# N queries no BigQuery, e a conta cresce com audiência em vez de crescer com
+# dado novo. Com 5 min, uma campanha vista 200×/dia custa ~pouquíssimas
+# queries, e a defasagem é irrelevante pra uma pesquisa que acumula resposta
+# ao longo de semanas.
+#
+# O cache de resultado é keyed por (criativo, pergunta, período): dois clientes
+# vendo o mesmo report batem na mesma entrada, e o filtro de período do admin
+# não contamina a visão do cliente.
+_MA_RESULTS_TTL = 300     # 5 min
+_MA_CREATIVES_TTL = 600   # 10 min — listagem é admin, e a dimensão recarrega ~1×/h
+_ma_results_cache = {}    # "creative|question|from|to" -> (timestamp, payload)
+_ma_creatives_cache = {}  # "token|days" -> (timestamp, payload)
 
 # Cache do report_analytics — endpoint pesado (7 queries BQ paralelas).
 # Hit cacheia a estrutura completa do modal por 60s. Cobre o caso comum
