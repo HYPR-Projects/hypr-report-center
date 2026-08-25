@@ -1,74 +1,60 @@
 // src/v2/admin/components/MonthFilterPills.jsx
 //
-// Pills horizontais: [Todos · 211] [Abril · 58] [Março · 60] ...
-// Click em uma pill aplica filtro de mês; click novamente em pill ativa
-// limpa.
+// Filtro de mês — antes uma fileira de pílulas, agora o painel do chip
+// "Período".
 //
-// Espelha a "Acesso Rápido por Mês" do legacy mas com visual atualizado:
-// pills mais compactas, contagem em badge interna, e cor signature pra
-// estado ativo (em vez de azul saturado preenchido).
+// Por que saiu da fileira
+// ────────────────────────────────────────────────────────────────────────
+// A lista tinha "Todos" + um mês por cohort presente na base. Com 2026 em
+// andamento isso já eram DEZ pílulas ocupando uma faixa inteira de 52px,
+// que quebrava em duas linhas em telas médias — uma segunda barra de
+// navegação horizontal logo abaixo da primeira, com o mesmo peso visual da
+// busca e da ordenação ao lado. E as pílulas eram permanentes: ocupavam a
+// faixa toda mesmo quando "Todos" estava selecionado, que é o estado
+// default e o mais comum.
+//
+// Como painel, os mesmos meses com as mesmas contagens ficam a um clique —
+// e o chip mostra qual está ativo (`Período · Ago 26`), o que a fileira não
+// conseguia dizer sem você varrer dez pílulas procurando a tintada.
+//
+// A semântica não mudou em nada: clicar no mês ativo limpa, "Todos" é o
+// estado sem filtro, e a contagem por mês é a mesma (campanhas cujo
+// `start_date` cai naquele mês).
 
-import { useMemo } from "react";
-import { cn } from "../../../ui/cn";
-import { CountBadge } from "../../../ui/CountBadge";
 import { formatMonthLabel } from "../lib/format";
+import { useMonthBuckets } from "../lib/filterLabels";
+import { FilterPanel, FilterOption } from "./FilterBar";
 
-export function MonthFilterPills({ campaigns, activeMonth, onChange, className }) {
-  // Lista de meses únicos com contagem, ordenados decrescente (mais recente
-  // primeiro). useMemo pra não recomputar a cada render do parent.
-  const months = useMemo(() => {
-    const counter = new Map();
-    for (const c of campaigns || []) {
-      const m = c.start_date?.slice(0, 7);
-      if (!m) continue;
-      counter.set(m, (counter.get(m) || 0) + 1);
-    }
-    return [...counter.entries()]
-      .sort((a, b) => b[0].localeCompare(a[0]))
-      .map(([month, count]) => ({ month, count }));
-  }, [campaigns]);
+// `useMonthBuckets` e `monthFilterLabel` vivem em ../lib/filterLabels.js.
 
-  if (months.length === 0) return null;
+/** Conteúdo do popover do chip "Período". */
+export function MonthFilterPanel({ campaigns, activeMonth, onChange, onClose }) {
+  const months = useMonthBuckets(campaigns);
+  const total = campaigns?.length || 0;
 
-  const totalCount = campaigns?.length || 0;
+  const pick = (month) => {
+    onChange(month);
+    onClose?.();
+  };
 
   return (
-    <div className={cn("flex flex-wrap items-center gap-2", className)}>
-      <PillButton
-        active={activeMonth === null}
-        label="Todos"
-        count={totalCount}
-        onClick={() => onChange(null)}
+    <FilterPanel title="Mês de início" maxHeight={340}>
+      <FilterOption
+        label="Todos os meses"
+        count={total}
+        selected={activeMonth === null}
+        onSelect={() => pick(null)}
       />
       {months.map(({ month, count }) => (
-        <PillButton
+        <FilterOption
           key={month}
-          active={activeMonth === month}
-          label={formatMonthLabel(month, "short")}
+          label={formatMonthLabel(month)}
           count={count}
-          onClick={() => onChange(activeMonth === month ? null : month)}
+          selected={activeMonth === month}
+          // Reclicar o mês ativo limpa — mesmo comportamento das pílulas.
+          onSelect={() => pick(activeMonth === month ? null : month)}
         />
       ))}
-    </div>
-  );
-}
-
-function PillButton({ active, label, count, onClick }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "inline-flex items-center gap-2 h-7 px-3 rounded-full cursor-pointer",
-        "text-xs font-medium transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
-        active
-          ? "bg-signature-soft text-fg border border-signature/40"
-          : "bg-surface text-fg-muted border border-border hover:bg-surface-strong hover:text-fg"
-      )}
-    >
-      {label}
-      <CountBadge value={count} tone={active ? "onSignature" : "neutral"} />
-    </button>
+    </FilterPanel>
   );
 }

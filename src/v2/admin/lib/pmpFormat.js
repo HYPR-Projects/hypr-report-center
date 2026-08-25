@@ -90,11 +90,11 @@ export const PMP_STATUSES = [
 
 export function statusPillClass(status) {
   switch (status) {
-    case "Finalizado": return "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
-    case "Andamento":  return "bg-sky-500/15 text-sky-400 border-sky-500/30";
-    case "Revisão":    return "bg-amber-500/15 text-amber-400 border-amber-500/30";
+    case "Finalizado": return "bg-success/15 text-success border-success/30";
+    case "Andamento":  return "bg-signature/15 text-signature border-signature/30";
+    case "Revisão":    return "bg-warning/15 text-warning border-warning/30";
     case "Pausado":    return "bg-violet-500/15 text-violet-400 border-violet-500/30";
-    case "Cancelado":  return "bg-rose-500/15 text-rose-400 border-rose-500/30";
+    case "Cancelado":  return "bg-danger/15 text-danger border-danger/30";
     case "Pendente":
     default:           return "bg-surface text-fg-muted border-border";
   }
@@ -109,11 +109,11 @@ export const DELIVERY_STATUS_ORDER = [
 ];
 
 export const DELIVERY_STATUS_META = {
-  live:      { label: "No ar",          dot: "bg-emerald-400 shadow-[0_0_8px_rgb(52,211,153)]", border: "border-emerald-500/30", text: "text-emerald-400", bg: "bg-emerald-500/10" },
-  running:   { label: "Rodando",        dot: "bg-emerald-400",       border: "border-emerald-500/20", text: "text-emerald-400", bg: "bg-emerald-500/10" },
-  slowing:   { label: "Desacelerando",  dot: "bg-amber-400",         border: "border-amber-500/30",   text: "text-amber-400",   bg: "bg-amber-500/10" },
-  stopped:   { label: "Parou",          dot: "bg-rose-400",          border: "border-rose-500/30",    text: "text-rose-400",    bg: "bg-rose-500/10" },
-  scheduled: { label: "Agendada",       dot: "bg-sky-400",           border: "border-sky-500/30",     text: "text-sky-400",     bg: "bg-sky-500/10" },
+  live:      { label: "No ar",          dot: "bg-success shadow-[0_0_8px_rgb(52,211,153)]", border: "border-success/30", text: "text-success", bg: "bg-success/10" },
+  running:   { label: "Rodando",        dot: "bg-success",       border: "border-success/20", text: "text-success", bg: "bg-success/10" },
+  slowing:   { label: "Desacelerando",  dot: "bg-warning",         border: "border-warning/30",   text: "text-warning",   bg: "bg-warning/10" },
+  stopped:   { label: "Parou",          dot: "bg-danger",          border: "border-danger/30",    text: "text-danger",    bg: "bg-danger/10" },
+  scheduled: { label: "Agendada",       dot: "bg-signature",           border: "border-signature/30",     text: "text-signature",     bg: "bg-signature/10" },
   paused:    { label: "Pausada",        dot: "bg-violet-400",        border: "border-violet-500/30",  text: "text-violet-400",  bg: "bg-violet-500/10" },
   ended:     { label: "Encerrada",      dot: "bg-fg-subtle",         border: "border-border",         text: "text-fg-muted",    bg: "bg-surface" },
   archived:  { label: "Histórico",      dot: "bg-fg-subtle/40",      border: "border-border",         text: "text-fg-subtle",   bg: "bg-surface/50" },
@@ -194,9 +194,9 @@ export const HISTORY_STATUSES = new Set(["stopped", "ended", "archived"]);
 // ─── Health pill (calculado no backend) ──────────────────────────────────────
 export function healthPillClass(health) {
   switch (health) {
-    case "green":   return "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
-    case "amber":   return "bg-amber-500/15 text-amber-400 border-amber-500/30";
-    case "red":     return "bg-rose-500/15 text-rose-400 border-rose-500/30";
+    case "green":   return "bg-success/15 text-success border-success/30";
+    case "amber":   return "bg-warning/15 text-warning border-warning/30";
+    case "red":     return "bg-danger/15 text-danger border-danger/30";
     case "neutral":
     default:        return "bg-surface text-fg-subtle border-border";
   }
@@ -293,18 +293,18 @@ export function groupFaltaEntregarRev(line, groupPi) {
 // verde "quase lá".
 export function pctDeliveryClass(ratio) {
   if (ratio == null || isNaN(ratio)) return "";
-  if (ratio < 0.70) return "bg-rose-500/15 text-rose-400";
-  if (ratio < 0.85) return "bg-amber-500/15 text-amber-400";
-  if (ratio < 1.00) return "bg-emerald-500/15 text-emerald-400";
-  return "bg-emerald-700/20 text-emerald-500";
+  if (ratio < 0.70) return "bg-danger/15 text-danger";
+  if (ratio < 0.85) return "bg-warning/15 text-warning";
+  if (ratio < 1.00) return "bg-success/15 text-success";
+  return "bg-success/20 text-success";
 }
 
 export function pctBarColor(ratio) {
   if (ratio == null || isNaN(ratio)) return "bg-border";
-  if (ratio < 0.70) return "bg-rose-400";
-  if (ratio < 0.85) return "bg-amber-400";
-  if (ratio < 1.00) return "bg-emerald-400";
-  return "bg-emerald-600";
+  if (ratio < 0.70) return "bg-danger";
+  if (ratio < 0.85) return "bg-warning";
+  if (ratio < 1.00) return "bg-success";
+  return "bg-success";
 }
 
 // ─── Bid type ────────────────────────────────────────────────────────────────
@@ -314,7 +314,7 @@ export function bidTypeLabel(bid) {
   return null;
 }
 export function bidTypeBadgeClass(bid) {
-  if (bid === "flex")  return "bg-blue-500/10 text-blue-400 border-blue-500/20";
+  if (bid === "flex")  return "bg-signature/10 text-signature border-signature/20";
   if (bid === "fixed") return "bg-purple-500/10 text-purple-400 border-purple-500/20";
   return "bg-surface text-fg-subtle border-border";
 }

@@ -3,13 +3,21 @@
 // Página de drilldown do cliente — `/admin/client/:slug`.
 //
 // Visual:
-//   - Breadcrumb "← Reports" / Kenvue
-//   - Hero: nome do cliente + contador (12 campanhas · 3 ativas)
-//   - 4 KPIs agregados (Investimento total, Pacing médio, CTR médio, VTR médio)
-//   - Toolbar (search + owner + sort) — sem layout toggle aqui
-//   - Lista de cards de campanha (mesmo CampaignCardV2 da home)
+//   - Cabeçalho: nome do cliente + contador (12 campanhas · 3 ativas)
+//   - 4 KPIs agregados (ativas, pacing médio, CTR médio, VTR médio)
+//   - FilterBar (busca + owner + ordenação)
+//   - Cards de campanha agrupados por mês (mesmo CampaignCardV2 da home)
 //
 // Reusa CampaignCardV2 e CampaignDrawer pra manter coerência visual.
+//
+// ── O que mudou com o AdminShell ─────────────────────────────────────────
+// Esta página tinha o header MENOS completo das três: sem indicador de
+// frescor, sem sino de alertas, sem saúde de DSP. Quem estava no drilldown
+// de um cliente não tinha como saber se o dado era de hoje. Agora o rail é
+// o mesmo em toda rota admin, então o contexto operacional vem de graça.
+//
+// O breadcrumb "← Reports de Campanhas", que era um botão solto acima do
+// H1, virou o rastro da barra de contexto — onde sobrevive ao scroll.
 
 import { useState, useEffect, useMemo, useCallback } from "react";
 // Mesmo motivo do CampaignMenuV2: precisa do v2.css explícito porque
@@ -22,7 +30,6 @@ import { useTheme } from "../../hooks/useTheme";
 import { normalizeSlug } from "../lib/aggregation";
 import { createOwnerMatcher } from "../lib/ownerFilter";
 
-import HyprReportCenterLogo from "../../../components/HyprReportCenterLogo";
 import LoomModal from "../../../components/modals/LoomModal";
 import SurveyModal from "../../../components/modals/SurveyModal";
 import LogoModal from "../../../components/modals/LogoModal";
@@ -30,12 +37,19 @@ import OwnerModal from "../../../components/modals/OwnerModal";
 import MergeModal from "../../../components/modals/MergeModal";
 import { NegotiationModal } from "../../components/NegotiationModal";
 
-import { Card } from "../../../ui/Card";
+import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
-import { ThemeToggleV2 } from "../../components/ThemeToggleV2";
 
 import { ClientPortalDrawer } from "../../portal/ClientPortalDrawer";
-import { ToolbarV2 } from "../components/ToolbarV2";
+import { FilterBar, SortChipFilter } from "../components/FilterBar";
+import { KpiBoard } from "../components/KpiBoard";
+import { OwnerFilterPanel } from "../components/OwnerFilter";
+import { ownerFilterLabel } from "../lib/filterLabels";
+import { AdminShell } from "../shell/AdminShell";
+import { PageHeader, MetaDot, MetaStat } from "../shell/PageHeader";
+import { SECTION_CLIENT, buildNavCounts } from "../shell/navConfig";
+import { DataFreshnessIndicator } from "../components/DataFreshnessIndicator";
+import { DspHealthPanel } from "../components/DspHealthPanel";
 import { CampaignCardV2 } from "../components/CampaignCardV2";
 import { MergeGroupCardV2 } from "../components/MergeGroupCardV2";
 import { CampaignDrawer } from "../components/CampaignDrawer";
@@ -50,7 +64,9 @@ import {
 } from "../lib/format";
 import { TooltipProvider } from "../../../ui/Tooltip";
 
-export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenReport }) {
+export default function ClientDetailPage({
+  slug, user, onLogout, onOpenReport, onNavigateView,
+}) {
   // Stale-while-revalidate via mesmas keys do menu (`menu.campaigns` /
   // `menu.team`). Não há prejuízo em compartilhar — o payload é idêntico,
   // ClientDetailPage apenas filtra por slug. Quando o user navega
@@ -65,6 +81,18 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
     const cached = bootstrap.campaigns?.data ?? [];
     return cached.filter((c) => normalizeSlug(c.client_name) === slug);
   });
+  // Totais GLOBAIS (não os deste cliente) — o rail lista destinos, e a
+  // contagem ao lado de "Por mês" tem que ser a mesma em qualquer rota.
+  // Antes esta página passava o total local e o rail dizia "Por mês 2" aqui
+  // e "Por mês 9" no menu.
+  const [globalTotals, setGlobalTotals] = useState(() => {
+    const cached = bootstrap.campaigns?.data ?? [];
+    if (!cached.length) return { campaigns: undefined, clients: undefined };
+    return {
+      campaigns: cached.length,
+      clients: new Set(cached.map((c) => normalizeSlug(c.client_name)).filter(Boolean)).size,
+    };
+  });
   const [loading, setLoading]         = useState(!bootstrap.campaigns);
   const [teamMembers, setTeamMembers] = useState(bootstrap.team?.data ?? { cps: [], css: [] });
   // Init refreshing=true: o useEffect inicial sempre dispara um fetch.
@@ -76,6 +104,10 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
   const [search, setSearch]           = useState("");
   const [ownerFilter, setOwnerFilter] = useState([]);
   const [sortBy, setSortBy]           = useState("month");
+  // Direção de ordenação — o drilldown era a única superfície admin sem
+  // ela: o `ToolbarV2` recebia `sortBy` mas nunca `sortDir`, então o botão
+  // de inverter não renderizava e o cliente ficava preso em decrescente.
+  const [sortDir, setSortDir]         = useState("desc");
 
   const [drawerCampaign, setDrawerCampaign] = useState(null);
   const [copied, setCopied]                 = useState(null);
@@ -209,13 +241,19 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
     });
   }, [campaigns, search, ownerMatcher]);
 
+  // `dirMul` inverte a comparação sem duplicar cada `localeCompare`. As
+  // funções base ordenam ASC; `desc` multiplica por -1.
+  const dirMul = sortDir === "asc" ? 1 : -1;
+
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
-      if (sortBy === "alpha")      return (a.campaign_name || "").localeCompare(b.campaign_name || "");
-      if (sortBy === "start_date") return (a.start_date    || "").localeCompare(b.start_date    || "");
-      return (b.start_date || "").localeCompare(a.start_date || "");
+      if (sortBy === "alpha")      return dirMul * (a.campaign_name || "").localeCompare(b.campaign_name || "");
+      if (sortBy === "start_date") return dirMul * (a.start_date    || "").localeCompare(b.start_date    || "");
+      // "month" (default): por data de início. O agrupamento visual por mês
+      // vem do MonthGroupedSections; aqui é a ordem DENTRO do grupo.
+      return dirMul * (a.start_date || "").localeCompare(b.start_date || "");
     });
-  }, [filtered, sortBy]);
+  }, [filtered, sortBy, dirMul]);
 
   // Agrupa por merge_id pra renderizar campanhas mescladas dentro de um
   // único MergeGroupCardV2. Algoritmo:
@@ -337,6 +375,10 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
       .then((camps) => {
         writeCache("menu.campaigns", camps);
         setCampaigns(camps.filter((c) => normalizeSlug(c.client_name) === slug));
+        setGlobalTotals({
+          campaigns: camps.length,
+          clients: new Set(camps.map((c) => normalizeSlug(c.client_name)).filter(Boolean)).size,
+        });
         setLastFetchedAt(Date.now());
       })
       .catch(() => { /* keep stale */ });
@@ -350,6 +392,10 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
       .then((camps) => {
         writeCache("menu.campaigns", camps);
         setCampaigns(camps.filter((c) => normalizeSlug(c.client_name) === slug));
+        setGlobalTotals({
+          campaigns: camps.length,
+          clients: new Set(camps.map((c) => normalizeSlug(c.client_name)).filter(Boolean)).size,
+        });
         setLastFetchedAt(Date.now());
       })
       .catch(() => { /* keep stale */ });
@@ -424,155 +470,177 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
       .then((camps) => {
         writeCache("menu.campaigns", camps);
         setCampaigns(camps.filter((c) => normalizeSlug(c.client_name) === slug));
+        setGlobalTotals({
+          campaigns: camps.length,
+          clients: new Set(camps.map((c) => normalizeSlug(c.client_name)).filter(Boolean)).size,
+        });
         setLastFetchedAt(Date.now());
       })
       .catch(() => { /* keep stale — patch otimista já refletiu */ });
   }, [slug]);
 
+  const navCounts = buildNavCounts(globalTotals);
+
+  const activeFilters = [];
+  if (search.trim()) {
+    activeFilters.push({ id: "search", label: `Busca: ${search.trim()}`, onClear: () => setSearch("") });
+  }
+  if (ownerFilter.length > 0) {
+    activeFilters.push({
+      id: "owner",
+      label: `Owner: ${ownerFilterLabel(ownerFilter, teamMembers)}`,
+      onClear: () => setOwnerFilter([]),
+    });
+  }
+
+  const goToReports = useCallback(() => {
+    onNavigateView?.("reports", "month");
+  }, [onNavigateView]);
+
   return (
     <TooltipProvider delayDuration={200}>
-    <div className="min-h-screen w-full bg-canvas text-fg transition-colors">
-      {/* Topbar */}
-      <header className="sticky top-0 z-30 bg-canvas-elevated border-b border-border">
-        <div className="page-shell h-16 flex items-center justify-between">
-          <button
-            type="button"
-            onClick={() => {
-              // Mesma key usada pelo CampaignMenuV2 (LAYOUT_STORAGE_KEY).
-              // Grava "month" antes de navegar pro home, garantindo que
-              // o menu monte direto na view por mês — independente do
-              // layout que o admin estava usando antes.
-              try { localStorage.setItem("hypr.admin.layout", "month"); } catch { /* ignore */ }
-              onBack();
-            }}
-            className="flex items-center text-fg cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas-elevated"
-            aria-label="Voltar para visão por mês"
-            title="Voltar para visão por mês"
-          >
-            <HyprReportCenterLogo height={32} />
-          </button>
-          <div className="flex items-center gap-3">
-            <ThemeToggleV2 />
-            {user?.picture && (
-              <img src={user.picture} alt="" referrerPolicy="no-referrer" className="w-7 h-7 rounded-full ring-2 ring-signature" />
-            )}
-            <span className="text-xs text-fg-muted hidden sm:inline">{user?.name}</span>
-            <button
-              onClick={onLogout}
-              className="text-xs text-fg-muted hover:text-fg px-3 h-8 rounded-md border border-border hover:bg-surface transition-colors"
-            >
-              Sair
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main className="page-shell py-6 md:py-8">
-        {/* Breadcrumb */}
-        <button
-          onClick={onBack}
-          className="inline-flex items-center gap-1.5 text-[12px] text-fg-muted hover:text-fg transition-colors mb-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature rounded"
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
-            <path d="m15 18-6-6 6-6" />
+    <AdminShell
+      section={SECTION_CLIENT}
+      layout={null}
+      navCounts={navCounts}
+      onNavigate={onNavigateView}
+      viewLabel={displayName}
+      tally={
+        kpis.totalCampaigns
+          ? `${kpis.totalCampaigns} campanhas${kpis.activeCampaigns ? ` · ${kpis.activeCampaigns} ativas` : ""}`
+          : undefined
+      }
+      busy={refreshing && !refreshError}
+      user={user}
+      onLogout={onLogout}
+      wide={false}
+      operationSlots={
+        <>
+          <DataFreshnessIndicator variant="rail" user={user} />
+          <DspHealthPanel variant="rail" onOpenReport={onOpenReport} />
+        </>
+      }
+      // Button do DS, não um <button> com classes à mão: a ação primária do
+      // drilldown precisa ter a MESMA geometria de "+ Novo Report" e
+      // "Exportar", que são as primárias das outras duas rotas.
+      actions={
+        <Button variant="primary" size="sm" onClick={() => setPortalOpen(true)}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+            <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
           </svg>
-          Reports de Campanhas
-        </button>
-
-        {/* Hero */}
-        <div className="flex items-end justify-between gap-4 flex-wrap mb-6">
-          <div>
-            <h1 className="text-3xl font-bold tracking-tight text-fg leading-tight">
-              {displayName}
-            </h1>
-            <p className="text-xs text-fg-muted mt-1">
-              <span className="font-semibold text-fg tabular-nums">{kpis.totalCampaigns}</span> campanhas no total
-              {kpis.activeCampaigns > 0 && (
-                <>
-                  {" · "}
-                  <span className="font-semibold text-success tabular-nums">{kpis.activeCampaigns} rodando agora</span>
-                </>
-              )}
-              {refreshing && !refreshError && lastFetchedAt && (
-                <>
-                  {" · "}
-                  <span className="text-fg-subtle italic">atualizando…</span>
-                </>
-              )}
-            </p>
-          </div>
-
-          {/* Link compartilhado — abre o painel de gestão do Portal do Cliente */}
+          <span className="hidden sm:inline">Link compartilhado</span>
+        </Button>
+      }
+    >
+      <PageHeader
+        eyebrow={
           <button
             type="button"
-            onClick={() => setPortalOpen(true)}
-            className="inline-flex items-center gap-2 h-9 px-3.5 rounded-lg text-[13px] font-semibold text-on-signature bg-signature-fill hover:bg-signature-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+            onClick={goToReports}
+            className="inline-flex items-center gap-1 hover:text-fg-muted transition-colors cursor-pointer border-0 bg-transparent p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature rounded"
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-              <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" aria-hidden="true">
+              <path d="m15 18-6-6 6-6" />
             </svg>
-            Link compartilhado
+            Reports
           </button>
+        }
+        title={displayName}
+        meta={
+          <>
+            <MetaStat value={kpis.totalCampaigns} label="campanhas no total" />
+            {kpis.activeCampaigns > 0 && (
+              <>
+                <MetaDot />
+                <MetaStat value={kpis.activeCampaigns} label="rodando agora" tone="success" />
+              </>
+            )}
+          </>
+        }
+      />
+
+      {/* Banner de "dados desatualizados" — refresh em background falhou.
+          Mesma receita do menu (tokens `warning`, não style inline). */}
+      {refreshError && (
+        <div
+          role="status"
+          className="mb-4 flex items-center justify-between gap-3 flex-wrap rounded-lg border border-warning/30 bg-warning-soft px-3 py-2"
+        >
+          <p className="text-xs text-fg">
+            <span className="font-semibold">Dados desatualizados.</span>{" "}
+            Não consegui atualizar agora
+            {lastFetchedAt ? ` — mostrando dados de ${formatTimeAgo(lastFetchedAt)}.` : "."}
+          </p>
+          {/* Mesmo Button do banner equivalente no menu — os dois avisos de
+              "dado desatualizado" agora são o mesmo objeto nas duas rotas. */}
+          <Button variant="ghost" size="sm" onClick={handleRetry} disabled={refreshing}>
+            {refreshing ? "Tentando…" : "Tentar de novo"}
+          </Button>
         </div>
+      )}
 
-        {/* Banner de "dados desatualizados" — refresh em background falhou. */}
-        {refreshError && (
-          <div className="mb-4 px-4 py-2.5 rounded-lg flex items-center justify-between gap-3"
-               style={{
-                 background: "var(--color-warning-soft)",
-                 border: "1px solid var(--color-warning)",
-               }}>
-            <p className="text-[12px] text-fg">
-              Não consegui atualizar os dados.{" "}
-              {lastFetchedAt && (
-                <span className="text-fg-muted">
-                  Mostrando dados de {formatTimeAgo(lastFetchedAt)}.
-                </span>
-              )}
-            </p>
-            <button
-              type="button"
-              onClick={handleRetry}
-              disabled={refreshing}
-              className="text-[11px] font-medium text-fg px-3 h-7 rounded-md border border-warning/40 hover:bg-warning/10 transition-colors disabled:opacity-50 whitespace-nowrap"
-            >
-              {refreshing ? "Tentando…" : "Tentar de novo"}
-            </button>
-          </div>
-        )}
-
-        {/* KPIs */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-          <KpiBox label="Campanhas ativas" value={kpis.activeCampaigns ?? "—"} colorClass="text-fg" />
-          <KpiBox label="Pacing médio"      value={formatPacingValue(kpis.avgPacing)} colorClass={pacingColorClass(kpis.avgPacing)} />
-          <KpiBox label="CTR médio"         value={formatPct(kpis.avgCtr, 2)} colorClass="text-success" />
-          <KpiBox label="VTR médio"         value={formatPct(kpis.avgVtr, 1)} colorClass="text-success" />
+      {/* KPIs do cliente — mesmo board colapsável e mesmas células com filete
+          do menu e do PMP. Antes eram quatro Cards bordados soltos: a mesma
+          informação, num terceiro tratamento visual, na terceira rota. */}
+      <KpiBoard
+        scope="client"
+        title={`Desempenho · ${displayName}`}
+        summary={[
+          { label: "Ativas", value: kpis.activeCampaigns ?? "—" },
+          { label: "Pacing", value: formatPacingValue(kpis.avgPacing) },
+          { label: "CTR", value: formatPct(kpis.avgCtr, 2) },
+          { label: "VTR", value: formatPct(kpis.avgVtr, 1) },
+        ]}
+      >
+        <div className="grid grid-cols-2 @min-[560px]:grid-cols-4 gap-px bg-border">
+          <KpiCell label="Campanhas ativas" value={kpis.activeCampaigns ?? "—"} />
+          <KpiCell label="Pacing médio"     value={formatPacingValue(kpis.avgPacing)} colorClass={pacingColorClass(kpis.avgPacing)} />
+          <KpiCell label="CTR médio"        value={formatPct(kpis.avgCtr, 2)} colorClass="text-success" />
+          <KpiCell label="VTR médio"        value={formatPct(kpis.avgVtr, 1)} colorClass="text-success" />
         </div>
+      </KpiBoard>
 
-        {/* Toolbar */}
-        <div className="mb-5">
-          <ToolbarV2
-            search={search}
-            onSearchChange={setSearch}
-            ownerFilter={ownerFilter}
-            onOwnerChange={setOwnerFilter}
-            teamMembers={teamMembers}
-            sortBy={sortBy}
-            onSortByChange={setSortBy}
-            searchPlaceholder="Buscar campanha..."
+      <FilterBar
+        search={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="Buscar campanha ou token…"
+        chips={teamMembers ? [{
+          id: "owner",
+          label: "Owner",
+          value: ownerFilterLabel(ownerFilter, teamMembers),
+          panel: () => (
+            <OwnerFilterPanel
+              selected={ownerFilter}
+              onChange={setOwnerFilter}
+              teamMembers={teamMembers}
+            />
+          ),
+        }] : []}
+        trailing={
+          <SortChipFilter
+            options={CLIENT_DETAIL_SORTS}
+            value={sortBy}
+            dir={sortDir}
+            onValueChange={setSortBy}
+            onDirToggle={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+            defaultValue="month"
+            defaultDir="desc"
           />
-        </div>
+        }
+        active={activeFilters}
+        onClearAll={() => { setSearch(""); setOwnerFilter([]); }}
+        resultLabel={
+          activeFilters.length > 0 && kpis.totalCampaigns
+            ? `${sorted.length} de ${kpis.totalCampaigns} campanhas`
+            : null
+        }
+      />
 
-        {/* Section header */}
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-[11px] uppercase tracking-widest font-bold text-fg-muted">
-            Campanhas {displayName}
-          </h2>
-          <span className="text-[11px] text-fg-subtle">
-            {sorted.length} campanha{sorted.length === 1 ? "" : "s"}
-          </span>
-        </div>
+        {/* Sem cabeçalho de seção aqui: o H1 já diz o cliente, a barra de
+            filtros já diz "N de M campanhas", e o cabeçalho de cada mês
+            repete a contagem logo abaixo. Eram três lugares dizendo o mesmo
+            número em 60px de altura. */}
 
         {loading ? (
           <div className="space-y-2">
@@ -609,7 +677,6 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
             }
           />
         )}
-      </main>
 
       {/* Drawer + modais */}
       <CampaignDrawer
@@ -704,19 +771,34 @@ export default function ClientDetailPage({ slug, user, onLogout, onBack, onOpenR
         displayName={displayName}
         clientCampaigns={campaigns}
       />
-    </div>
+    </AdminShell>
     </TooltipProvider>
   );
 }
 
-function KpiBox({ label, value, colorClass }) {
+// Ordenação do drilldown. O `ToolbarV2` recebia `sortBy` mas nunca
+// `sortOptions`, então o dropdown listava as opções do MENU — incluindo
+// campos que esta página não implementa (ECPM, pacing, investimento). Aqui
+// são só os três critérios que o `sorted` de fato aplica.
+const CLIENT_DETAIL_SORTS = [
+  { value: "month",      label: "Mês de início" },
+  { value: "start_date", label: "Data de início" },
+  { value: "alpha",      label: "Nome da campanha" },
+];
+
+/**
+ * Célula do board de KPIs. Mesma receita das células do MetricStrip (menu) e
+ * do PmpKpiStrip: rótulo em `lbl-section`, valor em tabular-nums, fundo
+ * `canvas-elevated` e o filete vindo do `gap-px` sobre `bg-border` da grade.
+ */
+function KpiCell({ label, value, colorClass }) {
   return (
-    <Card className="p-4">
-      <div className="text-[10.5px] uppercase tracking-widest font-bold text-fg-subtle">{label}</div>
-      <div className={`text-2xl font-bold tracking-tight tabular-nums mt-1 ${colorClass || "text-fg"}`}>
+    <div className="bg-canvas-elevated px-3.5 py-3">
+      <div className="lbl-section">{label}</div>
+      <div className={`text-xl font-extrabold tracking-tight tabular-nums mt-1.5 ${colorClass || "text-fg"}`}>
         {value}
       </div>
-    </Card>
+    </div>
   );
 }
 

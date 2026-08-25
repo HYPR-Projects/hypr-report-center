@@ -13,6 +13,7 @@
 
 import { useState, useMemo, useEffect } from "react";
 import * as Popover from "@radix-ui/react-popover";
+import { AdminRailRow } from "../shell/AdminNavItem";
 import { cn } from "../../../ui/cn";
 import { CountBadge } from "../../../ui/CountBadge";
 import {
@@ -87,6 +88,7 @@ export function AlertsBell({
   teamMap = {},
   onDrillCampaign,
   onOpenDiagnostico,
+  variant = "icon",
 }) {
   const [readSet, setReadSet] = useState(loadReadSet);
   const [activeTab, setActiveTab] = useState("all");
@@ -190,45 +192,64 @@ export function AlertsBell({
     })).filter((t) => t.count > 0),
   ];
 
+  const isRail = variant === "rail";
+  const triggerTitle = totalCount === 0
+    ? "Sem alertas no momento"
+    : `${totalCount} alertas (${counts.critical} críticos)`;
+
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
-        <button
-          type="button"
-          aria-label={`Alertas — ${unreadCriticalCount} críticos não vistos`}
-          title={
-            totalCount === 0
-              ? "Sem alertas no momento"
-              : `${totalCount} alertas (${counts.critical} críticos)`
-          }
-          className={cn(
-            "relative inline-flex items-center justify-center size-9 rounded-full cursor-pointer",
-            "border border-border bg-surface text-fg-muted",
-            "hover:border-border-strong hover:bg-surface-strong hover:text-fg",
-            "transition-[colors,transform] duration-150",
-            "active:scale-90",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
-          )}
-        >
-          <BellIcon />
-          {unreadCriticalCount > 0 && (
-            <CountBadge
-              aria-hidden
-              value={unreadCriticalCount > 99 ? "99+" : unreadCriticalCount}
-              tone="danger"
-              // O anel da cor do container separa o selo do ícone embaixo.
-              // -top-1/-right-1 (em vez de -0.5) porque o selo cresceu de 16
-              // pra 18px e precisa manter a mordida no canto do botão.
-              className="absolute -top-1 -right-1 ring-2 ring-canvas-elevated animate-pulse"
-            />
-          )}
-        </button>
+        {isRail ? (
+          <AdminRailRow
+            label="Alertas"
+            iconNode={<BellIcon />}
+            badge={unreadCriticalCount > 0 ? unreadCriticalCount : undefined}
+            badgeTone="danger"
+            meta={unreadCriticalCount === 0 && totalCount > 0 ? totalCount : undefined}
+            tipHint={
+              unreadCriticalCount > 0
+                ? `${unreadCriticalCount} críticos`
+                : (totalCount > 0 ? `${totalCount} alertas` : "sem alertas")
+            }
+            aria-label={`Alertas — ${unreadCriticalCount} críticos não vistos`}
+            title={triggerTitle}
+          />
+        ) : (
+          <button
+            type="button"
+            aria-label={`Alertas — ${unreadCriticalCount} críticos não vistos`}
+            title={triggerTitle}
+            className={cn(
+              "relative inline-flex items-center justify-center size-9 rounded-full cursor-pointer",
+              "border border-border bg-surface text-fg-muted",
+              "hover:border-border-strong hover:bg-surface-strong hover:text-fg",
+              "transition-[colors,transform] duration-150",
+              "active:scale-90",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
+            )}
+          >
+            <BellIcon />
+            {unreadCriticalCount > 0 && (
+              <CountBadge
+                aria-hidden
+                value={unreadCriticalCount > 99 ? "99+" : unreadCriticalCount}
+                tone="danger"
+                // O anel da cor do container separa o selo do ícone embaixo.
+                // -top-1/-right-1 (em vez de -0.5) porque o selo cresceu de 16
+                // pra 18px e precisa manter a mordida no canto do botão.
+                className="absolute -top-1 -right-1 ring-2 ring-canvas-elevated animate-pulse"
+              />
+            )}
+          </button>
+        )}
       </Popover.Trigger>
 
       <Popover.Portal>
         <Popover.Content
+          side={isRail ? "right" : "bottom"}
           sideOffset={8}
-          align="end"
+          align={isRail ? "start" : "end"}
           collisionPadding={16}
           className={cn(
             "z-50 w-[420px] max-w-[calc(100vw-32px)]",
@@ -241,7 +262,7 @@ export function AlertsBell({
           {/* ── Header ──────────────────────────────────────────────── */}
           <div className="px-4 py-3 border-b border-border bg-surface-strong flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 min-w-0">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-fg-muted">
+              <span className="lbl-section text-fg-muted">
                 Alertas
               </span>
               {totalCount > 0 && (

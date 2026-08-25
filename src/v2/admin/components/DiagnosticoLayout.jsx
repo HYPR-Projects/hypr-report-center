@@ -117,15 +117,40 @@ export function DiagnosticoLayout({
   onOpenCampaign,
   search = "",
   ownerMatcher,
+  // Controles içados pra FilterBar. Quando a página passa os valores (é o
+  // que o CampaignMenuV2 faz), status e período viram chips na mesma barra
+  // de todo o resto do admin, e as fileiras internas não renderizam.
+  //
+  // Antes eram DUAS faixas próprias logo abaixo da barra — uma de pílulas de
+  // período (h-7 rounded-full) e outra de pílulas de status (h-8
+  // rounded-full) — somando três fileiras de controle empilhadas, com três
+  // geometrias diferentes, na mesma tela.
+  activeStatuses: statusesProp,
+  onStatusesChange,
+  preset: presetProp,
+  onPresetChange,
+  custom: customProp,
+  onCustomChange,
+  // Registra o handler de export pra que a página o exponha na barra de
+  // contexto, onde moram as ações primárias das outras rotas.
+  onRegisterExport,
 }) {
   // Filtros: Set de status ativos. Vazio = mostra tudo.
-  const [activeStatuses, setActiveStatuses] = useState(() => new Set());
+  const [statusesInner, setStatusesInner] = useState(() => new Set());
 
   // Filtro de período — mesma máquina de estados do Top Performers.
   // preset="now" (default) usa props.campaigns sem fetch; qualquer outro
   // preset dispara fetch janelado ao backend.
-  const [preset, setPreset] = useState("now");
-  const [custom, setCustom] = useState({ from: "", to: "" });
+  const [presetInner, setPresetInner] = useState("now");
+  const [customInner, setCustomInner] = useState({ from: "", to: "" });
+
+  const controlled = statusesProp != null;
+  const activeStatuses = controlled ? statusesProp : statusesInner;
+  const setActiveStatuses = onStatusesChange || setStatusesInner;
+  const preset = presetProp != null ? presetProp : presetInner;
+  const setPreset = onPresetChange || setPresetInner;
+  const custom = customProp != null ? customProp : customInner;
+  const setCustom = onCustomChange || setCustomInner;
   const [periodCampaigns, setPeriodCampaigns] = useState(null); // null = não fetcheado
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState(null);
@@ -244,17 +269,31 @@ export function DiagnosticoLayout({
     });
   };
 
+  // Publica o export pra página montar na barra de contexto — é lá que
+  // moram as ações primárias das outras rotas ("+ Novo Report", "Exportar").
+  useEffect(() => {
+    if (!onRegisterExport) return;
+    return onRegisterExport(() => handleDownloadXlsx());
+    // `handleDownloadXlsx` fecha sobre displayRows/videoRows; re-registrar
+    // quando eles mudam mantém o export apontando pro conjunto em tela.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onRegisterExport, displayRows, videoRows, isHistorical, periodLabel]);
+
+
   return (
     <div className="space-y-6">
-      {/* Filtro de período + aviso de modo histórico ─────────────────── */}
+      {/* Filtro de período + aviso de modo histórico. O picker só aparece
+          quando os controles NÃO estão na FilterBar. */}
       <div className="flex flex-wrap items-center gap-3">
-        <PeriodPicker
-          preset={preset}
-          onPresetChange={setPreset}
-          custom={custom}
-          onCustomChange={setCustom}
-          ariaLabel="Período do diagnóstico"
-        />
+        {!controlled && (
+          <PeriodPicker
+            preset={preset}
+            onPresetChange={setPreset}
+            custom={custom}
+            onCustomChange={setCustom}
+            ariaLabel="Período do diagnóstico"
+          />
+        )}
         {isHistorical && (
           <span className="text-[11px] text-fg-subtle leading-snug max-w-[560px]">
             Diagnóstico <span className="text-fg-muted font-medium">retrospectivo</span> de{" "}
@@ -282,8 +321,9 @@ export function DiagnosticoLayout({
         <EmptyStateGlobal historical={isHistorical} periodLabel={periodLabel} />
       ) : (
         <>
-          {/* Filtros pill + download ──────────────────────────────────── */}
-          <div className="flex flex-wrap items-center gap-2">
+          {/* Filtros pill + download — só quando os controles não subiram
+              pra FilterBar / barra de contexto. */}
+          <div className={cn("flex-wrap items-center gap-2", controlled ? "hidden" : "flex")}>
             {STATUS_ORDER.map((status) => (
               <StatusFilterPill
                 key={status}

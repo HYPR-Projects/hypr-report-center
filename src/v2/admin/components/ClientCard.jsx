@@ -37,6 +37,7 @@ import { cn } from "../../../ui/cn";
 import { getClientPortalConfig } from "../../../lib/api";
 import { Card } from "../../../ui/Card";
 import { Avatar } from "../../../ui/Avatar";
+import { MetaDot } from "../shell/PageHeader";
 import { TrendPill } from "./TrendPill";
 import { HealthDistribution } from "./HealthDistribution";
 import {
@@ -146,16 +147,19 @@ export function ClientCard({ client, onOpen }) {
                 {active_campaigns} ativa{active_campaigns === 1 ? "" : "s"}
               </span>
             )}
+            <MetaDot />
+            <span className="text-fg-subtle tabular-nums">
+              {formatTimeAgo(last_updated)}
+            </span>
           </div>
         </div>
-        <div className="flex flex-col items-end gap-1 shrink-0">
-          <div className="flex items-center gap-1">
-            <PortalLinkButton slug={slug} onOpen={onOpen} />
-            <TrendPill trend={trend} />
-          </div>
-          <span className="text-[10.5px] text-fg-subtle tabular-nums">
-            {formatTimeAgo(last_updated)}
-          </span>
+        {/* Coluna de ações. O timestamp ficava aqui embaixo e, quando o
+         *  cliente não tem trend, sobrava pendurado sob um ícone solto —
+         *  sem nenhuma borda com que se alinhar. Ele é um FATO sobre o
+         *  cliente, não uma ação, então voltou pra linha de fatos. */}
+        <div className="flex items-center gap-1 shrink-0">
+          <PortalLinkButton slug={slug} onOpen={onOpen} />
+          <TrendPill trend={trend} />
         </div>
       </div>
 
@@ -183,11 +187,11 @@ export function ClientCard({ client, onOpen }) {
             ecpmBgClass(admin_ecpm)
           )}>
             <div className="flex items-baseline gap-1.5">
-              <span className="text-[10px] uppercase tracking-[0.14em] font-bold text-fg-muted">
+              <span className="lbl-section text-fg-muted">
                 eCPM real
               </span>
               <span
-                className="text-[8.5px] uppercase tracking-widest font-semibold text-fg-subtle/70"
+                className="lbl-micro text-fg-subtle/70"
                 title="Custo bruto do DSP / impressions × 1000 — não exibir para o cliente"
               >
                 admin
@@ -221,18 +225,16 @@ export function ClientCard({ client, onOpen }) {
 
       {/* ── Footer: só pips de owners (tooltip carrega o nome) ─────── */}
       <div className="flex items-center gap-2 pt-3">
-        <div className="inline-flex">
+        {/* Sem sobreposição: são no máximo 2 pips (top CP + top CS) e o
+         *  `-ml-1.5` de antes comia a segunda inicial do primeiro avatar
+         *  — "DA" lia como "D". Empilhar só se paga quando há mais gente
+         *  do que espaço; aqui nunca há. */}
+        <div className="inline-flex items-center gap-1">
           {primaryCp && cpName && (
             <Avatar name={cpName} role="cp" size="sm" title={`CP: ${cpName}`} />
           )}
           {primaryCs && csName && (
-            <Avatar
-              name={csName}
-              role="cs"
-              size="sm"
-              className={primaryCp ? "-ml-1.5" : ""}
-              title={`CS: ${csName}`}
-            />
+            <Avatar name={csName} role="cs" size="sm" title={`CS: ${csName}`} />
           )}
         </div>
       </div>
@@ -251,7 +253,7 @@ function Metric({ label, value, colorClass, divider }) {
         divider && "border-l border-border"
       )}
     >
-      <span className="text-[9px] uppercase tracking-[0.14em] font-semibold text-fg-subtle">
+      <span className="lbl-micro text-fg-subtle">
         {label}
       </span>
       <span className={cn("text-[15px] font-bold tracking-tight tabular-nums mt-0.5", colorClass)}>

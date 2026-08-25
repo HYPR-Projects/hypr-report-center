@@ -153,8 +153,18 @@
  * saber nomear e grande o bastante pra todo mundo sentir que algo mexeu.
  *
  * A receita canônica é a que o report já usava (1440 / 4-6-8), a mais cuidada
- * das cinco. `page-shell-wide` existe porque a tabela do PMP precisa de mais
- * largura de fato — agora é uma variante declarada, não um acidente.
+ * das cinco.
+ *
+ * `page-shell` hoje serve só a superfície do CLIENTE — o report
+ * (ClientDashboardV2) e o portal (ClientPortalPage). As rotas admin migraram
+ * pro `shell-col` / `shell-wide` abaixo, que centralizam dentro do painel à
+ * direita do rail.
+ *
+ * `page-shell-wide` (1600px) existia porque a tabela do PMP precisava de mais
+ * largura — e era ela que fazia o app SALTAR de 1440 pra 1600 quando você
+ * entrava no PMP e voltar ao sair. A largura mudava por causa da ROTA, não do
+ * conteúdo. Agora quem declara largura é a view (`wide: true` em navConfig),
+ * então a variante ficou sem consumidor e saiu daqui.
  *
  * O padding VERTICAL fica com o call-site: header usa h-16, main usa py-6.
  */
@@ -163,16 +173,49 @@
   max-width: 1440px;
   padding-inline: 1rem;
 }
-@utility page-shell-wide {
+@media (width >= 48rem) {
+  .page-shell { padding-inline: 1.5rem; }
+}
+@media (width >= 64rem) {
+  .page-shell { padding-inline: 2rem; }
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * A moldura DENTRO do shell admin
+ * ──────────────────────────────────────────────────────────────────────
+ * `page-shell` centraliza sobre a largura da JANELA. Dentro do AdminShell
+ * a coluna de conteúdo já vive à direita de um rail de 248px, então o
+ * "centro" que importa é o do painel, não o da tela — e o cálculo é o
+ * mesmo, porque o container flex já é o painel. O que muda é só o padding:
+ * a coluna encosta num rail (não na borda do viewport), e 2rem de folga
+ * contra uma borda desenhada é excessivo.
+ *
+ * As duas variantes existem pelo mesmo motivo de antes — as tabelas do PMP,
+ * do Diagnóstico e da Lista precisam de largura de fato. A diferença é que
+ * agora quem declara é a VIEW (`wide: true` em navConfig), não a página:
+ * antes o app inteiro trocava de 1440 pra 1600 quando você entrava no PMP,
+ * e voltava ao sair. A largura saltava por causa da rota, não do conteúdo.
+ */
+@utility shell-col {
   margin-inline: auto;
-  max-width: 1600px;
+  /* 1520 (não 1400): o rail já consome 248px, então a coluna começa mais à
+     direita e o teto antigo desperdiçava monitor grande — num viewport de
+     1920px a linha do card parava em 1350px, a mesma largura que ela tem num
+     1600px. Com 1520 o card ganha ~150px, que vão inteiros pra coluna de
+     identidade (a única flexível da linha). */
+  max-width: 1520px;
+  padding-inline: 1rem;
+}
+@utility shell-wide {
+  margin-inline: auto;
+  max-width: 1680px;
   padding-inline: 1rem;
 }
 @media (width >= 48rem) {
-  .page-shell, .page-shell-wide { padding-inline: 1.5rem; }
+  .shell-col, .shell-wide { padding-inline: 1.25rem; }
 }
 @media (width >= 64rem) {
-  .page-shell, .page-shell-wide { padding-inline: 2rem; }
+  .shell-col, .shell-wide { padding-inline: 1.5rem; }
 }
 
 /* ──────────────────────────────────────────────────────────────────────

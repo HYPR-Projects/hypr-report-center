@@ -553,7 +553,7 @@ function KpiTile({ label, value, sub, title, accent = false, delta = null, delta
       } : undefined}
     >
       <div className="flex items-center justify-between gap-2">
-        <div className="text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted leading-none">{label}</div>
+        <div className="lbl-section text-fg-muted">{label}</div>
         {delta != null && <Delta value={delta} title={deltaTitle} />}
       </div>
       <div
@@ -573,7 +573,7 @@ function Delta({ value, title }) {
   const pct = value * 100;
   const flat = Math.abs(pct) < 0.5;
   const up = pct > 0;
-  const cls = flat ? "text-fg-subtle" : up ? "text-emerald-400" : "text-rose-400";
+  const cls = flat ? "text-fg-subtle" : up ? "text-success" : "text-danger";
   const arrow = flat ? "→" : up ? "▲" : "▼";
   const txt = `${up ? "+" : ""}${fmt(pct, 0)}%`;
   return (
@@ -722,7 +722,7 @@ function ContractProgress({ rows, metric, accent }) {
     <div className="pt-1">
       {/* Resumo consolidado — empilha em telas estreitas (flex-wrap). */}
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 pb-2.5 mb-2.5 border-b border-border/70">
-        <span className="text-[11px] uppercase tracking-wider text-fg-muted">
+        <span className="lbl-section text-fg-muted">
           {metricLabel} · {sorted.length} {sorted.length === 1 ? "item" : "itens"}
         </span>
         <span className="text-[12px] tabular-nums text-fg-muted">
@@ -753,14 +753,14 @@ function ContractProgress({ rows, metric, accent }) {
                   no mobile). O detalhe em R$ vai pra linha própria abaixo. */}
               <div className="flex items-baseline justify-between gap-2 mb-1.5">
                 <span className="text-[13px] font-medium text-fg truncate min-w-0" title={r.name}>{r.name}</span>
-                <span className={cn("text-[13px] font-semibold tabular-nums shrink-0", over ? "text-emerald-400" : "text-fg")}>
+                <span className={cn("text-[13px] font-semibold tabular-nums shrink-0", over ? "text-success" : "text-fg")}>
                   {over && <span aria-hidden>▲ </span>}{formatRatioPct(ratio, 1)}
                 </span>
               </div>
               <div className="relative">
                 <div className="h-2 rounded-full bg-track overflow-hidden">
                   <div className="h-full rounded-full transition-[width] duration-500"
-                       style={{ width: `${width}%`, background: over ? "var(--color-emerald-500, #10b981)" : accent }} />
+                       style={{ width: `${width}%`, background: over ? "var(--color-success)" : accent }} />
                 </div>
                 {/* Tracinho da meta de 85% (margem). Fica por cima da barra,
                     fora do overflow-hidden pra cruzar o trilho inteiro. */}
@@ -851,7 +851,7 @@ function MonthlyLedger({ ledger, accent }) {
     <div className="rounded-xl border border-border bg-surface overflow-hidden">
       <div className="px-4 md:px-5 py-3.5 border-b border-border flex items-start md:items-center justify-between gap-3 flex-wrap">
         <div className="min-w-0">
-          <h3 className="text-[11px] font-bold uppercase tracking-widest text-signature flex items-center gap-2 flex-wrap">
+          <h3 className="lbl-section text-signature flex items-center gap-2 flex-wrap">
             Fechamento mensal
             <span className="normal-case tracking-normal font-medium text-[10px] leading-none px-1.5 py-1 rounded-md bg-surface-strong text-fg-subtle border border-border whitespace-nowrap"
                   title="Entrada e consumo são acumulados por mês e não reagem ao filtro de período (os filtros de cliente, campanha, status e bid continuam valendo).">
@@ -894,10 +894,10 @@ function MonthlyLedger({ ledger, accent }) {
             <thead>
               <tr className="text-fg-subtle">
                 <th className="sticky top-0 z-20 bg-surface-3 h-6" />
-                <th colSpan={5} className={cn("sticky top-0 z-20 h-6 px-3 text-left text-[9.5px] font-bold uppercase tracking-widest text-signature", G1)}>
+                <th colSpan={5} className={cn("lbl-section text-signature sticky top-0 z-20 h-6 px-3 text-left", G1)}>
                   Safra do mês · o PI que entrou
                 </th>
-                <th colSpan={2} className={cn("sticky top-0 z-20 h-6 px-3 text-left text-[9.5px] font-bold uppercase tracking-widest text-fg-muted", G2, DIV)}>
+                <th colSpan={2} className={cn("lbl-section text-fg-muted sticky top-0 z-20 h-6 px-3 text-left", G2, DIV)}>
                   Caixa do mês · todas as safras
                 </th>
               </tr>
@@ -967,7 +967,7 @@ function MonthlyLedger({ ledger, accent }) {
                       </Td>
                       <Td className="text-right tabular-nums">
                         {r.pi > 0
-                          ? <span className="text-emerald-600 dark:text-emerald-400" title={formatBRL(r.cohortMargin)}>
+                          ? <span className="text-success" title={formatBRL(r.cohortMargin)}>
                               <EntriesHover row={r} mode="marginInMonth">{formatBRLCompact(r.cohortMargin)}</EntriesHover>
                             </span>
                           : <span className="text-fg-subtle">—</span>}
@@ -975,7 +975,7 @@ function MonthlyLedger({ ledger, accent }) {
                       <Td className="text-right tabular-nums">
                         {r.pi > 0 ? (
                           <>
-                            <div className={cn("font-semibold", r.open > 0 ? "text-amber-600 dark:text-amber-300" : "text-fg-subtle")}
+                            <div className={cn("font-semibold", r.open > 0 ? "text-warning" : "text-fg-subtle")}
                                  title={`PI − Receita Bruta já entregue por essa safra = ${formatBRL(r.open)}`}>
                               {r.open > 0
                                 ? <EntriesHover row={r} mode="open">{formatBRLCompact(r.open)}</EntriesHover>
@@ -998,7 +998,7 @@ function MonthlyLedger({ ledger, accent }) {
                       <Td className="text-right tabular-nums">
                         {r.margin > 0 ? (
                           <>
-                            <div className="font-semibold text-emerald-600 dark:text-emerald-400" title={formatBRL(r.margin)}>{formatBRLCompact(r.margin)}</div>
+                            <div className="font-semibold text-success" title={formatBRL(r.margin)}>{formatBRLCompact(r.margin)}</div>
                             {r.marginPct != null && <div className="text-[10.5px] text-fg-subtle font-normal">{formatRatioPct(r.marginPct, 0)} margem</div>}
                           </>
                         ) : <span className="text-fg-subtle">—</span>}
@@ -1043,7 +1043,7 @@ function MonthlyLedger({ ledger, accent }) {
                 <tr>), que é onde o browser respeita. */}
             <tfoot>
               <tr className="font-semibold">
-                <Td className={cn(FOOT, "text-left text-fg-muted text-[11px] uppercase tracking-wider")}>Total · {rows.length} {rows.length === 1 ? "mês" : "meses"}</Td>
+                <Td className={cn(FOOT, "lbl-section text-fg-muted text-left")}>Total · {rows.length} {rows.length === 1 ? "mês" : "meses"}</Td>
                 <Td className={cn(FOOT, "text-right text-fg tabular-nums")} title={formatBRL(totals.pi)}>
                   <EntriesHover row={totals} mode="pi" monthLabel="todo o período">{formatBRLCompact(totals.pi)}</EntriesHover>
                   <div className="text-[10.5px] text-fg-subtle font-normal">{totals.piCount} PIs</div>
@@ -1052,11 +1052,11 @@ function MonthlyLedger({ ledger, accent }) {
                   <EntriesHover row={totals} mode="inMonth" monthLabel="todo o período">{formatBRLCompact(totals.cohortRevenue)}</EntriesHover>
                   <div className="text-[10.5px] text-fg-subtle font-normal">{formatRatioPct(totals.cohortPct, 0)} do PI</div>
                 </Td>
-                <Td className={cn(FOOT, "text-right text-emerald-600 dark:text-emerald-400 tabular-nums")} title={formatBRL(totals.cohortMargin)}>
+                <Td className={cn(FOOT, "text-right text-success tabular-nums")} title={formatBRL(totals.cohortMargin)}>
                   <EntriesHover row={totals} mode="marginInMonth" monthLabel="todo o período">{formatBRLCompact(totals.cohortMargin)}</EntriesHover>
                 </Td>
                 <Td className={cn(FOOT, "text-right tabular-nums")} title={`Total ainda a receber: ${formatBRL(totals.open)}`}>
-                  <span className={totals.open > 0 ? "text-amber-600 dark:text-amber-300" : "text-fg-subtle"}>
+                  <span className={totals.open > 0 ? "text-warning" : "text-fg-subtle"}>
                     {totals.open > 0
                       ? <EntriesHover row={totals} mode="open" monthLabel="todo o período">{formatBRLCompact(totals.open)}</EntriesHover>
                       : formatBRLCompact(totals.open)}
@@ -1065,7 +1065,7 @@ function MonthlyLedger({ ledger, accent }) {
                 </Td>
                 <Td className={FOOT}><CycleBar row={totals} accent={accent} /></Td>
                 <Td className={cn(FOOT, DIV, "text-right text-fg tabular-nums")} title={formatBRL(totals.revenue)}>{formatBRLCompact(totals.revenue)}</Td>
-                <Td className={cn(FOOT, "text-right text-emerald-600 dark:text-emerald-400 tabular-nums")} title={formatBRL(totals.margin)}>
+                <Td className={cn(FOOT, "text-right text-success tabular-nums")} title={formatBRL(totals.margin)}>
                   {formatBRLCompact(totals.margin)}
                   {totals.marginPct != null && <div className="text-[10.5px] text-fg-subtle font-normal">{formatRatioPct(totals.marginPct, 0)} margem</div>}
                 </Td>
@@ -1083,7 +1083,7 @@ function MonthlyLedger({ ledger, accent }) {
           <span className="w-3 h-1.5 rounded-full" style={{ background: accent, opacity: 0.4 }} aria-hidden /> consumido depois
         </span>
         <span className="inline-flex items-center gap-1.5">
-          <span className="w-3 h-1.5 rounded-full bg-amber-500/60" aria-hidden /> em aberto
+          <span className="w-3 h-1.5 rounded-full bg-warning/60" aria-hidden /> em aberto
         </span>
         <span className="ml-auto">
           Em aberto = PI − Receita Bruta já entregue por aquela safra.
@@ -1123,7 +1123,7 @@ const HOVER_MODES = {
     title: (m) => `Margem HYPR dentro de ${m}`,
     value: (e) => e.marginInMonth,
     sub: (e) => (e.revenueInMonth > 0 ? `${formatRatioPct(e.marginInMonth / e.revenueInMonth, 0)} de margem` : null),
-    tone: "text-emerald-600 dark:text-emerald-400",
+    tone: "text-success",
     keep: (e) => e.marginInMonth > 0.01,
     footer: "Margem no mês",
     empty: "Nenhum PI dessa safra entregou dentro do próprio mês.",
@@ -1132,7 +1132,7 @@ const HOVER_MODES = {
     title: (m) => `Em aberto de ${m}`,
     value: (e) => e.open,
     sub: (e) => `entregue ${formatBRLCompact(e.revenueLife)} de ${formatBRLCompact(e.pi)}`,
-    tone: "text-amber-600 dark:text-amber-300",
+    tone: "text-warning",
     keep: (e) => e.open > 0.01,
     footer: "Total em aberto",
     empty: "Todos os PIs dessa safra já entregaram o contratado.",
@@ -1174,7 +1174,7 @@ function EntriesHover({ row, mode = "pi", monthLabel, children }) {
       </TooltipTrigger>
       <TooltipContent side="right" align="start" className="max-w-[400px] p-0 overflow-hidden">
         <div className="px-3 py-2 border-b border-border bg-surface-3">
-          <div className="text-[10px] font-bold uppercase tracking-widest text-signature">
+          <div className="lbl-section text-signature">
             {cfg.title(label)}
           </div>
           <div className="text-[11px] text-fg-subtle mt-0.5 tabular-nums">
@@ -1221,7 +1221,7 @@ function EntriesHover({ row, mode = "pi", monthLabel, children }) {
         )}
         {shown.length > 0 && (
           <div className="flex items-baseline justify-between gap-3 px-3 py-2 border-t border-border bg-surface-3">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-fg-muted">{cfg.footer}</span>
+            <span className="lbl-section text-fg-muted">{cfg.footer}</span>
             <span className={cn("text-[13px] font-bold tabular-nums", cfg.tone)}>{formatBRL(total)}</span>
           </div>
         )}
@@ -1263,13 +1263,13 @@ function CycleBar({ row, accent }) {
   const over = (row.overCount || 0) > 0;
   return (
     <div className="flex items-center gap-1.5">
-      <div className="flex h-2 w-[92px] rounded-full overflow-hidden bg-amber-500/25">
+      <div className="flex h-2 w-[92px] rounded-full overflow-hidden bg-warning/25">
         {inMonth > 0 && <span style={{ width: `${inMonth * 100}%`, background: accent }} />}
         {later > 0 && <span style={{ width: `${later * 100}%`, background: accent, opacity: 0.4 }} />}
-        {open > 0 && <span style={{ width: `${open * 100}%` }} className="bg-amber-500/60" />}
+        {open > 0 && <span style={{ width: `${open * 100}%` }} className="bg-warning/60" />}
       </div>
       {over && (
-        <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400"
+        <span className="text-[10px] font-semibold text-success"
               title={`${row.overCount} ${row.overCount === 1 ? "PI entregou" : "PIs entregaram"} mais que o contratado`}>▲</span>
       )}
     </div>
@@ -1298,7 +1298,7 @@ function StatusDonut({ data }) {
           </PieChart>
         </ResponsiveContainer>
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          <span className="text-[10px] uppercase tracking-wider text-fg-subtle">Receita</span>
+          <span className="lbl-section">Receita</span>
           <span className="text-[17px] font-bold text-fg tabular-nums">{formatBRLCompact(data.total)}</span>
           <span className="text-[10px] text-fg-subtle mt-0.5">{data.rows.length} {data.rows.length === 1 ? "status" : "status"}</span>
         </div>
@@ -1367,7 +1367,7 @@ function DealsTable({ rows, accent }) {
   return (
     <div className="rounded-xl border border-border bg-surface overflow-hidden">
       <div className="px-4 md:px-5 py-3.5 border-b border-border flex items-center justify-between gap-3">
-        <h3 className="text-[11px] font-bold uppercase tracking-widest text-signature">Desempenho por deal · período</h3>
+        <h3 className="lbl-section text-signature">Desempenho por deal · período</h3>
         <span className="text-[11px] text-fg-subtle tabular-nums">{rows.length} {rows.length === 1 ? "deal" : "deals"} com entrega</span>
       </div>
       <div className="overflow-x-auto">
@@ -1418,7 +1418,7 @@ function DealsTable({ rows, accent }) {
 function Th({ children, className, sortable, active, dir, onClick }) {
   return (
     <th onClick={onClick}
-        className={cn("px-3 py-2.5 text-[11px] font-bold uppercase tracking-wider whitespace-nowrap select-none",
+        className={cn("lbl-section px-3 py-2.5 whitespace-nowrap select-none",
                       sortable && "cursor-pointer hover:text-fg", className)}>
       <span className="inline-flex items-center gap-1">
         {children}

@@ -126,7 +126,7 @@ function StatusBadge({ pacing }) {
   return (
     <span className={cn(
       "inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border",
-      "text-[10.5px] font-bold uppercase tracking-wide whitespace-nowrap",
+      "lbl-section whitespace-nowrap",
       meta.bgClass, meta.borderClass, meta.textClass,
     )}>
       <span className={cn("size-1.5 rounded-full", meta.dotClass)} />
@@ -219,7 +219,7 @@ function MediaMetricsGrid({ mediaName, m, hasAbs }) {
         </h4>
         <StatusBadge pacing={m.projected_pacing} />
         {hasAbs && (
-          <span className="text-[10px] font-bold uppercase tracking-wide text-fg-subtle px-1.5 py-0.5 rounded bg-surface-strong border border-border">
+          <span className="lbl-section px-1.5 py-0.5 rounded bg-surface-strong border border-border">
             ABS
           </span>
         )}
@@ -367,7 +367,7 @@ function CostAnalysisCard({ mediaName, m }) {
         {recommendation && (
           <div className="px-3 py-2.5 border-t border-border/60 bg-surface-strong">
             <div className="flex items-baseline gap-2">
-              <span className={cn("text-[10px] font-bold uppercase tracking-wider", recommendation.tone)}>
+              <span className={cn("lbl-section", recommendation.tone)}>
                 {recommendation.verb}
               </span>
               <span className="lbl-section">
@@ -869,7 +869,7 @@ export function AlertCampaignSheet({
                 const tone = SEVERITY_TONE[sev];
                 return (
                   <div key={sev} className="space-y-1.5">
-                    <p className={cn("text-[10.5px] font-bold uppercase tracking-wider", tone.text)}>
+                    <p className={cn("lbl-section", tone.text)}>
                       {tone.label} <CountBadge value={list.length} tone="neutral" className="ml-1 align-middle" />
                     </p>
                     <ul className="space-y-1.5">

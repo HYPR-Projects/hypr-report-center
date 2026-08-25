@@ -143,8 +143,8 @@ function Th({ children, align = "left", sortable = false, active = false, dir, o
       scope="col"
       className={cn(
         "sticky top-0 z-10 bg-canvas-deeper",
-        "px-2 py-2.5",
-        "text-[10px] font-bold uppercase tracking-wider text-fg-subtle",
+        "px-2 py-2.5 dense:py-1.5",
+        "lbl-section",
         "border-b border-border",
         "whitespace-nowrap",
         sortable && "cursor-pointer select-none hover:text-fg",
@@ -199,7 +199,7 @@ function Td({ children, align = "left", className, tabular = false, title }) {
   return (
     <td
       className={cn(
-        "px-2 py-2.5",
+        "px-2 py-2.5 dense:py-1.5",
         "text-xs text-fg",
         "border-b border-border/40",
         "whitespace-nowrap",
@@ -497,7 +497,7 @@ export function DiagnosticoTable({
                           <span
                             className={cn(
                               "shrink-0 inline-flex items-center px-1.5 py-0.5 rounded",
-                              "text-[9px] font-bold uppercase tracking-wide",
+                              "lbl-micro",
                               "border border-signature/40 bg-signature-soft text-signature"
                             )}
                             title={

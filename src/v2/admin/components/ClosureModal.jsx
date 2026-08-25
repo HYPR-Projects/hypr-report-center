@@ -147,7 +147,7 @@ export function ClosureModal({
               <div className="flex items-center gap-2 mb-2">
                 <span className="inline-block w-6 h-0.5 rounded-full bg-signature" aria-hidden />
                 <Dialog.Title asChild>
-                  <span className="text-[10.5px] font-bold uppercase tracking-[1.5px] text-signature">
+                  <span className="lbl-section text-signature">
                     {isClose ? "Encerrar campanha" : "Pós-venda & fechamento"}
                   </span>
                 </Dialog.Title>
@@ -319,7 +319,7 @@ function SectionLabel({ icon, title, hint }) {
   return (
     <div className="flex items-center gap-2 mb-2">
       <span className="text-signature shrink-0">{icon}</span>
-      <span className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle">
+      <span className="lbl-section">
         {title}
       </span>
       {hint && (
@@ -363,7 +363,7 @@ function FieldNote({ tone, children }) {
 function DeliveryModeSegment({ value, onChange, disabled }) {
   return (
     <div className="mt-2.5">
-      <span className="block text-[10px] uppercase tracking-widest font-bold text-fg-subtle mb-1.5">
+      <span className="lbl-section block mb-1.5">
         Como chegou ao cliente?
       </span>
       <div className="inline-flex rounded-lg border border-border bg-surface p-0.5 gap-0.5">
@@ -405,7 +405,7 @@ function DeliveryModeSegment({ value, onChange, disabled }) {
 function PresentedDateField({ value, onChange, min, max, disabled }) {
   return (
     <label className="block mt-2.5">
-      <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+      <span className="lbl-section">
         Data da apresentação{" "}
         <span className="text-fg-subtle font-normal normal-case tracking-normal">(opcional)</span>
       </span>

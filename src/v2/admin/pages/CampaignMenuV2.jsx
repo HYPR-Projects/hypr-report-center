@@ -1,23 +1,35 @@
 // src/v2/admin/pages/CampaignMenuV2.jsx
 //
-// Substitui src/pages/CampaignMenu.jsx (legacy 566 linhas com inline
-// styles e props de tema). Tudo aqui usa Tailwind via tokens de
-// theme.css — light/dark theme automático via data-theme no <html>.
+// Reports de Campanhas — a rota raiz do admin. Cinco views sobre o mesmo
+// conjunto de campanhas:
 //
-// Layouts disponíveis (LayoutToggle):
-//   - month:  cards de campanha agrupados por mês (refatoração do legacy)
-//   - client: cards de cliente com sparkline + métricas agregadas (NOVO)
-//   - list:   lista densa estilo Linear (NOVO)
+//   month       cards agrupados por mês de início
+//   client      cards de cliente com sparkline + métricas agregadas
+//   list        lista densa estilo Linear
+//   performers  leaderboard de CS/CP
+//   diagnostico tabela de pacing com status Ok/Over/Super Over/Under
 //
-// Comportamento mantido:
-//   - filtro por search
-//   - filtro por owner (CP ou CS)
-//   - filtros por mês (quick pills) — só na view month
-//   - sort (mês, data início, A-Z) — só na view month e list
-//   - todas as ações (Loom, Survey, Logo, Owner, Link Cliente) — agora
-//     dentro do CampaignDrawer que abre ao clicar no card
+// ── O que esta página deixou de fazer ────────────────────────────────────
+// Header, navegação entre views e largura de coluna agora são do
+// `AdminShell`. A `layout` chega por PROP (derivada da URL em App.jsx), não
+// mais de `useState` + `localStorage`: cada view tem caminho próprio, então
+// refresh, voltar/avançar e link compartilhável funcionam.
+//
+// Os filtros que viviam em quatro faixas separadas — toolbar (busca, owner,
+// ordenação, direção), pill "Apenas ativas", dez pílulas de mês, três
+// pílulas de worklist, mais o banner de "filtro ativo" que aparecia por
+// cima de tudo — são uma `FilterBar` só. As funções de filtro e ordenação
+// não mudaram uma linha; mudou quem as invoca.
+//
+// ── O que continua igual ─────────────────────────────────────────────────
+//   - stale-while-revalidate do payload em localStorage
+//   - lazy fetch de listClients (só na view "client")
+//   - prefetch de detail/access/notes e o motor de alertas
+//   - todas as ações de campanha (Loom, Survey, Logo, Owner, Merge,
+//     Analytics, Negociação, uploads RMND/PDOOH, ABS, fechamento,
+//     check-ups, pausa, encerramento antecipado) no CampaignDrawer
 
-import { useState, useEffect, useMemo, useCallback, useSyncExternalStore } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, useSyncExternalStore } from "react";
 // IMPORT CRÍTICO — sem isso o Tailwind+theme.css não chega no bundle do
 // admin (v2.css é onde @import "tailwindcss" e tokens HYPR vivem). O
 // ClientDashboardV2 já importa em outro chunk lazy, mas o admin é a
@@ -41,7 +53,6 @@ import { useLoadingTask } from "../../../shared/loading";
 import { useTheme } from "../../hooks/useTheme";
 import { normalizeSlug, computeMetricsSummary, computeWorklist, computeHealthDistribution } from "../lib/aggregation";
 
-import HyprReportCenterLogo from "../../../components/HyprReportCenterLogo";
 import NewCampaignModal from "../../../components/modals/NewCampaignModal";
 import LoomModal from "../../../components/modals/LoomModal";
 import SurveyModal from "../../../components/modals/SurveyModal";
@@ -55,17 +66,22 @@ import { getOrIssueAdminJwt } from "../../../shared/auth";
 
 import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
-import { cn } from "../../../ui/cn";
-import { CountBadge } from "../../../ui/CountBadge";
-import { ThemeToggleV2 } from "../../components/ThemeToggleV2";
 import { DataFreshnessIndicator } from "../components/DataFreshnessIndicator";
 import { DspHealthPanel } from "../components/DspHealthPanel";
 
-import { LayoutToggle } from "../components/LayoutToggle";
-import { ToolbarV2 } from "../components/ToolbarV2";
-import { MetricStrip, SecondaryAlerts } from "../components/MetricStrip";
+import { MetricStrip, WorklistChips } from "../components/MetricStrip";
 import { PerformersLayout } from "../components/TopPerformers";
-import { MonthFilterPills } from "../components/MonthFilterPills";
+import { MonthFilterPanel } from "../components/MonthFilterPills";
+import { OwnerFilterPanel } from "../components/OwnerFilter";
+import { KpiBoard } from "../components/KpiBoard";
+import {
+  FilterBar, FilterPanel, FilterOption, FilterPanelClear, SortChipFilter,
+} from "../components/FilterBar";
+import { ownerFilterLabel, monthFilterLabel, situationLabel, WORKLIST_LABELS } from "../lib/filterLabels";
+import { PERIOD_PRESETS, formatPeriodLabel } from "../lib/period";
+import { AdminShell } from "../shell/AdminShell";
+import { PageHeader, MetaDot, MetaStat } from "../shell/PageHeader";
+import { buildNavCounts, writeNavCountsCache, SECTION_REPORTS, viewMeta } from "../shell/navConfig";
 import { ClientCard } from "../components/ClientCard";
 import { CampaignCardV2 } from "../components/CampaignCardV2";
 import { CampaignListV2 } from "../components/CampaignListV2";
@@ -76,9 +92,11 @@ import { prefetchNoteSummaries } from "../lib/notesSummaryCache";
 import { MonthGroupedSections } from "../components/MonthGroupedSections";
 import { formatMonthLabel, getCampaignStatus } from "../lib/format";
 import { DiagnosticoLayout } from "../components/DiagnosticoLayout";
+import { STATUS_ORDER, STATUS_META } from "../lib/diagnostico";
 import { AlertsBell } from "../components/AlertsBell";
 import { AlertCampaignSheet } from "../components/AlertCampaignSheet";
 import { generateAlerts } from "../lib/alerts/engine";
+import { SEVERITY } from "../lib/alerts/constants";
 import { TooltipProvider } from "../../../ui/Tooltip";
 import {
   schedulePrefetch,
@@ -86,18 +104,14 @@ import {
   getAllPrefetchedDetails,
 } from "../../../lib/prefetchReport";
 
-// localStorage key pra persistir o layout escolhido entre sessões.
-const LAYOUT_STORAGE_KEY = "hypr.admin.layout";
-
-function getInitialLayout() {
-  try {
-    const v = localStorage.getItem(LAYOUT_STORAGE_KEY);
-    if (v === "month" || v === "client" || v === "list" || v === "performers" || v === "diagnostico") return v;
-  } catch { /* ignore */ }
-  return "month";
-}
-
-export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenClient }) {
+export default function CampaignMenuV2({
+  user, onLogout, onOpenReport, onOpenClient,
+  // `layout` vem da URL (ver navConfig + App.jsx). A persistência em
+  // localStorage continua existindo, mas em App.jsx no momento de navegar —
+  // aqui a view é só leitura.
+  layout = "month",
+  onNavigateView,
+}) {
   // ── Estado de dados ──────────────────────────────────────────────────────
   // Stale-while-revalidate: lemos o último payload bom do localStorage
   // *sincronamente* no primeiro render. Resultado: 2ª+ visita ao menu
@@ -182,7 +196,6 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   useLoadingTask(loading || refreshing);
 
   // ── Estado de UI ─────────────────────────────────────────────────────────
-  const [layout, setLayout]               = useState(getInitialLayout);
   const [search, setSearch]               = useState("");
   const [ownerFilter, setOwnerFilter]     = useState(() => getOwnerFilter());
   const [activeMonth, setActiveMonth]     = useState(null);
@@ -206,6 +219,24 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   const [clientsSortBy,    setClientsSortBy]    = useState(() => validateClientSort(getSortByPref("clients",   CLIENT_SORT_DEFAULT)));
   const [clientsSortDir,   setClientsSortDir]   = useState(() => getSortDirPref("clients",   getDefaultDirection(CLIENT_SORT_DEFAULT)));
   const [activeWorklist, setActiveWorklist] = useState(null);
+  // Controles do leaderboard. Vivem aqui (e não dentro do PerformersLayout)
+  // porque viram chips da FilterBar — antes esta era a única view que
+  // escondia a barra inteira e desenhava dois controles próprios.
+  const [performerRole, setPerformerRole]     = useState("cs");
+  const [performerPreset, setPerformerPreset] = useState("now");
+  const [performerCustom, setPerformerCustom] = useState({ from: "", to: "" });
+  // Controles do Diagnóstico, pelo mesmo motivo: eram duas fileiras próprias
+  // (pílulas de período + pílulas de status) abaixo da barra, com geometrias
+  // que não existiam em nenhum outro lugar.
+  const [diagStatuses, setDiagStatuses] = useState(() => new Set());
+  const [diagPreset, setDiagPreset]     = useState("now");
+  const [diagCustom, setDiagCustom]     = useState({ from: "", to: "" });
+  // O Diagnóstico publica seu export aqui pra virar ação da barra de contexto.
+  const diagExportRef = useRef(null);
+  const registerDiagExport = useCallback((fn) => {
+    diagExportRef.current = fn;
+    return () => { if (diagExportRef.current === fn) diagExportRef.current = null; };
+  }, []);
   const [drawerCampaign, setDrawerCampaign] = useState(null);
   const [copied, setCopied]               = useState(null);
 
@@ -252,10 +283,6 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   const toggleClientsSortDir = useCallback(() => {
     setClientsSortDir((d) => (d === "asc" ? "desc" : "asc"));
   }, []);
-  useEffect(() => {
-    try { localStorage.setItem(LAYOUT_STORAGE_KEY, layout); } catch { /* ignore */ }
-  }, [layout]);
-
   // teamMap pra resolver email → display name
   const teamMap = useMemo(() => {
     const m = {};
@@ -834,12 +861,29 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
     [campaigns, teamMap, detailMap]
   );
 
-  // Atalho do rodapé do popover de alertas — leva pra aba Diagnóstico já
-  // selecionada. Não filtra nada além disso (a aba tem seus próprios filtros).
+  // Contagem de críticos pro selo do rail no item "Diagnóstico". Usa a
+  // mesma régua do sino (severidade CRITICAL), sem descontar os já lidos: o
+  // rail informa o estado da OPERAÇÃO, o sino informa o que falta você ver.
+  const criticalAlertCount = useMemo(
+    () => alerts.filter((a) => a.severity === SEVERITY.CRITICAL).length,
+    [alerts]
+  );
+  // Publica a fatia desta página pro rail das outras rotas: só aqui roda o
+  // motor de alertas, e só aqui se conhece o total de campanhas e clientes.
+  useEffect(() => {
+    writeNavCountsCache({
+      campaigns: totalCampaigns || undefined,
+      clients:   totalClients   || undefined,
+      critical:  criticalAlertCount || undefined,
+    });
+  }, [criticalAlertCount, totalCampaigns, totalClients]);
+
+  // Atalho do rodapé do popover de alertas — leva pra view Diagnóstico. Agora
+  // é navegação de rota (a view tem URL própria), então o back do browser
+  // volta pra onde o admin estava. O scroll é responsabilidade do shell.
   const handleOpenDiagnosticoFromAlert = useCallback(() => {
-    setLayout("diagnostico");
-    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
-  }, []);
+    onNavigateView?.(SECTION_REPORTS, "diagnostico");
+  }, [onNavigateView]);
 
   // ── Sheet de deep-dive da campanha (vive no nível do menu pra ser
   //    invocado tanto pelo AlertsBell quanto pelas rows do Diagnóstico).
@@ -857,272 +901,545 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
   const handleDrillCampaign = useCallback((token) => setDrillToken(token), []);
   const handleCloseDrill = useCallback(() => setDrillToken(null), []);
 
+  // ── Derivados de UI ──────────────────────────────────────────────────────
+  // Filtros que a barra declara. Ficam fora do JSX pra que a lista de chips
+  // e a lista de chips-ativos sejam lidas lado a lado — elas têm que
+  // concordar, e concordar é mais fácil de conferir aqui do que espalhado
+  // por 80 linhas de markup.
+  const isClientView = layout === "client";
+
+  // ── Que filtro está VIVO em cada view ──────────────────────────────────
+  // Isto não é preferência de layout: é o mapa de quais filtros de fato
+  // alcançam o conjunto que cada view renderiza. Sem ele havia dois erros
+  // simétricos, e os dois mentem pro usuário:
+  //
+  //   • Chip que aparece e NÃO filtra. "Situação" no Diagnóstico: a view
+  //     recebe `campaigns` cru (não `filteredCampaigns`), então "apenas
+  //     ativas" e os buckets de worklist nunca chegavam nela. O controle
+  //     existia, respondia ao clique e não mudava uma linha da tabela.
+  //
+  //   • Filtro que filtra e NÃO aparece. "Período" só tinha chip na view
+  //     por mês, mas `filteredCampaigns` aplica `matchMonth` — então a
+  //     Lista vinha filtrada por Agosto sem nada na tela dizendo isso. E o
+  //     worklist filtra clientes (`filteredClients`), mas o chip não era
+  //     oferecido lá: dava pra filtrar em "Por mês", trocar pra "Por
+  //     cliente" e ficar com um recorte ativo invisível.
+  //
+  // Um mapa só, lido pelos chips E pelos chips-ativos, garante que os dois
+  // sempre concordem com o que o dado está fazendo.
+  const LIVE = {
+    // filteredCampaigns → month e list
+    month:       { search: true, owner: true, period: true,  situation: true },
+    list:        { search: true, owner: true, period: true,  situation: true },
+    // filteredClients → search + owner + worklist (sem mês, sem onlyActive)
+    client:      { search: true, owner: true, period: false, situation: "worklist" },
+    // recebe `campaigns` cru + search + ownerMatcher
+    diagnostico: { search: true, owner: true, period: false, situation: false },
+    // leaderboard: filtros próprios (papel + janela), nenhum destes
+    performers:  { search: false, owner: false, period: false, situation: false },
+  }[layout] || { search: true, owner: true, period: false, situation: false };
+
+  const showOwnerFilter  = LIVE.owner;
+  const showMonthFilter  = LIVE.period;
+  const showSituation    = !!LIVE.situation;
+  // Em "Por cliente" só o recorte de worklist alcança o dataset — "apenas
+  // ativas" não é aplicado a `filteredClients`, então não é oferecido lá.
+  const showOnlyActive   = LIVE.situation === true;
+  // Performers é leaderboard: ordenar por outra coisa não faz sentido (a
+  // métrica JÁ é a ordem). Diagnóstico ordena por header de coluna na
+  // própria tabela. Nos dois casos o chip de ordenação sairia sobrando —
+  // antes a solução era passar `undefined` em cinco props do toolbar.
+  const showSort         = layout !== "performers" && layout !== "diagnostico";
+
+  const sortBy    = isClientView ? clientsSortBy  : campaignsSortBy;
+  const sortDir   = isClientView ? clientsSortDir : campaignsSortDir;
+  const sortOpts  = isClientView ? CLIENT_SORT_OPTIONS : CAMPAIGN_SORT_OPTIONS;
+  const onSortBy  = isClientView ? handleClientsSortByChange : handleCampaignsSortByChange;
+  const onSortDir = isClientView ? toggleClientsSortDir : toggleCampaignsSortDir;
+  const sortDefault    = isClientView ? CLIENT_SORT_DEFAULT : CAMPAIGN_SORT_DEFAULT;
+  const sortDefaultDir = getDefaultDirection(sortDefault);
+
+  const filterChips = [];
+  if (teamMembers && showOwnerFilter) {
+    filterChips.push({
+      id: "owner",
+      label: "Owner",
+      value: ownerFilterLabel(ownerFilter, teamMembers),
+      icon: <PersonGlyph />,
+      panel: () => (
+        <OwnerFilterPanel
+          selected={ownerFilter}
+          onChange={setOwnerFilter}
+          teamMembers={teamMembers}
+        />
+      ),
+    });
+  }
+  if (showMonthFilter) {
+    filterChips.push({
+      id: "period",
+      label: "Período",
+      value: monthFilterLabel(activeMonth),
+      icon: <CalendarGlyph />,
+      panel: (close) => (
+        <MonthFilterPanel
+          campaigns={campaigns}
+          activeMonth={activeMonth}
+          onChange={setActiveMonth}
+          onClose={close}
+        />
+      ),
+    });
+  }
+  if (layout === "performers") {
+    filterChips.push({
+      id: "role",
+      label: "Papel",
+      value: performerRole === "cs" ? "CS" : "CP",
+      icon: <PersonGlyph />,
+      panel: (close) => (
+        <FilterPanel title="Tipo de owner">
+          <FilterOption
+            label="Customer Success"
+            sub="ranking entre CSs"
+            selected={performerRole === "cs"}
+            onSelect={() => { setPerformerRole("cs"); close(); }}
+          />
+          <FilterOption
+            label="Customer Planner"
+            sub="ranking entre CPs"
+            selected={performerRole === "cp"}
+            onSelect={() => { setPerformerRole("cp"); close(); }}
+          />
+        </FilterPanel>
+      ),
+    });
+    filterChips.push({
+      id: "performerPeriod",
+      label: "Período",
+      value: performerPreset === "now"
+        ? undefined
+        : formatPeriodLabel(performerPreset, performerCustom.from, performerCustom.to),
+      icon: <CalendarGlyph />,
+      panel: (close) => (
+        <FilterPanel title="Janela do ranking">
+          {PERIOD_PRESETS.filter((o) => o.id !== "custom").map((o) => (
+            <FilterOption
+              key={o.id}
+              label={o.label}
+              selected={performerPreset === o.id}
+              onSelect={() => { setPerformerPreset(o.id); close(); }}
+            />
+          ))}
+        </FilterPanel>
+      ),
+    });
+  }
+  if (layout === "diagnostico") {
+    const diagStatusLabel = diagStatuses.size === 0
+      ? undefined
+      : diagStatuses.size === 1
+        ? STATUS_META[[...diagStatuses][0]]?.shortLabel
+        : `${diagStatuses.size} status`;
+    filterChips.push({
+      id: "diagStatus",
+      label: "Status",
+      value: diagStatusLabel,
+      panel: () => (
+        <FilterPanel
+          title="Status de pacing"
+          footer={
+            <FilterPanelClear
+              onClear={() => setDiagStatuses(new Set())}
+              disabled={diagStatuses.size === 0}
+            />
+          }
+        >
+          {STATUS_ORDER.map((st) => (
+            <FilterOption
+              key={st}
+              multi
+              label={STATUS_META[st]?.label || st}
+              sub={STATUS_META[st]?.description}
+              selected={diagStatuses.has(st)}
+              onSelect={() => setDiagStatuses((prev) => {
+                const next = new Set(prev);
+                if (next.has(st)) next.delete(st); else next.add(st);
+                return next;
+              })}
+            />
+          ))}
+        </FilterPanel>
+      ),
+    });
+    filterChips.push({
+      id: "diagPeriod",
+      label: "Período",
+      value: diagPreset === "now" ? undefined : formatPeriodLabel(diagPreset, diagCustom.from, diagCustom.to),
+      icon: <CalendarGlyph />,
+      panel: (close) => (
+        <FilterPanel title="Janela do diagnóstico">
+          {PERIOD_PRESETS.filter((o) => o.id !== "custom").map((o) => (
+            <FilterOption
+              key={o.id}
+              label={o.label}
+              sub={o.id === "now" ? "só campanhas em vôo" : "retrospectivo, inclui encerradas"}
+              selected={diagPreset === o.id}
+              onSelect={() => { setDiagPreset(o.id); close(); }}
+            />
+          ))}
+        </FilterPanel>
+      ),
+    });
+  }
+  if (showSituation) {
+    filterChips.push({
+      id: "situation",
+      label: "Situação",
+      value: situationLabel({
+        onlyActive: showOnlyActive && onlyActive,
+        worklistKey: activeWorklist,
+        worklistLabels: WORKLIST_LABELS,
+      }),
+      icon: <ClockGlyph />,
+      panel: () => (
+        <FilterPanel
+          title="Recorte da operação"
+          footer={
+            <FilterPanelClear
+              onClear={() => { setOnlyActive(false); setActiveWorklist(null); }}
+              disabled={!(showOnlyActive && onlyActive) && !activeWorklist}
+            />
+          }
+        >
+          {showOnlyActive && (
+            <FilterOption
+              multi
+              label="Apenas ativas"
+              sub="em veiculação — sem pausadas nem encerradas"
+              count={activeCampaignsCount}
+              selected={onlyActive}
+              onSelect={() => setOnlyActive((v) => !v)}
+            />
+          )}
+          {WORKLIST_KEYS.map((key) => {
+            const bucket = worklist?.[key];
+            if (!bucket?.count) return null;
+            return (
+              <FilterOption
+                key={key}
+                label={WORKLIST_LABELS[key]}
+                count={bucket.count}
+                selected={activeWorklist === key}
+                onSelect={() => setActiveWorklist(activeWorklist === key ? null : key)}
+              />
+            );
+          })}
+        </FilterPanel>
+      ),
+    });
+  }
+
+  // Chips ativos — um por filtro que está de fato restringindo o conjunto.
+  // A busca entra aqui também: era o único filtro sem representação visível
+  // fora do próprio campo, e num campo de 240px um termo longo fica
+  // truncado sem aviso.
+  const activeFilters = [];
+  if (LIVE.search && search.trim()) {
+    activeFilters.push({
+      id: "search",
+      label: `Busca: ${search.trim()}`,
+      onClear: () => setSearch(""),
+    });
+  }
+  if (showOwnerFilter && ownerFilter.length > 0) {
+    activeFilters.push({
+      id: "owner",
+      label: `Owner: ${ownerFilterLabel(ownerFilter, teamMembers)}`,
+      onClear: () => setOwnerFilter([]),
+    });
+  }
+  if (showMonthFilter && activeMonth) {
+    activeFilters.push({
+      id: "period",
+      label: monthFilterLabel(activeMonth),
+      onClear: () => setActiveMonth(null),
+    });
+  }
+  if (showOnlyActive && onlyActive) {
+    activeFilters.push({
+      id: "onlyActive",
+      label: "Apenas ativas",
+      onClear: () => setOnlyActive(false),
+    });
+  }
+  if (layout === "diagnostico" && diagStatuses.size > 0) {
+    activeFilters.push({
+      id: "diagStatus",
+      label: diagStatuses.size === 1
+        ? STATUS_META[[...diagStatuses][0]]?.shortLabel || "status"
+        : `${diagStatuses.size} status`,
+      onClear: () => setDiagStatuses(new Set()),
+    });
+  }
+  if (layout === "diagnostico" && diagPreset !== "now") {
+    activeFilters.push({
+      id: "diagPeriod",
+      label: formatPeriodLabel(diagPreset, diagCustom.from, diagCustom.to),
+      onClear: () => setDiagPreset("now"),
+    });
+  }
+  if (showSituation && activeWorklist) {
+    activeFilters.push({
+      id: "worklist",
+      label: WORKLIST_LABELS[activeWorklist] || activeWorklist,
+      onClear: () => setActiveWorklist(null),
+    });
+  }
+
+  const clearAllFilters = useCallback(() => {
+    setSearch("");
+    setOwnerFilter([]);
+    setActiveMonth(null);
+    setOnlyActive(false);
+    setActiveWorklist(null);
+    setDiagStatuses(new Set());
+    setDiagPreset("now");
+  }, []);
+
+  // "4 de 490 campanhas" — a leitura que não existia em nenhuma das cinco
+  // views. Sem ela, um filtro ativo e um dataset pequeno são
+  // indistinguíveis: você vê quatro cards e não sabe se são todos.
+  const visibleCount = isClientView ? enrichedClients.length : filteredCampaigns.length;
+  const totalForView = isClientView ? clients.length : totalCampaigns;
+  const resultLabel  = activeFilters.length > 0 && totalForView > 0
+    ? `${visibleCount} de ${totalForView} ${isClientView ? "clientes" : "campanhas"}`
+    : null;
+
+  const navCounts = buildNavCounts({
+    campaigns: totalCampaigns || undefined,
+    clients:   totalClients   || undefined,
+    critical:  criticalAlertCount || undefined,
+  });
+
+  const meta = viewMeta(SECTION_REPORTS, layout);
+
   // ── Render ───────────────────────────────────────────────────────────────
   return (
     <TooltipProvider delayDuration={200}>
-    <div className="min-h-screen w-full bg-canvas text-fg transition-colors">
-      {/* ── Topbar ──────────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-30 bg-canvas-elevated border-b border-border">
-        <div className="page-shell h-16 flex items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={() => {
-              setLayout("month");
-              setActiveWorklist(null);
-              if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
-            }}
-            className="flex items-center text-fg cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas-elevated min-w-0"
-            aria-label="Voltar para visão por mês"
-            title="Voltar para visão por mês"
-          >
-            <HyprReportCenterLogo height={32} />
-          </button>
-          <div className="flex items-center gap-2 md:gap-3">
-            {/* Status do rollup diário das bases. Admin-only — o
-                CampaignMenuV2 inteiro já é renderizado dentro do
-                isAdminMode em App.jsx, então o gate é implícito. */}
-            <DataFreshnessIndicator user={user} />
-            {/* Saúde de ENTREGA por DSP (volume/negócio) — complementa o
-                indicador acima, que cobre pipeline/frescor. Sneak peek com
-                gargalos clicáveis (abre o report da campanha parada). */}
-            <DspHealthPanel onOpenReport={onOpenReport} />
-            {/* Sino de alertas — engine prioriza riscos por severidade ×
-                impacto BRL, mostra críticos primeiro. Admin-only por estar
-                aqui dentro (mesmo gate do DataFreshnessIndicator). */}
-            <AlertsBell
-              alerts={alerts}
-              teamMap={teamMap}
-              onDrillCampaign={handleDrillCampaign}
-              onOpenDiagnostico={handleOpenDiagnosticoFromAlert}
-            />
-            <ThemeToggleV2 />
-            {user?.picture && (
-              <img
-                src={user.picture}
-                alt=""
-                referrerPolicy="no-referrer"
-                className="w-7 h-7 rounded-full ring-2 ring-signature shrink-0"
-              />
+    <AdminShell
+      section={SECTION_REPORTS}
+      layout={layout}
+      navCounts={navCounts}
+      onNavigate={onNavigateView}
+      viewLabel={meta?.label}
+      tally={
+        totalCampaigns > 0
+          ? `${totalCampaigns} campanhas · ${totalClients} clientes`
+          : undefined
+      }
+      busy={refreshing && !loading}
+      user={user}
+      onLogout={onLogout}
+      operationSlots={
+        <>
+          {/* Sino de alertas — o motor prioriza riscos por severidade ×
+              impacto BRL. Admin-only por estar dentro do gate do App.jsx. */}
+          <AlertsBell
+            variant="rail"
+            alerts={alerts}
+            teamMap={teamMap}
+            onDrillCampaign={handleDrillCampaign}
+            onOpenDiagnostico={handleOpenDiagnosticoFromAlert}
+          />
+          {/* Frescor do rollup diário das bases (pipeline). */}
+          <DataFreshnessIndicator variant="rail" user={user} />
+          {/* Saúde de ENTREGA por DSP (volume/negócio) — complementa o
+              indicador acima, que cobre pipeline/frescor. */}
+          <DspHealthPanel variant="rail" onOpenReport={onOpenReport} />
+        </>
+      }
+      actions={
+        <>
+          {/* O Diagnóstico tinha o próprio botão de export flutuando no fim
+              da fileira de pílulas de status. Aqui ele fica onde ficam as
+              ações primárias das outras rotas ("Exportar" no PMP, "Link
+              compartilhado" no drilldown). */}
+          {layout === "diagnostico" && (
+            <Button variant="ghost" size="sm" onClick={() => diagExportRef.current?.()}>
+              <DownloadGlyph />
+              <span className="hidden sm:inline">Baixar Excel</span>
+            </Button>
+          )}
+          <Button variant="primary" size="sm" onClick={() => setShowNewCampaign(true)}>
+            <PlusGlyph />
+            <span className="hidden sm:inline">Novo Report</span>
+          </Button>
+        </>
+      }
+    >
+      <PageHeader
+        eyebrow={`Reports · ${meta?.label || ""}`}
+        title={PAGE_TITLES[layout] || "Reports de Campanhas"}
+        meta={
+          <>
+            <MetaStat value={totalCampaigns} label="campanhas" />
+            <MetaDot />
+            <MetaStat value={totalClients} label="clientes" />
+            {activeCampaignsCount > 0 && (
+              <>
+                <MetaDot />
+                <MetaStat value={activeCampaignsCount} label="ativas" tone="success" />
+              </>
             )}
-            <span className="text-xs text-fg-muted hidden md:inline truncate max-w-[180px]">{user?.name}</span>
-            <button
-              onClick={onLogout}
-              className="text-xs text-fg-muted hover:text-fg px-3 h-9 md:h-8 rounded-md border border-border hover:bg-surface transition-colors shrink-0"
-            >
-              Sair
-            </button>
-          </div>
-        </div>
-      </header>
+            <MetaDot />
+            <span>{new Date().getFullYear()}</span>
+          </>
+        }
+      />
 
-      {/* ── Conteúdo ─────────────────────────────────────────────────────── */}
-      <main className="page-shell py-6 md:py-8">
-        {/* Hero: título + Novo Report */}
-        <div className="flex items-end justify-between gap-4 flex-wrap mb-6">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-fg leading-tight">
-              Reports de Campanhas
-            </h1>
-            <p className="text-xs text-fg-muted mt-1 flex items-center gap-2 flex-wrap">
-              <span><span className="font-semibold text-fg tabular-nums">{totalCampaigns}</span> campanhas</span>
-              <span className="w-0.5 h-0.5 rounded-full bg-fg-subtle" />
-              <span><span className="font-semibold text-fg tabular-nums">{totalClients}</span> clientes</span>
-              <span className="w-0.5 h-0.5 rounded-full bg-fg-subtle" />
-              <span>{new Date().getFullYear()}</span>
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {/* PMP Deals — visível pra todos os admins (somente-leitura por
-                padrão; edição gateada por PMP_EDITORS, e o "Sincronizar
-                agora" lá dentro por FEATURE_ADMINS — mesma regra do
-                "Reconstruir agora" daqui). */}
-            <Button
-              variant="ghost"
-              size="md"
-              onClick={() => {
-                window.history.pushState({}, "", "/admin/pmp");
-                window.dispatchEvent(new PopStateEvent("popstate"));
-              }}
-              title="Análise dos deals de pagamento HYPR (Xandr Curate)"
-            >
-              PMP Deals
-            </Button>
-            <Button
-              variant="ghost"
-              size="md"
-              onClick={() => window.open("/report/DEMO", "_blank")}
-              title="Abre o report de demonstração em nova aba"
-            >
-              Abrir Demo
-            </Button>
-            <Button variant="primary" size="md" onClick={() => setShowNewCampaign(true)}>
-              + Novo Report
-            </Button>
-          </div>
-        </div>
-
-        {/* Banner de dado stale. O estado `refreshError`/`lastFetchedAt` já
-            existia e era alimentado corretamente pelo runRefresh — mas NADA
-            renderizava. Resultado: quando o refresh falhava (o caso do
-            backend pendurado em 04/08), o menu seguia mostrando os números do
-            localStorage sem nenhum sinal, e o time lia isso como "o report
-            não atualiza". Silêncio é o pior estado possível aqui: o número
-            está na tela, parece atual, e não é. */}
-        {refreshError && !refreshing && (
-          <div
-            role="status"
-            className="mb-6 flex items-center justify-between gap-3 flex-wrap rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2"
+      {/* Banner de dado stale. O estado `refreshError`/`lastFetchedAt` já
+          existia e era alimentado corretamente pelo runRefresh — mas NADA
+          renderizava. Resultado: quando o refresh falhava, o menu seguia
+          mostrando os números do localStorage sem nenhum sinal, e o time lia
+          isso como "o report não atualiza". Silêncio é o pior estado
+          possível aqui: o número está na tela, parece atual, e não é. */}
+      {refreshError && !refreshing && (
+        <div
+          role="status"
+          className="mb-4 flex items-center justify-between gap-3 flex-wrap rounded-lg border border-warning/30 bg-warning-soft px-3 py-2"
+        >
+          <p className="text-xs text-fg">
+            <span className="font-semibold">Dados desatualizados.</span>{" "}
+            Não consegui atualizar agora — mostrando o último carregamento
+            {lastFetchedAt ? ` (${new Date(lastFetchedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}).` : "."}
+          </p>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => { setRefreshing(true); setRefreshError(null); runRefresh(); }}
           >
-            <p className="text-xs text-fg">
-              <span className="font-semibold">Dados desatualizados.</span>{" "}
-              Não consegui atualizar agora — mostrando o último carregamento
-              {lastFetchedAt ? ` (${new Date(lastFetchedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })})` : ""}.
-            </p>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => { setRefreshing(true); setRefreshError(null); runRefresh(); }}
-            >
-              Tentar de novo
-            </Button>
-          </div>
-        )}
+            Tentar de novo
+          </Button>
+        </div>
+      )}
 
-        {/* MetricStrip no topo — KPIs das campanhas ativas em grid de cards
-            bordados leves. Alertas operacionais (críticas, sem owner,
-            encerram em 7d) ficam logo abaixo como pills discretos pra
-            preservar a função de filtro sem competir com os números. */}
-        {!loading && totalCampaigns > 0 && (
-          <div className="mb-8 space-y-4">
-            <MetricStrip summary={metricsSummary} />
-            <SecondaryAlerts
+      {/* KPIs + recortes operacionais, num board colapsável com memória.
+          Antes: 110px fixos de grade em todas as views (inclusive Lista e
+          Diagnóstico, onde o assunto é a linha, não o agregado) mais 62px de
+          pílulas de alerta que pareciam legenda dos números mas eram
+          filtros. Agora é um bloco só, e quem varre tabela pode fechá-lo. */}
+      {!loading && totalCampaigns > 0 && (
+        <KpiBoard
+          scope="reports"
+          title={`Desempenho${activeMonth ? ` · ${monthFilterLabel(activeMonth)}` : " · mês corrente"}`}
+          summary={kpiSummaryLine(metricsSummary)}
+          alerts={
+            <WorklistChips
               worklist={worklist}
               activeKey={activeWorklist}
               onSelect={setActiveWorklist}
             />
-          </div>
-        )}
+          }
+        >
+          <MetricStrip summary={metricsSummary} />
+        </KpiBoard>
+      )}
 
-        {/* Banner de filtro ativo de worklist (UX feedback) */}
-        {activeWorklist && (
-          <ActiveWorklistBanner
-            activeKey={activeWorklist}
-            count={worklist?.[activeWorklist]?.count || 0}
-            onClear={() => setActiveWorklist(null)}
-          />
-        )}
+      <FilterBar
+        search={search}
+        // Omitir o handler faz o campo não renderizar. Em Performers a busca
+        // não alcança o dado (o leaderboard tem filtros próprios) — e um
+        // campo que aceita texto sem mudar nada é pior que campo nenhum.
+        onSearchChange={LIVE.search ? setSearch : undefined}
+        searchPlaceholder={
+          isClientView ? "Buscar cliente…" : "Buscar cliente, campanha ou token…"
+        }
+        chips={filterChips}
+        trailing={
+          showSort ? (
+            <SortChipFilter
+              options={sortOpts}
+              value={sortBy}
+              dir={sortDir}
+              onValueChange={onSortBy}
+              onDirToggle={onSortDir}
+              defaultValue={sortDefault}
+              defaultDir={sortDefaultDir}
+            />
+          ) : null
+        }
+        active={activeFilters}
+        onClearAll={clearAllFilters}
+        resultLabel={resultLabel}
+      />
 
-        {/* Toolbar: layout toggle (linha 1) + search/owner/sort (linha 2).
-            Filtros de busca/owner/sort não aplicam ao layout de performers
-            (é um leaderboard auto-contido com filtro próprio). */}
-        <div className="space-y-3 mb-5">
-          <div className="flex items-center gap-3">
-            {/* Mobile: toggle ocupa a largura toda (alinha com busca/cards e
-                respeita as margens da página); desktop volta a hug-content. */}
-            <LayoutToggle value={layout} onChange={setLayout} className="w-full md:w-auto" />
-            <div className="hidden md:block flex-1" />
-          </div>
-          {layout !== "performers" && (
-            <ToolbarV2
+      {/* Conteúdo principal por view.
+          `key={layout}` força remount ao trocar de view, então o fade-in de
+          220ms roda em cada troca — antes era hard-cut. */}
+      {loading ? (
+        <LoadingState layout={layout} />
+      ) : (
+        <div key={layout} className="content-fade-in pt-1">
+          {layout === "month" ? (
+            <MonthLayout
+              groups={monthGroups}
+              onOpen={handleOpenDrawer}
+              onOpenReport={onOpenReport}
+              teamMap={teamMap}
+              filterSignature={[
+                search.trim(),
+                ownerFilter.join(","),
+                activeWorklist || "",
+                onlyActive ? "only-active" : "",
+              ]
+                .filter(Boolean)
+                .join("|")}
+            />
+          ) : layout === "client" ? (
+            // Lazy: sem clients e carregando → skeleton. Com cache (mesmo
+            // stale), mostra os cards e o refetch corre em background.
+            clientsLoading && clients.length === 0
+              ? <LoadingState layout="client" />
+              : <ClientLayout clients={enrichedClients} onOpen={handleOpenClient} />
+          ) : layout === "performers" ? (
+            <PerformersLayout
+              campaigns={campaigns}
+              teamMap={teamMap}
+              onOpenReport={onOpenReport}
+              role={performerRole}
+              onRoleChange={setPerformerRole}
+              preset={performerPreset}
+              onPresetChange={setPerformerPreset}
+              custom={performerCustom}
+              onCustomChange={setPerformerCustom}
+            />
+          ) : layout === "diagnostico" ? (
+            <DiagnosticoLayout
+              campaigns={campaigns}
+              teamMap={teamMap}
+              onOpenReport={onOpenReport}
+              onOpenCampaign={handleDrillCampaign}
               search={search}
-              onSearchChange={setSearch}
-              ownerFilter={ownerFilter}
-              onOwnerChange={setOwnerFilter}
-              teamMembers={teamMembers}
-              // Diagnóstico tem sort por header de coluna nas próprias tabelas
-              // — omitir sortOptions esconde o dropdown e o toggle de direção
-              // do toolbar (ver ToolbarV2: `sortGroups` null → nada renderiza).
-              sortBy={layout === "diagnostico" ? undefined : (layout === "client" ? clientsSortBy : campaignsSortBy)}
-              onSortByChange={layout === "diagnostico" ? undefined : (layout === "client" ? handleClientsSortByChange : handleCampaignsSortByChange)}
-              sortDir={layout === "diagnostico" ? undefined : (layout === "client" ? clientsSortDir : campaignsSortDir)}
-              onSortDirToggle={layout === "diagnostico" ? undefined : (layout === "client" ? toggleClientsSortDir : toggleCampaignsSortDir)}
-              sortOptions={layout === "diagnostico" ? undefined : (layout === "client" ? CLIENT_SORT_OPTIONS : CAMPAIGN_SORT_OPTIONS)}
-              searchPlaceholder={
-                layout === "client" ? "Buscar cliente..." : "Buscar cliente, campanha ou token..."
-              }
+              ownerMatcher={ownerMatcher}
+              activeStatuses={diagStatuses}
+              onStatusesChange={setDiagStatuses}
+              preset={diagPreset}
+              onPresetChange={setDiagPreset}
+              custom={diagCustom}
+              onCustomChange={setDiagCustom}
+              onRegisterExport={registerDiagExport}
+            />
+          ) : (
+            <CampaignListV2
+              campaigns={sortedCampaigns}
+              onOpen={handleOpenDrawer}
+              onOpenReport={onOpenReport}
+              teamMap={teamMap}
             />
           )}
         </div>
-
-        {/* Filtros rápidos: chip "Apenas ativas" + (em 'month') pills de
-            mês. Apenas-ativas faz sentido tanto em 'month' quanto em 'list'
-            — em 'client' e 'top' a semântica é diferente (cliente filtrado
-            por TER ativas, top performers já filtra por performance), então
-            fica de fora desses pra não confundir.
-
-            Visualmente igual à PillButton mas conceitualmente é toggle
-            binário (on/off), não exclusivo. Composável com mês quando
-            ambos aparecem — clicar ambos restringe a interseção. */}
-        {(layout === "month" || layout === "list") && (
-          <div className="mb-6 flex flex-wrap items-center gap-2">
-            <ActiveFilterPill
-              active={onlyActive}
-              count={activeCampaignsCount}
-              onToggle={() => setOnlyActive((v) => !v)}
-            />
-            {layout === "month" && (
-              <MonthFilterPills
-                campaigns={campaigns}
-                activeMonth={activeMonth}
-                onChange={setActiveMonth}
-              />
-            )}
-          </div>
-        )}
-
-        {/* Conteúdo principal por layout.
-            Wrapper `content-fade-in` aplica fade-in 220ms quando o conteúdo
-            real monta (após o skeleton sumir, ou ao trocar de layout). A
-            `key={layout}` força remount ao trocar de aba, então a animação
-            roda em cada troca — antes era hard-cut, agora suaviza. */}
-        {loading ? (
-          <LoadingState layout={layout} />
-        ) : (
-          <div key={layout} className="content-fade-in">
-            {layout === "month" ? (
-              <MonthLayout
-                groups={monthGroups}
-                onOpen={handleOpenDrawer}
-                onOpenReport={onOpenReport}
-                teamMap={teamMap}
-                filterSignature={[
-                  search.trim(),
-                  ownerFilter.join(","),
-                  activeWorklist || "",
-                  onlyActive ? "only-active" : "",
-                ]
-                  .filter(Boolean)
-                  .join("|")}
-              />
-            ) : layout === "client" ? (
-              // Lazy: se não temos clients ainda E está carregando, mostra
-              // skeleton em vez de empty state. Se temos cache (mesmo stale),
-              // mostra os cards e refetch corre em background.
-              clientsLoading && clients.length === 0
-                ? <LoadingState layout="client" />
-                : <ClientLayout clients={enrichedClients} onOpen={handleOpenClient} />
-            ) : layout === "performers" ? (
-              <PerformersLayout campaigns={campaigns} teamMap={teamMap} onOpenReport={onOpenReport} />
-            ) : layout === "diagnostico" ? (
-              <DiagnosticoLayout
-                campaigns={campaigns}
-                teamMap={teamMap}
-                onOpenReport={onOpenReport}
-                onOpenCampaign={handleDrillCampaign}
-                search={search}
-                ownerMatcher={ownerMatcher}
-              />
-            ) : (
-              <CampaignListV2
-                campaigns={sortedCampaigns}
-                onOpen={handleOpenDrawer}
-                onOpenReport={onOpenReport}
-                teamMap={teamMap}
-              />
-            )}
-          </div>
-        )}
-      </main>
+      )}
 
       {/* Sheet de deep-dive de campanha — análise focada em alertas + métricas.
           Aberto pelo AlertsBell (clique em item) ou DiagnosticoLayout (clique
@@ -1267,7 +1584,7 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
         onOpenChange={(o) => !o && setAnalyticsModal(null)}
         campaign={analyticsModal}
       />
-    </div>
+    </AdminShell>
     </TooltipProvider>
   );
 }
@@ -1276,40 +1593,108 @@ export default function CampaignMenuV2({ user, onLogout, onOpenReport, onOpenCli
 // Sub-componentes
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── Chip "Apenas ativas" ────────────────────────────────────────────────
-// Toggle visualmente alinhado às MonthFilterPills (mesma altura, mesmo
-// shape de pill). Diferenças propositais pra comunicar "isto é um toggle,
-// não um seletor de mês":
-//   - Dot verde com pulse quando inativo, sólido quando ativo
-//   - Label fixo "Apenas ativas" (não muda com o estado)
-// Quando ativo, herda a aparência signature-soft das pills selecionadas.
-function ActiveFilterPill({ active, count, onToggle }) {
+// ─────────────────────────────────────────────────────────────────────────────
+// Rótulos e derivações da página
+// ─────────────────────────────────────────────────────────────────────────────
+// Título por view. Antes as cinco views compartilhavam "Reports de
+// Campanhas" — o H1 não dizia o que você estava olhando, e a única pista era
+// o segmentado tintado 400px abaixo. Com o rail marcando a view e o eyebrow
+// repetindo o rastro, o H1 pode nomear o conteúdo de fato.
+const PAGE_TITLES = {
+  month:       "Reports de Campanhas",
+  client:      "Carteira de Clientes",
+  list:        "Reports de Campanhas",
+  performers:  "Top Performers",
+  diagnostico: "Diagnóstico de Pacing",
+};
+
+// Ordem dos buckets no chip "Situação". `reports_not_viewed` fica de fora
+// porque o backend ainda não popula o bucket — entra aqui no dia que popular,
+// sem mexer no resto.
+const WORKLIST_KEYS = ["pacing_critical", "no_owner", "ending_soon"];
+
+/**
+ * Resumo de uma linha do KpiBoard fechado. Quatro números, escolhidos por
+ * responderem "como está o mês" sem abrir a grade: quantas rodando, se o
+ * ritmo está certo, se o criativo está performando, e quanto a operação
+ * está custando.
+ */
+function kpiSummaryLine(summary) {
+  if (!summary) return [];
+  const line = [];
+  if (summary.active_count != null) {
+    line.push({ label: "Ativas", value: Math.round(summary.active_count) });
+  }
+  if (summary.dsp_pacing != null) {
+    line.push({
+      label: "Pacing",
+      value: `${Math.round(summary.dsp_pacing)}%`,
+      tone: summary.dsp_pacing < 90 ? "danger" : summary.dsp_pacing < 100 ? "warning" : "success",
+    });
+  }
+  if (summary.ctr != null) {
+    line.push({
+      label: "CTR",
+      value: `${summary.ctr.toFixed(2).replace(".", ",")}%`,
+      tone: summary.ctr >= 0.70 ? "success" : summary.ctr >= 0.50 ? "warning" : "danger",
+    });
+  }
+  if (summary.tech_cost != null) {
+    line.push({
+      label: "Tech",
+      value: `${summary.tech_cost.toFixed(2).replace(".", ",")}%`,
+    });
+  }
+  return line;
+}
+
+// Glifos dos chips de filtro. Inline porque são três, e cada um só aparece
+// numa posição — um módulo de ícones pra isso seria indireção sem ganho.
+function PersonGlyph() {
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-pressed={active}
-      title={active ? "Mostrando só campanhas ativas — clique pra limpar" : "Filtrar só campanhas ativas"}
-      className={cn(
-        "inline-flex items-center gap-2 h-7 px-3 rounded-full cursor-pointer",
-        "text-xs font-medium transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
-        active
-          ? "bg-signature-soft text-fg border border-signature/40"
-          : "bg-surface text-fg-muted border border-border hover:bg-surface-strong hover:text-fg"
-      )}
-    >
-      <span className="relative inline-flex shrink-0">
-        <span className={cn(
-          "size-1.5 rounded-full bg-success",
-          // Pulse só quando inativo, pra "chamar pra clicar" sem ficar
-          // ruidoso quando já está ligado.
-          !active && "animate-pulse"
-        )} />
-      </span>
-      Apenas ativas
-      <CountBadge value={count} tone={active ? "onSignature" : "neutral"} />
-    </button>
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <circle cx="12" cy="8" r="3.5" />
+      <path d="M5 21v-1a7 7 0 0 1 14 0v1" />
+    </svg>
+  );
+}
+
+function CalendarGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="18" rx="2" />
+      <path d="M16 2v4M8 2v4M3 10h18" />
+    </svg>
+  );
+}
+
+function ClockGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 8v4l3 2" />
+    </svg>
+  );
+}
+
+function DownloadGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
+    </svg>
+  );
+}
+
+function PlusGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+      <path d="M12 5v14M5 12h14" />
+    </svg>
   );
 }
 
@@ -1375,33 +1760,6 @@ function LoadingState({ layout }) {
       {Array.from({ length: 6 }).map((_, i) => (
         <Skeleton key={i} className="h-[88px] rounded-xl" />
       ))}
-    </div>
-  );
-}
-
-const WORKLIST_LABELS = {
-  pacing_critical:    "pacing crítico",
-  no_owner:           "sem owner",
-  ending_soon:        "encerram em 7 dias",
-  reports_not_viewed: "reports não vistos",
-};
-
-function ActiveWorklistBanner({ activeKey, count, onClear }) {
-  return (
-    <div className="flex items-center justify-between gap-3 mb-5 px-4 py-2.5 rounded-lg bg-signature-soft border border-signature/30">
-      <p className="text-[12px] text-fg">
-        Filtrado por <span className="font-semibold">{WORKLIST_LABELS[activeKey] || activeKey}</span>
-        {" · "}
-        <span className="tabular-nums font-semibold">{count}</span>{" "}
-        {count === 1 ? "campanha" : "campanhas"}
-      </p>
-      <button
-        type="button"
-        onClick={onClear}
-        className="text-[11px] text-fg-muted hover:text-fg font-medium"
-      >
-        Limpar filtro
-      </button>
     </div>
   );
 }

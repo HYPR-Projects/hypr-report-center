@@ -411,7 +411,15 @@ function CampaignCardV2Inner({
             saúde da campanha sem precisar abrir drawer.
           • Desktop (md+): row horizontal com colunas dedicadas e dividers
             verticais (UX original — operação faz scan vertical). */}
-      <div className="flex flex-col md:flex-row md:items-stretch gap-3 md:gap-4 px-4 md:px-5 py-3.5">
+      {/* @container: as colunas do card decidem pela largura DO CARD, não
+          pela do viewport.
+          Isto passou a importar quando o rail entrou: com ele aberto, um
+          viewport de 1440px dá ~1150px de card; colapsado, ~1330px. As
+          colunas fixas somam ~758px, então no primeiro caso a coluna de
+          identidade cai pra ~216px e "Airlicium — SP, RJ e Nordeste" trunca
+          em "Airlicium — S...". Breakpoint de viewport não distingue os dois
+          casos — o rail muda a largura sem mudar o viewport. */}
+      <div className="@container flex flex-col md:flex-row md:items-stretch gap-3 md:gap-4 px-4 md:px-5 py-3.5 dense:py-2.5">
         {/* ── Marca + campanha + datas ───────────────────────────────
             self-center vale só pra desktop (flex-row, eixo cruzado é vertical).
             No mobile (flex-col), self-center colapsava a largura horizontal e
@@ -438,7 +446,7 @@ function CampaignCardV2Inner({
                 ele entra em cena assim que a data passa. */}
             {ended && earlyEnded && <EarlyEndedBadge reason={early_end_reason} date={early_end_date} />}
             {ended && !earlyEnded && (
-              <span className="text-[9px] uppercase tracking-widest font-bold text-fg-subtle">
+              <span className="lbl-micro text-fg-subtle">
                 encerrada
               </span>
             )}
@@ -557,7 +565,19 @@ function CampaignCardV2Inner({
             separa este grupo do pacing/resultados — antes os três eram
             filhos diretos da row e herdavam o gap-4 largo entre si, o que
             deixava o TECH "flutuando" longe da box de investimento. */}
-        <div className="hidden md:flex items-stretch gap-2.5 shrink-0">
+        {/* Limiar MEDIDO, não estimado. As colunas fixas do card somam
+            ~1060px com este cluster; abaixo disso a coluna de identidade cai
+            pra 80-100px e "Airlicium — SP, RJ e Nordeste" vira "Airlicium —
+            S...". Acima, ela fica com 240px+ e respira.
+
+            1250px é a largura do CONTENT BOX do container (`container-type:
+            inline-size` mede o content box), ou seja, 40px menos que a
+            largura externa da row por causa do `px-5`. Em viewport de 1440px:
+            rail aberto dá 1102px → esconde; rail colapsado dá 1282px →
+            mostra. Colapsar o rail (⌘\) é o que traz o cluster de volta no
+            laptop, que é exatamente pra isso que o controle existe. Os
+            números completos continuam no drawer da campanha. */}
+        <div className="hidden @min-[1250px]:flex items-stretch gap-2.5 shrink-0">
         {/* Largura FIXA em 148px independente de ter 1 ou 2 mídias.
             Antes era 148 no split e 96 no formato único — e como o cluster
             financeiro é ancorado à direita, os 52px de diferença mudavam a
@@ -762,12 +782,15 @@ function CampaignCardV2Inner({
             à esquerda e CTA à direita) abaixo dos KPIs.
             Desktop: shrink-fit ao final da row horizontal. */}
         <div className="flex items-center gap-3 md:shrink-0 md:self-center justify-between md:justify-start">
-          {/* Slot fixo 44px com justify-end: vazio, 1 ou 2 avatares,
+          {/* Slot fixo 48px com justify-end: vazio, 1 ou 2 avatares,
            *  o botão fica sempre no mesmo X. Mobile sempre mostra (UX
-           *  consistente com desktop). */}
-          <div className="flex w-11 justify-start md:justify-end items-center">
+           *  consistente com desktop).
+           *  48 = 22 + 4 + 22: os dois pips lado a lado. Eram 44px porque
+           *  o segundo avatar entrava com `-ml-1.5` — e essa sobreposição
+           *  cobria a segunda inicial do primeiro ("DA" lia como "D"). */}
+          <div className="flex w-12 gap-1 justify-start md:justify-end items-center">
             {cpName && <Avatar name={cpName} role="cp" size="sm" title={`CP: ${cpName}`} />}
-            {csName && <Avatar name={csName} role="cs" size="sm" className={cpName ? "-ml-1.5" : ""} title={`CS: ${csName}`} />}
+            {csName && <Avatar name={csName} role="cs" size="sm" title={`CS: ${csName}`} />}
           </div>
           <AccessBadge shortToken={short_token} ended={ended} />
           <button
@@ -985,14 +1008,14 @@ function FechamentoDots({ fechamento }) {
               )}
             />
           ))}
-          <span className="text-[9px] uppercase tracking-wider text-fg-subtle ml-0.5 leading-none">
+          <span className="lbl-micro text-fg-subtle ml-0.5">
             fechamento {have}/{FECHAMENTO_DEFS.length}
           </span>
         </div>
       </TooltipTrigger>
       <TooltipContent side="bottom" align="start">
         <div className="space-y-1 leading-snug">
-          <p className="text-[10px] uppercase tracking-[0.14em] font-semibold text-fg-subtle mb-1.5">
+          <p className="lbl-section mb-1.5">
             Fechamento
           </p>
           {FECHAMENTO_DEFS.map(([key, label]) => (
@@ -1021,7 +1044,7 @@ function FechamentoDots({ fechamento }) {
  */
 function SetupChip({ setup }) {
   const chip = (
-    <span className="badge-pop-in inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-warning px-1.5 py-0.5 rounded bg-warning-soft border border-warning/40 cursor-help">
+    <span className="lbl-micro text-warning badge-pop-in inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-warning-soft border border-warning/40 cursor-help">
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="10" />
         <path d="M12 8v4M12 16h.01" />
@@ -1130,7 +1153,7 @@ function CheckupDots({ progress }) {
               )}
             />
           )}
-          <span className="text-[9px] uppercase tracking-wider text-fg-subtle ml-0.5 leading-none">
+          <span className="lbl-micro text-fg-subtle ml-0.5">
             check-ups {done}/{total}
           </span>
         </div>
@@ -1192,7 +1215,7 @@ function NotesIndicator({ shortToken }) {
           aria-label={`${count} nota${count === 1 ? "" : "s"} interna${count === 1 ? "" : "s"}`}
         >
           <span aria-hidden className="size-1.5 rounded-full bg-signature/70" />
-          <span className="text-[9px] uppercase tracking-wider text-fg-subtle ml-0.5 leading-none">
+          <span className="lbl-micro text-fg-subtle ml-0.5">
             {count} nota{count === 1 ? "" : "s"}
           </span>
         </div>
@@ -1231,7 +1254,7 @@ function NotesIndicator({ shortToken }) {
 function NewBadge() {
   return (
     <span
-      className="badge-new badge-pop-in relative overflow-hidden inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-white px-1.5 py-0.5 rounded"
+      className="lbl-micro badge-new badge-pop-in relative overflow-hidden inline-flex items-center gap-1 text-white px-1.5 py-0.5 rounded"
       title="Campanha nova — está em vôo há ≤ 2 dias"
     >
       <svg
@@ -1257,7 +1280,7 @@ function NewBadge() {
 function MergedBadge() {
   return (
     <span
-      className="badge-pop-in inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-signature px-1.5 py-0.5 rounded bg-signature/8 border border-signature/30"
+      className="lbl-micro text-signature badge-pop-in inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-signature/8 border border-signature/30"
       title="Pertence a um grupo — o link do report unifica os tokens"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -1280,7 +1303,7 @@ function MergedBadge() {
 function BonusBadge() {
   return (
     <span
-      className="badge-pop-in inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-warning px-1.5 py-0.5 rounded bg-warning-soft border border-warning/40"
+      className="lbl-micro text-warning badge-pop-in inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-warning-soft border border-warning/40"
       title="Campanha 100% bonificada — todo volume entregue é cortesia HYPR"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -1308,7 +1331,7 @@ function BonusBadge() {
 function EarlyEndedBadge({ reason, date }) {
   const badge = (
     <span
-      className="badge-pop-in inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-danger px-1.5 py-0.5 rounded bg-danger-soft border border-danger/30 cursor-help"
+      className="lbl-micro text-danger badge-pop-in inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-danger-soft border border-danger/30 cursor-help"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="10" />
@@ -1370,7 +1393,7 @@ function EarlyEndedTooltipBody({ reason, date }) {
  */
 function RefatTag({ piOriginal }) {
   const tag = (
-    <span className="mt-1 inline-flex items-center gap-0.5 text-[8px] uppercase tracking-wider font-bold text-danger cursor-help">
+    <span className="lbl-micro text-danger mt-1 inline-flex items-center gap-0.5 cursor-help">
       <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
         <path d="M3 2v6h6" />
         <path d="M3 13a9 9 0 1 0 3-7.7L3 8" />
@@ -1412,7 +1435,7 @@ function RefatTag({ piOriginal }) {
 function PausedBadge({ reason }) {
   const badge = (
     <span
-      className="badge-pop-in relative z-10 inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-signature px-1.5 py-0.5 rounded bg-signature/8 border border-signature/30 cursor-help"
+      className="lbl-micro text-signature badge-pop-in relative z-10 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-signature/8 border border-signature/30 cursor-help"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
         <rect x="6"  y="4" width="4" height="16" rx="1" />
@@ -1449,7 +1472,7 @@ function PausedBadge({ reason }) {
 function AwaitingClosureBadge() {
   return (
     <span
-      className="badge-pop-in inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-warning px-1.5 py-0.5 rounded bg-warning-soft border border-warning/40"
+      className="lbl-micro text-warning badge-pop-in inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-warning-soft border border-warning/40"
       title="Campanha terminou — falta fazer o fechamento (sheet final, faturamento). Marcar como encerrada no drawer."
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -1471,7 +1494,7 @@ function AwaitingClosureBadge() {
 function AbsBadge() {
   return (
     <span
-      className="badge-pop-in inline-flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-success px-1.5 py-0.5 rounded bg-success-soft border border-success/30"
+      className="lbl-micro text-success badge-pop-in inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-success-soft border border-success/30"
       title="Brand Safety pre-bid (DV ABS / IAS) ativo — thresholds permissivos no scoring"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -1577,7 +1600,7 @@ function PacingRow({ label, pacing, ended, subBars }) {
         <div className="cursor-default">{rowContent}</div>
       </TooltipTrigger>
       <TooltipContent side="top" align="start" className="px-3 py-2">
-        <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-fg-subtle mb-1.5">
+        <div className="lbl-section mb-1.5">
           {tooltip} · pacing por frente
         </div>
         <div className="flex flex-col gap-1">
@@ -1611,7 +1634,7 @@ function FrenteTooltipRow({ label, pacing }) {
 function ResultRow({ label, value, colorClass }) {
   return (
     <div className="flex items-baseline gap-2 leading-none">
-      <span className="text-[9px] uppercase tracking-[0.14em] font-semibold text-fg-subtle w-7 shrink-0">
+      <span className="lbl-micro text-fg-subtle w-7 shrink-0">
         {label}
       </span>
       <span className={cn("text-[13px] font-bold tabular-nums flex-1 text-right", colorClass)}>

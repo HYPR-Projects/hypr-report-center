@@ -658,7 +658,7 @@ export function CampaignDrawer({
               de 40ms entre elas. Roda em paralelo com o slide do painel
               (drawer-content), dando sensação de "orquestrado, vivo" ao abrir. */}
           <div className="drawer-section-rise">
-            <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-1">
+            <div className="lbl-section mb-1">
               Período
             </div>
             <DrawerDateRange startISO={start_date} endISO={end_date} />
@@ -669,7 +669,7 @@ export function CampaignDrawer({
               cores carregam o sinal de saúde, sem precisar de chrome de
               card pra cada métrica. */}
           <div className="drawer-section-rise drawer-stagger-1">
-            <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
+            <div className="lbl-section mb-2">
               Performance
             </div>
             <div className="mb-5">
@@ -697,7 +697,7 @@ export function CampaignDrawer({
               vá existir naquela campanha). */}
           {hasFrenteBreakdown && (
             <div className="drawer-section-rise drawer-stagger-1">
-              <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
+              <div className="lbl-section mb-2">
                 Pacing por frente
               </div>
               <div className="rounded-lg bg-surface border border-border px-3 py-2.5 flex flex-col gap-2.5 mb-5">
@@ -818,7 +818,7 @@ export function CampaignDrawer({
               cai pra ~40px de altura (vs ~50px do card antigo). Total da
               seção encolhe de ~110px → ~60px. */}
           <div className="drawer-section-rise drawer-stagger-4">
-            <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
+            <div className="lbl-section mb-2">
               Owners
             </div>
             <div className="grid grid-cols-2 gap-2 mb-5">
@@ -1165,7 +1165,7 @@ function DrawerDateRange({ startISO, endISO }) {
 function DrawerStat({ label, value, colorClass }) {
   return (
     <div className="rounded-lg bg-surface border border-border px-3 py-2.5">
-      <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">{label}</div>
+      <div className="lbl-section">{label}</div>
       <div className={cn("text-lg font-bold tracking-tight tabular-nums mt-0.5", colorClass)}>{value}</div>
     </div>
   );
@@ -1179,7 +1179,7 @@ function DrawerStat({ label, value, colorClass }) {
 function DrawerInlineStat({ label, value, colorClass }) {
   return (
     <div className="text-center">
-      <div className="text-[9.5px] uppercase tracking-widest font-bold text-fg-subtle">{label}</div>
+      <div className="lbl-section">{label}</div>
       <div className={cn("text-[15px] font-bold tracking-tight tabular-nums leading-tight mt-0.5", colorClass)}>
         {value}
       </div>
@@ -1193,7 +1193,7 @@ function DrawerInlineStat({ label, value, colorClass }) {
 function FrenteGroup({ mediaLabel, subBars }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="text-[9.5px] uppercase tracking-widest font-bold text-fg-subtle">
+      <div className="lbl-section">
         {mediaLabel === "DSP" ? "Display" : "Vídeo"}
       </div>
       {subBars.map((s) => (
@@ -1215,7 +1215,7 @@ function FrenteLine({ label, pacing }) {
   }[tier] || "bg-fg-subtle/40";
   return (
     <div className="flex items-center gap-2 leading-none">
-      <span className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle w-9 shrink-0">
+      <span className="lbl-section w-9 shrink-0">
         {label}
       </span>
       <div className="relative h-[3px] flex-1 min-w-[40px] rounded-full bg-fg-subtle/15 overflow-visible">
@@ -1258,7 +1258,7 @@ function OwnerPill({ role, name, email }) {
           <span className="text-fg-subtle text-[10px]">?</span>
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[9px] uppercase tracking-widest font-bold text-fg-subtle leading-none">{role.toUpperCase()}</div>
+          <div className="lbl-micro text-fg-subtle">{role.toUpperCase()}</div>
           <p className="text-[11px] text-fg-subtle italic truncate leading-tight mt-0.5">Sem owner</p>
         </div>
       </div>
@@ -1271,7 +1271,7 @@ function OwnerPill({ role, name, email }) {
     >
       <Avatar name={name} role={role} size="sm" />
       <div className="min-w-0 flex-1">
-        <div className="text-[9px] uppercase tracking-widest font-bold text-fg-subtle leading-none">{role.toUpperCase()}</div>
+        <div className="lbl-micro text-fg-subtle">{role.toUpperCase()}</div>
         <p className="text-[11px] text-fg truncate font-medium leading-tight mt-0.5">{name}</p>
       </div>
     </div>
@@ -1286,7 +1286,7 @@ function OwnerRow({ role, name, email }) {
           <span className="text-fg-subtle text-[10px]">?</span>
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">{role.toUpperCase()}</div>
+          <div className="lbl-section">{role.toUpperCase()}</div>
           <p className="text-xs text-fg-subtle italic">Não atribuído</p>
         </div>
       </div>
@@ -1296,7 +1296,7 @@ function OwnerRow({ role, name, email }) {
     <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface border border-border">
       <Avatar name={name} role={role} size="md" />
       <div className="flex-1 min-w-0">
-        <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">{role.toUpperCase()}</div>
+        <div className="lbl-section">{role.toUpperCase()}</div>
         <p className="text-xs text-fg truncate font-medium">{name}</p>
         <p className="text-[10.5px] text-fg-subtle truncate font-mono">{email}</p>
       </div>
@@ -1342,7 +1342,7 @@ function formatFrozenAt(iso) {
 function ActionGroup({ label, className, children }) {
   return (
     <div className={cn("mb-5", className)}>
-      <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
+      <div className="lbl-section mb-2">
         {label}
       </div>
       <div className="space-y-1.5">{children}</div>
@@ -1392,7 +1392,7 @@ function EarlyEndedNote({ date, reason, originalEnd }) {
     <div className="mb-5 rounded-lg border border-danger/30 bg-danger-soft px-3 py-3">
       <div className="flex items-center gap-2 mb-2">
         <span className="text-danger">{ICON.earlyEnd}</span>
-        <span className="text-[11px] uppercase tracking-widest font-bold text-danger">
+        <span className="lbl-section text-danger">
           Encerrada antes do previsto
         </span>
       </div>
@@ -1436,7 +1436,7 @@ function ClosureSummaryNote({ details }) {
     <div className="mb-5 rounded-lg border border-success/30 bg-success-soft px-3 py-3">
       <div className="flex items-center gap-2 mb-2">
         <span className="text-success">{ICON.posvenda}</span>
-        <span className="text-[11px] uppercase tracking-widest font-bold text-success">
+        <span className="lbl-section text-success">
           Fechamento
         </span>
       </div>
@@ -1490,7 +1490,7 @@ function SetupPendingNote({ setup }) {
             <path d="M12 8v4M12 16h.01" />
           </svg>
         </span>
-        <span className="text-[11px] uppercase tracking-widest font-bold text-warning">
+        <span className="lbl-section text-warning">
           Setup pendente · {setup.done}/{setup.total}
         </span>
       </div>
@@ -1563,7 +1563,7 @@ function PausedNote({ pausedAt, reason }) {
     <div className="mb-5 rounded-lg border border-signature/30 bg-signature/5 px-3 py-3">
       <div className="flex items-center gap-2 mb-2">
         <span className="text-signature">{ICON.pause}</span>
-        <span className="text-[11px] uppercase tracking-widest font-bold text-signature">
+        <span className="lbl-section text-signature">
           Pausada
         </span>
       </div>
@@ -1597,12 +1597,12 @@ function PauseForm({
     <div className="rounded-lg border border-signature/40 bg-signature/5 px-3 py-3 space-y-2.5">
       <div className="flex items-center gap-2">
         <span className="text-signature">{ICON.pause}</span>
-        <span className="text-[11px] uppercase tracking-widest font-bold text-signature">
+        <span className="lbl-section text-signature">
           Pausar campanha
         </span>
       </div>
       <label className="block">
-        <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+        <span className="lbl-section">
           Motivo <span className="text-fg-subtle font-normal normal-case tracking-normal">(opcional, admin-only)</span>
         </span>
         <textarea
@@ -1655,12 +1655,12 @@ function EarlyEndForm({
     <div className="rounded-lg border border-danger/40 bg-danger-soft/60 px-3 py-3 space-y-2.5">
       <div className="flex items-center gap-2">
         <span className="text-danger">{ICON.earlyEnd}</span>
-        <span className="text-[11px] uppercase tracking-widest font-bold text-danger">
+        <span className="lbl-section text-danger">
           Encerrar antecipadamente
         </span>
       </div>
       <label className="block">
-        <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+        <span className="lbl-section">
           Data definitiva do fim
         </span>
         <input
@@ -1674,7 +1674,7 @@ function EarlyEndForm({
         />
       </label>
       <label className="block">
-        <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+        <span className="lbl-section">
           Motivo <span className="text-fg-subtle font-normal normal-case tracking-normal">(opcional, admin-only)</span>
         </span>
         <textarea

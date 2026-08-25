@@ -137,7 +137,7 @@ export function CoreProductsOverride({ shortToken, onChange }) {
 
   return (
     <div>
-      <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
+      <div className="lbl-section mb-2">
         Core products no report
       </div>
       <div className="px-3 py-2.5 rounded-lg bg-surface border border-border">

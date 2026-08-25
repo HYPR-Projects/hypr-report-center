@@ -9,7 +9,6 @@
 
 import { memo, useState, useMemo } from "react";
 import { cn } from "../../../ui/cn";
-import { useSlidingThumb } from "../../../ui/useSlidingThumb";
 import {
   effectiveDeliveryMeta, LIVE_STATUSES,
   statusPillClass, healthPillClass, healthLabel,
@@ -83,14 +82,15 @@ export function PmpLineGroupCard({ lines, onLineClick, onLinkClick, variant = "d
       {/* Header — minimal, sem fundo extra */}
       <header className={cn(
         "flex items-center gap-3 border-b border-signature/15",
-        nested ? "px-4 py-2.5" : "px-5 py-3.5",
+        // Densidade compacta: padding vertical encolhe, fonte não.
+        nested ? "px-4 py-2.5 dense:py-1.5" : "px-5 py-3.5 dense:py-2",
       )}>
         <span className="shrink-0 text-signature">
           <MergeIcon />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[9px] uppercase tracking-[0.16em] font-semibold text-signature">
+            <span className="lbl-micro text-signature">
               Grupo · 1 PI
             </span>
             <span className="text-fg-subtle text-[10px]">·</span>
@@ -109,15 +109,15 @@ export function PmpLineGroupCard({ lines, onLineClick, onLinkClick, variant = "d
         {/* Métricas chave do grupo direto no header — número grande, fácil escanear */}
         <div className="hidden md:flex items-center gap-6 text-right shrink-0 tabular-nums">
           <div>
-            <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-semibold">Receita Bruta</div>
+            <div className="lbl-micro text-fg-subtle">Receita Bruta</div>
             <div className="text-[13px] text-fg font-semibold">{formatBRL(groupRev)}</div>
           </div>
           <div>
-            <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-semibold">Margem HYPR</div>
-            <div className="text-[13px] text-emerald-400 font-bold">{formatBRL(groupMgn)}</div>
+            <div className="lbl-micro text-fg-subtle">Margem HYPR</div>
+            <div className="text-[13px] text-success font-bold">{formatBRL(groupMgn)}</div>
           </div>
           <div>
-            <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-semibold">% Entrega</div>
+            <div className="lbl-micro text-fg-subtle">% Entrega</div>
             <div className={cn("text-[13px] font-bold px-2 py-0.5 rounded", pctDeliveryClass(groupPct))}>
               {formatRatioPct(groupPct, 0)}
             </div>
@@ -157,51 +157,6 @@ function MergeIcon() {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-// LayoutToggle PMP — 4 views (Lista / Ao Vivo / Por Cliente / Histórico)
-// ═══════════════════════════════════════════════════════════════════════════
-// "Carteira" (ex-"Por cliente") agrupa por cliente OU por campanha — a
-// hierarquia é escolhida num segmentado dentro da aba, não numa 6ª aba.
-const LAYOUT_OPTIONS = [
-  { value: "list",      label: "Lista",     icon: <ListIcon /> },
-  { value: "live",      label: "No ar",     icon: <DotIcon /> },
-  { value: "client",    label: "Carteira",  icon: <UsersIcon /> },
-  { value: "history",   label: "Histórico", icon: <ArchiveIcon /> },
-  { value: "analytics", label: "Analytics", icon: <AnalyticsIcon /> },
-];
-
-export function PmpLayoutToggle({ value, onChange, counts = {} }) {
-  const activeIndex = Math.max(0, LAYOUT_OPTIONS.findIndex(o => o.value === value));
-  const { containerRef, setItemRef, thumbStyle } = useSlidingThumb(activeIndex, LAYOUT_OPTIONS.length);
-  return (
-    <div ref={containerRef} role="tablist" aria-label="Layout"
-         className="relative inline-flex w-full md:w-auto gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border max-w-full min-w-0 overflow-x-auto scrollbar-hidden motion-reduce:[&_[data-thumb]]:!transition-none">
-      <div data-thumb className="absolute top-0.5 bottom-0.5 left-0 rounded-md bg-canvas-elevated shadow-sm transition-all duration-200 ease-out [transform-origin:0_0] [will-change:transform,width]" style={thumbStyle} />
-      {LAYOUT_OPTIONS.map((opt, i) => {
-        const active = value === opt.value;
-        const n = counts[opt.value];
-        return (
-          <button key={opt.value} ref={setItemRef(i)} role="tab" aria-selected={active}
-                  onClick={() => onChange(opt.value)}
-                  className={cn(
-                    "relative z-10 inline-flex shrink-0 whitespace-nowrap items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium transition-colors",
-                    active ? "text-fg" : "text-fg-muted hover:text-fg",
-                  )}>
-            {opt.icon}
-            <span>{opt.label}</span>
-            {n != null && (
-              <span className={cn(
-                "ml-1 px-1.5 py-0.5 rounded text-[10px] tabular-nums",
-                active ? "bg-signature/15 text-signature" : "bg-surface text-fg-subtle",
-              )}>{n}</span>
-            )}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // KPI Strip rico (estilo MetricStrip do admin)
 // ═══════════════════════════════════════════════════════════════════════════
 // Valores SEMPRE em formato completo (R$ 11.339.437,28) — nunca abreviados.
@@ -214,7 +169,7 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false, w
   const items = [
     { label: "Lines no ar",   value: livesCount,
       sub: totalCount ? `${livesCount} de ${totalCount} ativas` : null,
-      valueClass: livesCount > 0 ? "text-emerald-400" : "text-fg" },
+      valueClass: livesCount > 0 ? "text-success" : "text-fg" },
     // Contagem é de PIs (unidade de conta), não de lines: um grupo de N lines
     // divide um PI só e conta uma vez.
     { label: "Total PI",      value: formatBRL(kpis.pi),
@@ -227,12 +182,12 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false, w
       title: METRIC.revenue.hint },
     { label: METRIC.margin.label, value: formatBRL(kpis.margin),
       sub: windowed ? periodSub : (kpis.margin7d ? `${formatBRL(kpis.margin7d)} últ. 7d` : null),
-      valueClass: "text-emerald-400",
+      valueClass: "text-success",
       title: `${METRIC.margin.hint} É a receita líquida da operação.` },
     { label: "% Entrega (Margem)", value: kpis.pctReceber != null ? formatRatioPct(kpis.pctReceber) : "—",
       sub: kpis.countWithPi ? "Margem HYPR ÷ Total PI" : "sem PI cadastrado",
       valueClass: kpis.pctReceber == null ? "text-fg"
-        : kpis.pctReceber >= 0.85 ? "text-emerald-400" : "text-amber-400",
+        : kpis.pctReceber >= 0.85 ? "text-success" : "text-warning",
       title: METRIC.pctMargin.hint,
       hint: kpis.pctReceber != null
         ? { text: "ideal ≥ 85%", ok: kpis.pctReceber >= 0.85 }
@@ -242,7 +197,7 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false, w
     // em sky pra diferenciar da métrica que tem meta.
     { label: "% Entrega (Receita)", value: kpis.pctReceberRev != null ? formatRatioPct(kpis.pctReceberRev) : "—",
       sub: kpis.countWithPi ? "Receita Bruta ÷ Total PI" : "sem PI cadastrado",
-      valueClass: kpis.pctReceberRev == null ? "text-fg" : "text-sky-400",
+      valueClass: kpis.pctReceberRev == null ? "text-fg" : "text-signature",
       title: METRIC.pctRev.hint },
     // Receita Extra só faz sentido como leitura lifetime (Histórico) — fora
     // disso muitas lines mid-flight aparecem muito negativas e poluem.
@@ -264,7 +219,7 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false, w
         ? `acima do esperado · ${kpis.extraLinesCount} lines`
         : "sem dado de margem configurada",
       valueClass: kpis.extraLinesCount === 0 ? "text-fg"
-        : kpis.extraRevenue >= 0 ? "text-emerald-400" : "text-amber-400",
+        : kpis.extraRevenue >= 0 ? "text-success" : "text-warning",
       // O tooltip descrevia "receita bruta × margem configurada"; a conta real
       // (e a do badge da coluna Margem) é contra o PI CHEIO do contrato.
       title: "Margem HYPR realizada − (PI × margem configurada). Positivo = a HYPR capturou mais que o esperado pelo contrato.",
@@ -284,28 +239,45 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false, w
   // linha. Mesma solução da grade de tiles do drawer e do grid do Overview.
   // Sem showExtra são 6 cards e todos os breakpoints já fecham — daí o span
   // só entrar no caso ímpar.
-  const tailSpan = showExtra ? "col-span-2 md:col-span-3 lg:col-span-2 2xl:col-span-1" : "";
+  // O span TEM que falar a mesma língua da grade. Quando a grade migrou pra
+  // container queries (por causa do rail, que estreita a coluna sem mudar o
+  // viewport), estas classes continuaram em breakpoint de viewport — num
+  // monitor de 1600px o `2xl:col-span-1` vencia enquanto a grade estava em 4
+  // colunas, e sobrava uma célula vazia de ~330px ao lado do último card.
+  //
+  // Fechamento por largura de board, espelhando a grade abaixo:
+  //   <560px   2 cols → 7 = 2+2+2+1(span 2)
+  //   560-760  3 cols → 7 = 3+3+1(span 3)
+  //   760-1350 4 cols → 7 = 4+(1+1+span 2)
+  //   ≥1350    7 cols → uma linha, span 1
+  const tailSpan = showExtra
+    ? "col-span-2 @min-[560px]:col-span-3 @min-[760px]:col-span-2 @min-[1350px]:col-span-1"
+    : "";
   return (
-    <div className={cn("grid grid-cols-2 gap-3 md:gap-4",
-      showExtra ? "md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-7"
-                : "md:grid-cols-3 lg:grid-cols-3 2xl:grid-cols-6")}>
+    // Limiares por largura do BOARD (ver KpiBoard), não do viewport: com o
+    // rail aberto o board é ~250px mais estreito que a janela, e os valores
+    // aqui são sempre completos (R$ 1.794.308,80 — operação contábil não
+    // abrevia), então cada card precisa de ~185px pra não quebrar o número.
+    <div className={cn("grid grid-cols-2 gap-px bg-border @min-[560px]:grid-cols-3",
+      showExtra ? "@min-[760px]:grid-cols-4 @min-[1350px]:grid-cols-7"
+                : "@min-[1150px]:grid-cols-6")}>
       {items.map((it, i) => (
         <div key={i}
-             className={cn("rounded-xl border border-border bg-canvas-elevated p-4 md:p-5",
+             className={cn("bg-canvas-elevated px-3.5 py-3",
                i === items.length - 1 && tailSpan)}
              title={it.title}>
-          <div className="text-[10px] uppercase tracking-widest text-fg-subtle font-semibold leading-tight">{it.label}</div>
-          <div className={cn("text-lg xl:text-xl font-bold tabular-nums mt-2 whitespace-nowrap overflow-hidden text-ellipsis", it.valueClass || "text-fg")}
+          <div className="lbl-section">{it.label}</div>
+          <div className={cn("text-base xl:text-lg font-bold tabular-nums mt-1.5 whitespace-nowrap overflow-hidden text-ellipsis", it.valueClass || "text-fg")}
                title={typeof it.value === "string" ? it.value : ""}>
             {it.value}
           </div>
-          {it.sub && <div className="text-[11px] text-fg-muted mt-1.5">{it.sub}</div>}
+          {it.sub && <div className="text-[10.5px] text-fg-muted mt-1">{it.sub}</div>}
           {it.hint && (
             <div className={cn(
               "text-[10px] mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded",
               it.hint.ok
-                ? "bg-emerald-500/15 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
-                : "bg-amber-500/15 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300",
+                ? "bg-success-soft text-success"
+                : "bg-warning-soft text-warning",
             )}>
               <span className="text-[8px] leading-none">●</span>
               <span>{it.hint.text}</span>
@@ -328,9 +300,9 @@ export function PmpAlertsBar({ alerts, onClickAlert }) {
         <button key={i} onClick={() => onClickAlert?.(a.bucket)}
                 className={cn(
                   "inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-[12px] border transition-colors cursor-pointer",
-                  a.kind === "danger" ? "border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/15"
-                  : a.kind === "warn" ? "border-amber-500/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/15"
-                  : "border-sky-500/30 bg-sky-500/10 text-sky-300 hover:bg-sky-500/15",
+                  a.kind === "danger" ? "border-danger/30 bg-danger/10 text-danger hover:bg-danger/15"
+                  : a.kind === "warn" ? "border-warning/30 bg-warning/10 text-warning hover:bg-warning/15"
+                  : "border-signature/30 bg-signature/10 text-signature hover:bg-signature/15",
                 )}>
           <span className="text-[10px] leading-none">●</span>
           <span>{a.text}</span>
@@ -399,8 +371,8 @@ function PmpLiveCardInner({ line, onClick, onLinkClick }) {
           )}
           {line.days_remaining != null && (
             <div className={cn("text-[11px] mt-1",
-              line.days_remaining < 3 ? "text-rose-400" :
-              line.days_remaining < 7 ? "text-amber-400" : "text-fg-subtle")}>
+              line.days_remaining < 3 ? "text-danger" :
+              line.days_remaining < 7 ? "text-warning" : "text-fg-subtle")}>
               {line.days_remaining >= 0 ? `${line.days_remaining}d restantes` : "fim passou"}
             </div>
           )}
@@ -414,7 +386,7 @@ function PmpLiveCardInner({ line, onClick, onLinkClick }) {
           <div>
             <div className="flex items-baseline justify-between mb-1.5">
               <div className="text-[11px] text-fg-muted">
-                <span className="font-medium text-emerald-400 tabular-nums">{formatBRL(line.curator_margin)}</span>
+                <span className="font-medium text-success tabular-nums">{formatBRL(line.curator_margin)}</span>
                 <span className="text-fg-subtle"> de </span>
                 <span className="tabular-nums">{formatBRL(line.pi_brl)}</span>
                 <span className="text-fg-subtle ml-1.5">· margem entregue</span>
@@ -433,7 +405,7 @@ function PmpLiveCardInner({ line, onClick, onLinkClick }) {
           <div>
             <div className="flex items-baseline justify-between mb-1.5">
               <div className="text-[11px] text-fg-muted">
-                <span className="font-medium text-sky-400 tabular-nums">{formatBRL(line.curator_revenue)}</span>
+                <span className="font-medium text-signature tabular-nums">{formatBRL(line.curator_revenue)}</span>
                 <span className="text-fg-subtle"> de </span>
                 <span className="tabular-nums">{formatBRL(line.pi_brl)}</span>
                 <span className="text-fg-subtle ml-1.5">· revenue entregue</span>
@@ -455,13 +427,13 @@ function PmpLiveCardInner({ line, onClick, onLinkClick }) {
           Cancelada — sem PI vinculado
         </div>
       ) : (
-        <div className="mb-4 flex items-center justify-between gap-3 px-3 py-2 rounded-md border border-dashed border-amber-500/30 bg-amber-500/5">
-          <div className="text-[11px] text-amber-300">
+        <div className="mb-4 flex items-center justify-between gap-3 px-3 py-2 rounded-md border border-dashed border-warning/30 bg-warning/5">
+          <div className="text-[11px] text-warning">
             Sem PI vinculado ao Hypr Command
           </div>
           {onLinkClick && (
             <button onClick={(e) => { e.stopPropagation(); onLinkClick(line); }}
-                    className="text-[11px] font-medium text-amber-300 hover:text-amber-200 underline-offset-2 hover:underline">
+                    className="text-[11px] font-medium text-warning hover:text-warning underline-offset-2 hover:underline">
               🔗 vincular
             </button>
           )}
@@ -493,7 +465,7 @@ export const PmpLiveCard = memo(PmpLiveCardInner);
 function Metric({ label, value }) {
   return (
     <div>
-      <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-bold">{label}</div>
+      <div className="lbl-micro text-fg-subtle">{label}</div>
       <div className="text-fg tabular-nums">{value}</div>
     </div>
   );
@@ -541,7 +513,7 @@ export function PmpLiveGroupCard({ members, onLineClick }) {
         <div className="flex items-start gap-4 mb-4">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-signature/15 text-signature border border-signature/25">
+              <span className="lbl-section text-signature inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-signature/15 border border-signature/25">
                 <MergeIcon />
                 Grupo · {members.length} lines · 1 PI
               </span>
@@ -577,7 +549,7 @@ export function PmpLiveGroupCard({ members, onLineClick }) {
             <div>
               <div className="flex items-baseline justify-between mb-1.5">
                 <div className="text-[11px] text-fg-muted">
-                  <span className="font-medium text-emerald-400 tabular-nums">{formatBRL(groupMargin)}</span>
+                  <span className="font-medium text-success tabular-nums">{formatBRL(groupMargin)}</span>
                   <span className="text-fg-subtle"> de </span>
                   <span className="tabular-nums">{formatBRL(groupPi)}</span>
                   <span className="text-fg-subtle ml-1.5">· margem entregue do PI compartilhado</span>
@@ -596,7 +568,7 @@ export function PmpLiveGroupCard({ members, onLineClick }) {
             <div>
               <div className="flex items-baseline justify-between mb-1.5">
                 <div className="text-[11px] text-fg-muted">
-                  <span className="font-medium text-sky-400 tabular-nums">{formatBRL(groupRev)}</span>
+                  <span className="font-medium text-signature tabular-nums">{formatBRL(groupRev)}</span>
                   <span className="text-fg-subtle"> de </span>
                   <span className="tabular-nums">{formatBRL(groupPi)}</span>
                   <span className="text-fg-subtle ml-1.5">· revenue entregue do PI compartilhado</span>
@@ -613,7 +585,7 @@ export function PmpLiveGroupCard({ members, onLineClick }) {
             </div>
           </div>
         ) : (
-          <div className="mb-4 px-3 py-2 rounded-md border border-dashed border-amber-500/30 bg-amber-500/5 text-[11px] text-amber-300">
+          <div className="mb-4 px-3 py-2 rounded-md border border-dashed border-warning/30 bg-warning/5 text-[11px] text-warning">
             Grupo sem PI vinculado — vincule pelo checklist do Hypr Command.
           </div>
         )}
@@ -636,7 +608,7 @@ export function PmpLiveGroupCard({ members, onLineClick }) {
                   </span>
                 </div>
                 <div className="text-right shrink-0 tabular-nums">
-                  <div className="text-[12px] text-emerald-400 font-semibold" title="Margem HYPR">{formatBRL(m.curator_margin)}</div>
+                  <div className="text-[12px] text-success font-semibold" title="Margem HYPR">{formatBRL(m.curator_margin)}</div>
                   <div className="text-[10px] text-fg-subtle" title="Revenue bruto">{formatBRL(m.curator_revenue)}</div>
                 </div>
               </button>
@@ -754,8 +726,8 @@ export function PmpCustomerAccordion({ customer, lines, onLineClick, onLinkClick
               {customer || <span className="italic text-fg-muted">(sem cliente)</span>}
             </h3>
             <div className="flex items-center gap-3 text-[11px] text-fg-subtle tabular-nums">
-              {agg.live > 0    && <span className="text-emerald-400">● {agg.live} no ar</span>}
-              {agg.stopped > 0 && <span className="text-rose-400">● {agg.stopped} parou</span>}
+              {agg.live > 0    && <span className="text-success">● {agg.live} no ar</span>}
+              {agg.stopped > 0 && <span className="text-danger">● {agg.stopped} parou</span>}
               <span>{agg.count} {agg.count === 1 ? "line" : "lines"}</span>
             </div>
           </div>
@@ -764,7 +736,7 @@ export function PmpCustomerAccordion({ customer, lines, onLineClick, onLinkClick
             <MetricInline label="PI" value={agg.pi > 0 ? formatBRL(agg.pi) : "—"} />
             <MetricInline label="Receita Bruta" value={formatBRL(agg.revenue)} />
             <MetricInline label="Margem HYPR" value={formatBRL(agg.margin)}
-                          highlight={agg.marginPct != null ? formatRatioPct(agg.marginPct, 0) : null} valueClass="text-emerald-400" />
+                          highlight={agg.marginPct != null ? formatRatioPct(agg.marginPct, 0) : null} valueClass="text-success" />
             <MetricInline label="% Entrega" value={agg.pctEntrega != null ? formatRatioPct(agg.pctEntrega, 1) : "—"} />
             <MetricInline label="Impressões" value={formatInt(agg.imps)} />
           </div>
@@ -804,7 +776,7 @@ export function PmpCustomerAccordion({ customer, lines, onLineClick, onLinkClick
 function MetricInline({ label, value, highlight, valueClass }) {
   return (
     <div className="min-w-0">
-      <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-semibold mb-0.5">{label}</div>
+      <div className="lbl-micro text-fg-subtle mb-0.5">{label}</div>
       <div className={cn("text-[13px] font-semibold truncate", valueClass || "text-fg")} title={String(value)}>
         {value}
         {highlight && <span className="ml-1.5 text-[11px] font-normal text-fg-muted">{highlight}</span>}
@@ -856,19 +828,19 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
   // coluna ativa.
   //
   // CUIDADO: <button> não herda font-size/font-weight/text-transform do pai
-  // (user-agent stylesheet sobrescreve), então `text-[10px] uppercase
-  // tracking-widest font-semibold` do container some quando o filho é
-  // <button>. Por isso aplico essas classes EXPLICITAMENTE no botão também.
+  // (user-agent stylesheet sobrescreve), então o `lbl-section` do container
+  // some quando o filho é <button>. Por isso aplico a mesma utility
+  // EXPLICITAMENTE no botão também.
   // `sub` = segunda linha minúscula do rótulo. Existe pra "% Entrega" caber
   // em duas linhas ("% ENTREGA" / "margem" e "receita") em vez de virar a
   // abreviação enigmática de antes ("% Entr Mgm").
-  const Th = ({ field, align = "right", emerald = false, sub = null, children }) => {
+  const Th = ({ field, align = "right", accent = false, sub = null, children }) => {
     const active = field && sortBy === field;
     const arrow = active ? (sortDir === "asc" ? "↑" : "↓") : null;
     const cls = cn(
       "select-none",
       align === "right" ? "text-right" : "text-left",
-      emerald && "text-emerald-400/80",
+      accent && "text-success/80",
     );
     const label = sub ? (
       <span className={cn("flex flex-col leading-tight", align === "right" ? "items-end" : "items-start")}>
@@ -892,7 +864,7 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
         className={cn(
           cls,
           // Tipografia replicada pra não cair no default do <button>.
-          "text-[10px] uppercase tracking-widest font-semibold",
+          "lbl-section",
           "inline-flex items-center gap-1 w-full cursor-pointer hover:text-fg transition-colors",
           align === "right" && "justify-end",
           active && "text-fg",
@@ -905,7 +877,7 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
   };
 
   return (
-    <div className={cn(grid, "hidden md:grid px-5 py-3 bg-surface/60 border-b border-border/60 text-[10px] uppercase tracking-widest font-semibold text-fg-subtle")}>
+    <div className={cn(grid, "lbl-section hidden md:grid px-5 py-3 dense:py-2 bg-surface/60 border-b border-border/60")}>
       <div />
       <Th field="customer" align="left">Cliente / Campanha</Th>
       <Th>Status</Th>
@@ -1007,7 +979,7 @@ function PmpLineRowInner({
           </span>
           {!isCancelado && isNewLine(line) && (
             <span
-              className="badge-new font-semibold text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full shrink-0 bg-signature/15 text-signature border border-signature/40"
+              className="lbl-micro text-signature badge-new px-1.5 py-0.5 rounded-full shrink-0 bg-signature/15 border border-signature/40"
               title="Line criada há menos de 72h">
               new
             </span>
@@ -1036,7 +1008,7 @@ function PmpLineRowInner({
               aparece quando de fato informa algo. */}
           <SourceChip source={line.source} className="shrink-0" />
           {groupBadge && (
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-signature/10 text-signature border border-signature/20 shrink-0"
+            <span className="lbl-micro text-signature inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-signature/10 border border-signature/20 shrink-0"
                   title={`Esta line pertence a um grupo · ${groupBadge}`}>
               <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
                    strokeLinecap="round" strokeLinejoin="round">
@@ -1078,11 +1050,11 @@ function PmpLineRowInner({
             <span className="text-fg-subtle/60">—</span>
           ) : onLinkClick ? (
             <button onClick={(e) => { e.stopPropagation(); onLinkClick(line); }}
-                    className="text-[11px] text-amber-300 hover:text-amber-200 underline-offset-2 hover:underline">
+                    className="text-[11px] text-warning hover:text-warning underline-offset-2 hover:underline">
               🔗 vincular
             </button>
           ) : (
-            <span className="text-[11px] text-amber-300/60">sem PI</span>
+            <span className="text-[11px] text-warning/60">sem PI</span>
           )}
         </div>
       )}
@@ -1108,7 +1080,7 @@ function PmpLineRowInner({
             : faltaEntregarRev(line);
           if (falta == null || falta < 1) return null;
           return (
-            <div className="text-[10px] text-amber-600 dark:text-amber-300 mt-0.5"
+            <div className="text-[10px] text-warning mt-0.5"
                  title={isGroupMember
                    ? "Falta entregar = PI compartilhado do grupo − revenue agregada do grupo"
                    : "Falta entregar = PI − revenue bruto (faturamento a fechar)"}>
@@ -1140,8 +1112,8 @@ function PmpLineRowInner({
             <div className={cn(
               "inline-block mt-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded",
               positive
-                ? "bg-emerald-500/15 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
-                : "bg-amber-500/15 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300",
+                ? "bg-success-soft text-success"
+                : "bg-warning-soft text-warning",
             )} title={isGroupMember
               ? "Margem agregada do grupo − PI × margem configurada"
               : "Margem realizada − PI × margem configurada"}>
@@ -1189,8 +1161,8 @@ function PmpLineRowInner({
             const diff = avg > 0 ? (my - avg) / avg : null;
             const arrow = diff == null ? "" : diff > 0.10 ? "↗" : diff < -0.10 ? "↘" : "→";
             const tone = diff == null ? "text-fg-muted"
-                       : diff > 0.10  ? "text-emerald-600 dark:text-emerald-300"
-                       : diff < -0.10 ? "text-amber-600 dark:text-amber-300"
+                       : diff > 0.10  ? "text-success"
+                       : diff < -0.10 ? "text-warning"
                        :                "text-fg-muted";
             const pct = diff != null ? Math.round(diff * 100) : null;
             const pctLabel = pct != null
@@ -1276,10 +1248,10 @@ function PmpLineRowInner({
                 <span className="text-fg-subtle/60">—</span>
               ) : onLinkClick ? (
                 <button onClick={(e) => { e.stopPropagation(); onLinkClick(line); }}
-                        className="text-[13px] text-amber-300 hover:text-amber-200 underline-offset-2 hover:underline">
+                        className="text-[13px] text-warning hover:text-warning underline-offset-2 hover:underline">
                   🔗 vincular
                 </button>
-              ) : <span className="text-amber-300/60">sem PI</span>}
+              ) : <span className="text-warning/60">sem PI</span>}
             </PmpMobileStat>
           )}
           <PmpMobileStat label="Custo"><span className="text-fg-muted">{formatBRL(line.curator_total_cost)}</span></PmpMobileStat>
@@ -1294,7 +1266,7 @@ function PmpLineRowInner({
                 : faltaEntregarRev(line);
               if (falta == null || falta < 1) return null;
               return (
-                <div className="text-[10px] text-amber-600 dark:text-amber-300 mt-0.5"
+                <div className="text-[10px] text-warning mt-0.5"
                      title="Falta entregar = PI − revenue bruto (faturamento a fechar)">
                   falta {formatBRLCompact(falta)}
                 </div>
@@ -1302,7 +1274,7 @@ function PmpLineRowInner({
             })()}
           </PmpMobileStat>
           <PmpMobileStat label="Margem HYPR">
-            <span className={cn("font-semibold", isCancelado ? "text-fg-subtle" : "text-emerald-600 dark:text-emerald-400")}>
+            <span className={cn("font-semibold", isCancelado ? "text-fg-subtle" : "text-success")}>
               {formatBRL(line.curator_margin)}
             </span>
           </PmpMobileStat>
@@ -1343,7 +1315,7 @@ export const PmpLineRow = memo(PmpLineRowInner);
 function PmpMobileStat({ label, children }) {
   return (
     <div className="min-w-0">
-      <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-semibold mb-0.5">{label}</div>
+      <div className="lbl-micro text-fg-subtle mb-0.5">{label}</div>
       <div className="text-[13px] tabular-nums">{children}</div>
     </div>
   );
@@ -1378,8 +1350,8 @@ export function PmpWorklistView({ lines, onLineClick, onLinkClick, focusBucket }
 
   if (totalUrgent === 0) {
     return (
-      <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-6 py-12 text-center">
-        <div className="text-emerald-400 text-3xl mb-2">✓</div>
+      <div className="rounded-xl border border-success/30 bg-success/5 px-6 py-12 text-center">
+        <div className="text-success text-3xl mb-2">✓</div>
         <div className="text-fg font-medium">Nenhuma ação urgente no momento</div>
         <div className="text-fg-muted text-sm mt-1">Todas as lines ativas estão entregando dentro do esperado.</div>
       </div>
@@ -1397,8 +1369,8 @@ export function PmpWorklistView({ lines, onLineClick, onLinkClick, focusBucket }
 
 function WorklistBucket({ bucket, onLineClick, onLinkClick, focused }) {
   const colorClasses = bucket.color === "rose"
-    ? { border: "border-rose-500/30", bg: "bg-rose-500/5", text: "text-rose-400", chip: "bg-rose-500/15 text-rose-300 border-rose-500/30" }
-    : { border: "border-amber-500/30", bg: "bg-amber-500/5", text: "text-amber-400", chip: "bg-amber-500/15 text-amber-300 border-amber-500/30" };
+    ? { border: "border-danger/30", bg: "bg-danger/5", text: "text-danger", chip: "bg-danger/15 text-danger border-danger/30" }
+    : { border: "border-warning/30", bg: "bg-warning/5", text: "text-warning", chip: "bg-warning/15 text-warning border-warning/30" };
 
   return (
     <div className={cn(
@@ -1434,18 +1406,18 @@ function WorklistBucket({ bucket, onLineClick, onLinkClick, focused }) {
               </div>
               <div className="text-right shrink-0">
                 {bucket.key === "stopped" && (
-                  <div className="text-xs text-rose-400">{formatLastDelivery(l.hours_since_last_delivery) || "sem delivery"}</div>
+                  <div className="text-xs text-danger">{formatLastDelivery(l.hours_since_last_delivery) || "sem delivery"}</div>
                 )}
                 {bucket.key === "no_pi" && (
                   effectiveStatus(l) === "Cancelado" ? (
                     <span className="text-xs text-fg-subtle/60">—</span>
                   ) : onLinkClick ? (
                     <button onClick={(e) => { e.stopPropagation(); onLinkClick(l); }}
-                            className="text-xs text-amber-300 hover:text-amber-200 underline-offset-2 hover:underline">
+                            className="text-xs text-warning hover:text-warning underline-offset-2 hover:underline">
                       🔗 vincular
                     </button>
                   ) : (
-                    <span className="text-xs text-amber-300/60">sem PI</span>
+                    <span className="text-xs text-warning/60">sem PI</span>
                   )
                 )}
               </div>

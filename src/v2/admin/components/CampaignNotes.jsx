@@ -305,7 +305,7 @@ function Composer({ value, onChange, onSubmit, onCancelEdit, editing, sending, a
     <div className="space-y-1.5">
       {editing && (
         <div className="flex items-center justify-between px-0.5">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-signature">
+          <span className="lbl-section text-signature">
             Editando nota
           </span>
           <button
@@ -681,7 +681,7 @@ export function CampaignNotes({
                   {dayLabel && (
                     <div className="flex items-center gap-2 pt-1">
                       <span className="h-px flex-1 bg-border" />
-                      <span className="text-[9.5px] uppercase tracking-wider font-semibold text-fg-subtle">
+                      <span className="lbl-section">
                         {dayLabel}
                       </span>
                       <span className="h-px flex-1 bg-border" />

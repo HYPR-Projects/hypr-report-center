@@ -147,7 +147,10 @@ function MetricCard({ label, value, tone = "fg", aside, footer }) {
     // embaixo enquanto os vizinhos tinham três andares — a faixa de oito
     // cards não formava uma linha. Agora todos têm as mesmas três âncoras
     // verticais (rótulo no topo, valor no meio, rodapé na base).
-    <div className="rounded-xl border border-border bg-surface px-3.5 py-4 sm:px-4 sm:py-5 flex flex-col justify-between gap-2 min-w-0">
+    // Célula, não card: o board já é a moldura. O fundo é `canvas-elevated`
+    // (o mesmo do board) e o que separa as células é o `gap-px` da grade
+    // deixando o `bg-border` do container aparecer como filete.
+    <div className="bg-canvas-elevated px-3.5 py-3 flex flex-col justify-between gap-1.5 min-w-0">
       <span className="lbl-section whitespace-nowrap">
         {label}
       </span>
@@ -267,10 +270,13 @@ export function MetricStrip({ summary, className }) {
   return (
     <div
       className={cn(
-        "grid grid-cols-2 sm:grid-cols-3 gap-3",
-        totalCols === 8 && "lg:grid-cols-8",
-        totalCols === 7 && "lg:grid-cols-7",
-        totalCols === 6 && "lg:grid-cols-6",
+        // Limiares por largura do BOARD (ver KpiBoard). Cada célula precisa
+        // de ~135px pra caber rótulo em versalete + valor + delta sem quebrar.
+        // `gap-px` sobre `bg-border` desenha os filetes entre as células.
+        "grid grid-cols-2 @min-[520px]:grid-cols-3 gap-px bg-border",
+        totalCols === 8 && "@min-[1120px]:grid-cols-8",
+        totalCols === 7 && "@min-[980px]:grid-cols-7",
+        totalCols === 6 && "@min-[840px]:grid-cols-6",
         className
       )}
       role="region"
@@ -382,47 +388,63 @@ export function MetricStrip({ summary, className }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SecondaryAlerts — pills discretos abaixo da grid de KPIs. Mantém a
-// função de filtro do worklist (críticas, sem owner, encerram em 7d) sem
-// competir com os números agregados acima.
+// WorklistChips — os recortes operacionais do worklist (críticas, sem owner,
+// encerram em 7d) como CHIPS, dentro do KpiBoard.
+//
+// O que eram antes: `SecondaryAlerts`, uma fileira de pílulas sem caixa
+// logo abaixo da grade de KPIs, separadas por pontinhos. Pareciam legenda
+// dos números acima — mas são filtros clicáveis. E quando você clicava num,
+// aparecia um TERCEIRO elemento (o `ActiveWorklistBanner`): uma faixa cheia
+// em `signature-soft`, largura total, só pra dizer "filtrado por pacing
+// crítico · 14 campanhas". Três linguagens visuais pra uma interação: ver a
+// contagem, filtrar, saber que está filtrado.
+//
+// Agora são chips com `aria-pressed`, na mesma família visual dos chips da
+// FilterBar — porque é isso que eles são. O estado "filtrado" aparece no
+// chip (tintado) e na linha de filtros ativos da barra, que é onde todo
+// filtro ativo do app mora. O banner morreu.
 // ─────────────────────────────────────────────────────────────────────────────
-const SECONDARY = [
-  { key: "pacing_critical", label: "críticas",         dotClass: "bg-danger",  glow: "shadow-[var(--shadow-glow-danger)]" },
-  { key: "no_owner",        label: "sem owner",        dotClass: "bg-warning", glow: "" },
-  { key: "ending_soon",     label: "encerram em 7d",   dotClass: "bg-success", glow: "" },
+const WORKLIST_CHIPS = [
+  { key: "pacing_critical", label: "críticas",       dotClass: "bg-danger",  glow: "shadow-glow-danger"  },
+  { key: "no_owner",        label: "sem owner",      dotClass: "bg-warning", glow: "shadow-glow-warning" },
+  { key: "ending_soon",     label: "encerram em 7d", dotClass: "bg-success", glow: "shadow-glow-success" },
 ];
 
-export function SecondaryAlerts({ worklist, activeKey, onSelect, className }) {
+// Os rótulos dos buckets (`WORKLIST_LABELS`) vivem em ../lib/filterLabels.js
+// — junto dos outros rótulos de chip, e fora de um arquivo de componente.
+
+export function WorklistChips({ worklist, activeKey, onSelect, className }) {
   if (!worklist) return null;
-  const items = SECONDARY
+  const items = WORKLIST_CHIPS
     .map((s) => ({ ...s, count: worklist[s.key]?.count || 0 }))
     .filter((s) => s.count > 0);
   if (!items.length) return null;
 
   return (
-    <div className={cn("flex items-center flex-wrap gap-x-4 gap-y-2 text-xs", className)}>
-      {items.map((s, i) => {
+    <div className={cn("flex items-center flex-wrap gap-1.5", className)}>
+      {items.map((s) => {
         const isActive = activeKey === s.key;
         return (
-          <span key={s.key} className="flex items-center gap-4">
-            {i > 0 && <span aria-hidden className="w-0.5 h-0.5 rounded-full bg-fg-subtle" />}
-            <button
-              type="button"
-              onClick={() => onSelect?.(isActive ? null : s.key)}
-              aria-pressed={isActive}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 cursor-pointer",
-                "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature/40",
-                isActive
-                  ? "bg-surface-strong text-fg border border-border"
-                  : "text-fg-subtle hover:text-fg"
-              )}
-            >
-              <span className={cn("w-1.5 h-1.5 rounded-full", s.dotClass, s.glow)} />
-              <span className="tabular-nums font-bold text-fg-muted">{s.count}</span>
-              <span>{s.label}</span>
-            </button>
-          </span>
+          <button
+            key={s.key}
+            type="button"
+            onClick={() => onSelect?.(isActive ? null : s.key)}
+            aria-pressed={isActive}
+            title={isActive ? `Mostrando só ${s.label} — clique pra limpar` : `Filtrar por ${s.label}`}
+            className={cn(
+              "inline-flex items-center gap-1.5 h-6 px-2.5 rounded-full cursor-pointer",
+              "text-[11px] font-semibold transition-colors border",
+              isActive
+                ? "bg-signature-soft border-signature text-fg"
+                : "bg-canvas-elevated border-border text-fg-muted hover:text-fg hover:border-border-strong",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
+              "focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
+            )}
+          >
+            <span aria-hidden="true" className={cn("size-1.5 rounded-full shrink-0", s.dotClass, s.glow)} />
+            <span className="tabular-nums font-extrabold text-fg">{s.count}</span>
+            <span>{s.label}</span>
+          </button>
         );
       })}
     </div>

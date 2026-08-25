@@ -203,7 +203,7 @@ function CampaignCard({ item, onOpenReport }) {
             )}
           </div>
           {campaign.client_name && campaign.campaign_name !== campaign.client_name && (
-            <div className="text-[10px] text-fg-subtle uppercase tracking-wider mt-0.5">
+            <div className="lbl-section mt-0.5">
               {campaign.client_name}
             </div>
           )}
@@ -287,7 +287,7 @@ function CategoryBar({ category, pts, max }) {
       <div className="flex items-baseline justify-between gap-2">
         <div className="flex items-center gap-1.5">
           <Icon className={cn("size-3.5", TEXT_TONE[tone] || "text-fg-subtle")} />
-          <span className="text-[11px] uppercase tracking-wider font-bold text-fg">
+          <span className="lbl-section text-fg">
             {meta.label}
           </span>
         </div>
@@ -409,7 +409,7 @@ function MetricBreakdown({ label, total, items, children, showTechFee = false })
           )}
         >
           {children}
-          <span className="mt-1 flex items-center gap-1 text-[9px] uppercase tracking-wider font-semibold text-fg-subtle/70 group-hover/bd:text-signature transition-colors">
+          <span className="lbl-micro text-fg-subtle/70 mt-1 flex items-center gap-1 group-hover/bd:text-signature transition-colors">
             {list.length} campanha{list.length === 1 ? "" : "s"}
             <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
               <path d="m6 9 6 6 6-6" />
@@ -431,7 +431,7 @@ function MetricBreakdown({ label, total, items, children, showTechFee = false })
           )}
         >
           <div className="flex items-baseline justify-between gap-3 pb-2 mb-1 border-b border-border/60">
-            <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+            <span className="lbl-section">
               {label}
             </span>
             <span className="text-sm font-bold tabular-nums">{formatBrlCompact(total)}</span>
@@ -439,7 +439,7 @@ function MetricBreakdown({ label, total, items, children, showTechFee = false })
           {/* Cabeçalho das colunas — só no breakdown com tech fee, pra deixar
               explícito que a lista está ranqueada por tech fee (maior → menor). */}
           {showTechFee && (
-            <div className="flex items-center gap-3 pb-1 text-[8.5px] uppercase tracking-wider font-semibold text-fg-subtle/70">
+            <div className="lbl-micro text-fg-subtle/70 flex items-center gap-3 pb-1">
               <span className="min-w-0 flex-1">Campanha</span>
               <span className="shrink-0 w-12 text-right">Tech fee</span>
               <span className="shrink-0 w-16 text-right">Investido</span>
@@ -516,7 +516,7 @@ function PerformerDrawerInner({ performer, displayName, onOpenReport }) {
               items={performer.month_budget_breakdown}
               showTechFee
             >
-              <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+              <div className="lbl-section">
                 Investido no mês
               </div>
               <div className="text-2xl font-bold tabular-nums leading-none mt-1 text-fg">
@@ -530,7 +530,7 @@ function PerformerDrawerInner({ performer, displayName, onOpenReport }) {
               total={performer.month_cost}
               items={performer.month_cost_breakdown}
             >
-              <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+              <div className="lbl-section">
                 Custo no mês
               </div>
               <div className="text-2xl font-bold tabular-nums leading-none mt-1 text-fg">
@@ -546,7 +546,7 @@ function PerformerDrawerInner({ performer, displayName, onOpenReport }) {
         <section className="space-y-2">
           <div className="flex items-end justify-between gap-3">
             <div>
-              <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+              <div className="lbl-section">
                 Score atual
               </div>
               <div className={cn("text-4xl font-bold tabular-nums leading-none mt-1", TEXT_TONE[tone])}>
@@ -556,7 +556,7 @@ function PerformerDrawerInner({ performer, displayName, onOpenReport }) {
             </div>
             {totalLost > 0.5 && (
               <div className="text-right">
-                <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+                <div className="lbl-section">
                   Perdendo
                 </div>
                 <div className="text-xl font-bold text-danger tabular-nums leading-none mt-1">
@@ -576,7 +576,7 @@ function PerformerDrawerInner({ performer, displayName, onOpenReport }) {
         {/* SEÇÃO 1: Onde tem mais a ganhar */}
         {topGain.length > 0 && (
           <section className="space-y-3">
-            <h3 className="text-[11px] uppercase tracking-widest font-bold text-fg flex items-center gap-1.5">
+            <h3 className="lbl-section text-fg flex items-center gap-1.5">
               <TargetIcon className="size-3.5 text-signature" />
               Onde tem mais a ganhar
             </h3>
@@ -599,7 +599,7 @@ function PerformerDrawerInner({ performer, displayName, onOpenReport }) {
         {/* SEÇÃO 2: Breakdown geral */}
         {bd && (
           <section className="space-y-3">
-            <h3 className="text-[11px] uppercase tracking-widest font-bold text-fg">
+            <h3 className="lbl-section text-fg">
               Breakdown geral
             </h3>
             <div className="space-y-3">
@@ -618,7 +618,7 @@ function PerformerDrawerInner({ performer, displayName, onOpenReport }) {
         {/* SEÇÃO 3: vs Time */}
         {bd && teamAvg && (
           <section className="space-y-2">
-            <h3 className="text-[11px] uppercase tracking-widest font-bold text-fg">
+            <h3 className="lbl-section text-fg">
               vs Time
             </h3>
             <div className="rounded-lg border border-border bg-surface px-3 divide-y divide-border/40">
@@ -653,7 +653,7 @@ function AbsBadge({ display, video }) {
   const label = both ? "ABS" : display ? "ABS·D" : "ABS·V";
   return (
     <span
-      className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wider uppercase bg-signature-soft text-signature border border-signature/30"
+      className="lbl-micro text-signature shrink-0 inline-flex items-center px-1.5 py-0.5 rounded bg-signature-soft border border-signature/30"
       title={
         both
           ? "Brand safety pre-bid ativo em Display e Video — thresholds eCPM/CTR mais permissivos"

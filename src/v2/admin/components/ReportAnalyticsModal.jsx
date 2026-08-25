@@ -431,7 +431,7 @@ function Header({ campaign, range, onRangeChange }) {
           <div className="flex items-center gap-2 mb-2">
             <span className="inline-block w-6 h-0.5 rounded-full bg-signature" aria-hidden />
             <Dialog.Title asChild>
-              <span className="text-[10.5px] font-bold uppercase tracking-[1.5px] text-signature">
+              <span className="lbl-section text-signature">
                 Analytics de acessos
               </span>
             </Dialog.Title>
@@ -545,7 +545,7 @@ function Kpi({ label, value, delta, valueIsRelative }) {
   const positive = delta != null && delta >= 0;
   return (
     <div className="rounded-xl border border-border bg-surface px-4 py-3.5">
-      <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+      <div className="lbl-section">
         {label}
       </div>
       <div className={cn(
@@ -655,7 +655,7 @@ function TimelineCard({ series, annotations, range, loading }) {
           <h3 className="text-sm font-semibold text-fg">Acessos ao longo do tempo</h3>
           <p className="text-[11px] text-fg-subtle">Últimos {range} dias · pico de {max} acessos/dia</p>
         </div>
-        <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+        <div className="lbl-section">
           Pageviews
         </div>
       </div>
@@ -692,7 +692,7 @@ function TimelineCard({ series, annotations, range, loading }) {
                 key={`anno-label-${anno.day}`}
                 className={cn(
                   "absolute bottom-0 -translate-x-1/2 whitespace-nowrap rounded-md px-1.5 py-0.5",
-                  "text-[9.5px] font-semibold uppercase tracking-wider shadow-sm",
+                  "lbl-section shadow-sm",
                   anno.tone === "signature" ? "bg-signature/15 text-signature" : "bg-success/15 text-success",
                 )}
                 style={{ left: `${xPct}%` }}
@@ -1165,7 +1165,7 @@ function SessionsCard({ sessions, loading }) {
               )}
             </div>
             {s.internal && (
-              <span className="shrink-0 rounded-md bg-warning-soft border border-warning/30 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-warning">
+              <span className="lbl-section text-warning shrink-0 rounded-md bg-warning-soft border border-warning/30 px-1.5 py-0.5">
                 Interno
               </span>
             )}

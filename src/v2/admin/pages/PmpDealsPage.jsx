@@ -4,13 +4,29 @@
 // Resolve: hierarquia visual (spacing, tipografia), separação clara entre
 // estados (live vs ended vs archived) e múltiplas views específicas.
 //
-// 4 views (LayoutToggle):
-//   📋 Lista       — densidade alta estilo Linear (default)
-//   🟢 Ao vivo     — cards ricos pra lines com delivery <7d
-//   👥 Por cliente — accordion: card cliente → lines dentro
-//   📂 Histórico   — lifetime: tudo (encerradas, ativas, arquivadas)
+// 5 views, agora navegadas pelo rail do AdminShell:
+//   Lista      — densidade alta estilo Linear
+//   No ar      — cards ricos pra lines com delivery <7d
+//   Carteira   — accordion por cliente ou por campanha
+//   Histórico  — lifetime: tudo (encerradas, ativas, arquivadas)
+//   Analytics  — série diária (lazy, carrega recharts)
 //
-// Mutations preservadas: drawer de edição, popup de auto-vinculação.
+// ── O que mudou com o AdminShell ─────────────────────────────────────────
+// Esta era a página onde a inconsistência doía mais. Ela usava
+// `page-shell-wide` (1600px) enquanto o menu usava `page-shell` (1440px), e
+// o app trocava de largura quando você entrava aqui. O header repetia o do
+// menu à mão, com um conjunto diferente de widgets. E três nomes conviviam
+// pra mesma coisa: "PMP Deals" no botão do herói, "PMP LINES" no breadcrumb
+// e "Deals de Pagamento" no H1.
+//
+// Os filtros eram o pior caso do admin: busca + Cliente + Bid + Fonte +
+// Status numa faixa, período/trimestre/mês do Histórico noutra, o SortChip
+// numa terceira, situação/ciclo da Carteira numa quarta — e DOIS links
+// "Limpar" separados, cada um zerando um subconjunto diferente. Agora é uma
+// `FilterBar` com chips declarados por view.
+//
+// Mutations preservadas: drawer de edição, popup de auto-vinculação,
+// modal de agrupamento, export, Compplan Sheet.
 
 import { useState, useEffect, useMemo, useCallback, lazy, Suspense } from "react";
 import { fmt } from "../../../shared/format";
@@ -32,15 +48,23 @@ import {
 const PmpAnalytics = lazy(() => import("../components/PmpAnalytics"));
 import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
+import { Select } from "../../../ui/Select";
 import {
   Drawer, DrawerContent, DrawerHeader, DrawerBody, DrawerFooter,
 } from "../../../ui/Drawer";
 import { cn } from "../../../ui/cn";
 import { CountBadge } from "../../../ui/CountBadge";
 import { ymd, parseYmd } from "../../../shared/dateFilter";
-import HyprReportCenterLogo from "../../../components/HyprReportCenterLogo";
-import { ThemeToggleV2 } from "../../components/ThemeToggleV2";
 import { TooltipProvider } from "../../../ui/Tooltip";
+import { AdminShell } from "../shell/AdminShell";
+import { PageHeader, MetaDot, MetaStat } from "../shell/PageHeader";
+import { buildNavCounts, writeNavCountsCache, SECTION_PMP, viewMeta } from "../shell/navConfig";
+import {
+  FilterBar, FilterPanel, FilterOption, FilterPanelClear, SortChipFilter,
+  FilterChipChevron, FilterChipValue,
+} from "../components/FilterBar";
+import { filterChipClass } from "../components/filterChipStyle";
+import { KpiBoard } from "../components/KpiBoard";
 import {
   PMP_STATUSES, statusPillClass,
   LIVE_STATUSES, HISTORY_STATUSES, effectiveDeliveryMeta,
@@ -54,13 +78,14 @@ import {
 } from "../lib/pmpFormat";
 import {
   buildCampaigns, CAMPAIGN_SORTS, countCampaignBuckets, filterCampaigns, sortCampaigns,
+  CAMPAIGN_SITUATIONS, CAMPAIGN_CYCLES,
 } from "../lib/pmpCampaign";
 import {
-  PmpLayoutToggle, PmpKpiStrip,
+  PmpKpiStrip,
   PmpLiveCard, PmpLiveGroupCard, PmpCustomerAccordion,
   PmpLineRow, PmpLineRowHeader, PmpLineGroupCard,
 } from "../components/PmpComponents";
-import { PmpCampaignView, PmpCarteiraFilters } from "../components/PmpCampaignView";
+import { PmpCampaignView } from "../components/PmpCampaignView";
 import { GroupLinesModal } from "../components/GroupLinesModal";
 import { buildCompplanRows, applyCompplanFormats } from "../lib/compplanExport";
 import CompplanSheetCard from "../components/CompplanSheetCard";
@@ -157,7 +182,12 @@ function applyWindowMetrics(lines, metrics) {
   });
 }
 
-export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
+export default function PmpDealsPage({
+  user, onLogout,
+  // `layout` vem da URL (ver navConfig + App.jsx).
+  layout = "list",
+  onNavigateView,
+}) {
   // Permissão de edição — só uma lista curada de operadores pode mutar
   // status/PI/command/overrides/notas/grupo. Demais usuários veem tudo
   // em modo somente-leitura. Gate é frontend-only (guard rail UX).
@@ -180,19 +210,6 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
   const [savingLineIds, setSavingLineIds] = useState(() => new Set());
   const startSaving = (id) => setSavingLineIds(prev => { const n = new Set(prev); n.add(id); return n; });
   const finishSaving = (id) => setSavingLineIds(prev => { const n = new Set(prev); n.delete(id); return n; });
-
-  // Layout
-  const [layout, setLayout] = useState(() => {
-    try {
-      const saved = localStorage.getItem("hypr.pmp.layout");
-      // "worklist" foi removida; migra storage antigo pra default.
-      if (saved && saved !== "worklist") return saved;
-      return "client";
-    } catch { return "client"; }
-  });
-  useEffect(() => {
-    try { localStorage.setItem("hypr.pmp.layout", layout); } catch { /* ignore */ }
-  }, [layout]);
 
   // Carteira (aba "client") tem duas hierarquias sobre o MESMO dataset:
   //   cliente   → accordion por cliente, campanhas/lines dentro
@@ -887,197 +904,472 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
     return sortCampaigns(rows, campaignSort).map(e => [e.name, e.lines]);
   }, [campaignsFiltered, campaignSort]);
 
+  // ── Chips de filtro por view ──────────────────────────────────────────────
+  // Antes: quatro faixas horizontais. Uma com busca + Cliente + Bid + Fonte +
+  // Status; uma com período/trimestre/mês (só no Histórico); uma com o
+  // SortChip; uma com situação/ciclo (só na Carteira). Mais DOIS links
+  // "Limpar" em linhas diferentes, cada um zerando um subconjunto. Agora é
+  // uma barra, e o que muda por view é a LISTA de chips.
+  const isHistory   = layout === "history";
+  const isCarteira  = layout === "client";
+  const showList    = layout === "list";
+
+  const filterChips = [];
+
+  filterChips.push({
+    id: "customer",
+    label: "Cliente",
+    value: customer.length === 0
+      ? undefined
+      : customer.length === 1 ? customer[0] : `${customer[0]} +${customer.length - 1}`,
+    panel: () => (
+      <FilterPanel
+        title={customer.length ? `${customer.length} de ${customersAll.length}` : "Todos os clientes"}
+        footer={<FilterPanelClear onClear={() => setCustomer([])} disabled={!customer.length} />}
+      >
+        {customersAll.map((c) => (
+          <FilterOption
+            key={c}
+            multi
+            label={c}
+            selected={customer.includes(c)}
+            onSelect={() =>
+              setCustomer(customer.includes(c) ? customer.filter((x) => x !== c) : [...customer, c])
+            }
+          />
+        ))}
+      </FilterPanel>
+    ),
+  });
+
+  filterChips.push({
+    id: "status",
+    label: "Status",
+    value: status.length === 0
+      ? undefined
+      : status.length === 1 ? status[0] : `${status.length} status`,
+    panel: () => (
+      <FilterPanel
+        title={status.length ? `${status.length} de ${PMP_STATUSES.length}` : "Todos os status"}
+        footer={<FilterPanelClear onClear={() => setStatus([])} disabled={!status.length} />}
+      >
+        {PMP_STATUSES.map((st) => (
+          <FilterOption
+            key={st}
+            multi
+            label={st}
+            selected={status.includes(st)}
+            onSelect={() =>
+              setStatus(status.includes(st) ? status.filter((x) => x !== st) : [...status, st])
+            }
+          />
+        ))}
+      </FilterPanel>
+    ),
+  });
+
+  filterChips.push({
+    id: "bid",
+    label: "Bid",
+    value: bidType === ALL ? undefined : bidTypeLabel(bidType),
+    panel: (close) => (
+      <FilterPanel title="Tipo de bid">
+        <FilterOption
+          label="Todos"
+          selected={bidType === ALL}
+          onSelect={() => { setBidType(ALL); close(); }}
+        />
+        {["flex", "fixed"].map((b) => (
+          <FilterOption
+            key={b}
+            label={bidTypeLabel(b)}
+            selected={bidType === b}
+            onSelect={() => { setBidType(b); close(); }}
+          />
+        ))}
+      </FilterPanel>
+    ),
+  });
+
+  // Fonte só existe como decisão quando há mais de uma curadoria no dataset.
+  if (sourcesPresent.length > 1) {
+    filterChips.push({
+      id: "source",
+      label: "Fonte",
+      value: sourceFilter === ALL ? undefined : (SOURCE_LABELS[sourceFilter] || sourceFilter),
+      panel: (close) => (
+        <FilterPanel title="Fonte de curadoria">
+          <FilterOption
+            label="Todas"
+            selected={sourceFilter === ALL}
+            onSelect={() => { setSourceFilter(ALL); close(); }}
+          />
+          {sourcesPresent.map((src) => (
+            <FilterOption
+              key={src}
+              label={SOURCE_LABELS[src] || src}
+              selected={sourceFilter === src}
+              onSelect={() => { setSourceFilter(src); close(); }}
+            />
+          ))}
+        </FilterPanel>
+      ),
+    });
+  }
+
+  if (isCarteira) {
+    filterChips.push({
+      id: "axis",
+      label: "Agrupar",
+      value: CARTEIRA_AXES.find((a) => a.value === carteiraGroup)?.label,
+      panel: (close) => (
+        <FilterPanel title="Eixo de leitura">
+          {CARTEIRA_AXES.map((a) => (
+            <FilterOption
+              key={a.value}
+              label={a.label}
+              sub={a.sub}
+              selected={carteiraGroup === a.value}
+              onSelect={() => { setCarteiraGroup(a.value); close(); }}
+            />
+          ))}
+        </FilterPanel>
+      ),
+    });
+    filterChips.push({
+      id: "situation",
+      label: "Situação",
+      value: carteiraSituation === "all"
+        ? undefined
+        : CAMPAIGN_SITUATIONS.find((o) => o.value === carteiraSituation)?.label,
+      panel: (close) => (
+        <FilterPanel title="Está rodando?">
+          {CAMPAIGN_SITUATIONS.map((o) => {
+            const n = carteiraCounts.situation?.[o.value] ?? 0;
+            return (
+              <FilterOption
+                key={o.value}
+                label={o.label}
+                sub={o.hint}
+                count={n}
+                selected={carteiraSituation === o.value}
+                onSelect={() => { setCarteiraSituation(o.value); close(); }}
+              />
+            );
+          })}
+        </FilterPanel>
+      ),
+    });
+    filterChips.push({
+      id: "cycle",
+      label: "Ciclo",
+      value: carteiraCycle === "all"
+        ? undefined
+        : CAMPAIGN_CYCLES.find((o) => o.value === carteiraCycle)?.label,
+      panel: (close) => (
+        <FilterPanel title="Entregou o contratado?">
+          {CAMPAIGN_CYCLES.map((o) => {
+            const n = carteiraCounts.cycle?.[o.value] ?? 0;
+            return (
+              <FilterOption
+                key={o.value}
+                label={o.label}
+                sub={o.hint}
+                count={n}
+                selected={carteiraCycle === o.value}
+                onSelect={() => { setCarteiraCycle(o.value); close(); }}
+              />
+            );
+          })}
+        </FilterPanel>
+      ),
+    });
+  }
+
+  // Chips ativos. A regra é a mesma do menu: um chip por restrição real, com
+  // remoção individual, e um "Limpar tudo" único — antes eram dois links
+  // separados que zeravam conjuntos diferentes, e nenhum zerava os dois.
+  const activeFilters = [];
+  if (search.trim()) {
+    activeFilters.push({ id: "search", label: `Busca: ${search.trim()}`, onClear: () => setSearch("") });
+  }
+  if (customer.length > 0) {
+    activeFilters.push({
+      id: "customer",
+      label: customer.length === 1 ? customer[0] : `${customer.length} clientes`,
+      onClear: () => setCustomer([]),
+    });
+  }
+  if (status.length > 0) {
+    activeFilters.push({
+      id: "status",
+      label: status.length === 1 ? status[0] : `${status.length} status`,
+      onClear: () => setStatus([]),
+    });
+  }
+  if (bidType !== ALL) {
+    activeFilters.push({ id: "bid", label: `Bid: ${bidTypeLabel(bidType)}`, onClear: () => setBidType(ALL) });
+  }
+  if (sourceFilter !== ALL) {
+    activeFilters.push({
+      id: "source",
+      label: SOURCE_LABELS[sourceFilter] || sourceFilter,
+      onClear: () => setSourceFilter(ALL),
+    });
+  }
+  if (isCarteira && carteiraSituation !== "all") {
+    activeFilters.push({
+      id: "situation",
+      label: CAMPAIGN_SITUATIONS.find((o) => o.value === carteiraSituation)?.label || carteiraSituation,
+      onClear: () => setCarteiraSituation("all"),
+    });
+  }
+  if (isCarteira && carteiraCycle !== "all") {
+    activeFilters.push({
+      id: "cycle",
+      label: CAMPAIGN_CYCLES.find((o) => o.value === carteiraCycle)?.label || carteiraCycle,
+      onClear: () => setCarteiraCycle("all"),
+    });
+  }
+  if (isHistory && (histPeriod.from || histPeriod.to)) {
+    activeFilters.push({
+      id: "period",
+      label: formatRangeCompact(histPeriod.from, histPeriod.to),
+      onClear: () => setHistPeriod({ presetId: "all", from: null, to: null }),
+    });
+  }
+  if (isHistory && histQuarters.length > 0) {
+    activeFilters.push({
+      id: "quarters",
+      label: histQuarters.length === 1
+        ? `Q${histQuarters[0].q} ${String(histQuarters[0].year).slice(2)}`
+        : `${histQuarters.length} trimestres`,
+      onClear: () => setHistQuarters([]),
+    });
+  }
+  if (isHistory && histMonths.length > 0) {
+    activeFilters.push({
+      id: "months",
+      label: histMonths.length === 1
+        ? `${MONTH_ABBR[histMonths[0].month - 1]}/${String(histMonths[0].year).slice(-2)}`
+        : `${histMonths.length} meses`,
+      onClear: () => setHistMonths([]),
+    });
+  }
+
+  const clearAllFilters = () => {
+    setSearch(""); setCustomer([]); setBidType(ALL); setStatus([]); setSourceFilter(ALL);
+    if (isCarteira) { setCarteiraSituation("all"); setCarteiraCycle("all"); }
+    if (isHistory) {
+      setHistPeriod({ presetId: "all", from: null, to: null });
+      setHistQuarters([]); setHistMonths([]);
+    }
+  };
+
+  // "10 de 99 lines" — não existia em nenhuma das cinco views.
+  const viewTotals = {
+    list:      { shown: allFiltered.length,      total: lines.length,   noun: "lines" },
+    live:      { shown: liveFiltered.length,     total: counts.live,    noun: "lines no ar" },
+    client:    { shown: counts.client,           total: counts.client,  noun: carteiraGroup === "campaign" ? "campanhas" : "clientes" },
+    history:   { shown: allLinesFiltered.length, total: lines.length,   noun: "lines" },
+    analytics: null,
+  }[layout];
+  const resultLabel = viewTotals && activeFilters.length > 0
+    ? `${viewTotals.shown} de ${viewTotals.total} ${viewTotals.noun}`
+    : null;
+
+  const meta = viewMeta(SECTION_PMP, layout);
+  // As quatro contagens do PMP só existem aqui — publica pro rail das
+  // outras rotas (ver writeNavCountsCache em navConfig).
+  useEffect(() => {
+    if (!lines.length) return;
+    writeNavCountsCache({
+      pmpList:    counts.list    || undefined,
+      pmpLive:    counts.live    || undefined,
+      pmpClient:  counts.client  || undefined,
+      pmpHistory: counts.history || undefined,
+    });
+  }, [lines.length, counts]);
+
+  const navCounts = buildNavCounts({
+    pmp: {
+      list:    counts.list    || undefined,
+      live:    counts.live    || undefined,
+      client:  counts.client  || undefined,
+      history: counts.history || undefined,
+    },
+  });
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <TooltipProvider delayDuration={200}>
-    <div className="min-h-screen w-full bg-canvas text-fg transition-colors">
-      <header className="sticky top-0 z-30 bg-canvas-elevated border-b border-border">
-        <div className="page-shell-wide h-16 flex items-center justify-between gap-3">
-          <button type="button" onClick={onBackToMenu}
-                  className="flex items-center text-fg cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas-elevated min-w-0"
-                  aria-label="Voltar">
-            <HyprReportCenterLogo height={32} />
-          </button>
-          <div className="flex items-center gap-2 md:gap-3">
-            {/* Status do sync por fonte de curadoria (Xandr + PubMatic) ·
-                ação "Sincronizar agora" (roda as duas fontes) mora dentro do
-                popover. Slot espelha o DataFreshnessIndicator do menu admin
-                pra manter consistência entre as duas headers. */}
-            <PmpFreshnessIndicator
-              sources={syncSources}
-              onSync={canSync ? onSync : undefined}
-              syncing={syncing}
-            />
-            <ThemeToggleV2 />
-            {user?.picture && (
-              <img src={user.picture} alt="" referrerPolicy="no-referrer"
-                   className="w-7 h-7 rounded-full ring-2 ring-signature shrink-0" />
-            )}
-            <span className="text-xs text-fg-muted hidden md:inline truncate max-w-[180px]">{user?.name}</span>
-            <button onClick={onLogout}
-                    className="text-xs text-fg-muted hover:text-fg px-3 h-9 md:h-8 rounded-md border border-border hover:bg-surface transition-colors shrink-0">
-              Sair
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main className="page-shell-wide py-6 md:py-8">
-        {/* Hero — generoso */}
-        <div className="flex items-end justify-between gap-4 flex-wrap mb-8">
-          <div>
-            <div className="flex items-center gap-2 text-xs text-fg-subtle uppercase tracking-widest mb-2">
-              <button onClick={onBackToMenu} className="hover:text-fg transition-colors">Admin</button>
-              <span>/</span>
-              <span className="text-fg-muted">PMP Lines</span>
-            </div>
-            <h1 className="text-3xl font-bold tracking-tight text-fg leading-tight">
-              Deals de Pagamento
-            </h1>
-            <p className="text-sm text-fg-muted mt-2 flex items-center gap-2 flex-wrap">
-              <span><span className="font-semibold text-fg tabular-nums">{partitions.live.length}</span> no ar</span>
-              <span className="w-0.5 h-0.5 rounded-full bg-fg-subtle" />
-              <span><span className="font-semibold text-fg tabular-nums">{lines.length}</span> totais</span>
-              <span className="w-0.5 h-0.5 rounded-full bg-fg-subtle" />
-              {/* Fontes vêm do dataset — a legenda fixa "Xandr Curate" ficou
-                  desatualizada quando a PubMatic entrou como 2ª fonte. */}
-              <span>Entregas {sourcesPresent.map(s => SOURCE_LABELS[s] || s).join(" × ")} × Hypr Command</span>
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {savingLineIds.size > 0 && (
-              <span className="inline-flex items-center gap-1.5 text-[11px] text-signature tabular-nums"
-                    title="Saves em andamento — você pode continuar editando outras lines">
-                <span className="w-1.5 h-1.5 rounded-full bg-signature animate-pulse" />
-                Salvando {savingLineIds.size > 1 ? `${savingLineIds.size} alterações` : "alteração"}…
-              </span>
-            )}
-            {canEdit && (
-              <Button variant="secondary" size="md" onClick={() => setShowCompplan(v => !v)}>
-                Compplan Sheet
-              </Button>
-            )}
-            <Button variant="primary" size="md" onClick={onExport} disabled={!allFiltered.length}>
-              Exportar
-            </Button>
-          </div>
-        </div>
-
-        {/* Planilha Google auto-atualizada do compplan (só editores) */}
-        {canEdit && showCompplan && (
-          <div className="mb-6">
-            <CompplanSheetCard />
-          </div>
-        )}
-
-        {/* KPIs — a aba Analytics tem seus próprios big numbers. */}
-        {lines.length > 0 && layout !== "analytics" && (
-          <div className="mb-6">
-            <PmpKpiStrip kpis={kpis} livesCount={partitions.live.length} totalCount={lines.length}
-                         showExtra={layout === "history" || layout === "client"}
-                         windowed={windowed}
-                         windowLabel={windowed ? formatRangeCompact(metricWindow.from, metricWindow.to) : null}
-                         windowLoading={windowLoading} />
-          </div>
-        )}
-
-
-        {/* Sync toast */}
-        {syncResult && <SyncToast result={syncResult} onDismiss={() => setSyncResult(null)} />}
-
-        {/* Layout toggle + filtros de período (Histórico) na mesma linha */}
-        <div className="flex items-center justify-between gap-3 flex-wrap mb-5">
-          <PmpLayoutToggle value={layout} onChange={setLayout} counts={counts} />
-          {layout === "history" && (
-            <div className="flex flex-wrap items-center gap-2">
-              <PeriodFilterPill value={histPeriod} onChange={setHistPeriod} />
-              <QuarterFilterPill values={histQuarters} onChange={setHistQuarters} availableYears={historyYears} />
-              <MonthFilterPill values={histMonths} onChange={setHistMonths} availableYears={historyYears} />
-              <SortChip
-                visible={histSortBy !== HIST_DEFAULT_SORT.by || histSortDir !== HIST_DEFAULT_SORT.dir}
-                field={histSortBy}
-                dir={histSortDir}
-                onClear={() => { setHistSortBy(HIST_DEFAULT_SORT.by); setHistSortDir(HIST_DEFAULT_SORT.dir); }}
-              />
-              {(histPeriod.from || histPeriod.to || histQuarters.length > 0 || histMonths.length > 0) && (
-                <button onClick={() => { setHistPeriod({ presetId: "all", from: null, to: null }); setHistQuarters([]); setHistMonths([]); }}
-                        className="text-xs text-fg-muted hover:text-fg underline-offset-2 hover:underline">
-                  Limpar
-                </button>
-              )}
-            </div>
-          )}
-          {layout === "client" && (
-            <div className="flex flex-wrap items-center gap-2">
-              <GroupBySwitch value={carteiraGroup} onChange={setCarteiraGroup} />
-              {/* Ordenação vale pros dois agrupamentos: por campanha ordena os
-                  cards, por cliente ordena os accordions com a mesma régua. */}
-              {(
-                <label className="inline-flex items-center gap-2">
-                  <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle hidden sm:inline">Ordenar</span>
-                  <select value={campaignSort} onChange={(e) => setCampaignSort(e.target.value)}
-                          className="appearance-none h-9 pl-3 pr-8 rounded-lg bg-surface border border-border text-sm text-fg hover:bg-surface-strong cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature"
-                          style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 10px center" }}>
-                    {CAMPAIGN_SORTS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-                  </select>
-                </label>
-              )}
-            </div>
-          )}
-          {layout === "list" && (sortBy !== LIST_DEFAULT_SORT.by || sortDir !== LIST_DEFAULT_SORT.dir) && (
-            <div className="flex flex-wrap items-center gap-2">
-              <SortChip
-                visible
-                field={sortBy}
-                dir={sortDir}
-                onClear={() => { setSortBy(LIST_DEFAULT_SORT.by); setSortDir(LIST_DEFAULT_SORT.dir); }}
-              />
-            </div>
-          )}
-        </div>
-
-        {/* Aviso: métricas janeladas (Cost/Revenue/Margem/% refletem o período). */}
-        {layout === "history" && windowed && (
-          <div className="mb-5 -mt-1 inline-flex items-center gap-2 text-[11px] text-fg-muted">
-            <span className="inline-flex w-1.5 h-1.5 rounded-full bg-signature" />
-            <span>
-              Métricas no período <span className="font-medium text-fg">{formatRangeCompact(metricWindow.from, metricWindow.to)}</span>
-              {windowLoading && " · calculando…"} · <span className="text-fg-subtle">PI é o valor de contrato e não filtra</span>
+    <AdminShell
+      section={SECTION_PMP}
+      layout={layout}
+      navCounts={navCounts}
+      onNavigate={onNavigateView}
+      viewLabel={meta?.label}
+      tally={
+        lines.length
+          ? `${partitions.live.length} no ar · ${lines.length} lines`
+          : undefined
+      }
+      busy={loading && lines.length > 0}
+      user={user}
+      onLogout={onLogout}
+      operationSlots={
+        <PmpFreshnessIndicator
+          variant="rail"
+          sources={syncSources}
+          onSync={canSync ? onSync : undefined}
+          syncing={syncing}
+        />
+      }
+      actions={
+        <>
+          {savingLineIds.size > 0 && (
+            <span
+              role="status"
+              className="hidden md:inline-flex items-center gap-1.5 text-[11px] text-signature tabular-nums"
+              title="Saves em andamento — você pode continuar editando outras lines"
+            >
+              <span aria-hidden="true" className="size-1.5 rounded-full bg-signature animate-pulse" />
+              Salvando {savingLineIds.size > 1 ? `${savingLineIds.size} alterações` : "alteração"}…
             </span>
-          </div>
-        )}
+          )}
+          {canEdit && (
+            <Button variant="ghost" size="sm" onClick={() => setShowCompplan(v => !v)}>
+              <span className="hidden lg:inline">Compplan Sheet</span>
+              <span className="lg:hidden">Compplan</span>
+            </Button>
+          )}
+          <Button variant="primary" size="sm" onClick={onExport} disabled={!allFiltered.length}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 3v12M7 10l5 5 5-5M4 21h16" />
+            </svg>
+            <span className="hidden sm:inline">Exportar</span>
+          </Button>
+        </>
+      }
+    >
+      <PageHeader
+        eyebrow={`PMP Deals · ${meta?.label || ""}`}
+        title={PMP_PAGE_TITLES[layout] || "Deals de Pagamento"}
+        meta={
+          <>
+            <MetaStat value={partitions.live.length} label="no ar" tone={partitions.live.length ? "success" : undefined} />
+            <MetaDot />
+            <MetaStat value={lines.length} label="lines totais" />
+            <MetaDot />
+            <span>
+              Entregas {sourcesPresent.map(s => SOURCE_LABELS[s] || s).join(" × ")} × Hypr Command
+            </span>
+          </>
+        }
+      />
 
-        {/* Filtros sticky — a aba Analytics tem sua própria barra de filtros. */}
-        {layout !== "analytics" && (
-          <div className="mb-6 flex flex-wrap items-center gap-2">
-            <SearchInput value={search} onChange={setSearch} />
-            <FilterMultiSelect label="Cliente" values={customer} onChange={setCustomer} options={customersAll} />
-            <FilterSelect label="Bid"     value={bidType}  onChange={setBidType}  options={["flex","fixed"]} />
-            {sourcesPresent.length > 1 && (
-              <FilterSelect label="Fonte" value={sourceFilter} onChange={setSourceFilter}
-                            options={sourcesPresent.map(s => ({ value: s, label: SOURCE_LABELS[s] || s }))} />
-            )}
-            <FilterMultiSelect label="Status" values={status} onChange={setStatus} options={PMP_STATUSES} />
-            {(search || customer.length > 0 || bidType !== ALL || status.length > 0 || sourceFilter !== ALL) && (
-              <button onClick={() => { setSearch(""); setCustomer([]); setBidType(ALL); setStatus([]); setSourceFilter(ALL); }}
-                      className="text-xs text-fg-muted hover:text-fg underline-offset-2 hover:underline ml-1">
-                Limpar
-              </button>
-            )}
-          </div>
-        )}
+      {/* Planilha Google auto-atualizada do compplan (só editores) */}
+      {canEdit && showCompplan && (
+        <div className="mb-4">
+          <CompplanSheetCard />
+        </div>
+      )}
 
-        {/* Recorte da Carteira — situação (está rodando?) × ciclo (entregou o
-            contratado?). Vale pros dois agrupamentos. */}
-        {layout === "client" && (
-          <div className="mb-6 -mt-2">
-            <PmpCarteiraFilters
-              situation={carteiraSituation} cycle={carteiraCycle}
-              onSituation={setCarteiraSituation} onCycle={setCarteiraCycle}
-              counts={carteiraCounts}
-            />
-          </div>
-        )}
+      {/* KPIs num board colapsável com memória. Antes, `layout !== "analytics"`
+          escondia a faixa por completo naquela aba — um bloco que aparece e
+          desaparece conforme a aba impede o usuário de saber onde as coisas
+          moram, e não dava escolha a quem QUERIA ver os números ali. Agora
+          Analytics tem os KPIs como todas as outras, e quem não quer fecha. */}
+      {lines.length > 0 && (
+        <KpiBoard
+          scope="pmp"
+          title={`Faturamento${windowed ? ` · ${formatRangeCompact(metricWindow.from, metricWindow.to)}` : " · acumulado"}`}
+          summary={pmpSummaryLine(kpis, partitions.live.length)}
+        >
+          <PmpKpiStrip
+            kpis={kpis}
+            livesCount={partitions.live.length}
+            totalCount={lines.length}
+            showExtra={isHistory || isCarteira}
+            windowed={windowed}
+            windowLabel={windowed ? formatRangeCompact(metricWindow.from, metricWindow.to) : null}
+            windowLoading={windowLoading}
+          />
+        </KpiBoard>
+      )}
+
+      {/* Sync toast */}
+      {syncResult && <SyncToast result={syncResult} onDismiss={() => setSyncResult(null)} />}
+
+      <FilterBar
+        search={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="Buscar cliente, campanha, line, token…"
+        chips={filterChips}
+        trailing={
+          <>
+            {/* Recortes de data do Histórico. Mantêm o próprio Popover (a
+                lógica de presets, range e multi-pick não cabe no contrato
+                `panel(close)`) mas herdam a forma via filterChipClass. */}
+            {isHistory && (
+              <>
+                <PeriodFilterPill value={histPeriod} onChange={setHistPeriod} />
+                <QuarterFilterPill values={histQuarters} onChange={setHistQuarters} availableYears={historyYears} />
+                <MonthFilterPill values={histMonths} onChange={setHistMonths} availableYears={historyYears} />
+              </>
+            )}
+            {showList && (
+              <SortChipFilter
+                options={LIST_SORT_OPTIONS}
+                value={sortBy}
+                dir={sortDir}
+                onValueChange={setSortBy}
+                onDirToggle={() => setSortDir(d => (d === "asc" ? "desc" : "asc"))}
+                defaultValue={LIST_DEFAULT_SORT.by}
+                defaultDir={LIST_DEFAULT_SORT.dir}
+              />
+            )}
+            {isHistory && (
+              <SortChipFilter
+                options={HIST_SORT_OPTIONS}
+                value={histSortBy}
+                dir={histSortDir}
+                onValueChange={setHistSortBy}
+                onDirToggle={() => setHistSortDir(d => (d === "asc" ? "desc" : "asc"))}
+                defaultValue={HIST_DEFAULT_SORT.by}
+                defaultDir={HIST_DEFAULT_SORT.dir}
+              />
+            )}
+            {isCarteira && (
+              <SortChipFilter
+                options={CAMPAIGN_SORT_OPTIONS}
+                value={campaignSort}
+                dir="desc"
+                onValueChange={setCampaignSort}
+                onDirToggle={() => {}}
+                defaultValue="recent_start"
+                defaultDir="desc"
+              />
+            )}
+          </>
+        }
+        active={activeFilters}
+        onClearAll={clearAllFilters}
+        resultLabel={resultLabel}
+        // O aviso de janela era uma QUARTA faixa solta entre os filtros e a
+        // tabela, com `-mt-1` pra compensar o espaçamento. Ele é consequência
+        // do filtro de período — então encosta na linha que mostra esse filtro.
+        notice={
+          isHistory && windowed ? (
+            <>
+              Custo, Receita e Margem refletem o período
+              {windowLoading && " · calculando…"}
+              {" · "}
+              <span className="text-fg-subtle">PI é valor de contrato e não filtra</span>
+            </>
+          ) : null
+        }
+      />
 
         {/* Views — skeleton só no load inicial; reload em background mantém a grid visível */}
         {(loading && lines.length === 0) ? <LinesSkeleton />
@@ -1124,7 +1416,6 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
             </>
           )
         }
-      </main>
 
       {/* Drawer + popups */}
       <PmpLineDrawer open={!!editing} onOpenChange={o => { if (!o) setEditing(null); }}
@@ -1137,7 +1428,7 @@ export default function PmpDealsPage({ user, onLogout, onBackToMenu }) {
       <GroupLinesModal open={!!grouping} onOpenChange={o => { if (!o) setGrouping(null); }}
                        line={grouping} onGroupCreated={() => reload()} />
       <LinkSuccessToast toast={linkToast} onDismiss={() => setLinkToast(null)} />
-    </div>
+    </AdminShell>
     </TooltipProvider>
   );
 }
@@ -1210,7 +1501,7 @@ function ClientView({ groups, onLineClick, onLinkClick, summary }) {
           {summary.live > 0 && (
             <>
               <span className="mx-1.5 text-fg-subtle">·</span>
-              <span className="text-emerald-500 dark:text-emerald-400">{summary.live} no ar</span>
+              <span className="text-success dark:text-success">{summary.live} no ar</span>
             </>
           )}
         </p>
@@ -1457,7 +1748,7 @@ function InlineGroupSubtotal({ members, groupPi, groupPctReceber, groupPctRecebe
   return (
     <div className={cn(grid, "hidden md:grid px-5 py-2.5 items-center border-t border-border/40 bg-surface/40 text-[12px]")}>
       <div />
-      <div className="text-[10px] uppercase tracking-widest font-semibold text-fg-muted">
+      <div className="lbl-section text-fg-muted">
         Subtotal do grupo · {members.length} lines
       </div>
       <div /> {/* bid/status */}
@@ -1512,180 +1803,13 @@ function SearchInput({ value, onChange }) {
   );
 }
 
-function FilterSelect({ label, value, onChange, options }) {
-  const opts = options.map(o => typeof o === "string" ? { value: o, label: o } : o);
-  return (
-    <label className="inline-flex items-center gap-2">
-      <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle hidden sm:inline">{label}</span>
-      <select value={value} onChange={e => onChange(e.target.value)}
-              className="appearance-none h-9 pl-3 pr-8 rounded-lg bg-surface border border-border text-sm text-fg hover:bg-surface-strong cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature"
-              style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 10px center" }}>
-        <option value={ALL}>Todos</option>
-        {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
-    </label>
-  );
-}
+// FilterSelect e FilterMultiSelect viviam aqui. Foram absorvidos pelos chips
+// da FilterBar (`Cliente`, `Status`, `Bid`, `Fonte`): mesmo comportamento,
+// uma geometria só, e sem o `<select>` que carregava um chevron em
+// `stroke='%23999'` cravado em `style` inline — cinza fixo, cego a tema, ao
+// lado de controles que respondiam a light/dark. Quando um `<select>` nativo
+// for de fato o controle certo, use `src/ui/Select.jsx`.
 
-// Multi-select com popover: trigger igual ao FilterSelect (mesma altura/borda)
-// + dropdown com search, checkbox por item, ações Selecionar tudo / Limpar.
-// `values=[]` significa "Todos" — evita força bruta de marcar tudo no estado.
-function FilterMultiSelect({ label, values, onChange, options }) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const opts = useMemo(
-    () => options.map(o => typeof o === "string" ? { value: o, label: o } : o),
-    [options],
-  );
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return opts;
-    return opts.filter(o => o.label.toLowerCase().includes(q));
-  }, [opts, query]);
-
-  const isAll = values.length === 0;
-  const summary = isAll
-    ? "Todos"
-    : values.length === 1
-      ? (opts.find(o => o.value === values[0])?.label || values[0])
-      : `${values.length} selecionados`;
-
-  const toggle = (v) => {
-    if (values.includes(v)) onChange(values.filter(x => x !== v));
-    else onChange([...values, v]);
-  };
-
-  // Reset busca quando fecha — UX limpa na próxima abertura.
-  useEffect(() => { if (!open) setQuery(""); }, [open]);
-
-  return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <label className="inline-flex items-center gap-2">
-        <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle hidden sm:inline">{label}</span>
-        <Popover.Trigger asChild>
-          <button
-            type="button"
-            className={cn(
-              "inline-flex items-center justify-between gap-2 h-9 pl-3 pr-2.5 min-w-[140px]",
-              "rounded-lg bg-surface border text-sm cursor-pointer",
-              "hover:bg-surface-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
-              isAll ? "border-border text-fg" : "border-signature/50 text-fg",
-            )}
-          >
-            <span className={cn("truncate", !isAll && "font-medium")}>{summary}</span>
-            {!isAll && (
-              <CountBadge value={values.length} tone="onSignature" />
-            )}
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-                 className="text-fg-subtle shrink-0">
-              <path d="m6 9 6 6 6-6"/>
-            </svg>
-          </button>
-        </Popover.Trigger>
-      </label>
-      <Popover.Portal>
-        <Popover.Content
-          sideOffset={6}
-          align="start"
-          collisionPadding={16}
-          className={cn(
-            "z-50 w-[280px] max-w-[calc(100vw-32px)]",
-            "rounded-lg border border-border bg-canvas-elevated shadow-lg overflow-hidden",
-            "data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out",
-            "focus-visible:outline-none",
-          )}
-        >
-          <div className="px-3 pt-3 pb-2 border-b border-border">
-            <div className="relative">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                   strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-                   className="absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-subtle pointer-events-none">
-                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
-              </svg>
-              <input
-                type="text"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Buscar cliente…"
-                autoFocus
-                className="w-full h-8 pl-7 pr-2 rounded-md bg-surface border border-border text-xs text-fg placeholder:text-fg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature"
-              />
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between px-3 py-1.5 border-b border-border text-[11px]">
-            <button
-              type="button"
-              onClick={() => onChange(opts.map(o => o.value))}
-              disabled={values.length === opts.length}
-              className="text-fg-muted hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Selecionar tudo
-            </button>
-            <button
-              type="button"
-              onClick={() => onChange([])}
-              disabled={isAll}
-              className="text-fg-muted hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Limpar
-            </button>
-          </div>
-
-          <div className="max-h-[280px] overflow-y-auto py-1">
-            {filtered.length === 0 ? (
-              <div className="px-3 py-4 text-xs text-fg-subtle italic text-center">
-                Nenhum cliente encontrado
-              </div>
-            ) : filtered.map(o => {
-              const checked = values.includes(o.value);
-              return (
-                <label
-                  key={o.value}
-                  className={cn(
-                    "flex items-center gap-2.5 px-3 py-2 cursor-pointer transition-colors",
-                    checked ? "bg-signature/10 hover:bg-signature/20" : "hover:bg-surface",
-                  )}
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => toggle(o.value)}
-                    className="sr-only peer"
-                  />
-                  <span
-                    aria-hidden="true"
-                    className={cn(
-                      "shrink-0 w-4 h-4 rounded-[4px] border-2 inline-flex items-center justify-center transition-colors",
-                      checked ? "bg-signature border-signature" : "border-fg-subtle",
-                      "peer-focus-visible:ring-2 peer-focus-visible:ring-signature peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-canvas-elevated",
-                    )}
-                  >
-                    {checked && (
-                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="white"
-                           strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M1.5 5.5L4 8L8.5 2"/>
-                      </svg>
-                    )}
-                  </span>
-                  <span className={cn(
-                    "text-sm flex-1 min-w-0 truncate",
-                    checked ? "text-fg font-medium" : "text-fg-muted",
-                  )}>
-                    {o.label}
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
-  );
-}
-
-// ───── Filtros de período do Histórico ──────────────────────────────────────
 const HIST_PERIOD_PRESETS = [
   { id: "all",        label: "Tudo" },
   { id: "30d",        label: "Últimos 30 dias" },
@@ -1724,6 +1848,49 @@ function formatRangeCompact(from, to) {
 
 // Label humano por campo sortable — usado no chip "Ordenado: X" pra
 // indicar de forma clara qual coluna tá ativa.
+// Títulos por view. As cinco compartilhavam "Deals de Pagamento" — o H1 não
+// dizia o que você estava olhando, e a única pista era o segmentado tintado
+// mais abaixo na página.
+const PMP_PAGE_TITLES = {
+  list:      "Deals de Pagamento",
+  live:      "Lines no Ar",
+  client:    "Carteira PMP",
+  history:   "Histórico de Lines",
+  analytics: "Analytics de Faturamento",
+};
+
+// Eixo de leitura da Carteira: mesmo dataset, duas hierarquias.
+//
+// Era um segmentado com rótulo externo ("Agrupar por") numa linha própria,
+// acima dos filtros. Virou chip: mostra o eixo ativo (`Agrupar · Cliente`) e
+// entra na mesma fileira dos outros recortes da Carteira, que é onde a
+// decisão acontece. O segmentado não estava errado como componente — estava
+// errado como QUINTA geometria de controle na mesma tela.
+const CARTEIRA_AXES = [
+  { value: "client",   label: "Cliente",  sub: "clientes, com campanhas e lines dentro" },
+  { value: "campaign", label: "Campanha", sub: "campanhas, com flights e lines dentro" },
+];
+
+/**
+ * Resumo de uma linha do KpiBoard fechado. Quatro números: quantas lines
+ * estão vivas, quanto foi contratado, quanto sobrou pra HYPR, e se a entrega
+ * está no alvo.
+ */
+function pmpSummaryLine(kpis, liveCount) {
+  if (!kpis) return [];
+  const line = [{ label: "No ar", value: liveCount, tone: liveCount ? "success" : undefined }];
+  if (kpis.pi != null)     line.push({ label: "PI", value: formatBRLCompact(kpis.pi) });
+  if (kpis.margin != null) line.push({ label: "Margem", value: formatBRLCompact(kpis.margin), tone: "success" });
+  if (kpis.pctReceber != null) {
+    line.push({
+      label: "% Entrega",
+      value: formatRatioPct(kpis.pctReceber),
+      tone: kpis.pctReceber >= 0.85 ? "success" : "warning",
+    });
+  }
+  return line;
+}
+
 const SORT_FIELD_LABELS = {
   customer:                  "Cliente",
   pi_brl:                    "PI",
@@ -1737,60 +1904,25 @@ const SORT_FIELD_LABELS = {
   start_date:                "Início",
 };
 
-// Chip "Ordenado: Margem ↓ ×" — fica visível quando a sort diverge do default
-// da view. Click no chip inteiro limpa (volta pro default). Atalho mais
-// óbvio que ficar lembrando do "clique 3× pra limpar" no header.
-function SortChip({ visible, field, dir, onClear }) {
-  if (!visible) return null;
-  const label = SORT_FIELD_LABELS[field] || field;
-  const arrow = dir === "asc" ? "↑" : "↓";
-  return (
-    <button
-      type="button"
-      onClick={onClear}
-      title="Voltar pra ordem padrão"
-      className="group inline-flex items-center gap-1.5 h-9 pl-2.5 pr-2 rounded-lg border border-signature/50 bg-signature/10 text-signature text-xs hover:bg-signature/15 transition-colors"
-    >
-      <span className="text-[10px] uppercase tracking-widest font-bold opacity-70">Ordenado</span>
-      <span className="font-medium">{label} {arrow}</span>
-      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-signature/20 group-hover:bg-signature/30 text-[12px] leading-none transition-colors">×</span>
-    </button>
-  );
-}
-
-// Eixo de leitura da Carteira: mesmo dataset, duas hierarquias.
-// Segmentado (e não duas abas) porque a troca é de PONTO DE VISTA, não de
-// recorte — filtros, KPIs e contagem seguem valendo dos dois lados.
-function GroupBySwitch({ value, onChange }) {
-  const options = [
-    { value: "client",   label: "Cliente",
-      icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="7" r="3.5"/><path d="M3 21v-1a6 6 0 0 1 12 0v1"/><circle cx="17" cy="7" r="3" strokeOpacity="0.5"/></svg> },
-    { value: "campaign", label: "Campanha",
-      icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 11v3a1 1 0 0 0 1 1h3l5 4V6L7 10H4a1 1 0 0 0-1 1Z"/><path d="M16 8.5a5 5 0 0 1 0 7"/></svg> },
-  ];
-  return (
-    <div className="inline-flex items-center gap-2">
-      <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle hidden sm:inline">Agrupar por</span>
-      <div role="tablist" aria-label="Agrupar carteira por"
-           className="inline-flex gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border">
-        {options.map(o => {
-          const active = o.value === value;
-          return (
-            <button key={o.value} type="button" role="tab" aria-selected={active}
-                    onClick={() => onChange(o.value)}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium transition-colors",
-                      active ? "bg-canvas-elevated text-fg shadow-sm" : "text-fg-muted hover:text-fg",
-                    )}>
-              {o.icon}
-              <span>{o.label}</span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
+// Os campos ordenáveis de cada view, no formato que o SortChipFilter espera.
+// Os headers de coluna continuam ordenáveis (ciclo desc → asc → default); o
+// chip existe porque em tabelas de 11 colunas com scroll horizontal a coluna
+// que você quer ordenar pode estar fora da tela.
+const LIST_SORT_FIELDS = [
+  "hours_since_last_delivery", "customer", "start_date", "pi_brl",
+  "curator_total_cost", "curator_revenue", "curator_margin",
+  "pct_a_receber", "pct_a_receber_rev",
+];
+const HIST_SORT_FIELDS = [
+  "start_date", "customer", "pi_brl", "curator_total_cost",
+  "curator_revenue", "curator_margin", "effective_margin_pct", "pct_a_receber",
+];
+const toSortOptions = (fields) =>
+  fields.map((f) => ({ value: f, label: SORT_FIELD_LABELS[f] || f }));
+const LIST_SORT_OPTIONS = toSortOptions(LIST_SORT_FIELDS);
+const HIST_SORT_OPTIONS = toSortOptions(HIST_SORT_FIELDS);
+// A Carteira ordena os accordions pela mesma régua das campanhas.
+const CAMPAIGN_SORT_OPTIONS = CAMPAIGN_SORTS.map((o) => ({ value: o.value, label: o.label }));
 
 function PeriodFilterPill({ value, onChange }) {
   const [open, setOpen] = useState(false);
@@ -1835,19 +1967,18 @@ function PeriodFilterPill({ value, onChange }) {
   return (
     <Popover.Root open={open} onOpenChange={handleOpenChange}>
       <Popover.Trigger asChild>
-        <button className={cn(
-          "inline-flex items-center gap-2 h-9 px-3 rounded-lg border text-sm transition-colors",
-          isActive
-            ? "border-signature/40 bg-signature/10 text-signature"
-            : "border-border bg-surface text-fg hover:bg-surface-strong",
-        )}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>
-          </svg>
-          <span>{currentLabel}</span>
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={cn("transition-transform", open && "rotate-180")}>
-            <path d="m6 9 6 6 6-6"/>
-          </svg>
+        {/* Mantém o próprio Popover — presets + DayPicker de range não cabem
+            no contrato `panel(close)` do FilterChip sem reescrever a
+            validação de datas — mas herda a FORMA via filterChipClass. */}
+        <button type="button" aria-expanded={open} className={filterChipClass({ isSet: isActive })}>
+          <span aria-hidden="true" className={cn("shrink-0 grid place-items-center", isActive ? "text-signature" : "text-fg-subtle")}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>
+            </svg>
+          </span>
+          <span className={isActive ? "font-semibold" : undefined}>Período</span>
+          {isActive && <FilterChipValue>{currentLabel}</FilterChipValue>}
+          <FilterChipChevron open={open} />
         </button>
       </Popover.Trigger>
       <Popover.Portal>
@@ -1919,38 +2050,37 @@ function QuarterFilterPill({ values, onChange, availableYears }) {
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
-        <button className={cn(
-          "inline-flex items-center gap-2 h-9 px-3 rounded-lg border text-sm transition-colors",
-          isActive
-            ? "border-signature/50 bg-signature/10 text-signature"
-            : "border-border bg-surface text-fg hover:bg-surface-strong",
-        )}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
-            <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
-          </svg>
-          <span>{label}</span>
-          {isActive && values.length > 1 && (
-            <CountBadge value={values.length} tone="onSignature" />
-          )}
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={cn("transition-transform", open && "rotate-180")}>
-            <path d="m6 9 6 6 6-6"/>
-          </svg>
+        <button type="button" aria-expanded={open} className={filterChipClass({ isSet: isActive })}>
+          <span aria-hidden="true" className={cn("shrink-0 grid place-items-center", isActive ? "text-signature" : "text-fg-subtle")}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+              <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+            </svg>
+          </span>
+          <span className={isActive ? "font-semibold" : undefined}>Trimestre</span>
+          {isActive && <FilterChipValue>{label}</FilterChipValue>}
+          <FilterChipChevron open={open} />
         </button>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content align="start" sideOffset={8}
           className="z-50 rounded-xl border border-border bg-surface-2 shadow-2xl p-4 w-[260px] data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2">
           <div className="flex items-center justify-between mb-3">
-            <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">Ano</div>
+            <div className="lbl-section">Ano</div>
             <div className="inline-flex items-center gap-1">
               <button onClick={() => setYear(y => y - 1)} className="w-7 h-7 inline-flex items-center justify-center rounded-md text-fg-muted hover:bg-surface-strong">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m15 18-6-6 6-6"/></svg>
               </button>
-              <select value={year} onChange={e => setYear(Number(e.target.value))}
-                      className="h-7 px-2 rounded-md bg-surface border border-border text-sm text-fg cursor-pointer">
-                {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
-              </select>
+              {/* Select do DS: o nativo aqui renderizava a seta do sistema
+                  operacional — cinza fixo no macOS, triângulo no Windows,
+                  nenhum dos dois seguindo o tema. */}
+              <Select
+                size="xs"
+                ariaLabel="Ano"
+                value={String(year)}
+                onChange={(v) => setYear(Number(v))}
+                options={availableYears.map((y) => ({ value: String(y), label: String(y) }))}
+              />
               <button onClick={() => setYear(y => y + 1)} className="w-7 h-7 inline-flex items-center justify-center rounded-md text-fg-muted hover:bg-surface-strong">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m9 18 6-6-6-6"/></svg>
               </button>
@@ -2028,38 +2158,37 @@ function MonthFilterPill({ values, onChange, availableYears }) {
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
-        <button className={cn(
-          "inline-flex items-center gap-2 h-9 px-3 rounded-lg border text-sm transition-colors",
-          isActive
-            ? "border-signature/50 bg-signature/10 text-signature"
-            : "border-border bg-surface text-fg hover:bg-surface-strong",
-        )}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="4" width="18" height="18" rx="2"/>
-            <path d="M16 2v4M8 2v4M3 10h18"/>
-          </svg>
-          <span>{label}</span>
-          {isActive && values.length > 1 && (
-            <CountBadge value={values.length} tone="onSignature" />
-          )}
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={cn("transition-transform", open && "rotate-180")}>
-            <path d="m6 9 6 6 6-6"/>
-          </svg>
+        <button type="button" aria-expanded={open} className={filterChipClass({ isSet: isActive })}>
+          <span aria-hidden="true" className={cn("shrink-0 grid place-items-center", isActive ? "text-signature" : "text-fg-subtle")}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="4" width="18" height="18" rx="2"/>
+              <path d="M16 2v4M8 2v4M3 10h18"/>
+            </svg>
+          </span>
+          <span className={isActive ? "font-semibold" : undefined}>Mês</span>
+          {isActive && <FilterChipValue>{label}</FilterChipValue>}
+          <FilterChipChevron open={open} />
         </button>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content align="start" sideOffset={8}
           className="z-50 rounded-xl border border-border bg-surface-2 shadow-2xl p-4 w-[300px] data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2">
           <div className="flex items-center justify-between mb-3">
-            <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">Ano</div>
+            <div className="lbl-section">Ano</div>
             <div className="inline-flex items-center gap-1">
               <button onClick={() => setYear(y => y - 1)} className="w-7 h-7 inline-flex items-center justify-center rounded-md text-fg-muted hover:bg-surface-strong">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m15 18-6-6 6-6"/></svg>
               </button>
-              <select value={year} onChange={e => setYear(Number(e.target.value))}
-                      className="h-7 px-2 rounded-md bg-surface border border-border text-sm text-fg cursor-pointer">
-                {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
-              </select>
+              {/* Select do DS: o nativo aqui renderizava a seta do sistema
+                  operacional — cinza fixo no macOS, triângulo no Windows,
+                  nenhum dos dois seguindo o tema. */}
+              <Select
+                size="xs"
+                ariaLabel="Ano"
+                value={String(year)}
+                onChange={(v) => setYear(Number(v))}
+                options={availableYears.map((y) => ({ value: String(y), label: String(y) }))}
+              />
               <button onClick={() => setYear(y => y + 1)} className="w-7 h-7 inline-flex items-center justify-center rounded-md text-fg-muted hover:bg-surface-strong">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m9 18 6-6-6-6"/></svg>
               </button>
@@ -2317,7 +2446,7 @@ function MetaRow({ k, v, mono, compact }) {
   if (compact) {
     return (
       <div className="min-w-0">
-        <div className="text-[10px] uppercase tracking-wider text-fg-subtle">{k}</div>
+        <div className="lbl-section">{k}</div>
         <div className={cn("text-[12px] text-fg truncate tabular-nums", mono && "font-mono")}
              title={String(v ?? "")}>{v || "—"}</div>
       </div>
@@ -2325,7 +2454,7 @@ function MetaRow({ k, v, mono, compact }) {
   }
   return (
     <div className="flex items-start justify-between gap-3 text-[11px]">
-      <span className="text-fg-subtle uppercase tracking-wider shrink-0">{k}</span>
+      <span className="lbl-section shrink-0">{k}</span>
       <span className={cn("text-fg text-right max-w-[300px]",
                           mono ? "font-mono break-all" : "truncate")}
             title={String(v ?? "")}>{v || "—"}</span>
@@ -2395,7 +2524,7 @@ function DeliveryChart({ daily }) {
       {/* Header — KPI grande à esquerda, toggle à direita */}
       <div className="flex items-start justify-between gap-3 px-4 pt-3.5 pb-2">
         <div className="min-w-0">
-          <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+          <div className="lbl-section">
             {meta.label} · 7 dias
           </div>
           <div className="flex items-baseline gap-2 mt-1">
@@ -2544,7 +2673,7 @@ function MetricToggle({ value, onChange }) {
           <button key={k} role="tab" aria-selected={active}
                   onClick={() => onChange(k)}
                   className={cn(
-                    "px-2 h-6 rounded text-[10.5px] uppercase tracking-wider font-semibold transition-colors",
+                    "lbl-section px-2 h-6 rounded transition-colors",
                     active
                       ? "bg-surface-2 text-fg shadow-sm"
                       : "text-fg-subtle hover:text-fg",
@@ -2564,8 +2693,8 @@ function DeltaPill({ pct }) {
   const isFlat  = Math.abs(pct) < 1;
   const isUp    = !isFlat && rounded > 0;
   const isDown  = !isFlat && rounded < 0;
-  const cls = isUp   ? "bg-emerald-500/10 text-emerald-400"
-            : isDown ? "bg-rose-500/10 text-rose-400"
+  const cls = isUp   ? "bg-success/10 text-success"
+            : isDown ? "bg-danger/10 text-danger"
             :          "bg-surface-2 text-fg-subtle";
   const arrow = isUp ? "↑" : isDown ? "↓" : "≈";
   const text = isFlat ? "flat" : `${Math.abs(rounded)}%`;
@@ -2588,7 +2717,7 @@ function Accordion({ label, summary, defaultOpen = false, children }) {
              open={defaultOpen}>
       <summary className="flex items-center justify-between gap-3 cursor-pointer select-none list-none px-4 py-2.5 hover:bg-surface/60 transition-colors [&::-webkit-details-marker]:hidden">
         <div className="min-w-0 flex-1">
-          <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">{label}</div>
+          <div className="lbl-section">{label}</div>
           {summary && (
             <div className="text-[11px] text-fg-muted mt-0.5 truncate" title={summary}>{summary}</div>
           )}
@@ -2613,7 +2742,7 @@ function GroupBlock({ line, onGroupClick, canEdit = true }) {
     return (
       <div className="rounded-lg border border-signature/30 bg-signature/[0.05] px-4 py-3">
         <div className="flex items-center justify-between mb-1.5">
-          <div className="text-[10px] uppercase tracking-widest font-bold text-signature">
+          <div className="lbl-section text-signature">
             Grupo · PI compartilhado
           </div>
           <span className="font-mono text-[10px] text-signature">{line.group_id}</span>
@@ -2684,7 +2813,7 @@ function overrideSummary(line, form) {
 function FieldGroup({ label, children }) {
   return (
     <div>
-      <label className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle mb-1.5 block">{label}</label>
+      <label className="lbl-section mb-1.5 block">{label}</label>
       {children}
     </div>
   );
@@ -2781,7 +2910,7 @@ function LinkCommandPopup({ open, onOpenChange, line, onLink }) {
           {loading && <Skeleton className="h-16 w-full rounded-md" />}
           {!loading && suggestions.length > 0 && (
             <div className="space-y-2 mb-5">
-              <div className="text-[10px] uppercase tracking-widest text-fg-subtle font-bold">Sugestões automáticas</div>
+              <div className="lbl-section">Sugestões automáticas</div>
               {suggestions.map(s => {
                 const linkingThis = linkingToken === s.short_token;
                 const dimmed = isLinking && !linkingThis;
@@ -2821,7 +2950,7 @@ function LinkCommandPopup({ open, onOpenChange, line, onLink }) {
             <div className="text-xs text-fg-muted mb-5">Nenhuma sugestão automática encontrada.</div>
           )}
           <div className="space-y-2">
-            <div className="text-[10px] uppercase tracking-widest text-fg-subtle font-bold">Vincular manualmente</div>
+            <div className="lbl-section">Vincular manualmente</div>
             <div className="flex items-center gap-2">
               <input type="text" value={manual} onChange={e => setManual(e.target.value.toUpperCase())}
                      placeholder="ex: NO2015"
@@ -2840,12 +2969,12 @@ function LinkCommandPopup({ open, onOpenChange, line, onLink }) {
             </div>
           </div>
           {err && (
-            <div className="mt-4 rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
+            <div className="mt-4 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
               {err}
               {conflict && (
                 <button onClick={() => tryLink(manual || suggestions[0]?.short_token, true)}
                         disabled={isLinking}
-                        className="block mt-2 text-amber-400 underline-offset-2 hover:underline text-xs disabled:opacity-40 disabled:no-underline">
+                        className="block mt-2 text-warning underline-offset-2 hover:underline text-xs disabled:opacity-40 disabled:no-underline">
                   {isLinking ? "Sobrescrevendo…" : `Sobrescrever — desvincular da line ${conflict} e vincular aqui`}
                 </button>
               )}
@@ -2875,25 +3004,25 @@ function LinkSuccessToast({ toast, onDismiss }) {
   if (!toast) return null;
   return (
     <div role="status"
-         className="fixed bottom-6 right-6 z-[60] max-w-[360px] rounded-lg border border-emerald-500/30 bg-emerald-500/[0.08] backdrop-blur-md px-3.5 py-2.5 shadow-xl animate-in fade-in slide-in-from-bottom-2 duration-200">
+         className="fixed bottom-6 right-6 z-[60] max-w-[360px] rounded-lg border border-success/30 bg-success/[0.08] backdrop-blur-md px-3.5 py-2.5 shadow-xl animate-in fade-in slide-in-from-bottom-2 duration-200">
       <div className="flex items-start gap-2.5">
-        <div className="shrink-0 w-5 h-5 rounded-full bg-emerald-500/20 flex items-center justify-center mt-px">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-300">
+        <div className="shrink-0 w-5 h-5 rounded-full bg-success/20 flex items-center justify-center mt-px">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-success">
             <path d="M20 6 9 17l-5-5"/>
           </svg>
         </div>
-        <div className="min-w-0 flex-1 text-[12.5px] text-emerald-100">
+        <div className="min-w-0 flex-1 text-[12.5px] text-success">
           <div>
-            <span className="font-mono font-semibold text-emerald-300">{toast.token}</span>
-            <span className="text-emerald-200/80"> vinculado</span>
+            <span className="font-mono font-semibold text-success">{toast.token}</span>
+            <span className="text-success/80"> vinculado</span>
           </div>
-          <div className="text-[11px] text-emerald-200/60 truncate mt-0.5" title={toast.lineLabel}>
+          <div className="text-[11px] text-success/60 truncate mt-0.5" title={toast.lineLabel}>
             {toast.lineLabel}
           </div>
         </div>
         <button onClick={onDismiss}
                 aria-label="Fechar"
-                className="shrink-0 -mt-0.5 -mr-1 w-6 h-6 rounded-md text-emerald-200/60 hover:text-emerald-200 hover:bg-emerald-500/10 inline-flex items-center justify-center">
+                className="shrink-0 -mt-0.5 -mr-1 w-6 h-6 rounded-md text-success/60 hover:text-success hover:bg-success/10 inline-flex items-center justify-center">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
             <path d="M18 6 6 18M6 6l12 12"/>
           </svg>
@@ -2907,8 +3036,8 @@ function SyncToast({ result, onDismiss }) {
   const ok = result.ok, s = result.summary;
   return (
     <div className={cn("mb-6 rounded-xl border px-4 py-3 text-sm flex items-start gap-3",
-      ok ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-         : "border-rose-500/30 bg-rose-500/10 text-rose-300")} role="status">
+      ok ? "border-success/30 bg-success/10 text-success"
+         : "border-danger/30 bg-danger/10 text-danger")} role="status">
       <div className="flex-1 min-w-0">
         {ok ? (
           <>
@@ -2939,8 +3068,8 @@ function LinesSkeleton() {
 
 function ErrorState({ message, onRetry }) {
   return (
-    <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-6 text-center">
-      <div className="text-rose-400 text-sm">{message}</div>
+    <div className="rounded-xl border border-danger/30 bg-danger/10 px-4 py-6 text-center">
+      <div className="text-danger text-sm">{message}</div>
       <Button variant="ghost" size="md" onClick={onRetry} className="mt-3">Tentar de novo</Button>
     </div>
   );

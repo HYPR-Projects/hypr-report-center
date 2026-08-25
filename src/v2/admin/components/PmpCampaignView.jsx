@@ -72,7 +72,7 @@ export function PmpCarteiraFilters({ situation, cycle, onSituation, onCycle, cou
 function ChipGroup({ label, options, value, counts, onChange }) {
   return (
     <div className="flex items-center gap-2 min-w-0">
-      <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle hidden sm:inline shrink-0">
+      <span className="lbl-section hidden sm:inline shrink-0">
         {label}
       </span>
       <div className="flex flex-wrap items-center gap-1.5">
@@ -133,7 +133,7 @@ export function PmpCampaignView({ campaigns, onLineClick, onLinkClick, sortBy = 
           {totals.live > 0 && (
             <>
               <span className="mx-1.5 text-fg-subtle">·</span>
-              <span className="text-emerald-500 dark:text-emerald-400">{totals.live} no ar</span>
+              <span className="text-success dark:text-success">{totals.live} no ar</span>
             </>
           )}
         </p>
@@ -194,8 +194,8 @@ function CampaignAccordionInner({ campaign: c, defaultOpen = false, bulk, onLine
                 {c.status}
               </span>
               {c.liveCount > 0 && (
-                <span className="inline-flex items-center gap-1 text-[10.5px] font-medium text-emerald-500 dark:text-emerald-400">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgb(52,211,153)]" />
+                <span className="inline-flex items-center gap-1 text-[10.5px] font-medium text-success dark:text-success">
+                  <span className="w-1.5 h-1.5 rounded-full bg-success shadow-[0_0_8px_rgb(52,211,153)]" />
                   {c.liveCount} no ar
                 </span>
               )}
@@ -221,7 +221,7 @@ function CampaignAccordionInner({ campaign: c, defaultOpen = false, bulk, onLine
             </div>
           </div>
           <div className="hidden sm:block text-right shrink-0">
-            <div className="text-[10px] uppercase tracking-widest text-fg-subtle font-semibold">Última entrega</div>
+            <div className="lbl-section">Última entrega</div>
             <div className="text-[12.5px] font-semibold text-fg tabular-nums mt-0.5">{lastDeliv || "—"}</div>
           </div>
         </div>
@@ -233,7 +233,7 @@ function CampaignAccordionInner({ campaign: c, defaultOpen = false, bulk, onLine
                 sub={multiFlight && hasPi ? `${c.flightsWithPi} de ${c.flights.length} flights` : null} />
           <Stat label={METRIC.revenue.label} title={METRIC.revenue.hint} value={formatBRL(c.revenue)} />
           <Stat label={METRIC.margin.label} title={METRIC.margin.hint}
-                value={formatBRL(c.margin)} valueClass="text-emerald-600 dark:text-emerald-400"
+                value={formatBRL(c.margin)} valueClass="text-success"
                 sub={c.marginPct != null ? `${formatRatioPct(c.marginPct, 0)} da receita` : null} />
           <Stat label={METRIC.cost.label} title={METRIC.cost.hint}
                 value={formatBRL(c.cost)} valueClass="text-fg-muted" />
@@ -253,7 +253,7 @@ function CampaignAccordionInner({ campaign: c, defaultOpen = false, bulk, onLine
             <ProgressRow label="Receita Bruta" value={c.revenue} total={c.pi} ratio={c.pctRev} tone="revenue" />
           </div>
         ) : (
-          <div className="mt-4 px-3 py-2 rounded-md border border-dashed border-amber-500/30 bg-amber-500/5 text-[11px] text-amber-700 dark:text-amber-300">
+          <div className="mt-4 px-3 py-2 rounded-md border border-dashed border-warning/30 bg-warning/5 text-[11px] text-warning dark:text-warning">
             Sem PI vinculado — não dá pra medir entrega contra contrato.
           </div>
         )}
@@ -294,7 +294,7 @@ function FlightBlock({ flight: f, onLineClick, onLinkClick }) {
   return (
     <div className="rounded-lg border border-signature/25 bg-signature/[0.03] overflow-hidden">
       <div className="flex items-center gap-3 flex-wrap px-4 py-2.5 border-b border-signature/15">
-        <span className="text-[9px] uppercase tracking-[0.16em] font-semibold text-signature shrink-0">
+        <span className="lbl-micro text-signature shrink-0">
           {f.kind === "group" ? "Flight · 1 PI" : "Flight"}
         </span>
         <span className="text-[12.5px] font-medium text-fg truncate min-w-0" title={f.name}>{f.name}</span>
@@ -305,7 +305,7 @@ function FlightBlock({ flight: f, onLineClick, onLinkClick }) {
           <span className="text-fg-subtle">{f.lines.length} {f.lines.length === 1 ? "line" : "lines"}</span>
           <span className="text-fg-muted">PI <span className="font-semibold text-fg">{f.pi != null ? formatBRL(f.pi) : "—"}</span></span>
           <span className="hidden sm:inline text-fg-muted">Receita <span className="font-semibold text-fg">{formatBRL(f.revenue)}</span></span>
-          <span className="text-fg-muted">Margem <span className="font-semibold text-emerald-600 dark:text-emerald-400">{formatBRL(f.margin)}</span></span>
+          <span className="text-fg-muted">Margem <span className="font-semibold text-success">{formatBRL(f.margin)}</span></span>
           {f.pi > 0 && (
             <span className={cn("px-1.5 py-0.5 rounded font-semibold", pctDeliveryClass(f.margin / f.pi))}>
               {formatRatioPct(f.margin / f.pi, 0)}
@@ -349,7 +349,7 @@ function ProgressRow({ label, value, total, ratio, tone }) {
       <div className="flex items-baseline justify-between gap-3 mb-1">
         <span className="text-[11px] text-fg-muted">
           <span className={cn("font-medium tabular-nums",
-            tone === "margin" ? "text-emerald-600 dark:text-emerald-400" : "text-sky-600 dark:text-sky-400")}>
+            tone === "margin" ? "text-success" : "text-signature dark:text-signature")}>
             {formatBRL(value)}
           </span>
           <span className="text-fg-subtle"> de </span>
@@ -372,7 +372,7 @@ function ProgressRow({ label, value, total, ratio, tone }) {
 function Stat({ label, value, sub, valueClass, title }) {
   return (
     <div className="min-w-0" title={title}>
-      <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-semibold">{label}</div>
+      <div className="lbl-micro text-fg-subtle">{label}</div>
       <div className={cn("text-[14px] font-semibold tabular-nums truncate mt-0.5", valueClass || "text-fg")}
            title={typeof value === "string" ? value : undefined}>
         {value}
@@ -385,7 +385,7 @@ function Stat({ label, value, sub, valueClass, title }) {
 function Warning({ children, title }) {
   return (
     <span title={title}
-          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[10.5px] font-medium border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[10.5px] font-medium border border-warning/30 bg-warning/10 text-warning dark:text-warning">
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
            strokeLinecap="round" strokeLinejoin="round" aria-hidden>
         <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
