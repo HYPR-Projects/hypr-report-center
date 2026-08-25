@@ -56,16 +56,22 @@ export function isFeatureAdmin(user) {
 
 // ─── Admin session persistence (localStorage, 8h TTL) ────────────────────────
 /**
- * Persiste user + Google id_token com TTL de 8h. Substitui o antigo
- * sessionStorage que morria com a aba. O admin JWT é persistido depois
- * via `updateSessionAdminJwt()` (depois do primeiro mint via id_token).
+ * Persiste user + Google id_token (+ admin JWT) com TTL de 8h. Substitui o
+ * antigo sessionStorage que morria com a aba.
+ *
+ * `adminJwt` é opcional por compatibilidade, mas o caminho de login passa o
+ * JWT AQUI, junto: a tela de login só considera a entrada bem-sucedida depois
+ * de trocar o id_token pelo JWT do backend (ver LoginScreen). Gravar os dois
+ * de uma vez é o que garante que não existe sessão persistida sem credencial
+ * de trabalho — que era o estado em que o app entrava, batia 401 em tudo e
+ * voltava pro login em laço.
  */
-export function saveSession(user, idToken) {
+export function saveSession(user, idToken, adminJwt = null) {
   try {
     const payload = {
       user,
       idToken,
-      adminJwt: null,
+      adminJwt,
       expiresAt: Date.now() + SESSION_TTL_MS,
     };
     localStorage.setItem(LS_SESSION_KEY, JSON.stringify(payload));
@@ -272,27 +278,50 @@ export function getResolvedShortToken(urlToken) {
 
 // ─── Trade Google id_token → custom admin JWT (5min TTL) ─────────────────────
 /**
- * Calls backend to mint a short-lived admin JWT.
- * Returns { token, email, ttl } on success, or null if backend doesn't
- * support the endpoint yet (returns 404/501) or any other failure.
+ * Troca o id_token do Google pelo admin JWT do backend.
+ *
+ * Sucesso  → `{ token, email, ttl }`
+ * Recusa   → `{ token: null, status, reason }`  (nunca null seco)
+ *
+ * O shape de falha é objeto, não `null`, porque quem chama precisa saber a
+ * DIFERENÇA entre "o backend recusou esta conta" (status 401/403, `reason`
+ * vindo de backend/auth.py) e "não deu pra perguntar agora" (rede fora,
+ * 5xx, endpoint ausente). São dois problemas com donos diferentes: o
+ * primeiro é conta/Workspace, o segundo é infra — e o front tratava os dois
+ * como o mesmo `null`, o que virava um loop de login sem explicação.
+ *
+ * Callers antigos que só testam `issued?.token` continuam corretos.
  */
 export async function issueAdminJwt(googleIdToken) {
-  if (!googleIdToken) return null;
+  if (!googleIdToken) return { token: null, status: 0, reason: "missing_id_token" };
+  let res;
   try {
-    const res = await fetch(`${API_URL}?action=issue_admin_token`, {
+    res = await fetch(`${API_URL}?action=issue_admin_token`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${googleIdToken}`,
         "Content-Type": "application/json",
       },
     });
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (!data?.token) return null;
-    return data;
   } catch {
-    return null;
+    // Rede fora, CORS, backend inalcançável — não houve veredito.
+    return { token: null, status: 0, reason: "network_error" };
   }
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* corpo vazio ou não-JSON — segue com data = null */
+  }
+  if (!res.ok || !data?.token) {
+    return {
+      token: null,
+      status: res.status,
+      // `reason` do backend quando existe; senão o status conta a história.
+      reason: data?.reason || (res.ok ? "malformed_response" : `http_${res.status}`),
+    };
+  }
+  return data;
 }
 
 // ─── Cached JWT for the menu tab ─────────────────────────────────────────────

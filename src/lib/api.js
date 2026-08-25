@@ -29,6 +29,7 @@ import {
   adminAuthHeaders,
   getOrIssueAdminJwt,
   clearCachedAdminJwt,
+  clearSession,
   loadSession,
   touchSession,
 } from "../shared/auth";
@@ -38,6 +39,37 @@ import { isDemoToken, buildDemoPayload, DEMO_TOKEN } from "../shared/demoData";
 // ── Helpers internos ─────────────────────────────────────────────────────────
 
 const jsonHeaders = { "Content-Type": "application/json" };
+
+/**
+ * 401/403 numa LEITURA admin: derruba a credencial local e AVISA. Devolve o
+ * Error pro caller lançar (`throw adminSessionLost("listCampaigns")`).
+ *
+ * POR QUE NÃO `window.location.reload()`
+ * ─────────────────────────────────────────────────────────────────────────
+ * Estes sete pontos faziam `localStorage.removeItem("hypr.session")` seguido
+ * de `location.reload()`. A intenção era "reabre o login", e no caso comum
+ * (sessão de 8h vencida) funcionava. Só que o reload não é o fim da história:
+ * a tela de login re-autentica sozinha (One Tap silencioso com `auto_select`)
+ * e o menu monta de novo. Se a causa do 401 persistir — backend recusando
+ * aquela conta, por exemplo — o mesmo 401 acontece, o handler recarrega de
+ * novo, e o app entra num laço infinito de "pisca no menu, volta pro login",
+ * sem mensagem nenhuma e sem como sair, nem em janela anônima. Foi assim que
+ * um operador ficou sem acessar o report em produção.
+ *
+ * A correção é parar de recarregar por conta própria: o modal global (o mesmo
+ * `SessionExpiredModalV2` que o `postJson` já usa) aparece, o laço automático
+ * morre, e a página só recarrega quando uma PESSOA clica. Recarregar cai na
+ * tela de login, que agora só deixa entrar com o admin JWT emitido e mostra o
+ * motivo quando o backend recusa (ver pages/LoginScreen).
+ */
+function adminSessionLost(context) {
+  // Sessão local sai: sem JWT válido ela não serve pra nada, e deixá-la ali
+  // fazia o app voltar pro menu num estado que já sabemos que não funciona.
+  clearSession();
+  clearCachedAdminJwt();
+  emitSessionExpired();
+  return new Error(`admin session expired (${context})`);
+}
 
 /**
  * Deadline de cliente para as leituras do menu admin.
@@ -163,9 +195,11 @@ async function postJson(url, body, extraHeaders = {}) {
     // backend rejeitou JWT novo).
   }
 
-  // Mint falhou ou retry 401 — emite evento pro modal global. Retorna a
-  // response original (caller decide se trata).
-  emitSessionExpired();
+  // Mint falhou ou retry 401 — derruba a sessão e abre o modal global.
+  // O Error devolvido pelo helper é descartado de propósito: aqui quem
+  // decide o que fazer com a falha é o caller, que recebe a response
+  // original de volta.
+  adminSessionLost("postJson");
   return res;
 }
 
@@ -225,9 +259,10 @@ export async function checkCampaignToken(token) {
  * ----------------
  * - Sucesso (200): retorna array (pode ser vazio se backend devolveu
  *   `{campaigns: []}`).
- * - 401/403: dispara `window.location.reload()` pra reabrir login e
- *   lança `Error("admin session expired")` — caller pode ignorar pois
- *   a página vai recarregar.
+ * - 401/403: derruba a sessão local, abre o modal global de sessão
+ *   expirada e lança `Error("admin session expired (listCampaigns)")`.
+ *   NÃO recarrega a página sozinho — ver `adminSessionLost` pra por quê
+ *   (o reload automático virava laço infinito de login).
  * - Qualquer outro erro (5xx, rede, JSON malformado): **lança**.
  *   Versões antigas retornavam `[]` silenciosamente, o que mascarava
  *   falhas como "lista realmente vazia" e gerava o bug de "0 campanhas"
@@ -246,9 +281,7 @@ export async function listCampaigns({ refresh = false } = {}) {
     signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
   });
   if (r.status === 401 || r.status === 403) {
-    try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
-    window.location.reload();
-    throw new Error("admin session expired");
+    throw adminSessionLost("listCampaigns");
   }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
@@ -300,9 +333,7 @@ export async function listClients() {
       signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
     });
     if (r.status === 401 || r.status === 403) {
-      try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
-      window.location.reload();
-      throw new Error("admin session expired");
+      throw adminSessionLost("listClients");
     }
     if (r.ok) {
       const d = await r.json();
@@ -359,9 +390,7 @@ export async function listPerformersForPeriod({ from, to } = {}) {
     signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
   });
   if (r.status === 401 || r.status === 403) {
-    try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
-    window.location.reload();
-    throw new Error("admin session expired");
+    throw adminSessionLost("listPerformersForPeriod");
   }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
@@ -397,9 +426,7 @@ export async function listTeamMembers() {
     signal: timeoutSignal(READ_TIMEOUT_LIGHT_MS),
   });
   if (r.status === 401 || r.status === 403) {
-    try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
-    window.location.reload();
-    throw new Error("admin session expired");
+    throw adminSessionLost("listTeamMembers");
   }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
@@ -1613,9 +1640,7 @@ export async function listPmpLines({ includeArchived = false, onlyActive = true 
   qs.set("only_active", onlyActive ? "1" : "0");
   const r = await fetch(`${API_URL}?${qs}`, { headers: { ...adminAuthHeaders(jwt) } });
   if (r.status === 401 || r.status === 403) {
-    try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
-    window.location.reload();
-    throw new Error("admin session expired");
+    throw adminSessionLost("listPmpLines");
   }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
@@ -1639,9 +1664,7 @@ export async function pmpLineWindowMetrics({ dateFrom, dateTo }) {
   const qs = new URLSearchParams({ action: "pmp_lines_window", date_from: dateFrom, date_to: dateTo });
   const r = await fetch(`${API_URL}?${qs}`, { headers: { ...adminAuthHeaders(jwt) } });
   if (r.status === 401 || r.status === 403) {
-    try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
-    window.location.reload();
-    throw new Error("admin session expired");
+    throw adminSessionLost("pmpLineWindowMetrics");
   }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
@@ -1659,9 +1682,7 @@ export async function pmpLinesTimeseries({ dateFrom, dateTo }) {
   const qs = new URLSearchParams({ action: "pmp_lines_timeseries", date_from: dateFrom, date_to: dateTo });
   const r = await fetch(`${API_URL}?${qs}`, { headers: { ...adminAuthHeaders(jwt) } });
   if (r.status === 401 || r.status === 403) {
-    try { localStorage.removeItem("hypr.session"); } catch { /* ignore */ }
-    window.location.reload();
-    throw new Error("admin session expired");
+    throw adminSessionLost("pmpLinesTimeseries");
   }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
