@@ -430,7 +430,7 @@ if [ -n "$PMP_SCHEDULER_SECRET" ] && [ -n "$XANDR_CURATE_USER" ]; then
 fi
 
 # ── 5a. Cloud Scheduler: pmp-pubmatic-refresh ────────────────────────────────
-# Re-sync SÓ da PubMatic, 4x/dia (10/14/18/22h BRT), além do cron das 04h.
+# Re-sync SÓ da PubMatic, DE HORA EM HORA das 05h às 23h BRT, além do cron 04h.
 #
 # Motivo (24/08/2026): o hub mostrava "entrega há 2d" pro deal do TIM enquanto
 # a Media Console da PubMatic mostrava a entrega de ontem. Nada estava quebrado
@@ -439,10 +439,25 @@ fi
 # apareceria "no ar" sem ter entregue nada); logo D-1 só entrava no run da
 # madrugada SEGUINTE. Em regime permanente: base 2 dias atrás, job 100% verde.
 #
+# Por que HORÁRIO e não os 4 slots de antes (10/14/18/22)
+# ────────────────────────────────────────────────────────
+# Os 4 slots eram chute. Funcionavam — mas deixavam um buraco de 6h entre o
+# cron das 04h e o primeiro re-sync às 10h, e é exatamente nessa janela que as
+# pessoas abrem o hub de manhã e veem a base um dia atrás. Trocar 10h por 07h
+# seria outro chute; a pergunta que ninguém respondeu é A QUE HORAS a PubMatic
+# fecha D-1, e ela varia.
+#
+# De hora em hora a resposta deixa de importar: a base fica fresca até ~1h
+# depois de a fonte fechar, qualquer que seja o horário. E como cada run grava
+# `api_last_day` no ledger, uma semana disso RESPONDE a pergunta com dado — aí
+# o schedule pode ser apertado por evidência em vez de por palpite.
+#
 # Barato de propósito: 1 request de report + MERGE idempotente + refresh da
 # enriched (~250 linhas). Não toca no Xandr, que é o caminho caro e já roda de
-# madrugada. O Bearer é cacheado 6h em memória, então 4 runs/dia não chegam
-# perto do limite de 200 gerações de token em 20min da PubMatic.
+# madrugada. O push do compplan pra planilha só acontece quando a fonte de fato
+# avançou (ver o handler) — senão seriam 19 reescritas por dia do mesmo número.
+# O Bearer é cacheado 6h em memória, então são ~4 gerações de token por dia,
+# longe do limite de 200 em 20min da PubMatic.
 #
 # Não substitui o cron das 04h: aquele é o full sync (IOs, line items, Xandr,
 # espelho de checklists). Este só puxa a PubMatic de novo, mais tarde.
@@ -462,7 +477,7 @@ if [ -n "$PMP_SCHEDULER_SECRET" ]; then
   gcloud scheduler jobs create http "$PM_JOB" \
     --location="$REGION" \
     --project=site-hypr \
-    --schedule="0 10,14,18,22 * * *" \
+    --schedule="0 5-23 * * *" \
     --time-zone="America/Sao_Paulo" \
     --uri="$PM_URI" \
     --http-method=POST \
@@ -471,7 +486,7 @@ if [ -n "$PMP_SCHEDULER_SECRET" ]; then
     --attempt-deadline=300s \
     --description="Re-sync PubMatic (fecha D-1 no dia em que a fonte fecha)" \
     >/dev/null
-  echo "  ✓ Job recriado (0 10,14,18,22 * * * America/Sao_Paulo → $PM_URI)"
+  echo "  ✓ Job recriado (0 5-23 * * * America/Sao_Paulo → $PM_URI)"
 fi
 
 # ── 5b. Cloud Scheduler: auto-freeze-daily ───────────────────────────────────
