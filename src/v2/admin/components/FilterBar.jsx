@@ -413,9 +413,19 @@ export function FilterPanel({ title, children, footer, maxHeight = 320 }) {
 }
 
 /**
- * Linha selecionável do painel. `multi` desenha caixa; single desenha
- * marca de seleção — a mesma distinção que o OwnerFilter já fazia, agora
- * disponível pra todo filtro em vez de reimplementada por cada um.
+ * Linha selecionável do painel.
+ *
+ * A FORMA carrega a semântica, e as duas são sempre visíveis:
+ *
+ *   multi  → quadrado. Marcar um não desmarca os outros.
+ *   single → círculo. Marcar um substitui o anterior.
+ *
+ * Antes a variante single não desenhava nada quando desmarcada — só um
+ * vazio de 15px reservando o espaço da marca. Num painel misto (o de
+ * "Situação" tem "Apenas ativas" multi e três da worklist single) as
+ * linhas single liam como caixa que faltou desenhar. E num painel só de
+ * single não havia pista nenhuma de que a linha era selecionável antes
+ * de clicar: o indicador só existia DEPOIS de já se saber a resposta.
  */
 export function FilterOption({ label, sub, count, selected, onSelect, multi = false }) {
   return (
@@ -425,36 +435,33 @@ export function FilterOption({ label, sub, count, selected, onSelect, multi = fa
       role={multi ? "checkbox" : "menuitemradio"}
       aria-checked={!!selected}
       className={cn(
-        "w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md cursor-pointer border-0 text-left",
+        "group/opt w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md cursor-pointer border-0 text-left",
         "bg-transparent hover:bg-surface transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
       )}
     >
-      {multi ? (
-        <span
-          aria-hidden="true"
-          className={cn(
-            "shrink-0 size-[15px] rounded border grid place-items-center transition-colors",
-            selected ? "bg-signature-fill border-signature" : "border-border-strong bg-transparent",
-          )}
-        >
-          {selected && (
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5"
-                 strokeLinecap="round" strokeLinejoin="round" className="text-on-signature">
-              <path d="M20 6 9 17l-5-5" />
-            </svg>
-          )}
-        </span>
-      ) : (
-        <span aria-hidden="true" className="shrink-0 size-[15px] grid place-items-center text-signature">
-          {selected && (
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"
-                 strokeLinecap="round" strokeLinejoin="round">
-              <path d="M20 6 9 17l-5-5" />
-            </svg>
-          )}
-        </span>
-      )}
+      {/* Casca comum: mesmo tamanho, mesma borda, mesmo preenchimento
+       *  quando ativo. Só o raio e a marca interna mudam — assim as duas
+       *  variantes não conseguem divergir de peso ou de cor. */}
+      <span
+        aria-hidden="true"
+        className={cn(
+          "shrink-0 size-[15px] border grid place-items-center transition-colors",
+          multi ? "rounded" : "rounded-full",
+          selected
+            ? "bg-signature-fill border-signature"
+            : "border-border-strong bg-transparent group-hover/opt:border-fg-subtle",
+        )}
+      >
+        {selected && (multi ? (
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5"
+               strokeLinecap="round" strokeLinejoin="round" className="text-on-signature">
+            <path d="M20 6 9 17l-5-5" />
+          </svg>
+        ) : (
+          <span className="size-[5px] rounded-full bg-on-signature" />
+        ))}
+      </span>
 
       <span className="flex-1 min-w-0">
         <span className={cn("block text-[12.5px] truncate", selected ? "font-semibold text-fg" : "text-fg-muted")}>
