@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { C } from "../../shared/theme";
 import {
   saveSurvey as saveSurveyApi,
@@ -6,11 +6,13 @@ import {
   listTypeformForms,
   fetchTypeformFormMeta,
   fetchTypeformViaProxy,
+  listMaxAttentionCreatives,
 } from "../../lib/api";
 import ModalShell from "./ModalShell";
 import { toast } from "../../lib/toast";
 import { parseSurveyConfig, serializeSurveyConfig, sumCounts, getSideSource } from "../../shared/surveyConfig";
 import { parseVideoaskFile } from "../../lib/videoaskParser";
+import { levenshtein, canonicalLabel, similarity, SOURCE_TINTS } from "../../shared/surveySources";
 
 /**
  * Modal pra configurar surveys com slots independentes pra Controle e Exposto.
@@ -43,6 +45,11 @@ import { parseVideoaskFile } from "../../lib/videoaskParser";
  */
 const EMPTY_SIDE = (defaultMode = "list") => ({
   source: "typeform",
+  // Bases SOMADAS a esta, além da principal. Hoje só Max Attention entra
+  // aqui: `{source:"maxattention", creativeId, creativeName, question}`.
+  // Vazio = comportamento de sempre (uma base por lado), e o JSON salvo
+  // sai idêntico ao de antes.
+  extras: [],
   mode: defaultMode,
   formId: "",
   url: "",
@@ -61,13 +68,20 @@ const EMPTY_BLOCK = (defaultMode = "list") => ({
   focusRow: "",
 });
 
-// Diz se um SideState tem dado utilizável (URL/form ID pra typeform OU
-// counts pra videoask). Usado em validação e na decisão de habilitar
-// botões de save/preview.
-function sideHasData(side) {
+// Dado utilizável na base PRINCIPAL do lado (URL/form ID pra typeform,
+// counts pra videoask).
+function primaryHasData(side) {
   if (!side) return false;
   if (side.source === "videoask") return sumCounts(side.counts) > 0;
   return !!(side.formId || extractFormId(side.url));
+}
+
+// Dado utilizável no lado como um todo. Um lado só com Max Attention —
+// sem Typeform nenhum — é válido: a pesquisa pode estar rodando só na
+// mídia da HYPR.
+function sideHasData(side) {
+  if (!side) return false;
+  return primaryHasData(side) || (side.extras || []).length > 0;
 }
 
 // Espelho frontend de _extract_typeform_form_id do backend.
@@ -99,27 +113,6 @@ function normalizeAndTokenize(title) {
     .toLowerCase()
     .split(/[_\-\s]+/)
     .filter(Boolean);
-}
-
-// Distância de Levenshtein. Strings curtas (< 32 chars) — barato.
-function levenshtein(a, b) {
-  if (a === b) return 0;
-  const al = a.length;
-  const bl = b.length;
-  if (!al) return bl;
-  if (!bl) return al;
-  let prev = new Array(bl + 1);
-  let cur = new Array(bl + 1);
-  for (let j = 0; j <= bl; j++) prev[j] = j;
-  for (let i = 1; i <= al; i++) {
-    cur[0] = i;
-    for (let j = 1; j <= bl; j++) {
-      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
-      cur[j] = Math.min(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
-    }
-    [prev, cur] = [cur, prev];
-  }
-  return prev[bl];
 }
 
 // Classifica 1 token. Retorna "controle" / "exposto" / null.
@@ -234,6 +227,139 @@ function findPartnerForm(formId, formsById, forms) {
 // `slotGroup` é o slot lógico ("controle"/"exposto") onde o form foi posto,
 // usado pra rotular conflitos ("já usado em P2 Controle"). Só inspeciona
 // lados com source=typeform — videoask não conflita por formId.
+// ── Pareamento automático com o Max Attention ──────────────────────────────
+//
+// O nome do criativo na plataforma já carrega tudo que precisamos:
+//
+//     ID-FXR5US_HYPR_LOREAL_..._SURVEY_AWARENESS_CONTROLE
+//        ^^^^^^ campanha                          ^^^^^^^^ lado
+//
+// e o criativo traz os títulos das perguntas que ele coletou. Com isso dá
+// pra sugerir o casamento inteiro sem o admin digitar nada: campanha vem
+// do backend (que já filtra por token), lado vem do sufixo, e a pergunta
+// casa por título usando a MESMA régua que soma os rótulos depois.
+//
+// Sugestão nunca vira configuração sozinha — o admin clica pra aceitar.
+
+// Limiar de casamento de TÍTULO de pergunta. Mais frouxo que o de rótulo
+// de resposta (0.86): títulos variam mais entre bases ("Ad Recall" ×
+// "Ad Recall — Airlicium") e o custo de errar é menor, porque a sugestão
+// aparece nomeada na tela antes de valer.
+const MA_QUESTION_THRESHOLD = 0.62;
+
+// Quanto as opções do criativo casam com as do Typeform daquele lado.
+// Devolve 0..1 (fração das opções do Typeform encontradas no criativo) ou
+// `null` quando falta informação dos dois lados pra comparar.
+//
+// É ESTE sinal que separa uma pergunta da outra. O nome do criativo diz a
+// campanha e o lado, mas não diz QUAL pergunta ele coletou — e no Tap to
+// Choose de pergunta única o evento nem carrega título. Sem comparar opção,
+// a sugestão só sabia "é da campanha e é o lado certo" e oferecia o mesmo
+// criativo de Ad Recall também pra Preferência.
+function maOptionOverlap(creative, typeformOptions) {
+  const mine = (creative?.options || []).map(canonicalLabel).filter(Boolean);
+  const theirs = (typeformOptions || []).map(canonicalLabel).filter(Boolean);
+  if (!mine.length || !theirs.length) return null;
+  const set = new Set(mine);
+  let hit = 0;
+  for (const o of theirs) {
+    // Igualdade canônica ou aproximação — mesma régua do reconciliador que
+    // soma os rótulos depois. Se não casasse aqui, também não somaria lá.
+    if (set.has(o) || mine.some((m) => similarity(m, o) >= 0.86)) hit++;
+  }
+  return hit / theirs.length;
+}
+
+// Piso de casamento de opções. Metade das opções do Typeform presentes no
+// criativo já é evidência forte de ser a mesma pergunta (tolera uma opção a
+// mais ou a menos de um lado); abaixo disso são perguntas diferentes.
+const MA_OPTION_THRESHOLD = 0.5;
+
+// Melhor pergunta do criativo pro nome do bloco. Criativo sem pergunta
+// declarada (pergunta única) devolve "" — o backend então soma todas as
+// respostas dele, que é exatamente o certo aí.
+function matchMaQuestion(creative, blockNome) {
+  const questions = creative?.questions || [];
+  if (questions.length <= 1) return questions[0] || "";
+  const target = canonicalLabel(blockNome || "");
+  if (!target) return "";
+  let best = "";
+  let bestScore = 0;
+  for (const q of questions) {
+    const score = similarity(target, canonicalLabel(q));
+    if (score > bestScore) { bestScore = score; best = q; }
+  }
+  return bestScore >= MA_QUESTION_THRESHOLD ? best : "";
+}
+
+// Criativos que servem pra um slot: o lado bate, ou o nome não diz nada e
+// aí cabe nos dois.
+//
+// Não exigimos que o criativo declare perguntas: no Tap to Choose de
+// pergunta única o evento não carrega título de pergunta (só o rótulo da
+// resposta), então `questions` vem vazio — e é justamente o caso mais
+// comum. Lista vazia significa "a pergunta do criativo", não "sem dado".
+function maCandidatesForSide(creatives, sideKey) {
+  const wanted = sideKey === "ctrl" ? "controle" : "exposto";
+  return (creatives || []).filter(
+    (c) => c && (c.side === wanted || c.side == null),
+  );
+}
+
+// A melhor sugestão pra um slot.
+//
+// A regra que importa: só sugere com evidência de que o criativo coletou
+// ESTA pergunta. Ser da campanha e do lado certo NÃO basta — foi assim que
+// a primeira versão ofereceu o criativo de Ad Recall também pro slot de
+// Preferência, já que os dois são "FXR5US, controle".
+//
+// A evidência vem de um dos dois, nesta ordem:
+//   1. as OPÇÕES batem com as do Typeform daquele lado (sinal forte: é a
+//      mesma pergunta sendo respondida nas duas bases, que é justamente a
+//      premissa da soma);
+//   2. o TÍTULO da pergunta do criativo casa com o nome do bloco (só existe
+//      em criativo de múltiplas perguntas).
+//
+// Sem nenhum dos dois — o Typeform ainda não carregou, ou o criativo não
+// declara opções — devolve `null` e a lista fica pro admin. Nesse caso não
+// há como saber, e chutar é pior que não sugerir.
+function suggestMaForSide(creatives, sideKey, blockNome, alreadyUsed, typeformOptions) {
+  const wanted = sideKey === "ctrl" ? "controle" : "exposto";
+  const used = new Set(alreadyUsed || []);
+  let best = null;
+
+  for (const c of maCandidatesForSide(creatives, sideKey)) {
+    if (used.has(c.creative_id)) continue;
+
+    const overlap = maOptionOverlap(c, typeformOptions);
+    // Opções comparáveis e DIVERGENTES: é outra pergunta. Descarta — não é
+    // "menos provável", é errado.
+    if (overlap !== null && overlap < MA_OPTION_THRESHOLD) continue;
+
+    const question = matchMaQuestion(c, blockNome);
+    const hasEvidence = overlap !== null || !!question;
+    if (!hasEvidence) continue;
+
+    const score =
+      (c.side === wanted ? 4 : 0) +
+      (overlap !== null ? Math.round(overlap * 3) : 0) +
+      (question ? 2 : 0) +
+      (c.match === "short_token" ? 1 : 0);
+
+    const why = overlap !== null
+      ? `opções batem com o Typeform${c.side === wanted ? ` · nome indica ${wanted}` : ""}`
+      : `pergunta "${question}"${c.side === wanted ? ` · nome indica ${wanted}` : ""}`;
+
+    if (!best || score > best.score || (score === best.score && c.responses > best.creative.responses)) {
+      best = { creative: c, question, score, why };
+    }
+  }
+
+  // Mesmo com evidência de pergunta, exige o lado bater (ou o nome ser
+  // neutro) — score < 2 significa que nem lado nem pergunta sustentam.
+  return best && best.score >= 2 ? best : null;
+}
+
 function buildUsageMap(blocks) {
   const m = new Map();
   blocks.forEach((b, blockIdx) => {
@@ -278,6 +404,17 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
   const [loading, setLoading] = useState(true);
   const [forms, setForms] = useState([]);            // [{id,title,last_updated_at,display_url}]
   const [formsError, setFormsError] = useState("");
+  // Criativos do Max Attention desta campanha. `maStatus`:
+  //   "loading" | "ready"
+  //   "off"    — MA_SURVEY_VIEW não configurada: a seção some, não há o que
+  //              oferecer e não há nada que o admin possa fazer.
+  //   "stale"  — backend ainda não atualizado (o front publica no merge, a
+  //              Cloud Function é deploy manual). Aviso neutro: não é falha
+  //              de nada, é uma janela de defasagem que se fecha sozinha.
+  //   "error"  — falhou de verdade; o admin precisa ver o motivo.
+  const [maCreatives, setMaCreatives] = useState([]);
+  const [maStatus, setMaStatus] = useState("loading");
+  const [maError, setMaError] = useState("");
   const [scope, setScope] = useState("workspace");
   // Cache de meta por formId — populado sob demanda quando admin seleciona um form.
   // valor: { type: "matrix"|"choice"|"other", rows: [str], loading?: bool, error?: str }
@@ -382,13 +519,22 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
           try {
             const url = `https://form.typeform.com/to/${id}`;
             const data = await fetchTypeformViaProxy(url, null);
+            // As OPÇÕES vêm de graça nesta mesma resposta (a chamada já é
+            // feita pro span de datas) e são o que identifica a pergunta:
+            // "Sim/Não/Talvez" contra "Marca A/Marca B" separa Ad Recall de
+            // Preferência quando o criativo do Max Attention não declara
+            // título de pergunta — que é o caso do Tap to Choose comum.
+            const options = data?.type === "matrix"
+              ? Object.keys(data?.rows || {})
+              : Object.keys(data?.counts || {});
             return [id, {
               first: data?.first_response_at || null,
               last: data?.last_response_at || null,
               total: typeof data?.total === "number" ? data.total : null,
+              options,
             }];
           } catch {
-            return [id, { first: null, last: null, total: null, error: true }];
+            return [id, { first: null, last: null, total: null, options: [], error: true }];
           }
         }),
       );
@@ -407,11 +553,24 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [savedRaw, formsResp] = await Promise.allSettled([
+      const [savedRaw, formsResp, maResp] = await Promise.allSettled([
         getSurveyApi({ short_token: shortToken }),
         listTypeformForms(),
+        listMaxAttentionCreatives({ shortToken }),
       ]);
       if (cancelled) return;
+
+      if (maResp.status === "fulfilled") {
+        setMaCreatives(maResp.value?.creatives || []);
+        setMaStatus("ready");
+      } else if (maResp.reason?.notConfigured) {
+        setMaStatus("off");
+      } else if (maResp.reason?.staleBackend) {
+        setMaStatus("stale");
+      } else {
+        setMaStatus("error");
+        setMaError(maResp.reason?.message || "Falha ao listar criativos do Max Attention");
+      }
 
       let formsList = [];
       let listFailed = false;
@@ -438,11 +597,22 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
           const hydrateSide = (q, side) => {
             const source = getSideSource(q, side);
             const base = EMPTY_SIDE(defaultMode);
+            // Schema v4: a 1ª parte é a base principal (e já foi espelhada
+            // nos campos de fonte única, que `getSideSource` leu acima);
+            // as demais viram `extras`.
+            const parts = side === "ctrl" ? q.ctrlParts : q.expParts;
+            const extras = Array.isArray(parts) ? parts.slice(1).filter(Boolean) : [];
+            const maOnly =
+              Array.isArray(parts) && parts.length === 1 && parts[0]?.source === "maxattention";
+            if (maOnly) {
+              return { ...base, source: "typeform", extras: [parts[0]] };
+            }
             if (source === "videoask") {
               const counts = side === "ctrl" ? q.ctrlCounts : q.expCounts;
               return {
                 ...base,
                 source: "videoask",
+                extras,
                 fileName: (side === "ctrl" ? q.ctrlFileName : q.expFileName) || "",
                 question: (side === "ctrl" ? q.ctrlQuestion : q.expQuestion) || "",
                 counts: counts || {},
@@ -457,6 +627,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
             return {
               ...base,
               source: "typeform",
+              extras,
               mode: matched ? "list" : (fid || url ? "manual" : defaultMode),
               formId: matched ? fid : "",
               url,
@@ -480,6 +651,76 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
     })();
     return () => { cancelled = true; };
   }, [shortToken]);
+
+  // Opções do Typeform de um lado — vêm da chamada de span, que já é feita.
+  // É o que permite decidir se um criativo do Max Attention coletou ESTA
+  // pergunta ou outra da mesma campanha.
+  const typeformOptionsOf = useCallback((side) => {
+    if (!side || side.source !== "typeform") return null;
+    const id = side.mode === "list" ? side.formId : extractFormId(side.url);
+    if (!id) return null;
+    return responseSpanByForm.get(id)?.options || null;
+  }, [responseSpanByForm]);
+
+  // Criativos do Max Attention já vinculados em qualquer slot — não faz
+  // sentido oferecer o mesmo criativo duas vezes (contaria em dobro).
+  const maUsedIds = useMemo(() => {
+    const ids = new Set();
+    for (const b of blocks) {
+      for (const k of ["ctrl", "exp"]) {
+        for (const e of b[k]?.extras || []) if (e?.creativeId) ids.add(e.creativeId);
+      }
+    }
+    return ids;
+  }, [blocks]);
+
+  // Sugestões pra TODOS os slots ainda sem Max Attention, resolvidas em
+  // sequência pra que dois slots não disputem o mesmo criativo.
+  const maSuggestions = useMemo(() => {
+    if (maStatus !== "ready" || !maCreatives.length) return [];
+    const used = new Set(maUsedIds);
+    const out = [];
+    blocks.forEach((b, idx) => {
+      for (const side of ["ctrl", "exp"]) {
+        if ((b[side]?.extras || []).length) continue;
+        const sug = suggestMaForSide(
+          maCreatives, side, b.nome, used, typeformOptionsOf(b[side]),
+        );
+        if (!sug) continue;
+        used.add(sug.creative.creative_id);
+        out.push({ idx, side, creative: sug.creative, question: sug.question });
+      }
+    });
+    return out;
+  }, [blocks, maCreatives, maStatus, maUsedIds, typeformOptionsOf]);
+
+  const applyMaSuggestions = () => {
+    setBlocks((bs) =>
+      bs.map((b, i) => {
+        const mine = maSuggestions.filter((sg) => sg.idx === i);
+        if (!mine.length) return b;
+        const next = { ...b };
+        for (const sg of mine) {
+          next[sg.side] = {
+            ...next[sg.side],
+            extras: [
+              ...(next[sg.side].extras || []),
+              {
+                source: "maxattention",
+                creativeId: sg.creative.creative_id,
+                creativeName: sg.creative.creative_name,
+                question: sg.question || "",
+              },
+            ],
+          };
+        }
+        return next;
+      }),
+    );
+    toast.success(
+      `${maSuggestions.length} base(s) do Max Attention conectada(s). Confira antes de salvar.`,
+    );
+  };
 
   const handleClose = () => { if (onClose) onClose(); };
 
@@ -566,9 +807,9 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
       // Serializa cada lado independentemente. Lados vazios omitem TODOS
       // os campos daquele lado (incluindo *Source) — leitor antigo lê como
       // "sem dado" e renderer single-side cuida do resto.
-      const writeSide = (out, side, sideKey /* "ctrl" | "exp" */) => {
-        if (!sideHasData(side)) return;
-        const prefix = sideKey;
+      // Escreve a base PRINCIPAL nos campos de fonte única — o formato que
+      // sempre existiu. Continua sendo o que um leitor pré-v4 enxerga.
+      const writePrimary = (out, side, prefix) => {
         out[`${prefix}Source`] = side.source;
         if (side.source === "videoask") {
           out[`${prefix}Counts`] = side.counts || {};
@@ -578,7 +819,6 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
           if (side.lastAt)   out[`${prefix}LastAt`]   = side.lastAt;
           return;
         }
-        // typeform
         if (side.mode === "list" && side.formId) {
           const f = formsById.get(side.formId);
           out[`${prefix}FormId`] = side.formId;
@@ -588,6 +828,41 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
           const id = extractFormId(out[`${prefix}Url`]);
           if (id) out[`${prefix}FormId`] = id;
         }
+      };
+
+      // A parte equivalente à base principal, pra montar `*Parts`.
+      const primaryPart = (side) => {
+        if (side.source === "videoask") {
+          return {
+            source: "videoask",
+            counts: side.counts || {},
+            total: sumCounts(side.counts),
+            fileName: side.fileName || "",
+            question: side.question || "",
+            firstAt: side.firstAt || null,
+            lastAt: side.lastAt || null,
+          };
+        }
+        const url =
+          side.mode === "list" && side.formId
+            ? formsById.get(side.formId)?.display_url || `https://form.typeform.com/to/${side.formId}`
+            : side.url.trim();
+        return { source: "typeform", url, formId: side.formId || extractFormId(url) };
+      };
+
+      // Um lado vira: campos de fonte única (a principal) + `*Parts` quando
+      // há mais de uma base, ou quando a única base é Max Attention — que
+      // um leitor antigo não saberia ler nos campos de fonte única.
+      const writeSide = (out, side, sideKey /* "ctrl" | "exp" */) => {
+        if (!sideHasData(side)) return;
+        const prefix = sideKey;
+        const extras = (side.extras || []).filter(Boolean);
+        const hasPrimary = primaryHasData(side);
+
+        if (hasPrimary) writePrimary(out, side, prefix);
+
+        const parts = [...(hasPrimary ? [primaryPart(side)] : []), ...extras];
+        if (parts.length > 1 || !hasPrimary) out[`${prefix}Parts`] = parts;
       };
       const payload = blocks.map((b) => {
         const out = { nome: b.nome.trim() };
@@ -690,6 +965,56 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
         </div>
       )}
 
+      {!loading && maStatus === "stale" && (
+        <div style={{
+          marginBottom: 12, padding: "8px 10px", borderRadius: 8,
+          border: `1px solid ${modalBdr}`, background: inputBg,
+          fontSize: 11.5, color: muted, lineHeight: 1.5,
+        }}>
+          Max Attention indisponível: o backend ainda não foi atualizado com esta
+          versão. Some sozinho no próximo deploy — o Typeform segue normal.
+        </div>
+      )}
+
+      {!loading && maStatus === "error" && (
+        <div style={{
+          marginBottom: 12, padding: "8px 10px", borderRadius: 8,
+          border: `1px solid ${modalBdr}`, background: inputBg,
+          fontSize: 11.5, color: muted, lineHeight: 1.5,
+        }}>
+          Não consegui listar os criativos do Max Attention ({maError}). O Typeform
+          segue funcionando normalmente.
+        </div>
+      )}
+
+      {!loading && maSuggestions.length > 0 && (
+        <div style={{
+          marginBottom: 12,
+          padding: "10px 12px",
+          borderRadius: 8,
+          border: `1px solid ${SOURCE_TINTS.maxattention.bd}`,
+          background: SOURCE_TINTS.maxattention.bg,
+          display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+        }}>
+          <span style={{ fontSize: 12, color: text, flex: "1 1 240px", lineHeight: 1.5 }}>
+            Esta campanha tem <strong>{maSuggestions.length}</strong> criativo(s) de pesquisa
+            no Max Attention que casam com {maSuggestions.length > 1 ? "estes slots" : "este slot"}.
+            Somar às respostas do Typeform?
+          </span>
+          <button
+            type="button"
+            onClick={applyMaSuggestions}
+            style={{
+              background: SOURCE_TINTS.maxattention.fg, border: "none", color: "#1a1a1a",
+              fontSize: 11.5, fontWeight: 700, cursor: "pointer",
+              padding: "6px 12px", borderRadius: 6, whiteSpace: "nowrap",
+            }}
+          >
+            Conectar automaticamente
+          </button>
+        </div>
+      )}
+
       {loading ? (
         <SkeletonBlock theme={{ inputBg, modalBdr }} />
       ) : (
@@ -775,6 +1100,11 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
                 label="Controle"
                 accentColor="#27AE60"
                 side={block.ctrl}
+                blockNome={block.nome}
+                typeformOptions={typeformOptionsOf(block.ctrl)}
+                maCreatives={maCreatives}
+                maStatus={maStatus}
+                maUsedIds={maUsedIds}
                 forms={forms}
                 formsById={formsById}
                 emptyForms={emptyForms}
@@ -793,6 +1123,11 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
                 label="Exposto"
                 accentColor={C.blue}
                 side={block.exp}
+                blockNome={block.nome}
+                typeformOptions={typeformOptionsOf(block.exp)}
+                maCreatives={maCreatives}
+                maStatus={maStatus}
+                maUsedIds={maUsedIds}
                 forms={forms}
                 formsById={formsById}
                 emptyForms={emptyForms}
@@ -1424,6 +1759,11 @@ function SideCard({
   label,             // "Controle" | "Exposto"
   accentColor,
   side,
+  blockNome,
+  typeformOptions,
+  maCreatives,
+  maStatus,
+  maUsedIds,
   forms,
   formsById,
   emptyForms,
@@ -1567,6 +1907,37 @@ function SideCard({
         />
       )}
 
+      <ExtraSourceSlot
+        sideKey={sideKey}
+        label={label}
+        blockNome={blockNome}
+        typeformOptions={typeformOptions}
+        extras={side.extras || []}
+        creatives={maCreatives}
+        status={maStatus}
+        usedIds={maUsedIds}
+        onAdd={(creative, question) =>
+          onChange({
+            extras: [
+              ...(side.extras || []),
+              {
+                source: "maxattention",
+                creativeId: creative.creative_id,
+                creativeName: creative.creative_name,
+                question: question || "",
+              },
+            ],
+          })
+        }
+        onRemove={(i) => onChange({ extras: (side.extras || []).filter((_, j) => j !== i) })}
+        onChangeQuestion={(i, question) =>
+          onChange({
+            extras: (side.extras || []).map((e, j) => (j === i ? { ...e, question } : e)),
+          })
+        }
+        theme={{ text, muted, modalBdr, inputBg, cardBg }}
+      />
+
       {mismatch && mismatch !== "ok" && (
         <div
           style={{
@@ -1607,6 +1978,161 @@ function SideCard({
             </button>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+// Bases somadas à principal do lado. Hoje: Max Attention.
+//
+// Some inteiro quando não há criativo pra oferecer — UI morta atrapalha
+// mais que ajuda num modal que já tem muita coisa. Com sugestão, vira um
+// clique só; sem sugestão confiável, vira uma lista pro admin escolher.
+function ExtraSourceSlot({
+  sideKey,
+  label,
+  blockNome,
+  typeformOptions,
+  extras,
+  creatives,
+  status,
+  usedIds,
+  onAdd,
+  onRemove,
+  onChangeQuestion,
+  theme,
+}) {
+  const { text, muted, modalBdr, inputBg } = theme;
+  const [picking, setPicking] = useState(false);
+
+  const candidates = useMemo(
+    () => maCandidatesForSide(creatives, sideKey).filter((c) => !usedIds.has(c.creative_id)),
+    [creatives, sideKey, usedIds],
+  );
+  const suggestion = useMemo(
+    () => suggestMaForSide(creatives, sideKey, blockNome, usedIds, typeformOptions),
+    [creatives, sideKey, blockNome, usedIds, typeformOptions],
+  );
+
+  const tint = SOURCE_TINTS.maxattention;
+  const hasExtras = extras.length > 0;
+  if (status !== "ready" && !hasExtras) return null;
+  if (!hasExtras && candidates.length === 0) return null;
+
+  const byId = new Map((creatives || []).map((c) => [c.creative_id, c]));
+
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${modalBdr}` }}>
+      {extras.map((extra, i) => {
+        const creative = byId.get(extra.creativeId);
+        const questions = creative?.questions || [];
+        return (
+          <div
+            key={`${extra.creativeId}-${i}`}
+            style={{
+              background: tint.bg,
+              border: `1px solid ${tint.bd}`,
+              borderRadius: 7,
+              padding: "8px 10px",
+              marginBottom: 6,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{
+                fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase",
+                color: tint.fg, background: theme.cardBg || "transparent",
+                border: `1px solid ${tint.bd}`, borderRadius: 999, padding: "2px 7px",
+              }}>+ Max Attention</span>
+              <span style={{ fontSize: 11.5, color: text, flex: "1 1 160px", wordBreak: "break-all" }}>
+                {extra.creativeName || extra.creativeId}
+              </span>
+              {creative?.responses != null && (
+                <span style={{ fontSize: 11, color: muted, whiteSpace: "nowrap" }}>
+                  {creative.responses.toLocaleString("pt-BR")} respostas
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => onRemove(i)}
+                title="Remover base"
+                style={{ background: "none", border: "none", color: muted, fontSize: 11, fontWeight: 600, cursor: "pointer", padding: 0 }}
+              >
+                × remover
+              </button>
+            </div>
+            {questions.length > 1 && (
+              <div style={{ marginTop: 6 }}>
+                <select
+                  value={extra.question || ""}
+                  onChange={(e) => onChangeQuestion(i, e.target.value)}
+                  style={{
+                    width: "100%", background: inputBg, border: `1px solid ${modalBdr}`,
+                    borderRadius: 6, padding: "6px 8px", color: text, fontSize: 11.5,
+                  }}
+                >
+                  <option value="">Todas as perguntas do criativo</option>
+                  {questions.map((q) => <option key={q} value={q}>{q}</option>)}
+                </select>
+                {!extra.question && (
+                  <div style={{ fontSize: 10.5, color: muted, marginTop: 4, lineHeight: 1.5 }}>
+                    O criativo tem mais de uma pergunta — sem escolher uma, as respostas
+                    de todas entram na soma.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {!hasExtras && suggestion && !picking && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => onAdd(suggestion.creative, suggestion.question)}
+            style={{
+              background: tint.bg, border: `1px solid ${tint.bd}`, color: tint.fg,
+              borderRadius: 7, padding: "6px 10px", cursor: "pointer",
+              fontSize: 11.5, fontWeight: 700, textAlign: "left", flex: "1 1 220px",
+            }}
+            title={suggestion.creative.creative_name}
+          >
+            + Somar Max Attention
+            <span style={{ fontWeight: 500, color: muted }}>
+              {" "}· {suggestion.creative.responses?.toLocaleString("pt-BR") || 0} respostas · {suggestion.why}
+            </span>
+          </button>
+          {candidates.length > 1 && (
+            <button
+              type="button"
+              onClick={() => setPicking(true)}
+              style={{ background: "none", border: "none", color: muted, fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+            >
+              escolher outro
+            </button>
+          )}
+        </div>
+      )}
+
+      {!hasExtras && (!suggestion || picking) && (
+        <select
+          value=""
+          onChange={(e) => {
+            const c = byId.get(e.target.value);
+            if (c) { onAdd(c, matchMaQuestion(c, blockNome)); setPicking(false); }
+          }}
+          style={{
+            width: "100%", background: inputBg, border: `1px solid ${modalBdr}`,
+            borderRadius: 7, padding: "8px 10px", color: text, fontSize: 12,
+          }}
+        >
+          <option value="">+ Somar base do Max Attention a {label}…</option>
+          {candidates.map((c) => (
+            <option key={c.creative_id} value={c.creative_id}>
+              {c.creative_name} · {(c.responses || 0).toLocaleString("pt-BR")} respostas
+            </option>
+          ))}
+        </select>
       )}
     </div>
   );

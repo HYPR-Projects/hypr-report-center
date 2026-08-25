@@ -13,14 +13,26 @@
 // estatisticamente correta de "agregar todos os resultados". O casamento
 // entre meses é POR NOME da pergunta; perguntas/marcas órfãs (presentes só
 // em alguns meses) são agregadas apenas com os meses que as contêm.
+//
+// Há DOIS eixos de agregação, e eles são independentes:
+//
+//   • entre FONTES do mesmo lado (Typeform + Max Attention + VideoAsk na
+//     mesma pergunta, mesmo mês) — resolvido em `loadSurveyQuestions` via
+//     `poolSideParts`, com reconciliação de rótulos;
+//   • entre MESES (o mesmo lado, meses diferentes) — resolvido aqui.
+//
+// Os dois usam o mesmo reconciliador (`surveySources.js`), então "Sim" de
+// abril soma com "sim" de maio pelo mesmo critério que faz o Typeform
+// somar com o Max Attention. Um eixo não sabe do outro.
 
-import { fetchTypeformViaProxy } from "../lib/api";
+import { fetchTypeformViaProxy, fetchMaxAttentionResults } from "../lib/api";
 import {
   parseSurveyConfig,
   sumCounts,
-  getSideSource,
+  getSideParts,
   hasSideData,
 } from "./surveyConfig";
+import { poolSideParts, poolChoiceParts, poolMatrixParts, SOURCE_LABELS } from "./surveySources";
 
 // Normaliza UM survey (1 token) no shape consumido pelos renderers do
 // SurveyTab. `rangeParam` ({from,to}|null) filtra as respostas Typeform.
@@ -39,16 +51,63 @@ export async function loadSurveyQuestions(surveyJson, rangeParam) {
     );
 
   if (hasModernQuestion) {
-    // Fetcha um lado individual (typeform → API, videoask → counts embutidos).
-    const fetchSide = async (q, side) => {
-      if (!hasSideData(q, side)) return null;
-      const source = getSideSource(q, side);
-      if (source === "videoask") {
-        const counts = side === "ctrl" ? q.ctrlCounts || {} : q.expCounts || {};
-        return { type: "choice", counts, total: sumCounts(counts) };
+    // Busca UMA fonte. Typeform vai na API (via proxy); fontes com
+    // contagens embutidas (VideoAsk, e Max Attention quando as respostas
+    // já foram gravadas na config) resolvem local, sem rede.
+    const fetchPart = async (part) => {
+      if (part.source === "typeform") {
+        const data = await fetchTypeformData(part.url || part.formId);
+        return data ? { ...data, source: "typeform", label: SOURCE_LABELS.typeform } : null;
       }
-      const url = side === "ctrl" ? q.ctrlUrl : q.expUrl;
-      return fetchTypeformData(url);
+      // Max Attention amarrado a um criativo é buscado ao vivo, com o
+      // mesmo filtro de período do Typeform. `counts` embutido continua
+      // valendo como fallback (config antiga, ou intake manual).
+      if (part.source === "maxattention" && part.creativeId) {
+        const data = await fetchMaxAttentionResults(part.creativeId, {
+          question: part.question || "",
+          range: rangeParam,
+        });
+        return data
+          ? {
+              ...data,
+              source: "maxattention",
+              label: part.creativeName || SOURCE_LABELS.maxattention,
+            }
+          : null;
+      }
+      const counts = part.counts || {};
+      const total = Number(part.total);
+      return {
+        type: "choice",
+        source: part.source,
+        label: part.creativeName || part.fileName || SOURCE_LABELS[part.source] || "",
+        counts,
+        total: Number.isFinite(total) && total > 0 ? total : sumCounts(counts),
+        firstAt: part.firstAt || null,
+        lastAt: part.lastAt || null,
+      };
+    };
+
+    // Um lado = N fontes somadas. Falha de UMA fonte não derruba o lado:
+    // o report mostra o que respondeu e registra a base que faltou, em vez
+    // de sumir com a pergunta inteira por causa de um 502 do Typeform.
+    const fetchSide = async (q, side) => {
+      const parts = getSideParts(q, side);
+      if (!parts.length) return null;
+      const settled = await Promise.allSettled(parts.map(fetchPart));
+      const ok = [];
+      const failed = [];
+      settled.forEach((r, i) => {
+        if (r.status === "fulfilled" && r.value) ok.push(r.value);
+        else failed.push({ source: parts[i].source, error: r.reason?.message || "falha ao buscar" });
+      });
+      if (!ok.length) {
+        if (failed.length) throw new Error(failed[0].error);
+        return null;
+      }
+      const pooled = poolSideParts(ok);
+      if (pooled && failed.length) pooled.reconciliation.failed = failed;
+      return pooled;
     };
 
     return Promise.all(
@@ -57,11 +116,16 @@ export async function loadSurveyQuestions(surveyJson, rangeParam) {
           fetchSide(q, "ctrl"),
           fetchSide(q, "exp"),
         ]);
-        const ctrlSource = getSideSource(q, "ctrl");
-        const expSource = getSideSource(q, "exp");
+        // `sources` é sempre ARRAY por lado — com multi-fonte, um lado pode
+        // ter mais de uma origem ao mesmo tempo.
         const sources = {
-          ctrl: ctrlData ? ctrlSource : null,
-          exp: expData ? expSource : null,
+          ctrl: ctrlData?.sources || null,
+          exp: expData?.sources || null,
+        };
+        const bases = { ctrl: ctrlData?.bases || null, exp: expData?.bases || null };
+        const reconciliation = {
+          ctrl: ctrlData?.reconciliation || null,
+          exp: expData?.reconciliation || null,
         };
         const isMatrix =
           ctrlData?.type === "matrix" && expData?.type === "matrix";
@@ -70,6 +134,8 @@ export async function loadSurveyQuestions(surveyJson, rangeParam) {
             nome: q.nome,
             type: "matrix",
             sources,
+            bases,
+            reconciliation,
             focusRow: q.focusRow || null,
             control_total: ctrlData.total,
             exposed_total: expData.total,
@@ -81,6 +147,8 @@ export async function loadSurveyQuestions(surveyJson, rangeParam) {
           nome: q.nome,
           type: "choice",
           sources,
+          bases,
+          reconciliation,
           focusRow: q.focusRow || null,
           control_total: ctrlData?.total ?? null,
           exposed_total: expData?.total ?? null,
@@ -108,93 +176,104 @@ export async function loadSurveyQuestions(surveyJson, rangeParam) {
   return [];
 }
 
-// Soma maps {label: count} acumulando em `dest` (mutado).
-function addCounts(dest, src) {
-  if (!src) return;
-  for (const [k, v] of Object.entries(src)) {
-    const n = Number(v);
-    if (Number.isFinite(n)) dest[k] = (dest[k] || 0) + n;
-  }
+// Fontes de um lado, sempre como array e sem repetição, preservando a
+// ordem de aparição. Aceita o formato antigo (string única) porque um
+// report pode estar sendo montado a partir de dado já em memória.
+function toSourceList(v) {
+  if (!v) return [];
+  return Array.isArray(v) ? v.filter(Boolean) : [v];
 }
 
-// Pooling de uma pergunta tipo choice através dos meses.
-function poolChoice(nome, list) {
-  const ctrl = {};
-  const exp = {};
-  let ct = 0;
-  let et = 0;
-  let hasCtrl = false;
-  let hasExp = false;
-  let sourcesCtrl = null;
-  let sourcesExp = null;
-  let focusRow = null;
-
+function unionSources(list, side) {
+  const out = [];
   for (const q of list) {
-    if (q.ctrl && Object.keys(q.ctrl).length) {
-      hasCtrl = true;
-      addCounts(ctrl, q.ctrl);
+    for (const s of toSourceList(q.sources?.[side])) {
+      if (!out.includes(s)) out.push(s);
     }
-    if (q.exp && Object.keys(q.exp).length) {
-      hasExp = true;
-      addCounts(exp, q.exp);
-    }
-    if (q.control_total != null) ct += q.control_total;
-    if (q.exposed_total != null) et += q.exposed_total;
-    if (!sourcesCtrl && q.sources?.ctrl) sourcesCtrl = q.sources.ctrl;
-    if (!sourcesExp && q.sources?.exp) sourcesExp = q.sources.exp;
-    if (!focusRow && q.focusRow) focusRow = q.focusRow;
   }
+  return out.length ? out : null;
+}
+
+// Bases (fonte × volume) de todos os meses, concatenadas — o admin
+// consegue ver de onde veio cada pedaço do total combinado.
+function concatBases(list, side) {
+  const out = [];
+  for (const q of list) {
+    for (const b of q.bases?.[side] || []) out.push(b);
+  }
+  return out.length ? out : null;
+}
+
+// Pooling de uma pergunta tipo choice através dos meses. Usa o MESMO
+// reconciliador da agregação entre fontes, então "Sim" de abril soma com
+// "sim" de maio — antes isso virava duas linhas no gráfico.
+function poolChoice(nome, list) {
+  const partsFor = (side) => {
+    const key = side === "ctrl" ? "ctrl" : "exp";
+    const totalKey = side === "ctrl" ? "control_total" : "exposed_total";
+    return list
+      .filter((q) => q[key] && Object.keys(q[key]).length)
+      .map((q, i) => ({
+        source: `mes-${i}`,
+        counts: q[key],
+        total: q[totalKey] ?? undefined,
+      }));
+  };
+
+  const ctrlPooled = poolChoiceParts(partsFor("ctrl"));
+  const expPooled = poolChoiceParts(partsFor("exp"));
+  const focusRow = list.find((q) => q.focusRow)?.focusRow || null;
 
   return {
     nome,
     type: "choice",
-    sources: { ctrl: hasCtrl ? sourcesCtrl : null, exp: hasExp ? sourcesExp : null },
+    sources: {
+      ctrl: ctrlPooled ? unionSources(list, "ctrl") : null,
+      exp: expPooled ? unionSources(list, "exp") : null,
+    },
+    bases: { ctrl: concatBases(list, "ctrl"), exp: concatBases(list, "exp") },
+    reconciliation: {
+      ctrl: ctrlPooled?.reconciliation || null,
+      exp: expPooled?.reconciliation || null,
+    },
     focusRow,
-    control_total: hasCtrl ? ct : null,
-    exposed_total: hasExp ? et : null,
-    ctrl: hasCtrl ? ctrl : null,
-    exp: hasExp ? exp : null,
+    control_total: ctrlPooled ? ctrlPooled.total : null,
+    exposed_total: expPooled ? expPooled.total : null,
+    ctrl: ctrlPooled ? ctrlPooled.counts : null,
+    exp: expPooled ? expPooled.counts : null,
   };
 }
 
 // Pooling de uma pergunta matrix: união das marcas, somando counts por
-// nota e totais — cada marca agrega só os meses que a contêm.
+// nota e totais — cada marca agrega só os meses que a contêm, e marcas
+// escritas diferente entre meses ("Vichy" × "vichy") caem na mesma linha.
 function poolMatrix(nome, list) {
-  const ctrlRows = {};
-  const expRows = {};
-  let ct = 0;
-  let et = 0;
-  let focusRow = null;
-  let sourcesCtrl = null;
-  let sourcesExp = null;
+  const partsFor = (rowsKey, totalKey) =>
+    list
+      .filter((q) => q[rowsKey] && Object.keys(q[rowsKey]).length)
+      .map((q, i) => ({
+        source: `mes-${i}`,
+        rows: q[rowsKey],
+        total: q[totalKey] ?? undefined,
+      }));
 
-  const mergeRows = (dest, src) => {
-    for (const [row, data] of Object.entries(src || {})) {
-      if (!dest[row]) dest[row] = { counts: {}, total: 0 };
-      addCounts(dest[row].counts, data?.counts);
-      dest[row].total += Number(data?.total) || 0;
-    }
-  };
-
-  for (const q of list) {
-    mergeRows(ctrlRows, q.ctrlRows);
-    mergeRows(expRows, q.expRows);
-    ct += q.control_total || 0;
-    et += q.exposed_total || 0;
-    if (!focusRow && q.focusRow) focusRow = q.focusRow;
-    if (!sourcesCtrl && q.sources?.ctrl) sourcesCtrl = q.sources.ctrl;
-    if (!sourcesExp && q.sources?.exp) sourcesExp = q.sources.exp;
-  }
+  const ctrlPooled = poolMatrixParts(partsFor("ctrlRows", "control_total"));
+  const expPooled = poolMatrixParts(partsFor("expRows", "exposed_total"));
 
   return {
     nome,
     type: "matrix",
-    sources: { ctrl: sourcesCtrl, exp: sourcesExp },
-    focusRow,
-    control_total: ct,
-    exposed_total: et,
-    ctrlRows,
-    expRows,
+    sources: { ctrl: unionSources(list, "ctrl"), exp: unionSources(list, "exp") },
+    bases: { ctrl: concatBases(list, "ctrl"), exp: concatBases(list, "exp") },
+    reconciliation: {
+      ctrl: ctrlPooled?.reconciliation || null,
+      exp: expPooled?.reconciliation || null,
+    },
+    focusRow: list.find((q) => q.focusRow)?.focusRow || null,
+    control_total: ctrlPooled?.total || 0,
+    exposed_total: expPooled?.total || 0,
+    ctrlRows: ctrlPooled?.rows || {},
+    expRows: expPooled?.rows || {},
   };
 }
 

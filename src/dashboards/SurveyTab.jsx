@@ -8,6 +8,8 @@ import { ymd } from "../shared/dateFilter";
 import { parseSurveyConfig, fmtClientRange } from "../shared/surveyConfig";
 import { loadSurveyQuestions, combineSurveyQuestions } from "../shared/surveyCombine";
 import { fmt } from "../shared/format";
+import { SOURCE_LABELS, SOURCE_TINTS, reconciliationSummary } from "../shared/surveySources";
+import { liftSignificance, significanceLabel } from "../shared/surveyStats";
 
 // Quando `combinedItems` é passado (array de {short_token, label, survey}),
 // o SurveyTab opera em modo AGREGADO: busca cada mês, soma as contagens
@@ -119,7 +121,16 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
       const ep = expPct[i]  ?? 0;
       const abs=Math.round((ep-cp)*10)/10;
       const rel=cp>0?Math.round((abs/cp)*1000)/10:0;
-      return{key:k,abs,rel,isFocus:k===focusRow};
+      // O teste vai na CONTAGEM BRUTA, não em ctrlPct/expPct: aqueles já
+      // passaram por Math.round e perderam justamente a precisão que o
+      // teste mede.
+      const sig = significanceLabel(liftSignificance({
+        ctrlN: ctrlTot,
+        ctrlPositive: ctrlMap?.[k] ?? 0,
+        expN: expTot,
+        expPositive: expMap?.[k] ?? 0,
+      }));
+      return{key:k,abs,rel,sig,isFocus:k===focusRow};
     }) : [];
     return(
       <div key={qIdx} style={{border:`1px solid ${bdr}`,borderRadius:12,padding:20,marginBottom:16,background:bgCard}}>
@@ -163,6 +174,26 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
                       <div style={{fontSize:16,fontWeight:600,color}}>{l.rel>=0?"+":""}{l.rel}%</div>
                     </div>
                   </div>
+                  {/* Margem de erro e significância são a régua com que a HYPR
+                      julga o próprio número — inclusive quando ela diz "não
+                      concluir". Sai da visão do cliente; o gate é aqui, e não
+                      no cálculo, porque `l.sig` continua alimentando o título
+                      e a leitura interna. */}
+                  {isAdmin && l.sig && (
+                    <div
+                      title={
+                        l.sig.tone === "muted"
+                          ? "Amostra abaixo do piso da HYPR (60 respostas por célula). O número aparece, mas não sustenta conclusão."
+                          : "Teste z de duas proporções, bicaudal, 95% de confiança — a mesma régua do brand lift do AdBolt."
+                      }
+                      style={{
+                        marginTop:8,fontSize:10.5,fontWeight:600,letterSpacing:0.2,cursor:"help",
+                        color: l.sig.tone === "good" ? "#2ECC71" : l.sig.tone === "warn" ? "#E0A21E" : mt,
+                      }}
+                    >
+                      {l.sig.tone === "good" ? "✓ " : l.sig.tone === "warn" ? "≈ " : "· "}{l.sig.text}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -451,7 +482,12 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
                 <div style={{fontSize:13,fontWeight:700,color:C.blue,textTransform:"uppercase",letterSpacing:1.5}}>
                   {q.nome||`Pergunta ${i+1}`}
                 </div>
-                <SourceBadges sources={q.sources}/>
+                {/* De qual base veio a resposta é decisão de metodologia da
+                    HYPR, não informação de relatório: pro cliente a pergunta
+                    é uma só, com um total só. As pílulas de fonte e o aviso de
+                    reconciliação entre bases ficam do lado de dentro. */}
+                {isAdmin && <SourceBadges sources={q.sources}/>}
+                {isAdmin && <ReconciliationNote reconciliation={q.reconciliation}/>}
               </div>
               {isAdmin && (
                 <div style={{fontSize:11,color:mt,whiteSpace:"nowrap"}}>
@@ -480,35 +516,104 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
 };
 
 // Badge inline da fonte de cada lado da pergunta. Pra Typeform/Typeform
-// (caso comum) escondemos badges — sem ruído. Pra mistos ou só-VideoAsk,
-// renderizamos pra deixar claro de onde vieram os dados.
-const SOURCE_LABEL = { typeform: "Standard Survey", videoask: "Video Survey" };
-const SOURCE_TINT  = {
-  typeform: { fg: "#3397B9", bg: "#3397B918", bd: "#3397B940" },
-  videoask: { fg: "#8E44AD", bg: "#8E44AD18", bd: "#8E44AD40" },
-};
+// (caso comum) escondemos badges — sem ruído. Pra mistos, só-VideoAsk ou
+// lados com MAIS DE UMA fonte somada, renderizamos: quando o número na
+// tela é a soma de duas bases, o leitor tem que saber disso.
+const SOURCE_LABEL = SOURCE_LABELS;
+const SOURCE_TINT  = SOURCE_TINTS;
+
+// `sources` de cada lado é uma lista (multi-fonte). Normaliza o formato
+// antigo (string) pra não depender da versão do dado em memória.
+const asList = (v) => (v == null ? [] : Array.isArray(v) ? v.filter(Boolean) : [v]);
+
 function SourceBadges({ sources }) {
   if (!sources) return null;
-  const c = sources.ctrl, e = sources.exp;
-  // Caso default: typeform×typeform — nada a mostrar
-  if ((c === "typeform" || c == null) && (e === "typeform" || e == null)) return null;
-  const pill = (label, kind) => {
+  const c = asList(sources.ctrl);
+  const e = asList(sources.exp);
+  const isPlainTypeform = (l) => l.length === 0 || (l.length === 1 && l[0] === "typeform");
+  // Caso default: typeform×typeform, uma base de cada lado — nada a mostrar
+  if (isPlainTypeform(c) && isPlainTypeform(e)) return null;
+
+  const pill = (label, kind, key) => {
     const t = SOURCE_TINT[kind] || SOURCE_TINT.typeform;
     return (
-      <span style={{
+      <span key={key} style={{
         fontSize:10,fontWeight:700,letterSpacing:0.6,textTransform:"uppercase",
         color:t.fg,background:t.bg,border:`1px solid ${t.bd}`,borderRadius:999,padding:"2px 7px",
       }}>{label}</span>
     );
   };
-  // Mesmo source nos 2 lados → 1 pílula só
-  if (c && e && c === e) return pill(SOURCE_LABEL[c], c);
-  // Mixed ou single-side
-  return (
-    <span style={{display:"inline-flex",gap:6,alignItems:"center"}}>
-      {c && pill(`Ctrl: ${SOURCE_LABEL[c]}`, c)}
-      {e && pill(`Exp: ${SOURCE_LABEL[e]}`, e)}
+  // Um lado com N fontes vira N pílulas encostadas, com "+" entre elas —
+  // a soma fica explícita ("Standard Survey + Max Attention").
+  const stack = (list, prefix) => (
+    <span style={{display:"inline-flex",gap:4,alignItems:"center"}}>
+      {list.map((kind, i) => (
+        <span key={`${prefix}-${kind}-${i}`} style={{display:"inline-flex",gap:4,alignItems:"center"}}>
+          {i > 0 && <span style={{fontSize:10,color:C.muted,fontWeight:700}}>+</span>}
+          {pill(i === 0 && prefix ? `${prefix}: ${SOURCE_LABEL[kind] || kind}` : (SOURCE_LABEL[kind] || kind), kind, `${prefix}-${kind}-${i}`)}
+        </span>
+      ))}
     </span>
+  );
+
+  // Mesmas fontes nos 2 lados → um conjunto só de pílulas, sem prefixo
+  const sameBothSides =
+    c.length && e.length && c.length === e.length && c.every((v, i) => v === e[i]);
+  if (sameBothSides) return stack(c, "");
+
+  return (
+    <span style={{display:"inline-flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+      {c.length > 0 && stack(c, "Ctrl")}
+      {e.length > 0 && stack(e, "Exp")}
+    </span>
+  );
+}
+
+// Aviso de reconciliação entre bases — SÓ pro admin (o chamador já gateia).
+// Já foi visível pro cliente no caso grave, na ideia de que "bases
+// divergentes" fosse uma proteção contra ler um total mal somado. Não era:
+// quem corrige divergência de base é a HYPR, na origem, e o aviso ainda
+// entregava ao cliente o que a decisão de esconder a fonte quer esconder —
+// que existe mais de uma base. Some pros dois motivos de uma vez.
+function ReconciliationNote({ reconciliation }) {
+  if (!reconciliation) return null;
+  const sides = [
+    { key: "ctrl", label: "Controle", rec: reconciliation.ctrl },
+    { key: "exp",  label: "Exposto",  rec: reconciliation.exp },
+  ].filter((s) => s.rec && s.rec.status !== "single");
+  if (!sides.length) return null;
+
+  const worst = sides.some((s) => s.rec.status === "mismatch")
+    ? "mismatch"
+    : sides.some((s) => s.rec.status === "partial")
+      ? "partial"
+      : "ok";
+
+  const tint = worst === "mismatch"
+    ? { fg:"#C0392B", bg:"#C0392B14", bd:"#C0392B40" }
+    : worst === "partial"
+      ? { fg:"#B7791F", bg:"#B7791F14", bd:"#B7791F40" }
+      : { fg:C.muted, bg:"transparent", bd:"transparent" };
+
+  const title = sides
+    .map((s) => `${s.label}: ${reconciliationSummary(s.rec) || "bases somadas sem divergência"}`)
+    .join("\n");
+
+  const text = worst === "mismatch"
+    ? "bases divergentes"
+    : worst === "partial"
+      ? "respostas sem par entre bases"
+      : "bases somadas";
+
+  return (
+    <span
+      title={title}
+      style={{
+        fontSize:10,fontWeight:700,letterSpacing:0.6,textTransform:"uppercase",
+        color:tint.fg,background:tint.bg,border:`1px solid ${tint.bd}`,
+        borderRadius:999,padding:"2px 7px",cursor:"help",
+      }}
+    >{text}</span>
   );
 }
 
