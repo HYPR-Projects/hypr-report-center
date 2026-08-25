@@ -41,6 +41,7 @@ from auth import (
     JWT_TTL_SECONDS,
     authenticate_admin,
     issue_admin_jwt,
+    refresh_admin_jwt,
     rejection_email,
     verify_google_id_token_verbose,
     verify_navi_key,
@@ -1181,6 +1182,29 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR issue_admin_token] {e}")
             return (jsonify({"error": "Erro ao emitir token"}), 500, headers)
+
+    # ── Endpoint: renovar o admin JWT sem passar pelo Google ─────────────────
+    # O front chama isto quando o JWT está perto de vencer e ele AINDA é
+    # válido. Evita depender do id_token do Google (1h, renovado por One Tap
+    # silencioso que falha calado em navegador com FedCM/cookies de terceiros
+    # bloqueados) pra manter a jornada de trabalho de pé. Ver
+    # `refresh_admin_jwt` pra discussão do teto de jornada.
+    if request.method == "POST" and request.args.get("action") == "refresh_admin_token":
+        try:
+            auth_header = request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer "):
+                return (jsonify({"error": "Authorization header ausente"}), 401, headers)
+            current = auth_header[len("Bearer "):].strip()
+            fresh, reason = refresh_admin_jwt(current)
+            if not fresh:
+                # `session_max` não é erro: é a jornada terminando. Fica em
+                # info pra não poluir o log de erro com o fim natural do dia.
+                logger.info(f"[AUTH REFRESH DENIED] reason={reason}")
+                return (jsonify({"error": "Sessão não renovável", "reason": reason}), 401, headers)
+            return (jsonify({"token": fresh, "ttl": JWT_TTL_SECONDS}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR refresh_admin_token] {e}")
+            return (jsonify({"error": "Erro ao renovar token"}), 500, headers)
 
     # ── Endpoint: resolver credenciais do cliente → short_token ──────────────
     # Público (sem auth admin). Recebe `{share_id, password}` e devolve o

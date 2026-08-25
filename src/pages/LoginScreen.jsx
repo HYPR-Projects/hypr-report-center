@@ -188,7 +188,7 @@ const LoginScreen = ({ onLogin }) => {
 
     const user = { name: payload.name, email, picture: payload.picture };
     // user + id_token + admin JWT numa escrita só, TTL de 8h.
-    const stored = saveSession(user, res.credential, issued.token);
+    const stored = saveSession(user, res.credential, issued.token, issued.ttl);
     if (!stored) {
       // Sem persistência a aba FUNCIONA (o JWT está em memória), mas todo
       // refresh volta pro login e nada sobrevive a fechar a aba. Entrar

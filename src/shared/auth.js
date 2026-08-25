@@ -74,12 +74,16 @@ export function isFeatureAdmin(user) {
  * via "sessão expirou" no primeiro clique, sem nada de errado com a conta
  * dele. Quem chama precisa saber pra poder dizer isso na cara dele.
  */
-export function saveSession(user, idToken, adminJwt = null) {
+export function saveSession(user, idToken, adminJwt = null, ttlSeconds = 0) {
   try {
     const payload = {
       user,
       idToken,
       adminJwt,
+      // Prazo do JWT medido pelo relógio DESTA máquina (ver `adminJwtUntil`
+      // em _hydrateFromSession): duração é comparável entre relógios
+      // diferentes, instante não é.
+      adminJwtUntil: adminJwt ? Date.now() + (Number(ttlSeconds) || 8 * 60 * 60) * 1000 : 0,
       expiresAt: Date.now() + SESSION_TTL_MS,
     };
     localStorage.setItem(LS_SESSION_KEY, JSON.stringify(payload));
@@ -155,6 +159,11 @@ export function loadSession() {
       user: parsed.user || null,
       idToken: parsed.idToken || null,
       adminJwt: parsed.adminJwt || null,
+      // Precisa vir junto: é por este prazo (medido no relógio local, ver
+      // saveSession) que o cache decide se o JWT ainda serve. Sem ele nesta
+      // projeção, quem lê a sessão caía sempre no `exp` do token — que é do
+      // relógio do servidor, exatamente o que essa mudança evita.
+      adminJwtUntil: Number(parsed.adminJwtUntil || 0),
     };
   } catch {
     return null;
@@ -166,6 +175,57 @@ export function clearSession() {
     localStorage.removeItem(LS_SESSION_KEY);
   } catch {
     /* ignore */
+  }
+}
+
+/**
+ * Derruba a sessão gravada SOMENTE se ela for a que esta aba estava usando.
+ * Devolve `true` se derrubou (ou se já não havia nada), `false` se deixou
+ * quieto porque a sessão gravada é outra.
+ *
+ * O BUG QUE ISTO RESOLVE
+ * ──────────────────────────────────────────────────────────────────────────
+ * `localStorage` é COMPARTILHADO por todas as abas do mesmo domínio, e é lá
+ * que a sessão admin vive. Uma aba esquecida aberta desde ontem continua
+ * pollando (frescor das bases, saúde das DSPs) com credencial morta, leva
+ * 401 — e o handler de 401 apagava a chave. Só que a chave apagada era a
+ * MESMA que a aba nova tinha acabado de gravar ao fazer login. Pra quem
+ * estava logando o efeito era "entrei e o sistema disse que minha sessão
+ * expirou", numa aba onde nada estava errado. Foi o que travou um operador
+ * por uma manhã inteira — a aba culpada estava em outra janela.
+ *
+ * A regra aqui é a mínima que fecha isso: 401 de uma credencial só autoriza
+ * derrubar ESSA credencial. Se o storage tem outra, ela é de um login mais
+ * novo e não é desta aba pra jogar fora.
+ */
+export function clearSessionIfCurrent(adminJwt) {
+  try {
+    const raw = localStorage.getItem(LS_SESSION_KEY);
+    if (!raw) return true;
+    const parsed = JSON.parse(raw);
+    if (adminJwt) {
+      // Credencial diferente da que falhou → login mais novo, preserva.
+      if (parsed?.adminJwt && parsed.adminJwt !== adminJwt) return false;
+    } else {
+      // Esta aba falhou SEM credencial — não sabe nada sobre a sessão que
+      // está gravada agora. Só derruba se ela também estiver morta.
+      //
+      // "Morta" tem que olhar a CREDENCIAL, não só a janela de 8h: sessão
+      // com JWT vencido e janela viva existe (máquina que dormiu, aba de
+      // ontem) e é exatamente a que precisa sair do caminho — senão a aba
+      // nova fica presa num estado sem credencial, sem modal e sem tela de
+      // login, o pior dos três.
+      const jwtAlive = !!parsed?.adminJwt && (
+        Number(parsed.adminJwtUntil || 0) > Date.now()
+        || (!parsed.adminJwtUntil && !isJwtExpired(parsed.adminJwt))
+      );
+      const windowAlive = !!parsed?.expiresAt && Date.now() <= parsed.expiresAt;
+      if (jwtAlive && windowAlive) return false;
+    }
+    localStorage.removeItem(LS_SESSION_KEY);
+    return true;
+  } catch {
+    return true;
   }
 }
 
@@ -236,7 +296,7 @@ export function updateSessionIdToken(idToken) {
  *
  * No-op se não há sessão ou se a janela de 8h já expirou.
  */
-export function updateSessionAdminJwt(adminJwt) {
+export function updateSessionAdminJwt(adminJwt, ttlSeconds = 0) {
   try {
     const raw = localStorage.getItem(LS_SESSION_KEY);
     if (!raw) return;
@@ -246,6 +306,7 @@ export function updateSessionAdminJwt(adminJwt) {
       return;
     }
     parsed.adminJwt = adminJwt;
+    parsed.adminJwtUntil = Date.now() + (Number(ttlSeconds) || 8 * 60 * 60) * 1000;
     localStorage.setItem(LS_SESSION_KEY, JSON.stringify(parsed));
   } catch {
     /* ignore */
@@ -372,13 +433,50 @@ export async function issueAdminJwt(googleIdToken) {
   return data;
 }
 
+/**
+ * Renova um admin JWT ainda válido SEM passar pelo Google
+ * (`?action=refresh_admin_token`, ver backend/auth.py::refresh_admin_jwt).
+ *
+ * Sucesso → `{ token, ttl }`. Recusa → `null`.
+ *
+ * É isto que faz "loguei de manhã" durar o dia: a renovação deixa de
+ * depender do id_token do Google, que vive ~1h e é renovado por One Tap
+ * silencioso — mecanismo que falha calado em navegador com FedCM ou cookies
+ * de terceiros bloqueados. Quando ele falha, sem esta rota a sessão morre no
+ * meio da tarde e a pessoa acha que "o sistema desloga o tempo todo". O
+ * Google volta a ser necessário quando a jornada estoura o teto do backend
+ * ou quando o JWT expira de vez sem uso.
+ */
+export async function refreshAdminJwt(currentJwt) {
+  if (!currentJwt) return null;
+  try {
+    const res = await fetch(`${API_URL}?action=refresh_admin_token`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${currentJwt}`,
+        "Content-Type": "application/json",
+      },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.token ? data : null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Cached JWT for the menu tab ─────────────────────────────────────────────
 // Cache em memória pra que uma sequência de ações admin (save_logo,
 // save_loom, etc) na mesma aba não fique relendo localStorage. Backed por
 // localStorage (`hypr.session.adminJwt`) pra sobreviver a refresh da aba.
 let _cachedAdminJwt = null;
 let _cachedExpiryMs = 0;
-const _RENEW_BUFFER_MS = 60 * 1000; // re-minta 1min antes da expiração
+// Renova 30min antes de vencer, não 1min. Com 1min, a renovação acontecia
+// no último instante possível — e se ela falhasse ali (id_token do Google já
+// morto, rede oscilando) a pessoa era jogada pro login sem aviso, no meio do
+// expediente. 30min dão espaço pra tentar, falhar e tentar de novo em vários
+// ciclos antes de a credencial atual virar pó.
+const _RENEW_BUFFER_MS = 30 * 60 * 1000;
 
 // Promise in-flight pra dedupe de mint concorrente. Sem isso, N calls
 // admin que 401am em paralelo (ex: 5 calls de uma listagem ao abrir a
@@ -386,16 +484,26 @@ const _RENEW_BUFFER_MS = 60 * 1000; // re-minta 1min antes da expiração
 // chamada do backend faz round-trip pro tokeninfo do Google (50-150ms).
 // Resultado: 5 tokeninfo paralelos + 5 escritas race no localStorage.
 let _mintInFlight = null;
+// Mesmo motivo do dedupe de mint: N chamadas admin que precisam renovar ao
+// mesmo tempo têm que compartilhar uma única renovação.
+let _refreshInFlight = null;
 
 function _hydrateFromSession() {
   // Lê o JWT persistido. Só hidrata cache se ainda válido (com buffer).
+  //
+  // O prazo vem de `adminJwtUntil`, gravado no ato do mint com o relógio
+  // DESTA máquina. Antes vinha do `exp` do token, que é do relógio do
+  // SERVIDOR — e comparar instante de um relógio com "agora" de outro é o
+  // que fazia máquina com data adiantada tratar JWT recém-emitido como
+  // vencido. `exp` continua como fallback pra sessões gravadas antes deste
+  // campo existir (e `isJwtExpired` já tem tolerância de relógio).
   const session = loadSession();
   if (!session?.adminJwt) return;
-  const payload = decodeJwtPayload(session.adminJwt);
-  const expMs = Number(payload?.exp || 0) * 1000;
-  if (expMs && Date.now() < expMs - _RENEW_BUFFER_MS) {
+  const until = Number(session.adminJwtUntil || 0)
+    || Number(decodeJwtPayload(session.adminJwt)?.exp || 0) * 1000;
+  if (until && Date.now() < until - _RENEW_BUFFER_MS) {
     _cachedAdminJwt = session.adminJwt;
-    _cachedExpiryMs = expMs;
+    _cachedExpiryMs = until;
   }
 }
 
@@ -421,7 +529,26 @@ export async function getOrIssueAdminJwt() {
     touchSession();
     return _cachedAdminJwt;
   }
-  // localStorage vazio ou expirado — tenta mintar via id_token.
+  // A credencial atual está velha (ou dentro da janela de renovação), mas
+  // pode ainda ser válida pro backend: tenta renovar com ela ANTES de
+  // recorrer ao Google. É o caminho que mantém a jornada de pé quando o
+  // refresh silencioso do id_token não acontece.
+  const stale = _cachedAdminJwt || loadSession()?.adminJwt || null;
+  if (stale) {
+    if (!_refreshInFlight) {
+      _refreshInFlight = refreshAdminJwt(stale).finally(() => {
+        _refreshInFlight = null;
+      });
+    }
+    const renewed = await _refreshInFlight;
+    if (renewed?.token) {
+      _adoptFreshJwt(renewed.token, renewed.ttl);
+      return _cachedAdminJwt;
+    }
+  }
+
+  // Renovação recusada (jornada estourada, JWT expirado de vez) — só então
+  // volta pro Google.
   const idToken = getGoogleIdToken();
   if (!idToken) return null;
   // Dedup de mint concorrente: se já há um mint em voo, retorna o mesmo
@@ -434,14 +561,74 @@ export async function getOrIssueAdminJwt() {
   }
   const issued = await _mintInFlight;
   if (issued?.token) {
-    _cachedAdminJwt = issued.token;
-    const ttlSec = Number(issued.ttl) || 8 * 60 * 60;
-    _cachedExpiryMs = Date.now() + ttlSec * 1000;
-    updateSessionAdminJwt(issued.token);
-    touchSession();
+    _adoptFreshJwt(issued.token, issued.ttl);
     return _cachedAdminJwt;
   }
+
+  // Último recurso: nem a renovação nem o mint funcionaram AGORA, mas a
+  // credencial atual pode não ter vencido de fato — a gente só entrou na
+  // janela de 30min de renovação. Usar a que existe é melhor que devolver
+  // nada: o backend ainda a aceita, e devolver null aqui derrubaria a sessão
+  // de quem só teve uma oscilação de rede na hora de renovar.
+  const until = Number(loadSession()?.adminJwtUntil || 0);
+  if (stale && until && Date.now() < until) return stale;
   return null;
+}
+
+/** Grava um JWT novo em memória e no storage, com prazo medido aqui. */
+function _adoptFreshJwt(token, ttlSeconds) {
+  const ttlSec = Number(ttlSeconds) || 8 * 60 * 60;
+  _cachedAdminJwt = token;
+  _cachedExpiryMs = Date.now() + ttlSec * 1000;
+  updateSessionAdminJwt(token, ttlSec);
+  touchSession();
+}
+
+/**
+ * Re-hidrata o cache em memória a partir do storage e devolve o JWT adotado
+ * quando ele é DIFERENTE do que esta aba tinha. É assim que uma aba velha se
+ * conserta sozinha depois que outra aba fez login: no ciclo seguinte de
+ * poll/refetch ela já usa a credencial nova, sem reload e sem intervenção.
+ */
+export function adoptStoredSession() {
+  const before = _cachedAdminJwt;
+  _cachedAdminJwt = null;
+  _cachedExpiryMs = 0;
+  _hydrateFromSession();
+  return _cachedAdminJwt && _cachedAdminJwt !== before ? _cachedAdminJwt : null;
+}
+
+/**
+ * `true` quando existe alguma credencial admin plausível (JWT em memória,
+ * JWT gravado, ou id_token pra mintar). Serve pros pollers de fundo não
+ * dispararem request condenada a 401 — era isso que enchia o console de
+ * erro e mantinha aba morta batendo no backend a cada ciclo.
+ */
+export function hasAdminCredential() {
+  if (_cachedAdminJwt) return true;
+  const session = loadSession();
+  return !!(session?.adminJwt || session?.idToken);
+}
+
+/**
+ * Avisa quando a sessão muda em OUTRA aba (evento `storage`, que só dispara
+ * entre abas diferentes do mesmo domínio). Devolve o desinscritor.
+ */
+export function onSessionChanged(handler) {
+  if (typeof window === "undefined") return () => {};
+  const listener = (e) => {
+    // `key === null` = alguém chamou localStorage.clear().
+    if (e.key === LS_SESSION_KEY || e.key === null) handler();
+  };
+  window.addEventListener("storage", listener);
+  return () => window.removeEventListener("storage", listener);
+}
+
+// Adoção automática: toda aba passa a acompanhar o login feito nas outras.
+// Sem isto, a aba antiga só se recuperaria por reload — e reload automático
+// em cima de 401 é exatamente o laço que já custou caro aqui.
+if (typeof window !== "undefined") {
+  onSessionChanged(() => { adoptStoredSession(); });
 }
 
 /**
@@ -465,16 +652,27 @@ export function primeAdminJwt(adminJwt, ttlSeconds) {
   _cachedExpiryMs = Date.now() + ttlSec * 1000;
 }
 
-export function clearCachedAdminJwt() {
+export function clearCachedAdminJwt(usedJwt = null) {
+  const dropped = usedJwt || _cachedAdminJwt;
   _cachedAdminJwt = null;
   _cachedExpiryMs = 0;
-  // Também invalida o JWT persistido — chamado em logout e em 401 pra
-  // forçar re-mint na próxima call (não em cada 401, ver api.js).
+  // Invalida o JWT persistido pra forçar renovação na próxima call — mas só
+  // se o gravado for o MESMO que falhou. Zerar o campo sem comparar apagava
+  // a credencial que outra aba tinha acabado de gravar (mesmo motivo de
+  // clearSessionIfCurrent).
+  //
+  // E sem credencial pra comparar (`dropped` nulo) o storage não é tocado:
+  // "eu não tenho credencial" não é motivo pra apagar a que está gravada —
+  // ela pode ser de um login feito em outra aba um segundo atrás. Quem quer
+  // derrubar a sessão inteira usa clearSession() (é o que o logout faz).
+  if (!dropped) return;
   try {
     const raw = localStorage.getItem(LS_SESSION_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw);
+    if (parsed?.adminJwt && parsed.adminJwt !== dropped) return;
     parsed.adminJwt = null;
+    parsed.adminJwtUntil = 0;
     localStorage.setItem(LS_SESSION_KEY, JSON.stringify(parsed));
   } catch {
     /* ignore */
