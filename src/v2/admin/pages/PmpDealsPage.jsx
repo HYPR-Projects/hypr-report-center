@@ -201,6 +201,11 @@ export default function PmpDealsPage({
   // Ledger de execuções do sync por fonte (pmp_sync_runs). Vem no mesmo
   // payload das lines; alimenta o painel de frescor do header.
   const [syncRuns, setSyncRuns] = useState([]);
+  // Histórico das últimas execuções (todas as fontes, mais recente primeiro).
+  // Responde "as sondagens do dia rodaram?" — que a última execução sozinha
+  // não responde: base velha por fonte lenta e base velha por Scheduler morto
+  // produzem a MESMA linha, e pedem consertos opostos.
+  const [syncRunsRecent, setSyncRunsRecent] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   // Card da planilha Google do compplan — fechado por default pra não
@@ -342,9 +347,11 @@ export default function PmpDealsPage({
     setLoading(true); setError(null);
     try {
       // include_archived=true porque a view Histórico precisa ver tudo
-      const { lines: list, syncRuns: runs } = await listPmpLines({ includeArchived: true, onlyActive: false });
+      const { lines: list, syncRuns: runs, syncRunsRecent: recent } =
+        await listPmpLines({ includeArchived: true, onlyActive: false });
       setLines(list);
       setSyncRuns(runs);
+      setSyncRunsRecent(recent || []);
     } catch (e) {
       console.error("[pmp v3]", e);
       setError(e.message || "Erro ao carregar lines");
@@ -693,6 +700,16 @@ export default function PmpDealsPage({
   const SOURCE_NOTES = {
     pubmatic: "Sync às 04h + re-sync 10/14/18/22h — a fonte fecha D-1 ao longo do dia.",
   };
+  const recentBySource = useMemo(() => {
+    const by = new Map();
+    for (const r of syncRunsRecent) {
+      const key = r.source || "xandr";
+      if (!by.has(key)) by.set(key, []);
+      by.get(key).push(r);
+    }
+    return by;
+  }, [syncRunsRecent]);
+
   const syncSources = useMemo(() => {
     const by = new Map();
     const blank = (key) => ({
@@ -735,9 +752,10 @@ export default function PmpDealsPage({
           // Distingue "o ledger mediu e não há dado" de "este backend nem sabe
           // medir" — o indicador trata os dois casos de forma diferente.
           hasFreshness:  !!run && "api_last_day" in run,
+          recentRuns:    recentBySource.get(s.key) || [],
         };
       });
-  }, [lines, syncRuns]);
+  }, [lines, syncRuns, recentBySource]);
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const onSync = async () => {

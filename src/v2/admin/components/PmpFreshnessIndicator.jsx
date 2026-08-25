@@ -104,6 +104,17 @@ function fmtBrDate(iso) {
   return m ? `${m[3]}/${m[2]}` : String(iso);
 }
 
+// "24/08 14h" — dia e hora BRT, que é a granularidade em que se enxerga se as
+// sondagens horárias dispararam.
+function fmtBrDayHour(iso) {
+  if (!iso) return "—";
+  const p = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: TZ_BR, day: "2-digit", month: "2-digit", hour: "2-digit", hour12: false,
+  }).formatToParts(new Date(iso));
+  const g = (t) => p.find((x) => x.type === t)?.value ?? "";
+  return `${g("day")}/${g("month")} ${g("hour")}h`;
+}
+
 function daysBetweenBr(fromIso, toDate) {
   const a = new Date(`${brDateString(fromIso)}T00:00:00Z`);
   const b = new Date(`${brDateString(toDate)}T00:00:00Z`);
@@ -367,6 +378,9 @@ export function PmpFreshnessIndicator({
                       <Row label="Lines sincronizadas" value={String(s.linesCount)} />
                     )}
                   </ul>
+                  <RunHistory runs={s.recentRuns} />
+                  <ul className="py-1">
+                  </ul>
                   {/* O erro cru da API é o que responde "por que parou?" sem
                       abrir o Cloud Logging — vale a feiura de mostrar inteiro. */}
                   {s.lastRunStatus === "error" && s.lastError && (
@@ -416,6 +430,70 @@ export function PmpFreshnessIndicator({
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
+  );
+}
+
+// Histórico das últimas execuções de UMA fonte.
+//
+// Existe pra separar dois estados que a "última execução" sozinha funde — e
+// que pedem consertos opostos:
+//   • base velha porque a FONTE ainda não fechou D-1 → as sondagens rodaram,
+//     todas vendo o mesmo dia; é esperar (ou a fonte está mesmo atrasada);
+//   • base velha porque o SCHEDULER parou de disparar → há buracos de horas
+//     na coluna da esquerda; é infra, e nenhuma mudança de schedule ajuda.
+//
+// Antes de existir, distinguir os dois exigia abrir o BigQuery — que na
+// prática significa que ninguém distinguia, e o conserto virava chute.
+function RunHistory({ runs }) {
+  if (!runs || runs.length === 0) return null;
+  return (
+    <details className="group px-4 pb-2">
+      <summary
+        className="cursor-pointer list-none text-[11px] text-fg-muted
+                   hover:text-fg transition-colors select-none
+                   focus-visible:outline-none focus-visible:ring-2
+                   focus-visible:ring-signature rounded"
+      >
+        <span className="inline-flex items-center gap-1">
+          <span className="transition-transform group-open:rotate-90" aria-hidden>›</span>
+          Últimas {runs.length} execuções
+        </span>
+      </summary>
+      <ol className="mt-1.5 flex flex-col gap-0.5">
+        {runs.map((r, i) => {
+          const bad = r.status === "error" || r.status === "skipped";
+          return (
+            <li
+              key={`${r.started_at}-${i}`}
+              className="flex items-center gap-2 text-[10.5px] font-mono tabular-nums leading-relaxed"
+              title={r.error || undefined}
+            >
+              <span className="text-fg-subtle w-[5.5rem] shrink-0">
+                {fmtBrDayHour(r.started_at)}
+              </span>
+              <span
+                className={cn("size-1.5 rounded-full shrink-0",
+                  bad ? "bg-danger" : "bg-success")}
+                aria-hidden
+              />
+              {/* O dia que a API tinha NAQUELE momento. Ler a coluna de cima
+                  pra baixo mostra a hora exata em que a fonte fechou D-1 —
+                  que é a pergunta que fazia o schedule ser palpite. */}
+              <span className={cn("truncate", bad ? "text-danger" : "text-fg-muted")}>
+                {bad
+                  ? (r.status === "skipped" ? "não executado" : "falhou")
+                  : r.api_last_day
+                    ? `dado até ${fmtBrDate(r.api_last_day)}`
+                    : "ok"}
+              </span>
+              {r.actor === "scheduler" ? null : (
+                <span className="text-fg-subtle shrink-0">manual</span>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </details>
   );
 }
 

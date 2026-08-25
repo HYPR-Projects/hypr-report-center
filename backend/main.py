@@ -4093,6 +4093,12 @@ def report_data(request):
             return (jsonify({
                 "lines": lines,
                 "sync_runs": pmp_sync_runs.latest_by_source(),
+                # Histórico das últimas execuções. Sem ele, "base velha porque
+                # a fonte não fechou D-1" e "base velha porque o Scheduler
+                # parou de disparar" aparecem como a MESMA linha no painel —
+                # e pedem consertos opostos. Responder isso exigia abrir o
+                # BigQuery, ou seja: ninguém respondia.
+                "sync_runs_recent": pmp_sync_runs.recent_by_source(),
             }), 200, headers)
         except Exception as e:
             logger.exception(f"[ERROR pmp_lines_list] {e}")

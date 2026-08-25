@@ -1620,7 +1620,14 @@ export async function listPmpLines({ includeArchived = false, onlyActive = true 
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
   if (!Array.isArray(d?.lines)) throw new Error("malformed response: lines missing");
-  return { lines: d.lines, syncRuns: Array.isArray(d?.sync_runs) ? d.sync_runs : [] };
+  return {
+    lines: d.lines,
+    syncRuns: Array.isArray(d?.sync_runs) ? d.sync_runs : [],
+    // Histórico das últimas execuções por fonte. O painel usa pra responder
+    // "as sondagens do dia rodaram?" — pergunta que a última execução sozinha
+    // não responde e que, sem isto, só o BigQuery respondia.
+    syncRunsRecent: Array.isArray(d?.sync_runs_recent) ? d.sync_runs_recent : [],
+  };
 }
 
 /** Métricas de delivery agregadas por line dentro de [dateFrom, dateTo].

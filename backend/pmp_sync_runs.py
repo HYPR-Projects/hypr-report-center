@@ -210,6 +210,72 @@ def record(source: str,
         logger.warning("[pmp_sync_runs] falhou gravando run de %s: %s", source, e)
 
 
+def recent_by_source(days: int = 2, per_source: int = 14) -> List[dict]:
+    """Últimas execuções por fonte — o HISTÓRICO, não só a última.
+
+    Por que existe
+    ──────────────
+    O painel mostrava só a última execução, e com isso a pergunta que mais
+    importa quando a base amanhece velha ficava sem resposta na tela:
+    **as sondagens do dia rodaram?** Uma base atrasada porque a fonte ainda não
+    fechou D-1 e uma base atrasada porque o Cloud Scheduler parou de disparar
+    são a MESMA linha ("última execução 04:00") — e consertos opostos.
+
+    Responder isso exigia abrir o BigQuery, o que na prática significa que
+    ninguém responde. Aqui vira uma olhada no popover.
+
+    Devolve [{source, started_at, status, api_last_day, lag_days, actor,
+              rows_processed, error}], mais recente primeiro.
+    """
+    key = f"recent:{days}:{per_source}"
+    hit = _cache.get(key)
+    now = datetime.now(timezone.utc).timestamp()
+    if hit and now - hit[0] < _CACHE_TTL_S:
+        return hit[1]
+
+    for with_freshness in (True, False):
+        cols = ("api_last_day, lag_days" if with_freshness
+                else "CAST(NULL AS DATE) AS api_last_day, CAST(NULL AS INT64) AS lag_days")
+        sql = f"""
+            SELECT * EXCEPT(rn) FROM (
+              SELECT
+                source, started_at, status, actor, rows_processed, error,
+                {cols},
+                ROW_NUMBER() OVER (PARTITION BY source ORDER BY started_at DESC) AS rn
+              FROM `{_FQ}`
+              WHERE started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
+            )
+            WHERE rn <= @per_source
+            ORDER BY started_at DESC
+        """
+        try:
+            job = bq.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("days", "INT64", days),
+                bigquery.ScalarQueryParameter("per_source", "INT64", per_source),
+            ]))
+            out = []
+            for r in job.result():
+                d = dict(r)
+                for k in ("started_at", "api_last_day"):
+                    if d.get(k) is not None:
+                        d[k] = d[k].isoformat()
+                # O erro cru pode ser um dump enorme; no histórico só cabe o
+                # bastante pra reconhecer QUAL falha foi.
+                if d.get("error"):
+                    d["error"] = str(d["error"])[:160]
+                out.append(d)
+            _cache[key] = (now, out)
+            return out
+        except Exception as e:
+            if with_freshness:
+                logger.info("[pmp_sync_runs] histórico com frescor falhou (%s); "
+                            "tentando o legado", e)
+                continue
+            logger.warning("[pmp_sync_runs] falhou lendo histórico: %s", e)
+            return []
+    return []
+
+
 def last_ok_api_day(source: str, days: int = 7) -> Optional[str]:
     """Até que dia a fonte tinha dado na última execução BEM-SUCEDIDA.
 
