@@ -459,7 +459,17 @@ export async function issueAdminJwt(googleIdToken) {
  * Renova um admin JWT ainda válido SEM passar pelo Google
  * (`?action=refresh_admin_token`, ver backend/auth.py::refresh_admin_jwt).
  *
- * Sucesso → `{ token, ttl }`. Recusa → `null`.
+ * Sucesso  → `{ token, ttl }`.
+ * Recusa   → `{ token: null, status, reason }` (nunca null seco — mesmo
+ * shape de `issueAdminJwt`, pelo mesmo motivo: quem chama precisa saber a
+ * diferença entre "o backend respondeu e recusou" (status != 0 — JWT
+ * inválido, sessão estourou o teto) e "não deu pra perguntar" (status 0 —
+ * rede fora, timeout). Antes os dois casos viravam o mesmo `null`, e
+ * `getOrIssueAdminJwt` reofertava a credencial morta como "última
+ * instância" mesmo depois do backend já ter recusado explicitamente —
+ * deixando o app preso no banner de "dados desatualizados" pra sempre, sem
+ * nunca escalar pro modal de sessão expirada. Ver `getOrIssueAdminJwt` pra
+ * onde essa distinção é usada.
  *
  * É isto que faz "loguei de manhã" durar o dia: a renovação deixa de
  * depender do id_token do Google, que vive ~1h e é renovado por One Tap
@@ -470,21 +480,34 @@ export async function issueAdminJwt(googleIdToken) {
  * ou quando o JWT expira de vez sem uso.
  */
 export async function refreshAdminJwt(currentJwt) {
-  if (!currentJwt) return null;
+  if (!currentJwt) return { token: null, status: 0, reason: "missing_token" };
+  let res;
   try {
-    const res = await fetch(`${API_URL}?action=refresh_admin_token`, {
+    res = await fetch(`${API_URL}?action=refresh_admin_token`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${currentJwt}`,
         "Content-Type": "application/json",
       },
     });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data?.token ? data : null;
   } catch {
-    return null;
+    // Rede fora, CORS, backend inalcançável — não houve veredito.
+    return { token: null, status: 0, reason: "network_error" };
   }
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* corpo vazio ou não-JSON — segue com data = null */
+  }
+  if (!res.ok || !data?.token) {
+    return {
+      token: null,
+      status: res.status,
+      reason: data?.reason || (res.ok ? "malformed_response" : `http_${res.status}`),
+    };
+  }
+  return data;
 }
 
 // ─── Cached JWT for the menu tab ─────────────────────────────────────────────
@@ -556,6 +579,12 @@ export async function getOrIssueAdminJwt() {
   // recorrer ao Google. É o caminho que mantém a jornada de pé quando o
   // refresh silencioso do id_token não acontece.
   const stale = _cachedAdminJwt || loadSession()?.adminJwt || null;
+  // true quando o BACKEND respondeu e recusou (status != 0) — diferente de
+  // rede fora/timeout (status 0), que é ambíguo e não prova que a
+  // credencial morreu. É essa distinção que decide, lá embaixo, se o
+  // fallback de última instância pode reofertar `stale` ou se tem que
+  // desistir dele de vez.
+  let staleConfirmedDead = false;
   if (stale) {
     if (!_refreshInFlight) {
       _refreshInFlight = refreshAdminJwt(stale).finally(() => {
@@ -567,12 +596,22 @@ export async function getOrIssueAdminJwt() {
       _adoptFreshJwt(renewed.token, renewed.ttl);
       return _cachedAdminJwt;
     }
+    staleConfirmedDead = renewed?.status !== 0;
   }
 
   // Renovação recusada (jornada estourada, JWT expirado de vez) — só então
   // volta pro Google.
   const idToken = getGoogleIdToken();
-  if (!idToken) return null;
+  if (!idToken) {
+    // Sem id_token pra tentar mintar e a renovação já foi recusada
+    // explicitamente pelo backend: mesmo raciocínio do fallback lá embaixo
+    // (ver comentário perto de `staleConfirmedDead`) — deixar `stale`
+    // gravada faria o próximo 401 encontrar `adminJwtUntil` ainda no
+    // futuro e `clearSessionIfCurrent` recusar derrubar a sessão, nunca
+    // disparando o modal.
+    if (staleConfirmedDead) clearCachedAdminJwt(stale);
+    return null;
+  }
   // Dedup de mint concorrente: se já há um mint em voo, retorna o mesmo
   // promise pra todos os callers em paralelo. Sem isso, N calls admin que
   // 401am juntas geram N tokeninfo round-trips no backend.
@@ -592,8 +631,21 @@ export async function getOrIssueAdminJwt() {
   // janela de 30min de renovação. Usar a que existe é melhor que devolver
   // nada: o backend ainda a aceita, e devolver null aqui derrubaria a sessão
   // de quem só teve uma oscilação de rede na hora de renovar.
+  //
+  // MAS só quando a renovação foi ambígua (`!staleConfirmedDead` — rede
+  // fora, timeout). Se o backend JÁ respondeu recusando `stale`
+  // explicitamente, devolvê-la de novo aqui é reofertar uma credencial que
+  // sabemos morta: o caller manda de novo, toma 401 de novo, e como o
+  // relógio local (`adminJwtUntil`) ainda marca "não vencido", o handler de
+  // 401 em api.js (`clearSessionIfCurrent`) também acha que a sessão está
+  // viva e recusa derrubá-la — ninguém nunca chama `emitSessionExpired()`.
+  // Resultado: o app fica preso no banner de "dados desatualizados" pra
+  // sempre, sem jamais mostrar o modal de sessão expirada. Nesse caso é
+  // melhor derrubar a credencial aqui mesmo e devolver null, pra que o
+  // 401 seguinte já ache o storage limpo e escale corretamente.
   const until = Number(loadSession()?.adminJwtUntil || 0);
-  if (stale && until && Date.now() < until) return stale;
+  if (stale && !staleConfirmedDead && until && Date.now() < until) return stale;
+  if (staleConfirmedDead) clearCachedAdminJwt(stale);
   return null;
 }
 
