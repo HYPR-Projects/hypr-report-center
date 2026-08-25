@@ -127,7 +127,7 @@ def issue_admin_jwt(email: str) -> str:
     """Mint a short-lived admin JWT for the given email.
 
     Caller is responsible for proving the email is legitimate (e.g. via
-    `verify_google_id_token`). This function does not re-verify.
+    `verify_google_id_token_verbose`). This function does not re-verify.
     """
     if not JWT_SECRET:
         raise RuntimeError("JWT_SECRET environment variable is not set")
@@ -142,18 +142,37 @@ def issue_admin_jwt(email: str) -> str:
     return _encode_jwt(payload, JWT_SECRET)
 
 
-def verify_google_id_token(id_token: str) -> Optional[Dict[str, Any]]:
-    """Validate a Google-issued id_token via the tokeninfo endpoint.
+def verify_google_id_token_verbose(id_token: str) -> tuple[Optional[Dict[str, Any]], str]:
+    """Valida um id_token do Google via endpoint tokeninfo, com MOTIVO.
 
-    Returns the token payload if the token is valid AND
-    `email_verified` is true AND email ends with @hypr.mobi.
-    Otherwise None.
+    Devolve `(payload, "ok")` quando o token é válido, o e-mail termina em
+    @hypr.mobi e o Google diz que ele é verificado. Nos outros casos devolve
+    `(None, motivo)`. Motivos possíveis — todos benignos de expor ao cliente, e é
+    justamente pra isso que existem:
 
-    Note: tokeninfo is an HTTP call (~50-150ms). This runs only once per
-    admin login (when issuing our custom JWT), not on every admin action.
+        missing_token        chamada sem id_token
+        tokeninfo_error      o endpoint do Google não respondeu (rede, 5xx,
+                             timeout de 5s) — NÃO é culpa da conta
+        invalid_token        o Google respondeu, mas sem e-mail no payload
+                             (token de outro tipo, expirado, malformado)
+        domain_not_allowed   e-mail não termina em @hypr.mobi
+        email_not_verified   o Google não considera o e-mail verificado
+
+    tokeninfo é uma chamada HTTP (~50-150ms), e roda uma vez por login admin
+    (na emissão do nosso JWT), não em cada ação.
+
+    POR QUE O MOTIVO PRECISA SAIR DAQUI
+    -----------------------------------
+    Esta função devolvia `None` seco nas quatro recusas. Quando um operador
+    parou de conseguir entrar, o efeito visível foi um loop infinito na tela
+    de login do front — e daqui não saía nada: nem log, nem código, nem
+    diferença entre "a conta dele não passa" e "o Google está fora do ar".
+    Diagnosticar exigiu ler o código e reproduzir o loop no browser.
+    Com o motivo nomeado, o log responde em um grep e o front pode dizer ao
+    operador o que fazer em vez de piscar.
     """
     if not id_token:
-        return None
+        return None, "missing_token"
     try:
         url = (
             "https://oauth2.googleapis.com/tokeninfo?id_token="
@@ -163,16 +182,36 @@ def verify_google_id_token(id_token: str) -> Optional[Dict[str, Any]]:
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode())
     except Exception as e:
+        # Inclui o 400 que o Google devolve pra token expirado/inválido — daí
+        # `tokeninfo_error` cobrir os dois casos. O texto da exceção vai pro
+        # log (sem o token) pra separar um do outro na investigação.
         logger.warning(f"[WARN verify_google_id_token] {e}")
-        return None
+        return None, "tokeninfo_error"
 
     email = (data.get("email") or "").lower()
+    if not email:
+        return None, "invalid_token"
     if not email.endswith(ADMIN_EMAIL_DOMAIN):
-        return None
+        return None, "domain_not_allowed"
     # Google returns this as the string "true" in tokeninfo, not a boolean.
     if str(data.get("email_verified", "")).lower() != "true":
-        return None
-    return data
+        return None, "email_not_verified"
+    return data, "ok"
+
+
+def rejection_email(id_token: str) -> str:
+    """E-mail que o Google diz estar no token, pra LOG de recusa.
+
+    Sem verificar nada: é o payload cru do JWT, e quem chama já sabe que o
+    token foi recusado. Serve pra que a linha de log diga QUEM não entrou —
+    sem isso o log registra que alguém falhou, o que não ajuda ninguém.
+    Devolve "" se não der pra ler.
+    """
+    try:
+        payload = json.loads(_b64url_decode(id_token.split(".")[1]).decode())
+        return str(payload.get("email") or "")[:120]
+    except Exception:
+        return ""
 
 
 def authenticate_admin(request) -> Optional[Dict[str, Any]]:

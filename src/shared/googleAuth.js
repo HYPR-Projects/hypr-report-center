@@ -77,6 +77,26 @@ export async function renderSignInButton(elementId, opts = {}) {
 }
 
 /**
+ * Desarma o `auto_select`. Depois disso o GIS volta a PERGUNTAR qual conta
+ * usar em vez de repescar a última.
+ *
+ * Existe por um motivo específico: `auto_select: true` faz o One Tap
+ * silencioso reeleger sozinho a última conta Google usada no browser. Se
+ * essa conta não for @hypr.mobi, a tela de login recusa, e o `prompt()` da
+ * carga seguinte reelege a MESMA conta — o operador fica preso num laço sem
+ * nunca ver o seletor de contas. Chamar isto ao recusar devolve a escolha
+ * pra ele.
+ */
+export async function disableAutoSelect() {
+  await loadScript();
+  try {
+    window.google.accounts.id.disableAutoSelect();
+  } catch {
+    /* GIS ausente/bloqueado — nada a desarmar */
+  }
+}
+
+/**
  * Dispara One Tap silencioso. Em browsers com FedCM e sessão Google
  * ativa, o `callback` registrado em `initGoogleAuth` é invocado com
  * um `credential` novo sem qualquer UI. Em browsers sem FedCM, pode

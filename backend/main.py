@@ -41,7 +41,8 @@ from auth import (
     JWT_TTL_SECONDS,
     authenticate_admin,
     issue_admin_jwt,
-    verify_google_id_token,
+    rejection_email,
+    verify_google_id_token_verbose,
     verify_navi_key,
 )
 import owners
@@ -1158,10 +1159,24 @@ def report_data(request):
             if not auth_header.startswith("Bearer "):
                 return (jsonify({"error": "Authorization header ausente"}), 401, headers)
             google_id_token = auth_header[len("Bearer "):].strip()
-            info = verify_google_id_token(google_id_token)
+            info, reason = verify_google_id_token_verbose(google_id_token)
             if not info:
-                return (jsonify({"error": "id_token inválido ou domínio não autorizado"}), 401, headers)
+                # A recusa é logada COM o e-mail e o motivo. Este endpoint é o
+                # único ponto onde uma conta pode ser barrada, e enquanto ele
+                # devolvia só "401 inválido" a única forma de descobrir por que
+                # um operador não conseguia entrar era reproduzir o bug no
+                # browser dele. `reason` também volta no corpo: o front mostra
+                # o que fazer em vez de tentar de novo em loop.
+                logger.warning(
+                    f"[AUTH REJECT] issue_admin_token reason={reason} "
+                    f"email={rejection_email(google_id_token) or '-'}"
+                )
+                return (jsonify({
+                    "error": "id_token inválido ou domínio não autorizado",
+                    "reason": reason,
+                }), 401, headers)
             jwt = issue_admin_jwt(info["email"])
+            logger.info(f"[AUTH OK] issue_admin_token email={info['email']}")
             return (jsonify({"token": jwt, "email": info["email"], "ttl": JWT_TTL_SECONDS}), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR issue_admin_token] {e}")
