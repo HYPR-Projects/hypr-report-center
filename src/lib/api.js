@@ -28,8 +28,10 @@ import { API_URL } from "../shared/config";
 import {
   adminAuthHeaders,
   getOrIssueAdminJwt,
+  adoptStoredSession,
   clearCachedAdminJwt,
-  clearSession,
+  clearSessionIfCurrent,
+  hasAdminCredential,
   loadSession,
   touchSession,
 } from "../shared/auth";
@@ -62,11 +64,21 @@ const jsonHeaders = { "Content-Type": "application/json" };
  * tela de login, que agora só deixa entrar com o admin JWT emitido e mostra o
  * motivo quando o backend recusa (ver pages/LoginScreen).
  */
-function adminSessionLost(context) {
-  // Sessão local sai: sem JWT válido ela não serve pra nada, e deixá-la ali
-  // fazia o app voltar pro menu num estado que já sabemos que não funciona.
-  clearSession();
-  clearCachedAdminJwt();
+function adminSessionLost(context, usedJwt = null) {
+  // PRIMEIRO: outra aba pode ter logado enquanto esta falhava. Se o storage
+  // já tem credencial diferente, adota e não derruba nada — o próximo ciclo
+  // (poll, refetch, clique) usa a nova. É como uma aba antiga se recupera
+  // sozinha, sem reload.
+  if (adoptStoredSession()) {
+    return new Error(`admin credential rotated (${context})`);
+  }
+  // Só derruba a sessão gravada se ela for a que acabou de falhar. Uma aba
+  // com credencial velha apagando a chave compartilhada era o que derrubava
+  // o login recém-feito em outra aba (ver clearSessionIfCurrent).
+  if (!clearSessionIfCurrent(usedJwt)) {
+    return new Error(`admin credential superseded (${context})`);
+  }
+  clearCachedAdminJwt(usedJwt);
   emitSessionExpired();
   return new Error(`admin session expired (${context})`);
 }
@@ -177,8 +189,11 @@ async function postJson(url, body, extraHeaders = {}) {
   const wasAdminAttempt = hasAuthHeader || !!loadSession();
   if (!wasAdminAttempt) return res;
 
-  // Tenta uma vez: invalida cache, re-minta, retry.
-  clearCachedAdminJwt();
+  // Tenta uma vez: invalida cache, renova, retry. A credencial que o caller
+  // usou vai junto pra que a invalidação não passe por cima de um login que
+  // outra aba acabou de gravar.
+  const usedJwt = (extraHeaders?.Authorization || "").replace("Bearer ", "") || null;
+  clearCachedAdminJwt(usedJwt);
   const newJwt = await getOrIssueAdminJwt();
   if (newJwt) {
     const retryHeaders = {
@@ -199,7 +214,7 @@ async function postJson(url, body, extraHeaders = {}) {
   // O Error devolvido pelo helper é descartado de propósito: aqui quem
   // decide o que fazer com a falha é o caller, que recebe a response
   // original de volta.
-  adminSessionLost("postJson");
+  adminSessionLost("postJson", newJwt || usedJwt);
   return res;
 }
 
@@ -281,7 +296,7 @@ export async function listCampaigns({ refresh = false } = {}) {
     signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
   });
   if (r.status === 401 || r.status === 403) {
-    throw adminSessionLost("listCampaigns");
+    throw adminSessionLost("listCampaigns", jwt);
   }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
@@ -333,7 +348,7 @@ export async function listClients() {
       signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
     });
     if (r.status === 401 || r.status === 403) {
-      throw adminSessionLost("listClients");
+      throw adminSessionLost("listClients", jwt);
     }
     if (r.ok) {
       const d = await r.json();
@@ -390,7 +405,7 @@ export async function listPerformersForPeriod({ from, to } = {}) {
     signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
   });
   if (r.status === 401 || r.status === 403) {
-    throw adminSessionLost("listPerformersForPeriod");
+    throw adminSessionLost("listPerformersForPeriod", jwt);
   }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
@@ -426,7 +441,7 @@ export async function listTeamMembers() {
     signal: timeoutSignal(READ_TIMEOUT_LIGHT_MS),
   });
   if (r.status === 401 || r.status === 403) {
-    throw adminSessionLost("listTeamMembers");
+    throw adminSessionLost("listTeamMembers", jwt);
   }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
@@ -1640,7 +1655,7 @@ export async function listPmpLines({ includeArchived = false, onlyActive = true 
   qs.set("only_active", onlyActive ? "1" : "0");
   const r = await fetch(`${API_URL}?${qs}`, { headers: { ...adminAuthHeaders(jwt) } });
   if (r.status === 401 || r.status === 403) {
-    throw adminSessionLost("listPmpLines");
+    throw adminSessionLost("listPmpLines", jwt);
   }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
@@ -1664,7 +1679,7 @@ export async function pmpLineWindowMetrics({ dateFrom, dateTo }) {
   const qs = new URLSearchParams({ action: "pmp_lines_window", date_from: dateFrom, date_to: dateTo });
   const r = await fetch(`${API_URL}?${qs}`, { headers: { ...adminAuthHeaders(jwt) } });
   if (r.status === 401 || r.status === 403) {
-    throw adminSessionLost("pmpLineWindowMetrics");
+    throw adminSessionLost("pmpLineWindowMetrics", jwt);
   }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
@@ -1682,7 +1697,7 @@ export async function pmpLinesTimeseries({ dateFrom, dateTo }) {
   const qs = new URLSearchParams({ action: "pmp_lines_timeseries", date_from: dateFrom, date_to: dateTo });
   const r = await fetch(`${API_URL}?${qs}`, { headers: { ...adminAuthHeaders(jwt) } });
   if (r.status === 401 || r.status === 403) {
-    throw adminSessionLost("pmpLinesTimeseries");
+    throw adminSessionLost("pmpLinesTimeseries", jwt);
   }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
@@ -1853,6 +1868,12 @@ export async function compplanSheetDelete({ deleteSheet = false } = {}) {
  * servidor, evitando falso positivo por clock skew do client.
  */
 export async function getDataFreshness() {
+  // Poller de fundo: sem credencial nenhuma, não dispara request condenada a
+  // 401. Uma aba esquecida com sessão morta ficava batendo aqui a cada ciclo
+  // (e no dsp_health), enchendo o console de 401 e o backend de requests que
+  // não tinham como dar certo. Quando outra aba loga, a adoção automática
+  // devolve credencial e o poller volta sozinho.
+  if (!hasAdminCredential()) throw new Error("sem sessão admin");
   const jwt = await getOrIssueAdminJwt();
   const r = await fetch(
     `${API_URL}?action=data_freshness`,
@@ -1924,6 +1945,8 @@ export async function getDspBreakdown(token, adminJwt) {
  * fonte + resumo D-1 vs média 7d + campanhas ativas que pararam de entregar.
  */
 export async function getDspHealth() {
+  // Ver getDataFreshness: poller de fundo não bate sem credencial.
+  if (!hasAdminCredential()) throw new Error("sem sessão admin");
   const jwt = await getOrIssueAdminJwt();
   const r = await fetch(
     `${API_URL}?action=dsp_health`,

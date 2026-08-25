@@ -66,6 +66,12 @@ logger = logging.getLogger(__name__)
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
 JWT_TTL_SECONDS = 8 * 60 * 60  # 8h — bate com a janela de jornada admin do front (hypr.session). Com a JWT durando 8h, o front pode persistir o token e parar de depender do silent refresh do Google id_token (que falha silencioso quando FedCM/cookies de terceiros estão bloqueados). Trade-off de segurança aceito: admin é interno, JWT escopado, HTTPS-only.
 JWT_ISSUER = "hypr-report-hub"
+# Teto da jornada: por quanto tempo, contado do LOGIN COM O GOOGLE, o admin
+# JWT pode ser renovado sem passar pelo Google de novo (ver refresh_admin_jwt).
+# 16h cobre "entrei às 8h e trabalhei até tarde" e ainda faz o dia seguinte
+# pedir login — que é a regra que a operação espera. A TTL de 8h de cada JWT
+# continua valendo; o teto é sobre a CORRENTE de renovações.
+SESSION_MAX_SECONDS = 16 * 60 * 60
 ADMIN_EMAIL_DOMAIN = "@hypr.mobi"
 
 # Legacy admin key (DEPRECATED — remove after migration is verified).
@@ -123,11 +129,17 @@ def _decode_and_verify_jwt(token: str, secret: str) -> Optional[Dict[str, Any]]:
 
 
 # ─── Public API ──────────────────────────────────────────────────────────────
-def issue_admin_jwt(email: str) -> str:
+def issue_admin_jwt(email: str, auth_time: Optional[int] = None) -> str:
     """Mint a short-lived admin JWT for the given email.
 
     Caller is responsible for proving the email is legitimate (e.g. via
     `verify_google_id_token_verbose`). This function does not re-verify.
+
+    `auth_time` = quando ESTA pessoa provou identidade no Google. Fica no
+    payload e é PRESERVADO nas renovações (`refresh_admin_jwt`), que é o que
+    permite renovar sem Google e ao mesmo tempo ter um teto de jornada: sem
+    esse campo, cada renovação zeraria o relógio e a corrente não teria fim.
+    Omitido = é o login inicial, então auth_time = agora.
     """
     if not JWT_SECRET:
         raise RuntimeError("JWT_SECRET environment variable is not set")
@@ -138,8 +150,48 @@ def issue_admin_jwt(email: str) -> str:
         "admin": True,
         "iat": now,
         "exp": now + JWT_TTL_SECONDS,
+        "auth_time": int(auth_time or now),
     }
     return _encode_jwt(payload, JWT_SECRET)
+
+
+def refresh_admin_jwt(token: str) -> tuple[Optional[str], str]:
+    """Renova um admin JWT AINDA VÁLIDO, sem passar pelo Google.
+
+    Devolve `(novo_token, "ok")` ou `(None, motivo)`:
+
+        invalid       assinatura, issuer ou expiração não conferem
+        not_admin     token sem a claim admin
+        session_max   a jornada estourou o teto desde o login no Google
+
+    POR QUE ISSO EXISTE
+    -------------------
+    Renovar o admin JWT dependia de ter um id_token do Google fresco, e o
+    id_token dura ~1h e é renovado por One Tap silencioso. Quando esse
+    refresh silencioso não acontece — FedCM desligado, cookies de terceiros
+    bloqueados, política do navegador —, o id_token morre em 1h, a renovação
+    do admin JWT falha lá na frente e a pessoa é jogada de volta pro login do
+    Google no meio do dia. Do lado dela, "o sistema me desloga o tempo todo".
+    Um JWT válido é prova de identidade suficiente pra emitir o próximo: é o
+    mesmo segredo, a mesma claim, o mesmo `sub`. O Google volta a ser
+    necessário só quando a jornada estoura o teto (SESSION_MAX_SECONDS) ou
+    quando a pessoa deixa o JWT expirar de vez (8h sem usar).
+    """
+    payload = _decode_and_verify_jwt(token, JWT_SECRET)
+    if not payload:
+        return None, "invalid"
+    if payload.get("admin") is not True:
+        return None, "not_admin"
+    email = payload.get("sub") or ""
+    # Sessão sem auth_time = emitida antes deste campo existir. Trata o `iat`
+    # como início da jornada: é o dado mais próximo que existe e não trava
+    # ninguém no deploy.
+    auth_time = int(payload.get("auth_time") or payload.get("iat") or 0)
+    if not auth_time:
+        return None, "invalid"
+    if int(time.time()) - auth_time > SESSION_MAX_SECONDS:
+        return None, "session_max"
+    return issue_admin_jwt(email, auth_time=auth_time), "ok"
 
 
 def verify_google_id_token_verbose(id_token: str) -> tuple[Optional[Dict[str, Any]], str]:
