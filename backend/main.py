@@ -4468,7 +4468,16 @@ def report_data(request):
     # value_mismatch somem rodando o sync (MERGE idempotente); extra_in_bq
     # precisa de decisão humana, porque apagar entrega é irreversível.
     if request.method == "GET" and request.args.get("action") == "pmp_pubmatic_audit":
-        if not authenticate_admin(request):
+        # Aceita o segredo do scheduler ALÉM do JWT de admin. A auditoria é
+        # read-only (só compara API × BQ e classifica), e exigir login de
+        # navegador nela derrotava o propósito: a pergunta "a base bate com a
+        # fonte?" precisa ser respondível por automação, senão volta a depender
+        # de alguém lembrar de abrir a tela — que é como o pipeline ficou velho
+        # em silêncio em primeiro lugar.
+        _audit_secret = os.environ.get("PMP_SCHEDULER_SECRET", "")
+        _audit_is_bot = bool(_audit_secret) and \
+            request.headers.get("X-Scheduler-Secret", "") == _audit_secret
+        if not _audit_is_bot and not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         if not pubmatic_curate.is_configured():
             return (jsonify({"error": "Nenhuma credencial PubMatic configurada"}),
