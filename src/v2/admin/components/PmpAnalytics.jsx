@@ -553,7 +553,7 @@ function KpiTile({ label, value, sub, title, accent = false, delta = null, delta
       } : undefined}
     >
       <div className="flex items-center justify-between gap-2">
-        <div className="text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted leading-none">{label}</div>
+        <div className="lbl-section text-fg-muted">{label}</div>
         {delta != null && <Delta value={delta} title={deltaTitle} />}
       </div>
       <div
@@ -722,7 +722,7 @@ function ContractProgress({ rows, metric, accent }) {
     <div className="pt-1">
       {/* Resumo consolidado — empilha em telas estreitas (flex-wrap). */}
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 pb-2.5 mb-2.5 border-b border-border/70">
-        <span className="text-[11px] uppercase tracking-wider text-fg-muted">
+        <span className="lbl-section text-fg-muted">
           {metricLabel} · {sorted.length} {sorted.length === 1 ? "item" : "itens"}
         </span>
         <span className="text-[12px] tabular-nums text-fg-muted">
@@ -851,7 +851,7 @@ function MonthlyLedger({ ledger, accent }) {
     <div className="rounded-xl border border-border bg-surface overflow-hidden">
       <div className="px-4 md:px-5 py-3.5 border-b border-border flex items-start md:items-center justify-between gap-3 flex-wrap">
         <div className="min-w-0">
-          <h3 className="text-[11px] font-bold uppercase tracking-widest text-signature flex items-center gap-2 flex-wrap">
+          <h3 className="lbl-section text-signature flex items-center gap-2 flex-wrap">
             Fechamento mensal
             <span className="normal-case tracking-normal font-medium text-[10px] leading-none px-1.5 py-1 rounded-md bg-surface-strong text-fg-subtle border border-border whitespace-nowrap"
                   title="Entrada e consumo são acumulados por mês e não reagem ao filtro de período (os filtros de cliente, campanha, status e bid continuam valendo).">
@@ -894,10 +894,10 @@ function MonthlyLedger({ ledger, accent }) {
             <thead>
               <tr className="text-fg-subtle">
                 <th className="sticky top-0 z-20 bg-surface-3 h-6" />
-                <th colSpan={5} className={cn("sticky top-0 z-20 h-6 px-3 text-left text-[9.5px] font-bold uppercase tracking-widest text-signature", G1)}>
+                <th colSpan={5} className={cn("lbl-section text-signature sticky top-0 z-20 h-6 px-3 text-left", G1)}>
                   Safra do mês · o PI que entrou
                 </th>
-                <th colSpan={2} className={cn("sticky top-0 z-20 h-6 px-3 text-left text-[9.5px] font-bold uppercase tracking-widest text-fg-muted", G2, DIV)}>
+                <th colSpan={2} className={cn("lbl-section text-fg-muted sticky top-0 z-20 h-6 px-3 text-left", G2, DIV)}>
                   Caixa do mês · todas as safras
                 </th>
               </tr>
@@ -1043,7 +1043,7 @@ function MonthlyLedger({ ledger, accent }) {
                 <tr>), que é onde o browser respeita. */}
             <tfoot>
               <tr className="font-semibold">
-                <Td className={cn(FOOT, "text-left text-fg-muted text-[11px] uppercase tracking-wider")}>Total · {rows.length} {rows.length === 1 ? "mês" : "meses"}</Td>
+                <Td className={cn(FOOT, "lbl-section text-fg-muted text-left")}>Total · {rows.length} {rows.length === 1 ? "mês" : "meses"}</Td>
                 <Td className={cn(FOOT, "text-right text-fg tabular-nums")} title={formatBRL(totals.pi)}>
                   <EntriesHover row={totals} mode="pi" monthLabel="todo o período">{formatBRLCompact(totals.pi)}</EntriesHover>
                   <div className="text-[10.5px] text-fg-subtle font-normal">{totals.piCount} PIs</div>
@@ -1174,7 +1174,7 @@ function EntriesHover({ row, mode = "pi", monthLabel, children }) {
       </TooltipTrigger>
       <TooltipContent side="right" align="start" className="max-w-[400px] p-0 overflow-hidden">
         <div className="px-3 py-2 border-b border-border bg-surface-3">
-          <div className="text-[10px] font-bold uppercase tracking-widest text-signature">
+          <div className="lbl-section text-signature">
             {cfg.title(label)}
           </div>
           <div className="text-[11px] text-fg-subtle mt-0.5 tabular-nums">
@@ -1221,7 +1221,7 @@ function EntriesHover({ row, mode = "pi", monthLabel, children }) {
         )}
         {shown.length > 0 && (
           <div className="flex items-baseline justify-between gap-3 px-3 py-2 border-t border-border bg-surface-3">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-fg-muted">{cfg.footer}</span>
+            <span className="lbl-section text-fg-muted">{cfg.footer}</span>
             <span className={cn("text-[13px] font-bold tabular-nums", cfg.tone)}>{formatBRL(total)}</span>
           </div>
         )}
@@ -1298,7 +1298,7 @@ function StatusDonut({ data }) {
           </PieChart>
         </ResponsiveContainer>
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          <span className="text-[10px] uppercase tracking-wider text-fg-subtle">Receita</span>
+          <span className="lbl-section">Receita</span>
           <span className="text-[17px] font-bold text-fg tabular-nums">{formatBRLCompact(data.total)}</span>
           <span className="text-[10px] text-fg-subtle mt-0.5">{data.rows.length} {data.rows.length === 1 ? "status" : "status"}</span>
         </div>
@@ -1367,7 +1367,7 @@ function DealsTable({ rows, accent }) {
   return (
     <div className="rounded-xl border border-border bg-surface overflow-hidden">
       <div className="px-4 md:px-5 py-3.5 border-b border-border flex items-center justify-between gap-3">
-        <h3 className="text-[11px] font-bold uppercase tracking-widest text-signature">Desempenho por deal · período</h3>
+        <h3 className="lbl-section text-signature">Desempenho por deal · período</h3>
         <span className="text-[11px] text-fg-subtle tabular-nums">{rows.length} {rows.length === 1 ? "deal" : "deals"} com entrega</span>
       </div>
       <div className="overflow-x-auto">
@@ -1418,7 +1418,7 @@ function DealsTable({ rows, accent }) {
 function Th({ children, className, sortable, active, dir, onClick }) {
   return (
     <th onClick={onClick}
-        className={cn("px-3 py-2.5 text-[11px] font-bold uppercase tracking-wider whitespace-nowrap select-none",
+        className={cn("lbl-section px-3 py-2.5 whitespace-nowrap select-none",
                       sortable && "cursor-pointer hover:text-fg", className)}>
       <span className="inline-flex items-center gap-1">
         {children}

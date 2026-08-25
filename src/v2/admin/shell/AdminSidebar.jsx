@@ -84,8 +84,11 @@ export function AdminSidebar({
           Dividir esta faixa com um botão de 28px forçaria o logo a ~22px,
           e aí o wordmark começa a fechar os contraformas. */}
       <div
+        data-shell="brand"
         className={cn(
-          "h-14 shrink-0 flex items-center gap-2 border-b border-border",
+          // shell-header-row: MESMA altura da AdminContextBar. As duas
+          // bordas inferiores formam uma linha só atravessando a tela.
+          "shell-header-row flex items-center gap-2 border-b border-border",
           "pl-4 pr-3",
           !isDrawer && "rail-collapsed:px-0 rail-collapsed:justify-center",
         )}
@@ -236,7 +239,7 @@ function GroupLabel({ label, open, collapsible, onToggle }) {
 
   const base = cn(
     "w-full flex items-center gap-1.5 px-3 mb-1",
-    "text-[9.5px] font-extrabold uppercase tracking-[0.14em] text-fg-subtle",
+    "lbl-section",
     "rail-collapsed:justify-center rail-collapsed:px-0",
   );
 

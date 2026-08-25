@@ -42,8 +42,10 @@ export function AdminContextBar({
 
   return (
     <div
+      data-shell="context-bar"
       className={cn(
-        "shrink-0 h-13 flex items-center gap-3 px-4 md:px-5",
+        // shell-header-row: MESMA altura da faixa da marca no rail.
+        "shell-header-row flex items-center gap-3 px-4 md:px-5",
         "border-b border-border bg-canvas/85 backdrop-blur-md",
         // z acima do conteúdo e da FilterBar sticky, abaixo dos portais do
         // Radix (drawers e modais ficam em z-50+).

@@ -100,7 +100,8 @@ export function UserMenu({ user, onLogout, density, onDensityChange }) {
         aria-expanded={open}
         title={user?.name || user?.email || "Conta"}
         className={cn(
-          "w-full h-[42px] flex items-center gap-2.5 px-2 rounded-md cursor-pointer",
+          // h-10 (40px): degrau da escala. 42px era arbitrário.
+          "w-full h-10 flex items-center gap-2.5 px-2 rounded-md cursor-pointer",
           "border-0 bg-transparent text-left transition-colors",
           "hover:bg-surface",
           open && "bg-surface",

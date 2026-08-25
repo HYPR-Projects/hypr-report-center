@@ -29,7 +29,11 @@ import { forwardRef } from "react";
 import { cn } from "../../../ui/cn";
 
 const ROW_BASE = [
-  "group relative w-full h-[33px] flex items-center gap-2.5",
+  // h-8 (32px) é A altura de controle do DS — a mesma dos chips de
+  // filtro, da busca e dos botões da barra de contexto. Antes eram
+  // 33px aqui: 1px de diferença, usada com a mesma frequência que os
+  // 32px do resto. Ninguém sabe apontar 1px, todo mundo sente.
+  "group relative w-full h-8 flex items-center gap-2.5",
   "rounded-md border-0 bg-transparent text-left cursor-pointer",
   "text-[13px] font-medium",
   "transition-colors duration-150",

@@ -72,7 +72,7 @@ export function PmpCarteiraFilters({ situation, cycle, onSituation, onCycle, cou
 function ChipGroup({ label, options, value, counts, onChange }) {
   return (
     <div className="flex items-center gap-2 min-w-0">
-      <span className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle hidden sm:inline shrink-0">
+      <span className="lbl-section hidden sm:inline shrink-0">
         {label}
       </span>
       <div className="flex flex-wrap items-center gap-1.5">
@@ -221,7 +221,7 @@ function CampaignAccordionInner({ campaign: c, defaultOpen = false, bulk, onLine
             </div>
           </div>
           <div className="hidden sm:block text-right shrink-0">
-            <div className="text-[10px] uppercase tracking-widest text-fg-subtle font-semibold">Última entrega</div>
+            <div className="lbl-section">Última entrega</div>
             <div className="text-[12.5px] font-semibold text-fg tabular-nums mt-0.5">{lastDeliv || "—"}</div>
           </div>
         </div>
@@ -294,7 +294,7 @@ function FlightBlock({ flight: f, onLineClick, onLinkClick }) {
   return (
     <div className="rounded-lg border border-signature/25 bg-signature/[0.03] overflow-hidden">
       <div className="flex items-center gap-3 flex-wrap px-4 py-2.5 border-b border-signature/15">
-        <span className="text-[9px] uppercase tracking-[0.16em] font-semibold text-signature shrink-0">
+        <span className="lbl-micro text-signature shrink-0">
           {f.kind === "group" ? "Flight · 1 PI" : "Flight"}
         </span>
         <span className="text-[12.5px] font-medium text-fg truncate min-w-0" title={f.name}>{f.name}</span>
@@ -372,7 +372,7 @@ function ProgressRow({ label, value, total, ratio, tone }) {
 function Stat({ label, value, sub, valueClass, title }) {
   return (
     <div className="min-w-0" title={title}>
-      <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-semibold">{label}</div>
+      <div className="lbl-micro text-fg-subtle">{label}</div>
       <div className={cn("text-[14px] font-semibold tabular-nums truncate mt-0.5", valueClass || "text-fg")}
            title={typeof value === "string" ? value : undefined}>
         {value}

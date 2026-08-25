@@ -190,6 +190,12 @@
    * Windows, sem dependência externa). */
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
+  /* ═══════════════ SHELL ADMIN ═══════════════ */
+  /* Altura do cabeçalho — vale para a faixa da marca (dentro do rail) E
+   * para a barra de contexto (fora dele). As duas desenham metades da
+   * MESMA linha horizontal; ver `shell-header-row` em v2.css. */
+  --shell-header-h: 3.25rem;   /* 52px */
+
   /* ═══════════════ RAIOS ═══════════════ */
   /* Sobrescrevemos os defaults do Tailwind para uma escala um pouco
    * mais arredondada (alinhado com tendências 2025-2026 e marcas SaaS

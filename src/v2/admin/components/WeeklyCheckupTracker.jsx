@@ -175,7 +175,7 @@ export function WeeklyCheckupTracker({ campaign, initialLog, onSaved }) {
       {/* Header: título + progresso + status de save */}
       <div className="flex items-center gap-2 mb-1">
         <span className="text-signature shrink-0"><CheckupIcon /></span>
-        <span className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle">
+        <span className="lbl-section">
           Check-ups semanais
         </span>
         {total > 0 && (

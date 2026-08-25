@@ -209,7 +209,7 @@ export function DspHealthPanel({ className, onOpenReport, variant = "icon" }) {
           <div className="px-4 py-3 border-b border-border bg-surface-strong">
             <div className="flex items-center gap-2">
               <span className={cn("size-2 rounded-full shrink-0", tone.dot)} />
-              <span className="text-[11px] font-bold uppercase tracking-wider text-fg-muted">
+              <span className="lbl-section text-fg-muted">
                 Saúde das DSPs
               </span>
               {model?.referenceDate && (
@@ -286,7 +286,7 @@ export function DspHealthPanel({ className, onOpenReport, variant = "icon" }) {
                       </div>
                       {(s.stopped?.length || 0) > 0 && (
                         <div className="mt-1.5 pl-[18px]">
-                          <div className="text-[10.5px] font-semibold uppercase tracking-wider text-danger">
+                          <div className="lbl-section text-danger">
                             ⚠ Sem entrega ontem
                           </div>
                           <ul className="mt-0.5 space-y-0.5">

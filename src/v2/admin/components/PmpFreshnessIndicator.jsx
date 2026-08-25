@@ -323,7 +323,7 @@ export function PmpFreshnessIndicator({
           )}
         >
           <div className="px-4 py-3 border-b border-border bg-surface-strong">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-fg-muted">
+            <span className="lbl-section text-fg-muted">
               {multi ? "Sync das fontes" : "Sync da fonte"}
             </span>
           </div>

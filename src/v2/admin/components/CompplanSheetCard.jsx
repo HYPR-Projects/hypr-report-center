@@ -156,7 +156,7 @@ export default function CompplanSheetCard() {
               type="button"
               onClick={handleSyncNow}
               disabled={busy}
-              className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-muted hover:text-fg hover:border-fg-muted disabled:opacity-50 transition cursor-pointer"
+              className="lbl-section text-fg-muted px-3 py-2 rounded-md border border-border hover:text-fg hover:border-fg-muted disabled:opacity-50 transition cursor-pointer"
             >
               {busy ? "Sincronizando..." : "Sincronizar agora"}
             </button>
@@ -164,7 +164,7 @@ export default function CompplanSheetCard() {
               type="button"
               onClick={() => { setError(null); setConfirmDelete({ deleteSheet: false }); }}
               disabled={busy}
-              className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-subtle hover:text-fg-muted disabled:opacity-50 transition cursor-pointer"
+              className="lbl-section px-3 py-2 rounded-md border border-border hover:text-fg-muted disabled:opacity-50 transition cursor-pointer"
             >
               Excluir
             </button>
@@ -193,7 +193,7 @@ export default function CompplanSheetCard() {
                 type="button"
                 onClick={handleConfirmDelete}
                 disabled={busy}
-                className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md bg-danger/15 text-danger border border-danger/30 hover:bg-danger/25 disabled:opacity-50 transition cursor-pointer"
+                className="lbl-section text-danger px-3 py-1.5 rounded-md bg-danger/15 border border-danger/30 hover:bg-danger/25 disabled:opacity-50 transition cursor-pointer"
               >
                 {busy ? "Excluindo..." : "Confirmar exclusão"}
               </button>
@@ -201,7 +201,7 @@ export default function CompplanSheetCard() {
                 type="button"
                 onClick={() => setConfirmDelete(null)}
                 disabled={busy}
-                className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md border border-border text-fg-muted hover:text-fg disabled:opacity-50 transition cursor-pointer"
+                className="lbl-section text-fg-muted px-3 py-1.5 rounded-md border border-border hover:text-fg disabled:opacity-50 transition cursor-pointer"
               >
                 Cancelar
               </button>
@@ -269,7 +269,7 @@ function Pill({ tone, children }) {
     ? "bg-success/10 text-success border-success/30"
     : "bg-danger/10 text-danger border-danger/30";
   return (
-    <span className={`text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full border ${cls}`}>
+    <span className={`lbl-micro px-2 py-0.5 rounded-full border ${cls}`}>
       {children}
     </span>
   );

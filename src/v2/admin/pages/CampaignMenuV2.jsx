@@ -29,7 +29,7 @@
 //     Analytics, Negociação, uploads RMND/PDOOH, ABS, fechamento,
 //     check-ups, pausa, encerramento antecipado) no CampaignDrawer
 
-import { useState, useEffect, useMemo, useCallback, useSyncExternalStore } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, useSyncExternalStore } from "react";
 // IMPORT CRÍTICO — sem isso o Tailwind+theme.css não chega no bundle do
 // admin (v2.css é onde @import "tailwindcss" e tokens HYPR vivem). O
 // ClientDashboardV2 já importa em outro chunk lazy, mas o admin é a
@@ -81,7 +81,7 @@ import { ownerFilterLabel, monthFilterLabel, situationLabel, WORKLIST_LABELS } f
 import { PERIOD_PRESETS, formatPeriodLabel } from "../lib/period";
 import { AdminShell } from "../shell/AdminShell";
 import { PageHeader, MetaDot, MetaStat } from "../shell/PageHeader";
-import { buildNavCounts, SECTION_REPORTS, viewMeta } from "../shell/navConfig";
+import { buildNavCounts, writeNavCountsCache, SECTION_REPORTS, viewMeta } from "../shell/navConfig";
 import { ClientCard } from "../components/ClientCard";
 import { CampaignCardV2 } from "../components/CampaignCardV2";
 import { CampaignListV2 } from "../components/CampaignListV2";
@@ -92,6 +92,7 @@ import { prefetchNoteSummaries } from "../lib/notesSummaryCache";
 import { MonthGroupedSections } from "../components/MonthGroupedSections";
 import { formatMonthLabel, getCampaignStatus } from "../lib/format";
 import { DiagnosticoLayout } from "../components/DiagnosticoLayout";
+import { STATUS_ORDER, STATUS_META } from "../lib/diagnostico";
 import { AlertsBell } from "../components/AlertsBell";
 import { AlertCampaignSheet } from "../components/AlertCampaignSheet";
 import { generateAlerts } from "../lib/alerts/engine";
@@ -224,6 +225,18 @@ export default function CampaignMenuV2({
   const [performerRole, setPerformerRole]     = useState("cs");
   const [performerPreset, setPerformerPreset] = useState("now");
   const [performerCustom, setPerformerCustom] = useState({ from: "", to: "" });
+  // Controles do Diagnóstico, pelo mesmo motivo: eram duas fileiras próprias
+  // (pílulas de período + pílulas de status) abaixo da barra, com geometrias
+  // que não existiam em nenhum outro lugar.
+  const [diagStatuses, setDiagStatuses] = useState(() => new Set());
+  const [diagPreset, setDiagPreset]     = useState("now");
+  const [diagCustom, setDiagCustom]     = useState({ from: "", to: "" });
+  // O Diagnóstico publica seu export aqui pra virar ação da barra de contexto.
+  const diagExportRef = useRef(null);
+  const registerDiagExport = useCallback((fn) => {
+    diagExportRef.current = fn;
+    return () => { if (diagExportRef.current === fn) diagExportRef.current = null; };
+  }, []);
   const [drawerCampaign, setDrawerCampaign] = useState(null);
   const [copied, setCopied]               = useState(null);
 
@@ -855,6 +868,15 @@ export default function CampaignMenuV2({
     () => alerts.filter((a) => a.severity === SEVERITY.CRITICAL).length,
     [alerts]
   );
+  // Publica a fatia desta página pro rail das outras rotas: só aqui roda o
+  // motor de alertas, e só aqui se conhece o total de campanhas e clientes.
+  useEffect(() => {
+    writeNavCountsCache({
+      campaigns: totalCampaigns || undefined,
+      clients:   totalClients   || undefined,
+      critical:  criticalAlertCount || undefined,
+    });
+  }, [criticalAlertCount, totalCampaigns, totalClients]);
 
   // Atalho do rodapé do popover de alertas — leva pra view Diagnóstico. Agora
   // é navegação de rota (a view tem URL própria), então o back do browser
@@ -884,9 +906,45 @@ export default function CampaignMenuV2({
   // e a lista de chips-ativos sejam lidas lado a lado — elas têm que
   // concordar, e concordar é mais fácil de conferir aqui do que espalhado
   // por 80 linhas de markup.
-  const isClientView     = layout === "client";
-  const showMonthFilter  = layout === "month";
-  const showSituation    = layout === "month" || layout === "list" || layout === "diagnostico";
+  const isClientView = layout === "client";
+
+  // ── Que filtro está VIVO em cada view ──────────────────────────────────
+  // Isto não é preferência de layout: é o mapa de quais filtros de fato
+  // alcançam o conjunto que cada view renderiza. Sem ele havia dois erros
+  // simétricos, e os dois mentem pro usuário:
+  //
+  //   • Chip que aparece e NÃO filtra. "Situação" no Diagnóstico: a view
+  //     recebe `campaigns` cru (não `filteredCampaigns`), então "apenas
+  //     ativas" e os buckets de worklist nunca chegavam nela. O controle
+  //     existia, respondia ao clique e não mudava uma linha da tabela.
+  //
+  //   • Filtro que filtra e NÃO aparece. "Período" só tinha chip na view
+  //     por mês, mas `filteredCampaigns` aplica `matchMonth` — então a
+  //     Lista vinha filtrada por Agosto sem nada na tela dizendo isso. E o
+  //     worklist filtra clientes (`filteredClients`), mas o chip não era
+  //     oferecido lá: dava pra filtrar em "Por mês", trocar pra "Por
+  //     cliente" e ficar com um recorte ativo invisível.
+  //
+  // Um mapa só, lido pelos chips E pelos chips-ativos, garante que os dois
+  // sempre concordem com o que o dado está fazendo.
+  const LIVE = {
+    // filteredCampaigns → month e list
+    month:       { search: true, owner: true, period: true,  situation: true },
+    list:        { search: true, owner: true, period: true,  situation: true },
+    // filteredClients → search + owner + worklist (sem mês, sem onlyActive)
+    client:      { search: true, owner: true, period: false, situation: "worklist" },
+    // recebe `campaigns` cru + search + ownerMatcher
+    diagnostico: { search: true, owner: true, period: false, situation: false },
+    // leaderboard: filtros próprios (papel + janela), nenhum destes
+    performers:  { search: false, owner: false, period: false, situation: false },
+  }[layout] || { search: true, owner: true, period: false, situation: false };
+
+  const showOwnerFilter  = LIVE.owner;
+  const showMonthFilter  = LIVE.period;
+  const showSituation    = !!LIVE.situation;
+  // Em "Por cliente" só o recorte de worklist alcança o dataset — "apenas
+  // ativas" não é aplicado a `filteredClients`, então não é oferecido lá.
+  const showOnlyActive   = LIVE.situation === true;
   // Performers é leaderboard: ordenar por outra coisa não faz sentido (a
   // métrica JÁ é a ordem). Diagnóstico ordena por header de coluna na
   // própria tabela. Nos dois casos o chip de ordenação sairia sobrando —
@@ -902,7 +960,7 @@ export default function CampaignMenuV2({
   const sortDefaultDir = getDefaultDirection(sortDefault);
 
   const filterChips = [];
-  if (teamMembers) {
+  if (teamMembers && showOwnerFilter) {
     filterChips.push({
       id: "owner",
       label: "Owner",
@@ -977,11 +1035,72 @@ export default function CampaignMenuV2({
       ),
     });
   }
+  if (layout === "diagnostico") {
+    const diagStatusLabel = diagStatuses.size === 0
+      ? undefined
+      : diagStatuses.size === 1
+        ? STATUS_META[[...diagStatuses][0]]?.shortLabel
+        : `${diagStatuses.size} status`;
+    filterChips.push({
+      id: "diagStatus",
+      label: "Status",
+      value: diagStatusLabel,
+      panel: () => (
+        <FilterPanel
+          title="Status de pacing"
+          footer={
+            <FilterPanelClear
+              onClear={() => setDiagStatuses(new Set())}
+              disabled={diagStatuses.size === 0}
+            />
+          }
+        >
+          {STATUS_ORDER.map((st) => (
+            <FilterOption
+              key={st}
+              multi
+              label={STATUS_META[st]?.label || st}
+              sub={STATUS_META[st]?.description}
+              selected={diagStatuses.has(st)}
+              onSelect={() => setDiagStatuses((prev) => {
+                const next = new Set(prev);
+                if (next.has(st)) next.delete(st); else next.add(st);
+                return next;
+              })}
+            />
+          ))}
+        </FilterPanel>
+      ),
+    });
+    filterChips.push({
+      id: "diagPeriod",
+      label: "Período",
+      value: diagPreset === "now" ? undefined : formatPeriodLabel(diagPreset, diagCustom.from, diagCustom.to),
+      icon: <CalendarGlyph />,
+      panel: (close) => (
+        <FilterPanel title="Janela do diagnóstico">
+          {PERIOD_PRESETS.filter((o) => o.id !== "custom").map((o) => (
+            <FilterOption
+              key={o.id}
+              label={o.label}
+              sub={o.id === "now" ? "só campanhas em vôo" : "retrospectivo, inclui encerradas"}
+              selected={diagPreset === o.id}
+              onSelect={() => { setDiagPreset(o.id); close(); }}
+            />
+          ))}
+        </FilterPanel>
+      ),
+    });
+  }
   if (showSituation) {
     filterChips.push({
       id: "situation",
       label: "Situação",
-      value: situationLabel({ onlyActive, worklistKey: activeWorklist, worklistLabels: WORKLIST_LABELS }),
+      value: situationLabel({
+        onlyActive: showOnlyActive && onlyActive,
+        worklistKey: activeWorklist,
+        worklistLabels: WORKLIST_LABELS,
+      }),
       icon: <ClockGlyph />,
       panel: () => (
         <FilterPanel
@@ -989,18 +1108,20 @@ export default function CampaignMenuV2({
           footer={
             <FilterPanelClear
               onClear={() => { setOnlyActive(false); setActiveWorklist(null); }}
-              disabled={!onlyActive && !activeWorklist}
+              disabled={!(showOnlyActive && onlyActive) && !activeWorklist}
             />
           }
         >
-          <FilterOption
-            multi
-            label="Apenas ativas"
-            sub="em veiculação — sem pausadas nem encerradas"
-            count={activeCampaignsCount}
-            selected={onlyActive}
-            onSelect={() => setOnlyActive((v) => !v)}
-          />
+          {showOnlyActive && (
+            <FilterOption
+              multi
+              label="Apenas ativas"
+              sub="em veiculação — sem pausadas nem encerradas"
+              count={activeCampaignsCount}
+              selected={onlyActive}
+              onSelect={() => setOnlyActive((v) => !v)}
+            />
+          )}
           {WORKLIST_KEYS.map((key) => {
             const bucket = worklist?.[key];
             if (!bucket?.count) return null;
@@ -1024,14 +1145,14 @@ export default function CampaignMenuV2({
   // fora do próprio campo, e num campo de 240px um termo longo fica
   // truncado sem aviso.
   const activeFilters = [];
-  if (search.trim()) {
+  if (LIVE.search && search.trim()) {
     activeFilters.push({
       id: "search",
       label: `Busca: ${search.trim()}`,
       onClear: () => setSearch(""),
     });
   }
-  if (ownerFilter.length > 0) {
+  if (showOwnerFilter && ownerFilter.length > 0) {
     activeFilters.push({
       id: "owner",
       label: `Owner: ${ownerFilterLabel(ownerFilter, teamMembers)}`,
@@ -1045,11 +1166,27 @@ export default function CampaignMenuV2({
       onClear: () => setActiveMonth(null),
     });
   }
-  if (showSituation && onlyActive) {
+  if (showOnlyActive && onlyActive) {
     activeFilters.push({
       id: "onlyActive",
       label: "Apenas ativas",
       onClear: () => setOnlyActive(false),
+    });
+  }
+  if (layout === "diagnostico" && diagStatuses.size > 0) {
+    activeFilters.push({
+      id: "diagStatus",
+      label: diagStatuses.size === 1
+        ? STATUS_META[[...diagStatuses][0]]?.shortLabel || "status"
+        : `${diagStatuses.size} status`,
+      onClear: () => setDiagStatuses(new Set()),
+    });
+  }
+  if (layout === "diagnostico" && diagPreset !== "now") {
+    activeFilters.push({
+      id: "diagPeriod",
+      label: formatPeriodLabel(diagPreset, diagCustom.from, diagCustom.to),
+      onClear: () => setDiagPreset("now"),
     });
   }
   if (showSituation && activeWorklist) {
@@ -1066,6 +1203,8 @@ export default function CampaignMenuV2({
     setActiveMonth(null);
     setOnlyActive(false);
     setActiveWorklist(null);
+    setDiagStatuses(new Set());
+    setDiagPreset("now");
   }, []);
 
   // "4 de 490 campanhas" — a leitura que não existia em nenhuma das cinco
@@ -1121,10 +1260,22 @@ export default function CampaignMenuV2({
         </>
       }
       actions={
-        <Button variant="primary" size="sm" onClick={() => setShowNewCampaign(true)}>
-          <PlusGlyph />
-          <span className="hidden sm:inline">Novo Report</span>
-        </Button>
+        <>
+          {/* O Diagnóstico tinha o próprio botão de export flutuando no fim
+              da fileira de pílulas de status. Aqui ele fica onde ficam as
+              ações primárias das outras rotas ("Exportar" no PMP, "Link
+              compartilhado" no drilldown). */}
+          {layout === "diagnostico" && (
+            <Button variant="ghost" size="sm" onClick={() => diagExportRef.current?.()}>
+              <DownloadGlyph />
+              <span className="hidden sm:inline">Baixar Excel</span>
+            </Button>
+          )}
+          <Button variant="primary" size="sm" onClick={() => setShowNewCampaign(true)}>
+            <PlusGlyph />
+            <span className="hidden sm:inline">Novo Report</span>
+          </Button>
+        </>
       }
     >
       <PageHeader
@@ -1197,11 +1348,10 @@ export default function CampaignMenuV2({
 
       <FilterBar
         search={search}
-        // Performers é um leaderboard de ~10 owners: buscar por nome numa
-        // lista que caberia inteira na tela é controle sem função. Omitir o
-        // handler faz o campo não renderizar — a barra continua no lugar,
-        // com os filtros que a view tem.
-        onSearchChange={layout === "performers" ? undefined : setSearch}
+        // Omitir o handler faz o campo não renderizar. Em Performers a busca
+        // não alcança o dado (o leaderboard tem filtros próprios) — e um
+        // campo que aceita texto sem mudar nada é pior que campo nenhum.
+        onSearchChange={LIVE.search ? setSearch : undefined}
         searchPlaceholder={
           isClientView ? "Buscar cliente…" : "Buscar cliente, campanha ou token…"
         }
@@ -1272,6 +1422,13 @@ export default function CampaignMenuV2({
               onOpenCampaign={handleDrillCampaign}
               search={search}
               ownerMatcher={ownerMatcher}
+              activeStatuses={diagStatuses}
+              onStatusesChange={setDiagStatuses}
+              preset={diagPreset}
+              onPresetChange={setDiagPreset}
+              custom={diagCustom}
+              onCustomChange={setDiagCustom}
+              onRegisterExport={registerDiagExport}
             />
           ) : (
             <CampaignListV2
@@ -1519,6 +1676,15 @@ function ClockGlyph() {
          strokeWidth="2" strokeLinecap="round" aria-hidden="true">
       <circle cx="12" cy="12" r="9" />
       <path d="M12 8v4l3 2" />
+    </svg>
+  );
+}
+
+function DownloadGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
     </svg>
   );
 }

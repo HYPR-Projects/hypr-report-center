@@ -372,7 +372,7 @@ export function DataFreshnessIndicator({ className, user, variant = "icon" }) {
           <div className="px-4 py-3 border-b border-border bg-surface-strong">
             <div className="flex items-center gap-2">
               <span className={cn("size-2 rounded-full shrink-0", tone.dot)} />
-              <span className="text-[11px] font-bold uppercase tracking-wider text-fg-muted">
+              <span className="lbl-section text-fg-muted">
                 Estado das bases
               </span>
             </div>

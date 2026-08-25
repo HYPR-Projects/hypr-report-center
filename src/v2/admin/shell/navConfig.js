@@ -178,6 +178,46 @@ function sectionResult(section, rawSlug) {
   return { section, layout: fallback, canonical: pathFor(section, fallback) };
 }
 
+// ── Contagens do rail, persistidas ───────────────────────────────────────
+// O rail lista DESTINOS. A contagem ao lado de "Por mês" descreve o destino,
+// não a página em que você está — então ela não pode mudar (nem sumir)
+// conforme a rota. Só que cada página conhece uma fatia dos números:
+//
+//   CampaignMenuV2  sabe campanhas, clientes e críticos (roda o motor de alertas)
+//   PmpDealsPage    sabe as quatro contagens de line do PMP
+//   ClientDetailPage sabe só o cliente dele
+//
+// Sem um lugar comum, o rail ficava assimétrico: os itens do PMP apareciam
+// sem número enquanto você estava em Reports, e o selo de críticos sumia ao
+// entrar no drilldown. Cada página escreve a fatia que apurou e lê a união.
+//
+// É cache de EXIBIÇÃO, não fonte de verdade: quando a página que dona do
+// número monta, ela sobrescreve. O pior caso é o rail mostrar a contagem da
+// última visita — que é exatamente o que ele mostrava um segundo antes de
+// você navegar.
+const LS_NAV_COUNTS = "hypr.admin.navCounts";
+
+export function readNavCountsCache() {
+  try {
+    const raw = localStorage.getItem(LS_NAV_COUNTS);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch { return {}; }
+}
+
+/** Mescla uma fatia no cache. Chaves com valor nulo são ignoradas. */
+export function writeNavCountsCache(slice) {
+  if (!slice) return;
+  try {
+    const merged = { ...readNavCountsCache() };
+    for (const [k, v] of Object.entries(slice)) {
+      if (v != null) merged[k] = v;
+    }
+    localStorage.setItem(LS_NAV_COUNTS, JSON.stringify(merged));
+  } catch { /* ignore */ }
+}
+
 /**
  * Contagens exibidas no rail. Recebe o que cada página já calcula e devolve
  * o mapa consumido por `count`/`badge` das views.
@@ -187,7 +227,9 @@ function sectionResult(section, rawSlug) {
  * responde, o rail mostra o rótulo sem número em vez de um zero que mente.
  */
 export function buildNavCounts({ campaigns, clients, critical, pmp } = {}) {
-  const counts = {};
+  // Base: o que outras páginas já apuraram. Por cima, o que ESTA página
+  // sabe — quem tem o número fresco sempre vence o cache.
+  const counts = { ...readNavCountsCache() };
   if (campaigns != null) { counts.campaigns = campaigns; }
   if (clients   != null) { counts.clients   = clients;   }
   if (critical)          { counts.critical  = critical;  }

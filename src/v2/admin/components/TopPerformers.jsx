@@ -124,7 +124,7 @@ function MicroMetric({ label, value, tone = "fg" }) {
   // Em telas menores, a row quebra em stack e o divisor seria ruído.
   return (
     <div className="flex flex-col gap-1 min-w-0 lg:pl-3 lg:border-l lg:border-border/40 lg:first:border-l-0 lg:first:pl-0">
-      <span className="text-[9px] uppercase tracking-widest font-bold text-fg-subtle whitespace-nowrap leading-none">
+      <span className="lbl-micro text-fg-subtle whitespace-nowrap">
         {label}
       </span>
       <span className={cn(

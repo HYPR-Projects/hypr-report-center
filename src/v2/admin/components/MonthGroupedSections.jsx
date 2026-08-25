@@ -151,7 +151,7 @@ export function MonthGroupedSections({
                     <polyline points="3 4.5 6 7.5 9 4.5" />
                   </svg>
                 )}
-                <h2 className="text-[11px] uppercase tracking-widest font-bold text-fg-muted group-hover:text-fg transition-colors">
+                <h2 className="lbl-section text-fg-muted group-hover:text-fg transition-colors">
                   {g.label}
                 </h2>
               </div>

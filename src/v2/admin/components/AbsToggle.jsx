@@ -117,7 +117,7 @@ export function AbsToggle({ shortToken, autoDetected, onChange }) {
 
   return (
     <div>
-      <div className="text-[11px] uppercase tracking-widest font-bold text-fg-subtle mb-2">
+      <div className="lbl-section mb-2">
         Brand Safety
       </div>
       <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-surface border border-border">

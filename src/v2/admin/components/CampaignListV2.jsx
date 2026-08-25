@@ -94,7 +94,7 @@ export function CampaignListV2({ campaigns, onOpen, onOpenReport, teamMap = {} }
           <div
             className={cn(
               "grid gap-2 px-4 py-2.5 dense:py-1.5 bg-surface-strong border-b border-border",
-              "text-[10px] uppercase tracking-widest font-bold text-fg-subtle",
+              "lbl-section",
               GRID
             )}
           >
@@ -227,7 +227,7 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
           <TokenChip token={short_token} variant="compact" />
           {merge_id && (
             <span
-              className="text-[8.5px] uppercase tracking-widest font-bold text-signature px-1 rounded bg-signature/10"
+              className="lbl-micro text-signature px-1 rounded bg-signature/10"
               title="Pertence a um grupo agrupado"
             >
               grupo
@@ -237,7 +237,7 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
             <Tooltip>
               <TooltipTrigger asChild>
                 <span
-                  className="text-[8.5px] uppercase tracking-widest font-bold text-signature px-1 rounded bg-signature/10 border border-signature/30 cursor-help"
+                  className="lbl-micro text-signature px-1 rounded bg-signature/10 border border-signature/30 cursor-help"
                   onClick={(e) => e.stopPropagation()}
                 >
                   pausada
@@ -259,7 +259,7 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
           )}
           {awaiting && (
             <span
-              className="text-[8.5px] uppercase tracking-widest font-bold text-warning px-1 rounded bg-warning-soft border border-warning/30"
+              className="lbl-micro text-warning px-1 rounded bg-warning-soft border border-warning/30"
               title="Aguardando fechamento — marcar como encerrada no drawer"
             >
               fechar
@@ -271,7 +271,7 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
             <Tooltip>
               <TooltipTrigger asChild>
                 <span
-                  className="text-[8.5px] uppercase tracking-widest font-bold text-danger px-1 rounded bg-danger-soft border border-danger/30 cursor-help"
+                  className="lbl-micro text-danger px-1 rounded bg-danger-soft border border-danger/30 cursor-help"
                   onClick={(e) => e.stopPropagation()}
                 >
                   antecipada

@@ -58,7 +58,7 @@ import { ymd, parseYmd } from "../../../shared/dateFilter";
 import { TooltipProvider } from "../../../ui/Tooltip";
 import { AdminShell } from "../shell/AdminShell";
 import { PageHeader, MetaDot, MetaStat } from "../shell/PageHeader";
-import { buildNavCounts, SECTION_PMP, viewMeta } from "../shell/navConfig";
+import { buildNavCounts, writeNavCountsCache, SECTION_PMP, viewMeta } from "../shell/navConfig";
 import {
   FilterBar, FilterPanel, FilterOption, FilterPanelClear, SortChipFilter,
   FilterChipChevron, FilterChipValue,
@@ -1179,6 +1179,18 @@ export default function PmpDealsPage({
     : null;
 
   const meta = viewMeta(SECTION_PMP, layout);
+  // As quatro contagens do PMP só existem aqui — publica pro rail das
+  // outras rotas (ver writeNavCountsCache em navConfig).
+  useEffect(() => {
+    if (!lines.length) return;
+    writeNavCountsCache({
+      pmpList:    counts.list    || undefined,
+      pmpLive:    counts.live    || undefined,
+      pmpClient:  counts.client  || undefined,
+      pmpHistory: counts.history || undefined,
+    });
+  }, [lines.length, counts]);
+
   const navCounts = buildNavCounts({
     pmp: {
       list:    counts.list    || undefined,
@@ -1736,7 +1748,7 @@ function InlineGroupSubtotal({ members, groupPi, groupPctReceber, groupPctRecebe
   return (
     <div className={cn(grid, "hidden md:grid px-5 py-2.5 items-center border-t border-border/40 bg-surface/40 text-[12px]")}>
       <div />
-      <div className="text-[10px] uppercase tracking-widest font-semibold text-fg-muted">
+      <div className="lbl-section text-fg-muted">
         Subtotal do grupo · {members.length} lines
       </div>
       <div /> {/* bid/status */}
@@ -2054,7 +2066,7 @@ function QuarterFilterPill({ values, onChange, availableYears }) {
         <Popover.Content align="start" sideOffset={8}
           className="z-50 rounded-xl border border-border bg-surface-2 shadow-2xl p-4 w-[260px] data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2">
           <div className="flex items-center justify-between mb-3">
-            <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">Ano</div>
+            <div className="lbl-section">Ano</div>
             <div className="inline-flex items-center gap-1">
               <button onClick={() => setYear(y => y - 1)} className="w-7 h-7 inline-flex items-center justify-center rounded-md text-fg-muted hover:bg-surface-strong">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m15 18-6-6 6-6"/></svg>
@@ -2162,7 +2174,7 @@ function MonthFilterPill({ values, onChange, availableYears }) {
         <Popover.Content align="start" sideOffset={8}
           className="z-50 rounded-xl border border-border bg-surface-2 shadow-2xl p-4 w-[300px] data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2">
           <div className="flex items-center justify-between mb-3">
-            <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">Ano</div>
+            <div className="lbl-section">Ano</div>
             <div className="inline-flex items-center gap-1">
               <button onClick={() => setYear(y => y - 1)} className="w-7 h-7 inline-flex items-center justify-center rounded-md text-fg-muted hover:bg-surface-strong">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m15 18-6-6 6-6"/></svg>
@@ -2434,7 +2446,7 @@ function MetaRow({ k, v, mono, compact }) {
   if (compact) {
     return (
       <div className="min-w-0">
-        <div className="text-[10px] uppercase tracking-wider text-fg-subtle">{k}</div>
+        <div className="lbl-section">{k}</div>
         <div className={cn("text-[12px] text-fg truncate tabular-nums", mono && "font-mono")}
              title={String(v ?? "")}>{v || "—"}</div>
       </div>
@@ -2442,7 +2454,7 @@ function MetaRow({ k, v, mono, compact }) {
   }
   return (
     <div className="flex items-start justify-between gap-3 text-[11px]">
-      <span className="text-fg-subtle uppercase tracking-wider shrink-0">{k}</span>
+      <span className="lbl-section shrink-0">{k}</span>
       <span className={cn("text-fg text-right max-w-[300px]",
                           mono ? "font-mono break-all" : "truncate")}
             title={String(v ?? "")}>{v || "—"}</span>
@@ -2512,7 +2524,7 @@ function DeliveryChart({ daily }) {
       {/* Header — KPI grande à esquerda, toggle à direita */}
       <div className="flex items-start justify-between gap-3 px-4 pt-3.5 pb-2">
         <div className="min-w-0">
-          <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+          <div className="lbl-section">
             {meta.label} · 7 dias
           </div>
           <div className="flex items-baseline gap-2 mt-1">
@@ -2661,7 +2673,7 @@ function MetricToggle({ value, onChange }) {
           <button key={k} role="tab" aria-selected={active}
                   onClick={() => onChange(k)}
                   className={cn(
-                    "px-2 h-6 rounded text-[10.5px] uppercase tracking-wider font-semibold transition-colors",
+                    "lbl-section px-2 h-6 rounded transition-colors",
                     active
                       ? "bg-surface-2 text-fg shadow-sm"
                       : "text-fg-subtle hover:text-fg",
@@ -2705,7 +2717,7 @@ function Accordion({ label, summary, defaultOpen = false, children }) {
              open={defaultOpen}>
       <summary className="flex items-center justify-between gap-3 cursor-pointer select-none list-none px-4 py-2.5 hover:bg-surface/60 transition-colors [&::-webkit-details-marker]:hidden">
         <div className="min-w-0 flex-1">
-          <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">{label}</div>
+          <div className="lbl-section">{label}</div>
           {summary && (
             <div className="text-[11px] text-fg-muted mt-0.5 truncate" title={summary}>{summary}</div>
           )}
@@ -2730,7 +2742,7 @@ function GroupBlock({ line, onGroupClick, canEdit = true }) {
     return (
       <div className="rounded-lg border border-signature/30 bg-signature/[0.05] px-4 py-3">
         <div className="flex items-center justify-between mb-1.5">
-          <div className="text-[10px] uppercase tracking-widest font-bold text-signature">
+          <div className="lbl-section text-signature">
             Grupo · PI compartilhado
           </div>
           <span className="font-mono text-[10px] text-signature">{line.group_id}</span>
@@ -2801,7 +2813,7 @@ function overrideSummary(line, form) {
 function FieldGroup({ label, children }) {
   return (
     <div>
-      <label className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle mb-1.5 block">{label}</label>
+      <label className="lbl-section mb-1.5 block">{label}</label>
       {children}
     </div>
   );
@@ -2898,7 +2910,7 @@ function LinkCommandPopup({ open, onOpenChange, line, onLink }) {
           {loading && <Skeleton className="h-16 w-full rounded-md" />}
           {!loading && suggestions.length > 0 && (
             <div className="space-y-2 mb-5">
-              <div className="text-[10px] uppercase tracking-widest text-fg-subtle font-bold">Sugestões automáticas</div>
+              <div className="lbl-section">Sugestões automáticas</div>
               {suggestions.map(s => {
                 const linkingThis = linkingToken === s.short_token;
                 const dimmed = isLinking && !linkingThis;
@@ -2938,7 +2950,7 @@ function LinkCommandPopup({ open, onOpenChange, line, onLink }) {
             <div className="text-xs text-fg-muted mb-5">Nenhuma sugestão automática encontrada.</div>
           )}
           <div className="space-y-2">
-            <div className="text-[10px] uppercase tracking-widest text-fg-subtle font-bold">Vincular manualmente</div>
+            <div className="lbl-section">Vincular manualmente</div>
             <div className="flex items-center gap-2">
               <input type="text" value={manual} onChange={e => setManual(e.target.value.toUpperCase())}
                      placeholder="ex: NO2015"

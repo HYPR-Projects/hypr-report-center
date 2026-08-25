@@ -160,7 +160,7 @@ export function GroupLinesModal({ open, onOpenChange, line, onGroupCreated }) {
             {/* Lista de candidatas */}
             <div>
               <div className="flex items-center justify-between mb-2">
-                <div className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle">
+                <div className="lbl-section">
                   Lines do mesmo cliente ({line.customer || "?"})
                 </div>
                 <div className="text-[11px] text-fg-muted tabular-nums">
@@ -277,7 +277,7 @@ export function GroupLinesModal({ open, onOpenChange, line, onGroupCreated }) {
 function FieldGroup({ label, children }) {
   return (
     <div>
-      <label className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle mb-1.5 block">{label}</label>
+      <label className="lbl-section mb-1.5 block">{label}</label>
       {children}
     </div>
   );

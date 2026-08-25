@@ -77,7 +77,7 @@ export function KpiBoard({
           "focus-visible:ring-inset",
         )}
       >
-        <span className="shrink-0 text-[9.5px] font-extrabold uppercase tracking-[0.14em] text-fg-subtle">
+        <span className="shrink-0 lbl-section">
           {title}
         </span>
 

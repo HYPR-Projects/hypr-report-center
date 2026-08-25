@@ -62,7 +62,7 @@ export function MergeGroupCardV2({ members, onOpen, onOpenReport, teamMap = {} }
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[10px] uppercase tracking-[0.18em] font-bold text-signature">
+            <span className="lbl-section text-signature">
               Agrupado
             </span>
             <span className="text-fg-subtle text-[10px]">·</span>
@@ -81,7 +81,7 @@ export function MergeGroupCardV2({ members, onOpen, onOpenReport, teamMap = {} }
           </p>
         </div>
         <span
-          className="hidden md:inline-flex shrink-0 items-center gap-1 px-2 py-1 rounded-md bg-signature/10 border border-signature/30 text-[10px] font-bold text-signature uppercase tracking-wider"
+          className="lbl-section text-signature hidden md:inline-flex shrink-0 items-center gap-1 px-2 py-1 rounded-md bg-signature/10 border border-signature/30"
           title="Esses tokens compartilham um único link de report"
         >
           1 link único

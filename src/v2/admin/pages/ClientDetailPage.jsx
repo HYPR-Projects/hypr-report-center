@@ -37,16 +37,17 @@ import OwnerModal from "../../../components/modals/OwnerModal";
 import MergeModal from "../../../components/modals/MergeModal";
 import { NegotiationModal } from "../../components/NegotiationModal";
 
-import { Card } from "../../../ui/Card";
+import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
 
 import { ClientPortalDrawer } from "../../portal/ClientPortalDrawer";
 import { FilterBar, SortChipFilter } from "../components/FilterBar";
+import { KpiBoard } from "../components/KpiBoard";
 import { OwnerFilterPanel } from "../components/OwnerFilter";
 import { ownerFilterLabel } from "../lib/filterLabels";
 import { AdminShell } from "../shell/AdminShell";
 import { PageHeader, MetaDot, MetaStat } from "../shell/PageHeader";
-import { SECTION_CLIENT } from "../shell/navConfig";
+import { SECTION_CLIENT, buildNavCounts } from "../shell/navConfig";
 import { DataFreshnessIndicator } from "../components/DataFreshnessIndicator";
 import { DspHealthPanel } from "../components/DspHealthPanel";
 import { CampaignCardV2 } from "../components/CampaignCardV2";
@@ -79,6 +80,18 @@ export default function ClientDetailPage({
   const [campaigns, setCampaigns] = useState(() => {
     const cached = bootstrap.campaigns?.data ?? [];
     return cached.filter((c) => normalizeSlug(c.client_name) === slug);
+  });
+  // Totais GLOBAIS (não os deste cliente) — o rail lista destinos, e a
+  // contagem ao lado de "Por mês" tem que ser a mesma em qualquer rota.
+  // Antes esta página passava o total local e o rail dizia "Por mês 2" aqui
+  // e "Por mês 9" no menu.
+  const [globalTotals, setGlobalTotals] = useState(() => {
+    const cached = bootstrap.campaigns?.data ?? [];
+    if (!cached.length) return { campaigns: undefined, clients: undefined };
+    return {
+      campaigns: cached.length,
+      clients: new Set(cached.map((c) => normalizeSlug(c.client_name)).filter(Boolean)).size,
+    };
   });
   const [loading, setLoading]         = useState(!bootstrap.campaigns);
   const [teamMembers, setTeamMembers] = useState(bootstrap.team?.data ?? { cps: [], css: [] });
@@ -362,6 +375,10 @@ export default function ClientDetailPage({
       .then((camps) => {
         writeCache("menu.campaigns", camps);
         setCampaigns(camps.filter((c) => normalizeSlug(c.client_name) === slug));
+        setGlobalTotals({
+          campaigns: camps.length,
+          clients: new Set(camps.map((c) => normalizeSlug(c.client_name)).filter(Boolean)).size,
+        });
         setLastFetchedAt(Date.now());
       })
       .catch(() => { /* keep stale */ });
@@ -375,6 +392,10 @@ export default function ClientDetailPage({
       .then((camps) => {
         writeCache("menu.campaigns", camps);
         setCampaigns(camps.filter((c) => normalizeSlug(c.client_name) === slug));
+        setGlobalTotals({
+          campaigns: camps.length,
+          clients: new Set(camps.map((c) => normalizeSlug(c.client_name)).filter(Boolean)).size,
+        });
         setLastFetchedAt(Date.now());
       })
       .catch(() => { /* keep stale */ });
@@ -449,12 +470,16 @@ export default function ClientDetailPage({
       .then((camps) => {
         writeCache("menu.campaigns", camps);
         setCampaigns(camps.filter((c) => normalizeSlug(c.client_name) === slug));
+        setGlobalTotals({
+          campaigns: camps.length,
+          clients: new Set(camps.map((c) => normalizeSlug(c.client_name)).filter(Boolean)).size,
+        });
         setLastFetchedAt(Date.now());
       })
       .catch(() => { /* keep stale — patch otimista já refletiu */ });
   }, [slug]);
 
-  const navCounts = { campaigns: kpis.totalCampaigns || undefined };
+  const navCounts = buildNavCounts(globalTotals);
 
   const activeFilters = [];
   if (search.trim()) {
@@ -495,18 +520,17 @@ export default function ClientDetailPage({
           <DspHealthPanel variant="rail" onOpenReport={onOpenReport} />
         </>
       }
+      // Button do DS, não um <button> com classes à mão: a ação primária do
+      // drilldown precisa ter a MESMA geometria de "+ Novo Report" e
+      // "Exportar", que são as primárias das outras duas rotas.
       actions={
-        <button
-          type="button"
-          onClick={() => setPortalOpen(true)}
-          className="inline-flex items-center gap-2 h-[30px] px-3 rounded-md text-[12.5px] font-semibold text-on-signature bg-signature-fill hover:bg-signature-hover transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1 focus-visible:ring-offset-canvas"
-        >
+        <Button variant="primary" size="sm" onClick={() => setPortalOpen(true)}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
             <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
           </svg>
           <span className="hidden sm:inline">Link compartilhado</span>
-        </button>
+        </Button>
       }
     >
       <PageHeader
@@ -514,7 +538,7 @@ export default function ClientDetailPage({
           <button
             type="button"
             onClick={goToReports}
-            className="inline-flex items-center gap-1 uppercase tracking-[0.15em] hover:text-fg-muted transition-colors cursor-pointer border-0 bg-transparent p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature rounded"
+            className="inline-flex items-center gap-1 hover:text-fg-muted transition-colors cursor-pointer border-0 bg-transparent p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature rounded"
           >
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" aria-hidden="true">
               <path d="m15 18-6-6 6-6" />
@@ -548,24 +572,34 @@ export default function ClientDetailPage({
             Não consegui atualizar agora
             {lastFetchedAt ? ` — mostrando dados de ${formatTimeAgo(lastFetchedAt)}.` : "."}
           </p>
-          <button
-            type="button"
-            onClick={handleRetry}
-            disabled={refreshing}
-            className="text-[11px] font-semibold text-fg px-3 h-7 rounded-md border border-warning/40 hover:bg-warning/10 transition-colors disabled:opacity-50 whitespace-nowrap cursor-pointer"
-          >
+          {/* Mesmo Button do banner equivalente no menu — os dois avisos de
+              "dado desatualizado" agora são o mesmo objeto nas duas rotas. */}
+          <Button variant="ghost" size="sm" onClick={handleRetry} disabled={refreshing}>
             {refreshing ? "Tentando…" : "Tentar de novo"}
-          </button>
+          </Button>
         </div>
       )}
 
-      {/* KPIs do cliente */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 mb-4">
-        <KpiBox label="Campanhas ativas" value={kpis.activeCampaigns ?? "—"} colorClass="text-fg" />
-        <KpiBox label="Pacing médio"     value={formatPacingValue(kpis.avgPacing)} colorClass={pacingColorClass(kpis.avgPacing)} />
-        <KpiBox label="CTR médio"        value={formatPct(kpis.avgCtr, 2)} colorClass="text-success" />
-        <KpiBox label="VTR médio"        value={formatPct(kpis.avgVtr, 1)} colorClass="text-success" />
-      </div>
+      {/* KPIs do cliente — mesmo board colapsável e mesmas células com filete
+          do menu e do PMP. Antes eram quatro Cards bordados soltos: a mesma
+          informação, num terceiro tratamento visual, na terceira rota. */}
+      <KpiBoard
+        scope="client"
+        title={`Desempenho · ${displayName}`}
+        summary={[
+          { label: "Ativas", value: kpis.activeCampaigns ?? "—" },
+          { label: "Pacing", value: formatPacingValue(kpis.avgPacing) },
+          { label: "CTR", value: formatPct(kpis.avgCtr, 2) },
+          { label: "VTR", value: formatPct(kpis.avgVtr, 1) },
+        ]}
+      >
+        <div className="grid grid-cols-2 @min-[560px]:grid-cols-4 gap-px bg-border">
+          <KpiCell label="Campanhas ativas" value={kpis.activeCampaigns ?? "—"} />
+          <KpiCell label="Pacing médio"     value={formatPacingValue(kpis.avgPacing)} colorClass={pacingColorClass(kpis.avgPacing)} />
+          <KpiCell label="CTR médio"        value={formatPct(kpis.avgCtr, 2)} colorClass="text-success" />
+          <KpiCell label="VTR médio"        value={formatPct(kpis.avgVtr, 1)} colorClass="text-success" />
+        </div>
+      </KpiBoard>
 
       <FilterBar
         search={search}
@@ -603,15 +637,10 @@ export default function ClientDetailPage({
         }
       />
 
-        {/* Section header */}
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-[11px] uppercase tracking-widest font-bold text-fg-muted">
-            Campanhas {displayName}
-          </h2>
-          <span className="text-[11px] text-fg-subtle">
-            {sorted.length} campanha{sorted.length === 1 ? "" : "s"}
-          </span>
-        </div>
+        {/* Sem cabeçalho de seção aqui: o H1 já diz o cliente, a barra de
+            filtros já diz "N de M campanhas", e o cabeçalho de cada mês
+            repete a contagem logo abaixo. Eram três lugares dizendo o mesmo
+            número em 60px de altura. */}
 
         {loading ? (
           <div className="space-y-2">
@@ -757,14 +786,19 @@ const CLIENT_DETAIL_SORTS = [
   { value: "alpha",      label: "Nome da campanha" },
 ];
 
-function KpiBox({ label, value, colorClass }) {
+/**
+ * Célula do board de KPIs. Mesma receita das células do MetricStrip (menu) e
+ * do PmpKpiStrip: rótulo em `lbl-section`, valor em tabular-nums, fundo
+ * `canvas-elevated` e o filete vindo do `gap-px` sobre `bg-border` da grade.
+ */
+function KpiCell({ label, value, colorClass }) {
   return (
-    <Card className="p-3.5">
-      <div className="text-[9.5px] uppercase tracking-[0.14em] font-extrabold text-fg-subtle">{label}</div>
-      <div className={`text-xl font-extrabold tracking-tight tabular-nums mt-1 ${colorClass || "text-fg"}`}>
+    <div className="bg-canvas-elevated px-3.5 py-3">
+      <div className="lbl-section">{label}</div>
+      <div className={`text-xl font-extrabold tracking-tight tabular-nums mt-1.5 ${colorClass || "text-fg"}`}>
         {value}
       </div>
-    </Card>
+    </div>
   );
 }
 

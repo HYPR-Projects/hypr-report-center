@@ -192,7 +192,7 @@ export function CampaignLines({ shortToken, hasAbs }) {
           {/* Linha 2: chip mídia + impressões */}
           <div className="flex items-center justify-between gap-2 text-[10px]">
             <span className={cn(
-              "inline-flex items-center px-1.5 py-0.5 rounded font-bold uppercase tracking-wider",
+              "lbl-micro inline-flex items-center px-1.5 py-0.5 rounded",
               isVideo ? "bg-signature/15 text-signature" : "bg-surface-strong text-fg-muted"
             )}>
               {isVideo ? "VIDEO" : "DISPLAY"}
@@ -216,7 +216,7 @@ export function CampaignLines({ shortToken, hasAbs }) {
 function Pill({ label, value, t }) {
   return (
     <div className={cn("rounded px-2 py-1 leading-tight text-center", TONE_CLASS[t] || TONE_CLASS.neutral)}>
-      <div className="text-[9px] uppercase tracking-wider opacity-70 font-semibold">{label}</div>
+      <div className="lbl-micro opacity-70">{label}</div>
       <div className="text-[11px] tabular-nums font-bold mt-0.5">{value}</div>
     </div>
   );

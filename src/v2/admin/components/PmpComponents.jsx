@@ -90,7 +90,7 @@ export function PmpLineGroupCard({ lines, onLineClick, onLinkClick, variant = "d
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[9px] uppercase tracking-[0.16em] font-semibold text-signature">
+            <span className="lbl-micro text-signature">
               Grupo · 1 PI
             </span>
             <span className="text-fg-subtle text-[10px]">·</span>
@@ -109,15 +109,15 @@ export function PmpLineGroupCard({ lines, onLineClick, onLinkClick, variant = "d
         {/* Métricas chave do grupo direto no header — número grande, fácil escanear */}
         <div className="hidden md:flex items-center gap-6 text-right shrink-0 tabular-nums">
           <div>
-            <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-semibold">Receita Bruta</div>
+            <div className="lbl-micro text-fg-subtle">Receita Bruta</div>
             <div className="text-[13px] text-fg font-semibold">{formatBRL(groupRev)}</div>
           </div>
           <div>
-            <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-semibold">Margem HYPR</div>
+            <div className="lbl-micro text-fg-subtle">Margem HYPR</div>
             <div className="text-[13px] text-success font-bold">{formatBRL(groupMgn)}</div>
           </div>
           <div>
-            <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-semibold">% Entrega</div>
+            <div className="lbl-micro text-fg-subtle">% Entrega</div>
             <div className={cn("text-[13px] font-bold px-2 py-0.5 rounded", pctDeliveryClass(groupPct))}>
               {formatRatioPct(groupPct, 0)}
             </div>
@@ -239,7 +239,20 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false, w
   // linha. Mesma solução da grade de tiles do drawer e do grid do Overview.
   // Sem showExtra são 6 cards e todos os breakpoints já fecham — daí o span
   // só entrar no caso ímpar.
-  const tailSpan = showExtra ? "col-span-2 md:col-span-3 lg:col-span-2 2xl:col-span-1" : "";
+  // O span TEM que falar a mesma língua da grade. Quando a grade migrou pra
+  // container queries (por causa do rail, que estreita a coluna sem mudar o
+  // viewport), estas classes continuaram em breakpoint de viewport — num
+  // monitor de 1600px o `2xl:col-span-1` vencia enquanto a grade estava em 4
+  // colunas, e sobrava uma célula vazia de ~330px ao lado do último card.
+  //
+  // Fechamento por largura de board, espelhando a grade abaixo:
+  //   <560px   2 cols → 7 = 2+2+2+1(span 2)
+  //   560-760  3 cols → 7 = 3+3+1(span 3)
+  //   760-1350 4 cols → 7 = 4+(1+1+span 2)
+  //   ≥1350    7 cols → uma linha, span 1
+  const tailSpan = showExtra
+    ? "col-span-2 @min-[560px]:col-span-3 @min-[760px]:col-span-2 @min-[1350px]:col-span-1"
+    : "";
   return (
     // Limiares por largura do BOARD (ver KpiBoard), não do viewport: com o
     // rail aberto o board é ~250px mais estreito que a janela, e os valores
@@ -253,7 +266,7 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false, w
              className={cn("bg-canvas-elevated px-3.5 py-3",
                i === items.length - 1 && tailSpan)}
              title={it.title}>
-          <div className="text-[10px] uppercase tracking-widest text-fg-subtle font-semibold leading-tight">{it.label}</div>
+          <div className="lbl-section">{it.label}</div>
           <div className={cn("text-base xl:text-lg font-bold tabular-nums mt-1.5 whitespace-nowrap overflow-hidden text-ellipsis", it.valueClass || "text-fg")}
                title={typeof it.value === "string" ? it.value : ""}>
             {it.value}
@@ -452,7 +465,7 @@ export const PmpLiveCard = memo(PmpLiveCardInner);
 function Metric({ label, value }) {
   return (
     <div>
-      <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-bold">{label}</div>
+      <div className="lbl-micro text-fg-subtle">{label}</div>
       <div className="text-fg tabular-nums">{value}</div>
     </div>
   );
@@ -500,7 +513,7 @@ export function PmpLiveGroupCard({ members, onLineClick }) {
         <div className="flex items-start gap-4 mb-4">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-signature/15 text-signature border border-signature/25">
+              <span className="lbl-section text-signature inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-signature/15 border border-signature/25">
                 <MergeIcon />
                 Grupo · {members.length} lines · 1 PI
               </span>
@@ -763,7 +776,7 @@ export function PmpCustomerAccordion({ customer, lines, onLineClick, onLinkClick
 function MetricInline({ label, value, highlight, valueClass }) {
   return (
     <div className="min-w-0">
-      <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-semibold mb-0.5">{label}</div>
+      <div className="lbl-micro text-fg-subtle mb-0.5">{label}</div>
       <div className={cn("text-[13px] font-semibold truncate", valueClass || "text-fg")} title={String(value)}>
         {value}
         {highlight && <span className="ml-1.5 text-[11px] font-normal text-fg-muted">{highlight}</span>}
@@ -815,9 +828,9 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
   // coluna ativa.
   //
   // CUIDADO: <button> não herda font-size/font-weight/text-transform do pai
-  // (user-agent stylesheet sobrescreve), então `text-[10px] uppercase
-  // tracking-widest font-semibold` do container some quando o filho é
-  // <button>. Por isso aplico essas classes EXPLICITAMENTE no botão também.
+  // (user-agent stylesheet sobrescreve), então o `lbl-section` do container
+  // some quando o filho é <button>. Por isso aplico a mesma utility
+  // EXPLICITAMENTE no botão também.
   // `sub` = segunda linha minúscula do rótulo. Existe pra "% Entrega" caber
   // em duas linhas ("% ENTREGA" / "margem" e "receita") em vez de virar a
   // abreviação enigmática de antes ("% Entr Mgm").
@@ -851,7 +864,7 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
         className={cn(
           cls,
           // Tipografia replicada pra não cair no default do <button>.
-          "text-[10px] uppercase tracking-widest font-semibold",
+          "lbl-section",
           "inline-flex items-center gap-1 w-full cursor-pointer hover:text-fg transition-colors",
           align === "right" && "justify-end",
           active && "text-fg",
@@ -864,7 +877,7 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
   };
 
   return (
-    <div className={cn(grid, "hidden md:grid px-5 py-3 dense:py-2 bg-surface/60 border-b border-border/60 text-[10px] uppercase tracking-widest font-semibold text-fg-subtle")}>
+    <div className={cn(grid, "lbl-section hidden md:grid px-5 py-3 dense:py-2 bg-surface/60 border-b border-border/60")}>
       <div />
       <Th field="customer" align="left">Cliente / Campanha</Th>
       <Th>Status</Th>
@@ -966,7 +979,7 @@ function PmpLineRowInner({
           </span>
           {!isCancelado && isNewLine(line) && (
             <span
-              className="badge-new font-semibold text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full shrink-0 bg-signature/15 text-signature border border-signature/40"
+              className="lbl-micro text-signature badge-new px-1.5 py-0.5 rounded-full shrink-0 bg-signature/15 border border-signature/40"
               title="Line criada há menos de 72h">
               new
             </span>
@@ -995,7 +1008,7 @@ function PmpLineRowInner({
               aparece quando de fato informa algo. */}
           <SourceChip source={line.source} className="shrink-0" />
           {groupBadge && (
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-signature/10 text-signature border border-signature/20 shrink-0"
+            <span className="lbl-micro text-signature inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-signature/10 border border-signature/20 shrink-0"
                   title={`Esta line pertence a um grupo · ${groupBadge}`}>
               <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
                    strokeLinecap="round" strokeLinejoin="round">
@@ -1302,7 +1315,7 @@ export const PmpLineRow = memo(PmpLineRowInner);
 function PmpMobileStat({ label, children }) {
   return (
     <div className="min-w-0">
-      <div className="text-[9px] uppercase tracking-widest text-fg-subtle font-semibold mb-0.5">{label}</div>
+      <div className="lbl-micro text-fg-subtle mb-0.5">{label}</div>
       <div className="text-[13px] tabular-nums">{children}</div>
     </div>
   );

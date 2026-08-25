@@ -69,6 +69,31 @@
  *   Uso: `<td className="py-2.5 dense:py-1.5">`
  */
 @custom-variant rail-collapsed (&:where([data-rail="collapsed"] *));
+
+/* ───────────────────────────────────────────────────────────
+ * A altura do cabeçalho do shell — UM valor, dois lugares
+ * ───────────────────────────────────────────────────────────
+ * A faixa da marca (dentro do rail) e a barra de contexto (à
+ * direita dele) são dois componentes separados que desenham
+ * DUAS METADES DA MESMA LINHA. A borda inferior de uma encosta
+ * na borda inferior da outra no ponto exato em que o rail
+ * termina — e o olho lê as duas como um filete só atravessando
+ * a tela.
+ *
+ * Enquanto a altura era uma classe Tailwind escrita à mão em
+ * cada arquivo (`h-14` num, `h-13` no outro), as duas metades
+ * ficaram 4px fora de registro: um degrau visível bem no canto
+ * superior esquerdo, o primeiro lugar onde o olho pousa.
+ *
+ * Aqui há um valor só. Os dois componentes usam a mesma
+ * utilitária; não existe mais como divergir sem editar esta
+ * linha, e editar esta linha move as duas juntas.
+ */
+@utility shell-header-row {
+  height: var(--shell-header-h);
+  flex: 0 0 var(--shell-header-h);
+}
+
 @custom-variant dense (&:where([data-density="dense"] *));
 
 /* ───────────────────────────────────────────────────────────

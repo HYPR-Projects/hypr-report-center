@@ -132,7 +132,7 @@ export function FilterBar({
           <div className="flex items-center gap-1.5 flex-wrap pt-2">
             {hasActive && (
               <>
-                <span className="text-[9.5px] font-extrabold uppercase tracking-[0.13em] text-fg-subtle mr-0.5">
+                <span className="lbl-section mr-0.5">
                   Filtros
                 </span>
                 {active.map((f) => (
@@ -365,7 +365,8 @@ function ActiveChip({ label, onClear }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 h-[23px] pl-2.5 pr-1 rounded-full",
+        // h-6 (24px): mesma altura dos chips de worklist do KpiBoard.
+        "inline-flex items-center gap-1.5 h-6 pl-2.5 pr-1 rounded-full",
         "bg-signature-soft border border-signature",
         "text-[11px] font-semibold text-fg",
       )}
@@ -398,7 +399,7 @@ export function FilterPanel({ title, children, footer, maxHeight = 320 }) {
     <div>
       {title && (
         <div className="px-3 py-2 border-b border-border bg-surface-strong">
-          <span className="text-[9.5px] font-extrabold uppercase tracking-[0.13em] text-fg-muted">
+          <span className="lbl-section text-fg-muted">
             {title}
           </span>
         </div>
@@ -472,7 +473,7 @@ export function FilterOption({ label, sub, count, selected, onSelect, multi = fa
 /** Cabeçalho de bloco dentro de um painel (ex: "CP" / "CS" no owner). */
 export function FilterGroupLabel({ children }) {
   return (
-    <div className="px-2 pt-2 pb-1 text-[9px] font-extrabold uppercase tracking-[0.13em] text-fg-subtle">
+    <div className="px-2 pt-2 pb-1 lbl-micro text-fg-subtle">
       {children}
     </div>
   );

@@ -182,7 +182,7 @@ export function AudienceOverridesModal({
 
           {/* Adicionar manual */}
           <div className="px-5 pt-3 pb-3 border-t border-border">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle mb-2">
+            <div className="lbl-section mb-2">
               Adicionar manualmente
             </div>
             <div className="flex items-center gap-2">
@@ -256,7 +256,7 @@ function GroupCard({ group, busy, onRename, onRevert }) {
           className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1 py-0.5 text-xs font-semibold text-fg outline-none focus:border-signature focus:bg-canvas"
         />
         {merged && (
-          <span className="shrink-0 rounded-full bg-signature/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-signature">
+          <span className="lbl-section text-signature shrink-0 rounded-full bg-signature/15 px-2 py-0.5">
             mesclada · {group.members.length}
           </span>
         )}

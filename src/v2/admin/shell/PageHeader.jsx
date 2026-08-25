@@ -30,7 +30,7 @@ export function PageHeader({
     <div className={cn("flex items-end justify-between gap-4 flex-wrap mb-5", className)}>
       <div className="min-w-0">
         {eyebrow && (
-          <div className="text-[9.5px] font-extrabold uppercase tracking-[0.15em] text-fg-subtle mb-1.5">
+          <div className="lbl-section mb-1.5">
             {eyebrow}
           </div>
         )}

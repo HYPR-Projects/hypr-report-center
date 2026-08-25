@@ -262,7 +262,7 @@ export function AlertsBell({
           {/* ── Header ──────────────────────────────────────────────── */}
           <div className="px-4 py-3 border-b border-border bg-surface-strong flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 min-w-0">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-fg-muted">
+              <span className="lbl-section text-fg-muted">
                 Alertas
               </span>
               {totalCount > 0 && (
