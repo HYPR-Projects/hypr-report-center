@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { C } from "../shared/theme";
-import { saveSession, clearSession, issueAdminJwt } from "../shared/auth";
+import {
+  saveSession,
+  clearSession,
+  issueAdminJwt,
+  primeAdminJwt,
+  storageWritable,
+  measureClockSkewMs,
+} from "../shared/auth";
 import {
   initGoogleAuth,
   renderSignInButton,
@@ -162,9 +169,41 @@ const LoginScreen = ({ onLogin }) => {
       return;
     }
 
+    // Cache em memória primeiro: é o que faz a aba funcionar mesmo quando a
+    // gravação abaixo falha.
+    primeAdminJwt(issued.token, issued.ttl);
+
+    // Relógio torto não trava mais o acesso (ver CLOCK_SKEW_TOLERANCE_MS em
+    // shared/auth), mas continua valendo registrar: era candidato a causa de
+    // "sessão expirou" e é a própria pessoa que conserta.
+    const skewMs = measureClockSkewMs(issued.token, issued.ttl);
+    if (skewMs != null && Math.abs(skewMs) > 10 * 60 * 1000) {
+      const minutes = Math.round(skewMs / 60000);
+      console.warn(
+        `[HYPR] O relógio deste computador está ${Math.abs(minutes)} min ` +
+        `${minutes > 0 ? "atrasado" : "adiantado"} em relação ao servidor. ` +
+        "Ligar data/hora automática evita sessão caindo sem motivo."
+      );
+    }
+
     const user = { name: payload.name, email, picture: payload.picture };
     // user + id_token + admin JWT numa escrita só, TTL de 8h.
-    saveSession(user, res.credential, issued.token);
+    const stored = saveSession(user, res.credential, issued.token);
+    if (!stored) {
+      // Sem persistência a aba FUNCIONA (o JWT está em memória), mas todo
+      // refresh volta pro login e nada sobrevive a fechar a aba. Entrar
+      // calado aqui é o que fazia esse caso virar "sessão expirou" sem
+      // explicação — então mostra o que houve e deixa a decisão com ele.
+      setFailure({
+        title: "Seu navegador está bloqueando os dados deste site",
+        body: "Consegui te autenticar, mas não consigo guardar a sessão neste navegador (dados de site bloqueados por configuração, política ou extensão). Você pode entrar assim mesmo — só vai precisar logar de novo a cada refresh. Pra resolver de vez, libere cookies e dados de site para este endereço.",
+        email,
+        reason: "storage_blocked",
+        status: 0,
+        proceed: () => onLogin?.(user),
+      });
+      return;
+    }
     setFailure(null);
     onLogin?.(user);
   }, [onLogin]);
@@ -226,7 +265,7 @@ const LoginScreen = ({ onLogin }) => {
  * (é o mesmo `reason` que o backend registra no log).
  */
 function LoginFailure({ failure }) {
-  const { title, body, email, reason, status, retry } = failure;
+  const { title, body, email, reason, status, retry, proceed } = failure;
   return (
     <div
       role="alert"
@@ -250,6 +289,25 @@ function LoginFailure({ failure }) {
       <p style={{color:C.muted,fontSize:12,margin:"8px 0 0",lineHeight:1.55}}>
         {body}
       </p>
+      {proceed && (
+        <button
+          type="button"
+          onClick={proceed}
+          style={{
+            marginTop:12,
+            background:C.blueLight,
+            border:"none",
+            color:"#0B1620",
+            borderRadius:8,
+            padding:"7px 14px",
+            fontSize:12,
+            fontWeight:700,
+            cursor:"pointer",
+          }}
+        >
+          Entrar mesmo assim
+        </button>
+      )}
       {retry && (
         <button
           type="button"
@@ -269,8 +327,13 @@ function LoginFailure({ failure }) {
           Tentar de novo
         </button>
       )}
+      {/* Rodapé técnico: é o que transforma um print desta tela em
+          diagnóstico. `armazenamento` entra aqui porque "sessão não
+          persiste" e "conta recusada" têm sintoma idêntico pro operador e
+          causas que não se parecem em nada. */}
       <p style={{color:`${C.muted}90`,fontSize:10.5,margin:"12px 0 0",fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace"}}>
-        motivo: {reason}{status ? ` · http ${status}` : ""}
+        motivo: {reason}{status ? ` · http ${status}` : ""} · armazenamento:{" "}
+        {storageWritable() ? "ok" : "bloqueado"}
       </p>
     </div>
   );

@@ -65,6 +65,14 @@ export function isFeatureAdmin(user) {
  * de uma vez é o que garante que não existe sessão persistida sem credencial
  * de trabalho — que era o estado em que o app entrava, batia 401 em tudo e
  * voltava pro login em laço.
+ *
+ * DEVOLVE se conseguiu gravar. O `catch` vazio que existia aqui era um dos
+ * silêncios que custaram caro: navegador com dados de site bloqueados (por
+ * política, extensão ou "block all cookies" no site) faz o `setItem` lançar,
+ * e o app seguia como se tivesse sessão — só que `loadSession()` devolvia
+ * null pra sempre, então NENHUMA chamada admin levava credencial. O operador
+ * via "sessão expirou" no primeiro clique, sem nada de errado com a conta
+ * dele. Quem chama precisa saber pra poder dizer isso na cara dele.
  */
 export function saveSession(user, idToken, adminJwt = null) {
   try {
@@ -75,9 +83,49 @@ export function saveSession(user, idToken, adminJwt = null) {
       expiresAt: Date.now() + SESSION_TTL_MS,
     };
     localStorage.setItem(LS_SESSION_KEY, JSON.stringify(payload));
+    return true;
   } catch {
-    /* localStorage may be blocked — ignore */
+    return false;
   }
+}
+
+/**
+ * O localStorage deste navegador aceita escrita?
+ *
+ * Não dá pra inferir de `loadSession()`: sessão ausente é indistinguível de
+ * armazenamento bloqueado, e os dois levam a sintomas completamente
+ * diferentes (um é "faça login", o outro é "seu navegador está bloqueando
+ * este site"). A sonda escreve e apaga uma chave própria.
+ */
+export function storageWritable() {
+  try {
+    const probe = "hypr.__probe";
+    localStorage.setItem(probe, "1");
+    localStorage.removeItem(probe);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Desvio entre o relógio do SERVIDOR e o deste computador, em ms, medido no
+ * ato do mint: positivo = este computador está atrasado; negativo =
+ * adiantado.
+ *
+ * `exp` vem do backend (relógio dele) e `ttl` é a janela que ele mesmo
+ * declarou, então `exp - ttl` é "agora" segundo o servidor. Comparado com o
+ * `Date.now()` local, dá o desvio.
+ *
+ * Serve pra duas coisas: avisar o operador quando o relógio da máquina dele
+ * está errado (é ele que conserta, em dois cliques) e deixar o desvio à
+ * vista num print da tela de login.
+ */
+export function measureClockSkewMs(adminJwt, ttlSeconds) {
+  const exp = Number(decodeJwtPayload(adminJwt)?.exp || 0);
+  const ttl = Number(ttlSeconds || 0);
+  if (!exp || !ttl) return null;
+  return (exp - ttl) * 1000 - Date.now();
 }
 
 /**
@@ -396,6 +444,27 @@ export async function getOrIssueAdminJwt() {
   return null;
 }
 
+/**
+ * Semeia o cache EM MEMÓRIA com um JWT recém-mintado (usado pela tela de
+ * login, que minta antes de deixar entrar).
+ *
+ * Duas razões:
+ *   1. evita um segundo mint na primeira chamada admin da sessão;
+ *   2. é o que faz a aba funcionar quando o localStorage está bloqueado —
+ *      sem persistência o operador perde a sessão a cada refresh, mas
+ *      trabalha na aba aberta em vez de levar 401 em tudo.
+ *
+ * A validade é contada com o relógio DESTE computador (`Date.now() + ttl`),
+ * não com o `exp` do token: `ttl` é uma duração, e duração não depende de os
+ * dois relógios concordarem.
+ */
+export function primeAdminJwt(adminJwt, ttlSeconds) {
+  if (!adminJwt) return;
+  const ttlSec = Number(ttlSeconds) || 8 * 60 * 60;
+  _cachedAdminJwt = adminJwt;
+  _cachedExpiryMs = Date.now() + ttlSec * 1000;
+}
+
 export function clearCachedAdminJwt() {
   _cachedAdminJwt = null;
   _cachedExpiryMs = 0;
@@ -438,10 +507,29 @@ export function decodeJwtPayload(token) {
   }
 }
 
-export function isJwtExpired(token) {
+/**
+ * Tolerância de relógio na comparação `exp` (do SERVIDOR) × `Date.now()`
+ * (deste computador).
+ *
+ * Sem ela, computador com a data adiantada transformava JWT recém-emitido em
+ * "expirado" ANTES de sair: `adminAuthHeaders` descartava o header, toda
+ * chamada admin ia sem credencial, tudo voltava 401 e o operador levava
+ * "sua sessão expirou" no primeiro clique — com a conta perfeita, o backend
+ * de pé e nada de errado do lado dele além do relógio. Nenhum reinício ou
+ * janela anônima resolve isso, porque o relógio é da máquina.
+ *
+ * 12h é maior que a TTL de 8h de propósito: na prática significa "só
+ * descarta o token quando o `exp` for absurdamente antigo". A decisão que
+ * vale é do backend, que confere assinatura e expiração com o próprio
+ * relógio; aqui é só uma economia de round-trip, e economizar round-trip
+ * nunca justificou trancar alguém fora do sistema.
+ */
+const CLOCK_SKEW_TOLERANCE_MS = 12 * 60 * 60 * 1000;
+
+export function isJwtExpired(token, toleranceMs = CLOCK_SKEW_TOLERANCE_MS) {
   const p = decodeJwtPayload(token);
   if (!p?.exp) return true;
-  return Number(p.exp) * 1000 <= Date.now();
+  return Number(p.exp) * 1000 + toleranceMs <= Date.now();
 }
 
 // ─── Build admin Authorization headers ───────────────────────────────────────
