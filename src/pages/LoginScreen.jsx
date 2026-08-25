@@ -190,19 +190,22 @@ const LoginScreen = ({ onLogin }) => {
     // user + id_token + admin JWT numa escrita só, TTL de 8h.
     const stored = saveSession(user, res.credential, issued.token, issued.ttl);
     if (!stored) {
-      // Sem persistência a aba FUNCIONA (o JWT está em memória), mas todo
-      // refresh volta pro login e nada sobrevive a fechar a aba. Entrar
-      // calado aqui é o que fazia esse caso virar "sessão expirou" sem
-      // explicação — então mostra o que houve e deixa a decisão com ele.
-      setFailure({
-        title: "Seu navegador está bloqueando os dados deste site",
-        body: "Consegui te autenticar, mas não consigo guardar a sessão neste navegador (dados de site bloqueados por configuração, política ou extensão). Você pode entrar assim mesmo — só vai precisar logar de novo a cada refresh. Pra resolver de vez, libere cookies e dados de site para este endereço.",
-        email,
-        reason: "storage_blocked",
-        status: 0,
-        proceed: () => onLogin?.(user),
-      });
-      return;
+      // NÃO BARRA A ENTRADA. Uma versão anterior disto mostrava uma caixa
+      // vermelha pedindo pra pessoa clicar em "entrar mesmo assim" — e caiu
+      // na cara de quem estava trabalhando, num caso em que o único problema
+      // era o nosso cache tendo entupido o localStorage (ver saveSession).
+      // Duas lições ficam no lugar da caixa:
+      //   • falha de persistência é degradação, não impedimento: o JWT está
+      //     em memória (primeAdminJwt), então a aba funciona inteira; o que
+      //     se perde é a sessão sobreviver a refresh — e aí o One Tap
+      //     silencioso reloga sem UI nenhuma;
+      //   • diagnóstico que a pessoa não pode acionar não vai na tela dela.
+      //     Vai pro console, que é onde quem investiga procura.
+      console.warn(
+        "[HYPR] Não foi possível persistir a sessão neste navegador " +
+        "(quota do localStorage ou dados de site bloqueados). A aba funciona, " +
+        "mas cada refresh vai refazer o login."
+      );
     }
     setFailure(null);
     onLogin?.(user);
@@ -265,7 +268,7 @@ const LoginScreen = ({ onLogin }) => {
  * (é o mesmo `reason` que o backend registra no log).
  */
 function LoginFailure({ failure }) {
-  const { title, body, email, reason, status, retry, proceed } = failure;
+  const { title, body, email, reason, status, retry } = failure;
   return (
     <div
       role="alert"
@@ -289,25 +292,6 @@ function LoginFailure({ failure }) {
       <p style={{color:C.muted,fontSize:12,margin:"8px 0 0",lineHeight:1.55}}>
         {body}
       </p>
-      {proceed && (
-        <button
-          type="button"
-          onClick={proceed}
-          style={{
-            marginTop:12,
-            background:C.blueLight,
-            border:"none",
-            color:"#0B1620",
-            borderRadius:8,
-            padding:"7px 14px",
-            fontSize:12,
-            fontWeight:700,
-            cursor:"pointer",
-          }}
-        >
-          Entrar mesmo assim
-        </button>
-      )}
       {retry && (
         <button
           type="button"
