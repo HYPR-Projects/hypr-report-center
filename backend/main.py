@@ -4403,24 +4403,50 @@ def report_data(request):
                 return (jsonify({"error": "Não autorizado"}), 401, headers)
             actor = admin.get("email", "unknown")
         try:
+            # Até onde a fonte tinha dado ANTES desta sondagem. É o que
+            # distingue "a PubMatic finalmente fechou o dia" de "mais uma
+            # sondagem no vazio" — a maioria das runs de hora em hora é a
+            # segunda, e não deve arrastar o trabalho pesado junto.
+            prev_api_day = pmp_sync_runs.last_ok_api_day("pubmatic")
+
             pubmatic_res = _run_pubmatic_sync(actor)
+            api_day = (pubmatic_res or {}).get("api_last_day")
+            # None em prev = "não sei" (ledger sem frescor ainda). Nesse caso
+            # faz o trabalho completo: pular baseado em desconhecimento é como
+            # este pipeline ficou velho em silêncio da primeira vez.
+            advanced = bool(api_day) and (prev_api_day is None or api_day != prev_api_day)
+
             # A UI lê a pmp_lines_enriched, não a tabela de entrega — sem o
             # refresh o dado novo entra no BQ e não aparece na tela, que é
             # justamente a classe de falha ("cron verde, tela velha") que o
             # comentário do scheduler v1 no deploy.sh já registra.
+            # Roda SEMPRE, mesmo sem dia novo: a PubMatic restata dias já
+            # fechados, e ~250 linhas de CREATE OR REPLACE é barato.
             pmp_lines.refresh_enriched_table()
-            # O compplan espelha a mesma entrega; deixá-lo esperando as 04h
-            # seria consertar metade. Best-effort, como no pmp_sync_v2.
-            try:
-                compplan_res = compplan_sheet.sync_if_connected()
-            except Exception as ce:
-                logger.warning(f"[pmp_sync_pubmatic compplan push] {ce}")
-                compplan_res = {"error": str(ce)}
+
+            # O push do compplan escreve numa planilha que gente olha, e custa
+            # quota do Google. Só quando a fonte de fato avançou — senão são 19
+            # reescritas por dia do mesmo número. O pmp_sync_v2 das 04h continua
+            # empurrando incondicionalmente, então a planilha nunca fica órfã.
+            compplan_res = None
+            if advanced:
+                try:
+                    compplan_res = compplan_sheet.sync_if_connected()
+                except Exception as ce:
+                    logger.warning(f"[pmp_sync_pubmatic compplan push] {ce}")
+                    compplan_res = {"error": str(ce)}
             return (jsonify({
                 "actor": actor,
                 "pubmatic": pubmatic_res,
                 "view_refreshed": True,
-                "compplan_sheet": compplan_res,
+                # O par (antes, agora) é o que transforma o log das sondagens
+                # horárias no HORÁRIO REAL em que a PubMatic fecha D-1 — a
+                # pergunta que nunca foi respondida e que faz o schedule
+                # continuar sendo chute. Ver docs/pubmatic-freshness-audit.md.
+                "api_last_day_before": prev_api_day,
+                "api_last_day_after":  api_day,
+                "advanced":            advanced,
+                "compplan_sheet":      compplan_res,
             }), 200, headers)
         except Exception as e:
             logger.exception(f"[ERROR pmp_sync_pubmatic] {e}")

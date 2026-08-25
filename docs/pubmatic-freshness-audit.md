@@ -49,6 +49,72 @@ desligado.
 | 7 | Chain de credencial só cobria falha de **auth** | credencial que autentica e perdeu acesso ao report derrubava o sync com a ALT parada ao lado | chain avança em 401/403 do report |
 | 8 | Nenhuma forma de conferir base × fonte | "a PubMatic não atualizou" virava discussão, não diagnóstico | `?action=pmp_pubmatic_audit` |
 
+## Segunda rodada (25/08): por que 4 slots ainda era chute
+
+No dia seguinte ao deploy, a base amanheceu de novo um dia atrás. Não era
+regressão — era o desenho:
+
+| Momento | Dado da PubMatic | D-1 | Situação |
+|---|---|---|---|
+| 24/08 ~08h | 22/08 | 23/08 | 1 dia atrás |
+| 24/08 17h (sync manual) | **23/08** | 23/08 | em dia |
+| 25/08 ~08h (só o cron 04h) | 23/08 | 24/08 | 1 dia atrás |
+
+A linha do meio é a que ensina: **a PubMatic fecha D-1 durante o dia**, em
+algum ponto entre 04h e 17h. Os 4 slots (10/14/18/22) pegavam isso — mas
+deixavam um **buraco de 6h entre 04h e 10h**, que é justamente quando as
+pessoas abrem o hub de manhã.
+
+Mover 10h para 07h seria trocar um chute por outro. A pergunta real —
+**a que horas a PubMatic fecha D-1?** — nunca foi respondida, e é ela que faz
+o schedule continuar sendo palpite. Pior: ela provavelmente varia por dia.
+
+### A cura: convergir em vez de adivinhar
+
+O refresh passou a rodar **de hora em hora, das 05h às 23h BRT**. Assim o
+horário de fechamento deixa de importar: a base fica fresca até ~1h depois de
+a fonte fechar, seja lá quando for.
+
+Para as sondagens horárias saírem baratas:
+- o **MERGE e o refresh da enriched rodam sempre** (a PubMatic restata dias já
+  fechados, e ~250 linhas é barato);
+- o **push do compplan pra planilha só quando `api_last_day` avança** — senão
+  seriam 19 reescritas por dia do mesmo número, numa planilha que gente olha.
+
+### E a pergunta finalmente vira dado
+
+Cada sondagem grava `api_last_day` no ledger. Uma semana disso **responde o
+horário real de fechamento**, e aí o schedule pode ser apertado por evidência:
+
+```sql
+SELECT
+  DATE(started_at, 'America/Sao_Paulo')                    AS dia,
+  MIN(EXTRACT(HOUR FROM started_at AT TIME ZONE 'America/Sao_Paulo')) AS hora_em_que_D1_entrou
+FROM `site-hypr.prod_assets.pmp_sync_runs`
+WHERE source = 'pubmatic'
+  AND status = 'ok'
+  AND api_last_day = DATE_SUB(DATE(started_at, 'America/Sao_Paulo'), INTERVAL 1 DAY)
+GROUP BY dia
+ORDER BY dia DESC
+```
+
+Uma linha por dia com a hora em que D-1 apareceu. Se convergir (ex.: sempre
+entre 08h e 09h), dá pra cortar a janela horária. Se variar muito, a janela
+larga está justificada e a discussão morre.
+
+Para ver simplesmente o que aconteceu nas últimas 48h:
+
+```sql
+SELECT started_at, status, actor, api_last_day, lag_days, rows_processed, error
+FROM `site-hypr.prod_assets.pmp_sync_runs`
+WHERE source = 'pubmatic'
+  AND started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 2 DAY)
+ORDER BY started_at DESC
+```
+
+Isso responde de uma vez: o cron rodou? a que horas? com qual credencial?
+até que dia a fonte tinha dado em cada tentativa?
+
 ## Como auditar daqui pra frente
 
 ```

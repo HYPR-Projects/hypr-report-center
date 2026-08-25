@@ -210,6 +210,44 @@ def record(source: str,
         logger.warning("[pmp_sync_runs] falhou gravando run de %s: %s", source, e)
 
 
+def last_ok_api_day(source: str, days: int = 7) -> Optional[str]:
+    """Até que dia a fonte tinha dado na última execução BEM-SUCEDIDA.
+
+    Serve pra responder "esta run trouxe dia novo?" sem comparar tabela de
+    entrega. Com o refresh de hora em hora, a maioria das runs não traz nada
+    novo — são sondagens esperando a fonte fechar D-1 — e o trabalho pesado a
+    jusante (push do compplan pra planilha) não deve rodar 19 vezes por dia
+    pra reescrever o mesmo número.
+
+    Devolve None quando não há run OK com frescor medido; nesse caso o caller
+    deve tratar como "não sei" e fazer o trabalho completo, nunca pular.
+    """
+    try:
+        job = bq.query(
+            f"""
+            SELECT api_last_day
+            FROM `{_FQ}`
+            WHERE source = @source
+              AND status = 'ok'
+              AND api_last_day IS NOT NULL
+              AND started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            job_config=bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("source", "STRING", source),
+                bigquery.ScalarQueryParameter("days", "INT64", days),
+            ]),
+        )
+        for r in job.result():
+            return r["api_last_day"].isoformat() if r["api_last_day"] else None
+    except Exception as e:
+        # Coluna ausente (ALTER pendente) ou falha de leitura. "Não sei" é a
+        # resposta segura: o caller faz o trabalho completo.
+        logger.info("[pmp_sync_runs] last_ok_api_day indisponível: %s", e)
+    return None
+
+
 def latest_by_source(days: int = 90) -> List[dict]:
     """Última execução (e última bem-sucedida) por fonte, dentro de `days`.
 
