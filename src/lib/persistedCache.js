@@ -69,17 +69,83 @@ export function readCache(key, ttlMs = TTL_MS) {
 }
 
 /**
- * Persiste um item. Erros (quota exceeded, localStorage desabilitado)
- * são silenciosos — cache é otimização, não pode quebrar o app.
+ * Remove entradas de cache que a leitura JÁ IGNORA: de outra versão de
+ * schema ou de outro build. Devolve quantas saíram.
+ *
+ * POR QUE ISSO PRECISA EXISTIR
+ * ────────────────────────────────────────────────────────────────────────
+ * `readCache` descarta entrada com `bid` diferente (todo deploy gera um
+ * BUILD_ID novo), mas nada nunca a APAGAVA. Resultado: cada deploy deixava
+ * no navegador de cada pessoa mais uma cópia da lista de campanhas — e a
+ * lista tem centenas de campanhas. Depois de alguns deploys o localStorage
+ * do domínio chega no teto de ~5MB entupido de cache que ninguém mais lê.
+ *
+ * O sintoma não aparece no cache (ele degrada em silêncio, é otimização),
+ * aparece em QUEM PRECISA GRAVAR DEPOIS: gravar `hypr.session` passa a
+ * estourar quota. Escrever POR CIMA de uma chave do mesmo tamanho ainda
+ * funciona, o que é exatamente por que isso ficou invisível por tanto
+ * tempo — e explodiu no dia em que a sessão cresceu alguns bytes.
  */
-export function writeCache(key, data) {
+export function evictStaleCache() {
+  let removed = 0;
   try {
-    localStorage.setItem(
-      PREFIX + key,
-      JSON.stringify({ v: VERSION, bid: BUILD_ID, ts: Date.now(), data })
-    );
+    const doomed = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(PREFIX)) continue;
+      try {
+        const obj = JSON.parse(localStorage.getItem(key));
+        if (obj?.v !== VERSION || obj?.bid !== BUILD_ID) doomed.push(key);
+      } catch {
+        doomed.push(key); // JSON quebrado nunca vai ser lido de novo
+      }
+    }
+    for (const key of doomed) {
+      try { localStorage.removeItem(key); removed++; } catch { /* ignore */ }
+    }
+  } catch {
+    /* localStorage inacessível — nada a fazer */
+  }
+  return removed;
+}
+
+/**
+ * Apaga TODO o cache persistido. Último recurso pra abrir espaço: cache é
+ * reconstruível com um fetch, sessão não é. Devolve quantas chaves saíram.
+ */
+export function evictAllCache() {
+  let removed = 0;
+  try {
+    const doomed = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(PREFIX)) doomed.push(key);
+    }
+    for (const key of doomed) {
+      try { localStorage.removeItem(key); removed++; } catch { /* ignore */ }
+    }
   } catch {
     /* ignore */
+  }
+  return removed;
+}
+
+/**
+ * Persiste um item. Erros (quota exceeded, localStorage desabilitado)
+ * são silenciosos — cache é otimização, não pode quebrar o app.
+ *
+ * Em falha de quota, limpa as entradas obsoletas e tenta uma vez mais:
+ * sem isso o cache entope o localStorage do domínio e quebra quem grava
+ * depois dele (ver evictStaleCache).
+ */
+export function writeCache(key, data) {
+  const payload = JSON.stringify({ v: VERSION, bid: BUILD_ID, ts: Date.now(), data });
+  try {
+    localStorage.setItem(PREFIX + key, payload);
+  } catch {
+    if (evictStaleCache() > 0) {
+      try { localStorage.setItem(PREFIX + key, payload); } catch { /* desiste */ }
+    }
   }
 }
 

@@ -24,6 +24,7 @@
  */
 
 import { API_URL } from "./config";
+import { evictStaleCache, evictAllCache } from "../lib/persistedCache";
 
 // Sessão persiste 8h (jornada de trabalho) em localStorage. Diferente do
 // modelo antigo, agora o admin JWT do backend (também 8h) é persistido
@@ -66,31 +67,46 @@ export function isFeatureAdmin(user) {
  * de trabalho — que era o estado em que o app entrava, batia 401 em tudo e
  * voltava pro login em laço.
  *
- * DEVOLVE se conseguiu gravar. O `catch` vazio que existia aqui era um dos
- * silêncios que custaram caro: navegador com dados de site bloqueados (por
- * política, extensão ou "block all cookies" no site) faz o `setItem` lançar,
- * e o app seguia como se tivesse sessão — só que `loadSession()` devolvia
- * null pra sempre, então NENHUMA chamada admin levava credencial. O operador
- * via "sessão expirou" no primeiro clique, sem nada de errado com a conta
- * dele. Quem chama precisa saber pra poder dizer isso na cara dele.
+ * DEVOLVE se conseguiu gravar — mas ABRE ESPAÇO antes de desistir.
+ *
+ * O caso real que ensinou isso: o cache persistido (`hypr.cache.*`) guarda a
+ * lista de campanhas e nunca apagava as entradas de builds antigos, então o
+ * localStorage do domínio ia enchendo deploy a deploy até o teto de ~5MB.
+ * Nesse estado, gravar POR CIMA da sessão existente ainda funcionava (mesma
+ * chave, tamanho parecido, não pede quota nova) — foi o que manteve o
+ * problema invisível. No dia em que a sessão cresceu alguns bytes (o admin
+ * JWT passou a ser gravado junto), o `setItem` começou a estourar quota.
+ *
+ * Cache é reconstruível com um fetch; sessão não é. Então quota estourada
+ * não é motivo pra falhar: é motivo pra jogar cache fora e gravar.
  */
 export function saveSession(user, idToken, adminJwt = null, ttlSeconds = 0) {
-  try {
-    const payload = {
-      user,
-      idToken,
-      adminJwt,
-      // Prazo do JWT medido pelo relógio DESTA máquina (ver `adminJwtUntil`
-      // em _hydrateFromSession): duração é comparável entre relógios
-      // diferentes, instante não é.
-      adminJwtUntil: adminJwt ? Date.now() + (Number(ttlSeconds) || 8 * 60 * 60) * 1000 : 0,
-      expiresAt: Date.now() + SESSION_TTL_MS,
-    };
-    localStorage.setItem(LS_SESSION_KEY, JSON.stringify(payload));
-    return true;
-  } catch {
-    return false;
-  }
+  const payload = JSON.stringify({
+    user,
+    idToken,
+    adminJwt,
+    // Prazo do JWT medido pelo relógio DESTA máquina (ver `adminJwtUntil`
+    // em _hydrateFromSession): duração é comparável entre relógios
+    // diferentes, instante não é.
+    adminJwtUntil: adminJwt ? Date.now() + (Number(ttlSeconds) || 8 * 60 * 60) * 1000 : 0,
+    expiresAt: Date.now() + SESSION_TTL_MS,
+  });
+  const write = () => {
+    try {
+      localStorage.setItem(LS_SESSION_KEY, payload);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (write()) return true;
+  // 1ª tentativa de espaço: o cache que a própria leitura já ignora.
+  if (evictStaleCache() > 0 && write()) return true;
+  // 2ª: todo o cache. Perde-se o paint instantâneo da próxima visita, que é
+  // um preço óbvio ao lado de não conseguir manter alguém logado.
+  if (evictAllCache() > 0 && write()) return true;
+  // Aqui sim é bloqueio de verdade (política, extensão, modo privado).
+  return false;
 }
 
 /**
@@ -102,12 +118,18 @@ export function saveSession(user, idToken, adminJwt = null, ttlSeconds = 0) {
  * este site"). A sonda escreve e apaga uma chave própria.
  */
 export function storageWritable() {
+  const probe = "hypr.__probe";
   try {
-    const probe = "hypr.__probe";
-    localStorage.setItem(probe, "1");
+    // Sonda do TAMANHO de uma sessão (~4KB), não de um byte. Com 1 byte ela
+    // respondia "ok" num navegador onde gravar a sessão estourava quota — e
+    // o rodapé de diagnóstico exibia "armazenamento: ok" ao lado de uma
+    // mensagem dizendo que o armazenamento estava bloqueado. Sonda que não
+    // mede o que interessa é pior que sonda nenhuma.
+    localStorage.setItem(probe, "x".repeat(4096));
     localStorage.removeItem(probe);
     return true;
   } catch {
+    try { localStorage.removeItem(probe); } catch { /* ignore */ }
     return false;
   }
 }
