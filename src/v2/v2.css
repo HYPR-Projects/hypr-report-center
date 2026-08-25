@@ -97,6 +97,105 @@
 @custom-variant dense (&:where([data-density="dense"] *));
 
 /* ───────────────────────────────────────────────────────────
+ * O card de campanha e a largura que ele REALMENTE tem
+ * ───────────────────────────────────────────────────────────
+ * O card do menu "Por mês" é uma linha de colunas semânticas
+ * (identidade · pacing · resultados · financeiro adm · CTA).
+ * Quem decide o layout dele não é o viewport: é a largura que
+ * sobra pra linha depois do rail lateral (248px ou 68px), da
+ * coluna de conteúdo (`shell-col`), da borda e do padding do
+ * próprio card. Dois viewports iguais dão larguras diferentes
+ * conforme o rail esteja aberto ou colapsado — por isso o card
+ * declara `@container/card` e as variants abaixo consultam ESSA
+ * medida, não a da janela.
+ *
+ * Referência (rail aberto → colapsado):
+ *   1920px → 1430 / 1470     1440px → 1102 / 1282
+ *   1680px → 1342 / 1382     1366px → 1028 / 1208
+ *   1512px → 1174 / 1354     1280px →  942 / 1122
+ *
+ * Os três regimes:
+ *
+ *   (≥ 67rem)             UMA linha: todas as colunas cabem lado
+ *                         a lado, com as larguras no topo da
+ *                         escala fluida. É o estado BASE — não
+ *                         tem variant própria porque é o que vale
+ *                         quando nenhuma outra pega.
+ *   card-split (52–67rem) DUAS faixas: identidade, pacing,
+ *                         resultados e CTA na primeira; a faixa
+ *                         financeira na segunda (nada é escondido
+ *                         — o que antes desaparecia abaixo de
+ *                         1250px agora desce um andar).
+ *   card-stack (< 52rem)  coluna única (telefone e painel muito
+ *                         estreito): identidade, mini-grid de
+ *                         KPIs, faixa financeira, CTA.
+ *
+ * Duas variants de conveniência cobrem uniões desses regimes:
+ * `card-row` (≥ 52rem) = o card é uma linha horizontal — é o que
+ * está onde antes havia `md:`; `card-band` (< 67rem) = a faixa
+ * financeira saiu da linha, seja pra faixa própria ou empilhada.
+ *
+ * O corte de cima é 67rem (1072px) e não 68: um card dentro de
+ * MergeGroupCardV2 perde 16px pro padding do grupo, e no mesmo
+ * viewport de 1440px o card agrupado (1086px) tem que cair no
+ * MESMO regime que os vizinhos soltos (1102px) — senão a lista
+ * mistura dois layouts numa tela só.
+ */
+@custom-variant card-stack (@container card (width < 52rem));
+@custom-variant card-row   (@container card (width >= 52rem));
+@custom-variant card-band  (@container card (width < 67rem));
+@custom-variant card-split (@container card (52rem <= width < 67rem));
+
+/* ───────────────────────────────────────────────────────────
+ * A tabela de larguras das colunas do card
+ * ───────────────────────────────────────────────────────────
+ * Alinhamento vertical entre cards é requisito de operação: o
+ * admin varre a lista de cima pra baixo e qualquer número que
+ * dance de linha pra linha cansa. Isso exige que as colunas
+ * tenham largura DECLARADA — não intrínseca ao conteúdo.
+ *
+ * Largura declarada, porém, não precisa ser CONSTANTE: como
+ * todos os cards da lista têm a mesma largura de container, um
+ * `clamp()` em `cqi` resolve no mesmo valor pra todos eles. O
+ * alinhamento se mantém e as colunas passam a acompanhar o
+ * espaço disponível em vez de sumir quando ele aperta.
+ *
+ * Cada piso é o mínimo MEDIDO do conteúdo — o valor abaixo do
+ * qual algo quebra:
+ *
+ *   pacing   128px  ícone 20 + valor 44 + barra 48 + gaps
+ *   results   74px  rótulo 28 + gap 8 + "82,8%" 38
+ *   ecpm     144px  duas pílulas de "R$ 12,93" com padding
+ *   tech      66px  o rótulo "tech adm" (9px, tracking .1em)
+ *   invest   152px  "Investido" + "R$ 100.000" + padding
+ *   cta      104px  "Ver Report" + seta + padding
+ *
+ * Abaixo de 67rem não há mais aperto a acomodar — a faixa
+ * financeira desceu um andar e liberou a linha —, então as
+ * colunas passam a valores fixos, no topo da escala.
+ */
+.campaign-cols {
+  --cc-gap:     clamp(0.625rem, 1cqi,    1rem);
+  --cc-pacing:  clamp(128px,    11.6cqi, 164px);
+  --cc-results: clamp(74px,     6.4cqi,  90px);
+  --cc-ecpm:    clamp(144px,    13.1cqi, 152px);
+  --cc-tech:    clamp(66px,     6cqi,    80px);
+  --cc-invest:  clamp(152px,    13.1cqi, 176px);
+  --cc-cta:     clamp(104px,    9.5cqi,  112px);
+}
+@container card (width < 67rem) {
+  .campaign-cols {
+    --cc-gap:     0.875rem;
+    --cc-pacing:  156px;
+    --cc-results: 84px;
+    --cc-ecpm:    152px;
+    --cc-tech:    80px;
+    --cc-invest:  176px;
+    --cc-cta:     108px;
+  }
+}
+
+/* ───────────────────────────────────────────────────────────
  * TopProgressBar — barra de refetch (ClientDashboardV2)
  * ───────────────────────────────────────────────────────────
  * Stripe signature de 33% de largura desliza horizontalmente em
