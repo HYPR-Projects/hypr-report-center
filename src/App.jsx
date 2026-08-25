@@ -192,12 +192,20 @@ function AppRoutes() {
   // seria trabalho jogado fora. E `replace` (não `push`) porque empilhar
   // faria o botão voltar cair na forma legada, que normalizaria de novo —
   // um laço em que voltar nunca sai da página.
+  //
+  // Só normaliza DEPOIS do login. Sem a guarda de `user`, quem abre a
+  // ferramenta deslogado vê a tela de login com `/admin/reports/mes` na
+  // barra: a URL anuncia uma view que essa pessoa ainda não pode ver, e
+  // quem for copiar "o link da ferramenta" leva uma rota interna em vez
+  // da raiz. Ninguém fica travado por isso — o gate de login está acima
+  // de todas as rotas admin — mas o endereço passa a mentir.
   const canonicalPath = adminRoute?.canonical || null;
   useEffect(() => {
+    if (!user) return;
     if (!canonicalPath) return;
     if (window.location.pathname === canonicalPath) return;
     window.history.replaceState({}, "", canonicalPath + window.location.search + window.location.hash);
-  }, [canonicalPath]);
+  }, [canonicalPath, user]);
   // Quando o cliente desbloqueia, guardamos o short_token resolvido pelo
   // backend (que pode diferir do `clientToken` da URL no formato novo
   // /report/{share_id}). O state inicial é populado do localStorage para
