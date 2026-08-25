@@ -403,29 +403,48 @@ function CampaignCardV2Inner({
         />
       )}
 
-      {/* Layout responsivo:
-          • Mobile (<md): coluna única — header (marca/campanha/datas) +
-            mini-grid de KPIs em 2 cols (DSP/VID/CTR/VTR) + footer (avatares
-            + CTA). Sem dividers verticais (eles seriam horizontais e
-            poluiriam). Pacing/CTR/VTR ficam visíveis pro user identificar
-            saúde da campanha sem precisar abrir drawer.
-          • Desktop (md+): row horizontal com colunas dedicadas e dividers
-            verticais (UX original — operação faz scan vertical). */}
-      {/* @container: as colunas do card decidem pela largura DO CARD, não
-          pela do viewport.
-          Isto passou a importar quando o rail entrou: com ele aberto, um
-          viewport de 1440px dá ~1150px de card; colapsado, ~1330px. As
-          colunas fixas somam ~758px, então no primeiro caso a coluna de
-          identidade cai pra ~216px e "Airlicium — SP, RJ e Nordeste" trunca
-          em "Airlicium — S...". Breakpoint de viewport não distingue os dois
-          casos — o rail muda a largura sem mudar o viewport. */}
-      <div className="@container flex flex-col md:flex-row md:items-stretch gap-3 md:gap-4 px-4 md:px-5 py-3.5 dense:py-2.5">
+      {/* Layout responsivo em TRÊS regimes, decididos pela largura
+          DISPONÍVEL (o container do próprio card), não pela do viewport —
+          o rail lateral muda a primeira sem tocar na segunda. A tabela de
+          medidas e os nomes das variants estão no bloco "O card de campanha
+          e a largura que ele REALMENTE tem", em v2.css.
+
+            base       (≥1072px)   uma linha: identidade · pacing ·
+                                   resultados · financeiro adm · CTA.
+            card-split (832–1072)  duas faixas: identidade · pacing ·
+                                   resultados · CTA em cima; a faixa
+                                   financeira (eCPM · tech · investimento)
+                                   embaixo, deitada, ocupando a linha toda.
+            card-stack (<832px)    coluna única (telefone, painel estreito).
+
+          O cluster financeiro (eCPM + tech + investimento) NÃO desaparece
+          em nenhum dos três. Antes ele sumia abaixo de 1250px — que é
+          exatamente a largura de um laptop de 14" com o rail aberto, e a
+          sobra de espaço na coluna de identidade deixava claro que não era
+          falta de lugar: era um breakpoint binário (mostra tudo ou nada)
+          num layout que tinha como se reorganizar.
+
+          O padding vive no elemento que MEDE, pra que a largura consultada
+          pelas variants seja exatamente a que as colunas têm pra dividir. */}
+      <div className="@container/card px-4 sm:px-5 py-3.5 dense:py-2.5">
+      <div className={cn(
+        "campaign-cols flex flex-col gap-3",
+        // `flex-wrap` + `justify-between` são o que permite a segunda faixa
+        // no tier intermediário. Na linha única não têm efeito visível: a
+        // coluna de identidade é `flex-1` e absorve toda a sobra, então não
+        // existe espaço livre pra distribuir nem item pra quebrar.
+        "card-row:flex-row card-row:flex-wrap card-row:items-stretch card-row:justify-between",
+        "card-row:gap-x-[var(--cc-gap)] card-row:gap-y-0",
+      )}>
         {/* ── Marca + campanha + datas ───────────────────────────────
-            self-center vale só pra desktop (flex-row, eixo cruzado é vertical).
-            No mobile (flex-col), self-center colapsava a largura horizontal e
-            jogava o texto pro centro do card — texto fica esquerda alinhado
-            via stretch default. */}
-        <div className="min-w-0 flex-1 md:self-center">
+            self-center vale só quando o card é uma row (eixo cruzado é
+            vertical). Empilhado (flex-col), self-center colapsava a largura
+            horizontal e jogava o texto pro centro do card — ali o texto fica
+            alinhado à esquerda via stretch default.
+            No tier intermediário a identidade fica na primeira faixa junto
+            de pacing, resultados e CTA (todos com o `order` default); só a
+            faixa financeira desce. */}
+        <div className="min-w-0 flex-1 card-row:self-center">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="text-[15px] font-bold text-fg tracking-tight truncate leading-none">
               {client_name}
@@ -468,13 +487,34 @@ function CampaignCardV2Inner({
           </div>
         </div>
 
-        {/* ── KPIs mobile (visível só <md) ──────────────────────────────
+        {/* ── Quebra da faixa de métricas (só no tier intermediário) ───
+            `basis-full` num flex-wrap força uma linha nova: identidade,
+            pacing, resultados e CTA ficam na faixa de cima (order default),
+            o cluster financeiro cai na de baixo (order 2). Este elemento é o
+            order 1 no meio — e, com `h-0` + `border-t`, é também o filete
+            que separa as duas faixas, sem custar altura própria.
+            Fora desse tier ele não existe (`hidden`), então a row volta a
+            ser uma linha só ou uma coluna, sem resto de layout. */}
+        <div
+          aria-hidden
+          className="hidden card-split:block basis-full h-0 border-t border-border/60 my-3 card-split:order-1"
+        />
+
+        {/* ── KPIs no tier empilhado (coluna única) ─────────────────────
             Mini-grid 2 cols com DSP/VID em coluna esquerda e CTR/VTR em
             coluna direita. Em campanha encerrada, mostra cinza pra não
             chamar atenção. Quando todos os pacings são null, esconde
-            o bloco inteiro (campanha brand-new sem dados ainda). */}
+            o bloco inteiro (campanha brand-new sem dados ainda).
+            TECH saiu daqui: a faixa financeira agora aparece TAMBÉM no tier
+            empilhado (com eCPM e investimento junto), e o % duplicado nos
+            dois lugares era a mesma informação contada duas vezes. */}
         {!ended && (hasDisplay || hasVideo) && (
-          <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 md:hidden border-t border-border/60 pt-3">
+          // `max-w`: o tier empilhado também atende painel largo (um
+          // viewport de 900px com o rail aberto dá 610px de linha), e sem
+          // teto as duas células esticavam até a borda — barra de pacing de
+          // 180px e um vão de 100px entre o rótulo do CTR e o valor. O grid
+          // tem largura de leitura própria; o resto da linha fica vazio.
+          <div className="grid grid-cols-2 gap-x-5 gap-y-1.5 max-w-[440px] card-row:hidden border-t border-border/60 pt-3">
             {hasDisplay && (
               <>
                 <PacingRow label="DSP" pacing={display_pacing} ended={ended} />
@@ -495,20 +535,6 @@ function CampaignCardV2Inner({
                 />
               </>
             )}
-            {/* Tech Cost (admin-only) ocupa a row inteira no fim do grid —
-                só aparece quando há PI/budget pra calcular. */}
-            {techCostPct != null && (
-              <div className="col-span-2">
-                <ResultRow
-                  label="TECH"
-                  value={formatPct(techCostPct, 1)}
-                  // Tier de ABS igual ao do Diagnóstico (campanha inteira):
-                  // sem isso o card pintava vermelho em 10,5% enquanto a
-                  // tabela mostrava o mesmo número em amarelo.
-                  colorClass={techCostToneClass(techCostPct, has_abs)}
-                />
-              </div>
-            )}
           </div>
         )}
 
@@ -516,9 +542,11 @@ function CampaignCardV2Inner({
 
         {/* ── PACING (DSP row + VID row, separados) ──────────────────
             Cada linha some quando o formato não existe na campanha — em
-            vez de "—" placeholder. Largura da coluna fica fixa pra
-            alinhamento entre cards continuar consistente. */}
-        <div className="hidden md:flex flex-col justify-center gap-2 shrink-0 w-[160px]">
+            vez de "—" placeholder. A largura é declarada (não intrínseca)
+            pra que os valores fiquem no mesmo X em todos os cards; ela
+            acompanha o espaço disponível via `--cc-pacing` (ver a tabela
+            de larguras em v2.css). */}
+        <div className="hidden card-row:flex flex-col justify-center gap-2 shrink-0 w-[var(--cc-pacing)]">
           {hasDisplay && <PacingRow label="DSP" pacing={display_pacing} ended={ended} subBars={displaySubBars} />}
           {hasVideo   && <PacingRow label="VID" pacing={video_pacing}   ended={ended} subBars={videoSubBars} />}
         </div>
@@ -528,7 +556,7 @@ function CampaignCardV2Inner({
         {/* ── RESULTADOS (CTR + VTR) ─────────────────────────────────
             CTR só existe se há display; VTR só se há vídeo. Mesma régua
             de visibilidade do bloco de pacing. */}
-        <div className="hidden md:flex flex-col justify-center gap-2 shrink-0 w-[90px]">
+        <div className="hidden card-row:flex flex-col justify-center gap-2 shrink-0 w-[var(--cc-results)]">
           {hasDisplay && (
             <ResultRow
               label="CTR"
@@ -545,7 +573,11 @@ function CampaignCardV2Inner({
           )}
         </div>
 
-        <Divider />
+        {/* No tier intermediário a faixa financeira desce um andar, e um
+            divisor no começo dela não separaria nada — vira um traço solto
+            na borda esquerda. O filete horizontal da quebra já faz esse
+            trabalho ali. */}
+        <Divider className="card-split:hidden" />
 
         {/* ── eCPM REAL (admin-only, destaque) ─────────────────────────
             Layout dual:
@@ -561,30 +593,38 @@ function CampaignCardV2Inner({
             (label superior + valor centrado) — só com label do formato
             substituindo "ECPM ADM" em cada pill. */}
         {/* Cluster financeiro: eCPM + TECH + investimento colados com gap
-            apertado (gap-2.5) pra ler como UMA seção. O gap-4 da row só
-            separa este grupo do pacing/resultados — antes os três eram
-            filhos diretos da row e herdavam o gap-4 largo entre si, o que
-            deixava o TECH "flutuando" longe da box de investimento. */}
-        {/* Limiar MEDIDO, não estimado. As colunas fixas do card somam
-            ~1060px com este cluster; abaixo disso a coluna de identidade cai
-            pra 80-100px e "Airlicium — SP, RJ e Nordeste" vira "Airlicium —
-            S...". Acima, ela fica com 240px+ e respira.
+            apertado pra ler como UMA seção. O gap da row só separa este
+            grupo do pacing/resultados — antes os três eram filhos diretos
+            da row e herdavam o gap largo entre si, o que deixava o TECH
+            "flutuando" longe da box de investimento.
 
-            1250px é a largura do CONTENT BOX do container (`container-type:
-            inline-size` mede o content box), ou seja, 40px menos que a
-            largura externa da row por causa do `px-5`. Em viewport de 1440px:
-            rail aberto dá 1102px → esconde; rail colapsado dá 1282px →
-            mostra. Colapsar o rail (⌘\) é o que traz o cluster de volta no
-            laptop, que é exatamente pra isso que o controle existe. Os
-            números completos continuam no drawer da campanha. */}
-        <div className="hidden @min-[1250px]:flex items-stretch gap-2.5 shrink-0">
+            Este cluster era `hidden @min-[1250px]:flex`: um limiar binário
+            que o apagava inteiro em qualquer coisa menor que ~1250px de
+            linha útil — ou seja, em todo laptop de 14" com o rail aberto
+            (1102px). Agora ele não some em largura nenhuma; muda de LUGAR:
+
+              linha única → uma coluna do meio da linha, como sempre foi;
+              card-split  → a faixa de baixo, com a linha inteira à
+                            disposição (e a box de investimento deitada);
+              card-stack  → um bloco da coluna única, com as pílulas
+                            quebrando em duas fileiras quando não caberem.
+
+            `order-2` é o que faz o cluster descer no tier intermediário (o
+            resto da linha fica no order default). O filete de separação vem
+            do elemento de quebra no split e de `border-t` no stack. */}
+        <div className={cn(
+          "flex items-stretch gap-2 card-row:shrink-0",
+          "card-split:order-2 card-split:grow",
+          "card-stack:flex-wrap card-stack:gap-x-4 card-stack:gap-y-3",
+          "card-stack:border-t card-stack:border-border/60 card-stack:pt-3",
+        )}>
         {/* Largura FIXA em 148px independente de ter 1 ou 2 mídias.
             Antes era 148 no split e 96 no formato único — e como o cluster
             financeiro é ancorado à direita, os 52px de diferença mudavam a
             posição X do valor de eCPM entre um card e o seguinte. Na rolagem
             vertical (que é como a operação varre a lista) o número dançava.
             No formato único a pílula agora ocupa o slot inteiro. */}
-        <div className="flex flex-col justify-center shrink-0 w-[148px]">
+        <div className="flex flex-col justify-center shrink-0 w-[var(--cc-ecpm)]">
           {ecpmIsSplit ? (
             <div className="flex gap-1">
               {ecpmRows.map((row) => (
@@ -663,7 +703,7 @@ function CampaignCardV2Inner({
                  diferentes jogam os rótulos e as linhas de base em alturas
                  diferentes. O espaçador embaixo reserva o terceiro andar.
                  Mesma solução do rodapé reservado nos cards de KPI. */}
-        <div className="flex flex-col justify-center shrink-0 w-[80px]">
+        <div className="flex flex-col justify-center shrink-0 w-[var(--cc-tech)]">
           <div className="px-2 py-1.5">
           <div className="flex items-baseline gap-1 leading-none">
             <span className="lbl-micro text-fg-muted">
@@ -697,8 +737,14 @@ function CampaignCardV2Inner({
             largura fixa pra alinhamento entre cards continuar consistente —
             quando não há budget (bonificada / sem CPM-CPCV) a box some mas
             o slot permanece. Sem divisor antes: pertence ao grupo financeiro
-            (eCPM + TECH + investimento). */}
-        <div className="flex flex-col justify-center shrink-0 w-[172px]">
+            (eCPM + TECH + investimento).
+
+            No tier intermediário a box DEITA: os três valores passam a ficar
+            lado a lado e a coluna cresce pra ocupar a faixa. Dois ganhos de
+            uma vez — a faixa deixa de ter um vão vazio à direita, e a caixa
+            deixa de ser o que define a altura do card (empilhada ela tem
+            quatro andares; deitada, dois). */}
+        <div className="flex flex-col justify-center shrink-0 w-[var(--cc-invest)] card-split:w-auto card-split:grow">
           {techCostBudget > 0 && Number.isFinite(techCostCost) && (
             // Sem borda: borda dentro da borda do card, com só um nível de
             // superfície de diferença, era ruído — o terceiro tratamento
@@ -707,9 +753,14 @@ function CampaignCardV2Inner({
             // desenhar uma segunda moldura.
             <div className={cn(
               "rounded-lg px-3 py-2.5",
+              // `flex-wrap` é válvula de segurança, não layout: na largura mínima
+              // deste tier a linha deitada fica no limite, e uma campanha
+              // encerrada antes do previsto ainda pendura a tag "refat." no
+              // fim. Sem o wrap era ela que ficava cortada na borda do card.
+              "card-split:flex card-split:flex-wrap card-split:items-center card-split:gap-x-4 card-split:gap-y-1 card-split:py-2",
               ended ? "bg-canvas-deeper/40" : "bg-canvas-deeper/70"
             )}>
-              <div className="flex items-baseline gap-1 leading-none mb-2">
+              <div className="flex items-baseline gap-1 leading-none mb-2 card-split:mb-0 card-split:shrink-0">
                 <span className="lbl-micro text-fg-muted">
                   investimento
                 </span>
@@ -720,9 +771,21 @@ function CampaignCardV2Inner({
                   adm
                 </span>
               </div>
-              <div className="flex flex-col gap-1.5">
+              {/* Deitado, os três valores viram colunas de uma mini-tabela e
+                  cada rótulo fica ANTES do próprio valor, não na outra ponta
+                  da linha.
+                  As larguras são DECLARADAS (não intrínsecas) pelo mesmo
+                  motivo das colunas da linha: "R$ 80.000" e "R$ 131.250" não
+                  medem o mesmo, e sem largura declarada cada card colocaria o
+                  "Entregue" num X diferente. Quem absorve a sobra é a barra
+                  de progresso — o único elemento aqui que ganha significado
+                  ao esticar.
+                  `min-w` e não `w`: um PI de sete dígitos ("R$ 1.250.000")
+                  não cabe nos 132px, e é melhor esse card empurrar a barra
+                  do que o valor vazar por cima do vizinho. */}
+              <div className="flex flex-col gap-1.5 card-split:flex-row card-split:items-center card-split:grow card-split:gap-x-4 card-split:gap-y-0">
                 {/* Investido = total contratado (PI cliente) */}
-                <div className="flex items-baseline justify-between gap-2 leading-none">
+                <div className="flex items-baseline justify-between gap-2 leading-none card-split:justify-start card-split:gap-2.5 card-split:min-w-[132px] card-split:shrink-0">
                   <span className="lbl-micro text-fg-muted">
                     Investido
                   </span>
@@ -732,8 +795,8 @@ function CampaignCardV2Inner({
                 </div>
                 {/* Entregue = faturável já consumido; barra mostra % do PI */}
                 {hasConsumed && (
-                  <div className="flex flex-col gap-1">
-                    <div className="flex items-baseline justify-between gap-2 leading-none">
+                  <div className="flex flex-col gap-1 card-split:flex-row card-split:items-center card-split:gap-2.5 card-split:grow">
+                    <div className="flex items-baseline justify-between gap-2 leading-none card-split:justify-start card-split:gap-2.5 card-split:min-w-[124px] card-split:shrink-0">
                       <span className="lbl-micro text-fg-muted">
                         Entregue
                       </span>
@@ -742,7 +805,7 @@ function CampaignCardV2Inner({
                       </span>
                     </div>
                     <div
-                      className="h-1.5 rounded-full bg-track overflow-hidden"
+                      className="h-1.5 rounded-full bg-track overflow-hidden card-split:grow card-split:min-w-6"
                       title={`Entregue ${formatPct(consumedPct, 0)} do investido`}
                     >
                       <div
@@ -755,8 +818,10 @@ function CampaignCardV2Inner({
                     </div>
                   </div>
                 )}
-                {/* Gasto = custo real DSP (com survey) — numerador do tech fee */}
-                <div className="flex items-baseline justify-between gap-2 leading-none pt-1.5 border-t border-border/50">
+                {/* Gasto = custo real DSP (com survey) — numerador do tech fee.
+                    Empilhado, o filete que o separa dos outros dois é
+                    superior; deitado, é lateral. */}
+                <div className="flex items-baseline justify-between gap-2 leading-none pt-1.5 border-t border-border/50 card-split:justify-start card-split:gap-2.5 card-split:pt-0 card-split:pl-4 card-split:border-t-0 card-split:border-l card-split:shrink-0 card-split:min-w-[124px]">
                   <span className="lbl-micro text-fg-muted">
                     Gasto
                   </span>
@@ -775,20 +840,24 @@ function CampaignCardV2Inner({
         {/* /cluster financeiro */}
         </div>
 
-        <Divider />
+        {/* Idem: no tier intermediário o CTA fica na faixa de CIMA, então
+            deste lado do cluster financeiro também não há o que separar. */}
+        <Divider className="card-split:hidden" />
 
         {/* ── Owners (slot fixo) + Acessos + CTA (min-w fixo) ──────
-            Mobile: ocupa a row toda (justify-between distribui avatares
+            Empilhado: ocupa a row toda (justify-between distribui avatares
             à esquerda e CTA à direita) abaixo dos KPIs.
-            Desktop: shrink-fit ao final da row horizontal. */}
-        <div className="flex items-center gap-3 md:shrink-0 md:self-center justify-between md:justify-start">
+            Row: shrink-fit no fim da linha — inclusive no tier intermediário,
+            onde a primeira faixa reproduz a linha de sempre (identidade ·
+            pacing · resultados · CTA) e a segunda carrega o financeiro. */}
+        <div className="flex items-center gap-3 card-row:gap-2.5 card-row:shrink-0 card-row:self-center justify-between card-row:justify-start">
           {/* Slot fixo 48px com justify-end: vazio, 1 ou 2 avatares,
            *  o botão fica sempre no mesmo X. Mobile sempre mostra (UX
            *  consistente com desktop).
            *  48 = 22 + 4 + 22: os dois pips lado a lado. Eram 44px porque
            *  o segundo avatar entrava com `-ml-1.5` — e essa sobreposição
            *  cobria a segunda inicial do primeiro ("DA" lia como "D"). */}
-          <div className="flex w-12 gap-1 justify-start md:justify-end items-center">
+          <div className="flex w-12 gap-1 justify-start card-row:justify-end items-center">
             {cpName && <Avatar name={cpName} role="cp" size="sm" title={`CP: ${cpName}`} />}
             {csName && <Avatar name={csName} role="cs" size="sm" title={`CS: ${csName}`} />}
           </div>
@@ -800,8 +869,8 @@ function CampaignCardV2Inner({
               onOpenReport?.(short_token);
             }}
             className={cn(
-              "inline-flex items-center justify-center gap-1 h-9 md:h-8 px-3 rounded-md text-xs font-semibold cursor-pointer",
-              "min-w-[108px] transition-colors",
+              "inline-flex items-center justify-center gap-1 h-9 card-row:h-8 px-3 rounded-md text-xs font-semibold cursor-pointer",
+              "min-w-[var(--cc-cta)] transition-colors",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
               ended
                 // Encerrada: botão neutro/soft (leitura histórica, não operação)
@@ -816,6 +885,8 @@ function CampaignCardV2Inner({
             </svg>
           </button>
         </div>
+      </div>
+      {/* /container de medida */}
       </div>
 
       {/* Overlay de pausa — dima todo o conteúdo do card com tint da canvas,
@@ -841,9 +912,13 @@ function CampaignCardV2Inner({
 // Ganho: digitar na busca do menu não re-renderiza os 200+ cards.
 export const CampaignCardV2 = memo(CampaignCardV2Inner);
 
-/** Divisor vertical entre colunas. Some no mobile (md:block). */
-function Divider() {
-  return <div className="w-px bg-border self-stretch hidden md:block" />;
+/** Divisor vertical entre colunas. Só existe quando o card é uma linha
+ *  horizontal — empilhado ele viraria um traço deitado no meio do card.
+ *  `className` serve pra sumir com o divisor que fica órfão na quebra do
+ *  tier intermediário (o primeiro da segunda faixa e o que separava o
+ *  cluster financeiro do CTA, agora em faixas diferentes). */
+function Divider({ className }) {
+  return <div className={cn("w-px bg-border self-stretch hidden card-row:block", className)} />;
 }
 
 /**
@@ -1393,7 +1468,9 @@ function EarlyEndedTooltipBody({ reason, date }) {
  */
 function RefatTag({ piOriginal }) {
   const tag = (
-    <span className="lbl-micro text-danger mt-1 inline-flex items-center gap-0.5 cursor-help">
+    // `mt-1` empilhado (a tag fica embaixo dos valores); deitado ela é um
+    // item da própria linha, e a margem só a desalinharia.
+    <span className="lbl-micro text-danger mt-1 card-split:mt-0 card-split:shrink-0 inline-flex items-center gap-0.5 cursor-help">
       <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
         <path d="M3 2v6h6" />
         <path d="M3 13a9 9 0 1 0 3-7.7L3 8" />
@@ -1532,7 +1609,10 @@ function FormatIcon({ label }) {
 /** Linha de pacing: ícone do formato · valor fixo · mini-barra fluida.
  *
  *  Larguras de ícone e valor são fixas pra DSP e VID alinharem
- *  verticalmente. A barra ocupa o restante da coluna até o divisor.
+ *  verticalmente. A barra ocupa o restante da coluna até o divisor —
+ *  e os dois slots fixos são justos (20px pro ícone de 13px, 44px pro
+ *  valor de até quatro dígitos) porque cada pixel que eles sobram é
+ *  pixel que a barra não tem quando a coluna está no mínimo.
  *  Quando não há valor: mostra "—" e oculta a barra (não há o que medir).
  *
  *  Ícones (em vez de texto "DSP"/"VID"): operação reconhece formato por
@@ -1564,13 +1644,13 @@ function PacingRow({ label, pacing, ended, subBars }) {
   const rowContent = (
     <div className="flex items-center gap-2 leading-none">
       <span
-        className="text-fg-subtle w-7 shrink-0 flex items-center"
+        className="text-fg-subtle w-5 shrink-0 flex items-center"
         title={subBars ? undefined : tooltip}
         aria-label={tooltip}
       >
         <FormatIcon label={label} />
       </span>
-      <span className={cn("text-[13px] font-bold tabular-nums w-12 shrink-0 text-right", colorClass)}>
+      <span className={cn("text-[13px] font-bold tabular-nums w-11 shrink-0 text-right", colorClass)}>
         {has ? formatPacingValue(pacing) : "—"}
       </span>
       {/* ⚠️ inline quando há frente under (sub-100%) escondida pela média.
