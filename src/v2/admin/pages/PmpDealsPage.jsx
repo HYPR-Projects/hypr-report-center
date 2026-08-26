@@ -28,7 +28,7 @@
 // Mutations preservadas: drawer de edição, popup de auto-vinculação,
 // modal de agrupamento, export, Compplan Sheet.
 
-import { useState, useEffect, useMemo, useCallback, lazy, Suspense } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense } from "react";
 import { fmt } from "../../../shared/format";
 import * as Popover from "@radix-ui/react-popover";
 import { DayPicker } from "react-day-picker";
@@ -38,7 +38,7 @@ import "../../components/DateRangeFilterV2.css";
 import "../../v2.css";
 
 import {
-  listPmpLines, savePmpLineOverrides, syncPmpV2,
+  listPmpLines, savePmpLineOverrides, syncPmpV2, syncPmpPubmatic,
   suggestPmpLinks, linkPmpCommand, getPmpLine, pmpLineWindowMetrics,
   pmpLinesTimeseries,
 } from "../../../lib/api";
@@ -93,6 +93,11 @@ import { PmpFreshnessIndicator } from "../components/PmpFreshnessIndicator";
 import { isFeatureAdmin } from "../../../shared/auth";
 
 const ALL = "__ALL__";
+
+// Auto-recovery do frescor (ver o efeito no PmpDealsPage). Cooldown por
+// navegador: recarregar a página 10 vezes não vira 10 syncs.
+const AUTO_RECOVERY_COOLDOWN_MS = 30 * 60 * 1000;
+const AUTO_RECOVERY_KEY = "pmp:autoRecovery:lastAttempt";
 
 // Data BR de N dias atrás, como "YYYY-MM-DD" — mesma grandeza das colunas DATE
 // que o backend devolve (start_date, end_date, last_delivery_day).
@@ -756,6 +761,61 @@ export default function PmpDealsPage({
         };
       });
   }, [lines, syncRuns, recentBySource]);
+
+  // ── Auto-recovery do frescor ──────────────────────────────────────────────
+  //
+  // O problema que isto resolve, em uma frase: o cron das 04h roda ANTES de a
+  // PubMatic fechar D-1, e quem abre o hub cedo pega a base um dia atrás —
+  // todo santo dia, mesmo com o Cloud Scheduler 100% saudável.
+  //
+  // Consertar o horário do cron é o certo, mas mora no Cloud Scheduler (fora
+  // deste repo) e depende de alguém com acesso ao GCP. Enquanto isso, a página
+  // pode se virar: quem abriu /admin/pmp é admin, o endpoint PubMatic-only
+  // aceita JWT de admin, e o sync é barato (1 request de report + MERGE
+  // idempotente). Então em vez de mostrar "1 dia atrás" e esperar o próximo
+  // horário do cron, ela vai buscar.
+  //
+  // Guardas, porque auto-disparo em page load merece paranoia:
+  //   • só quando o atraso é REAL e MEDIDO (lagDays >= 1 vindo do ledger) —
+  //     nunca por palpite;
+  //   • só pra quem pode sincronizar (mesma régua do botão manual);
+  //   • no máximo 1 tentativa por AUTO_RECOVERY_COOLDOWN_MS por navegador,
+  //     persistido em localStorage — recarregar a página 10 vezes não vira 10
+  //     syncs, e vários admins juntos custam no máximo um sync cada;
+  //   • uma vez por montagem (ref), pra um re-render não re-disparar;
+  //   • falha é silenciosa: isto é conveniência, e o painel já mostra o atraso
+  //     de verdade. Barulhar aqui só empilharia ruído sobre um problema que já
+  //     está sinalizado.
+  const autoRecoveryTried = useRef(false);
+
+  useEffect(() => {
+    if (!canSync || loading || autoRecoveryTried.current) return;
+    // Atraso medido pelo próprio sync (api_last_day/lag_days do ledger). Sem
+    // medida não há o que recuperar — e agir sobre desconhecimento é como este
+    // pipeline ficou velho em silêncio da primeira vez.
+    const stale = syncRuns.some(
+      (r) => r.source === "pubmatic" && Number(r.lag_days) >= 1,
+    );
+    if (!stale) return;
+
+    let last = 0;
+    try { last = Number(localStorage.getItem(AUTO_RECOVERY_KEY)) || 0; } catch { /* storage bloqueado */ }
+    if (Date.now() - last < AUTO_RECOVERY_COOLDOWN_MS) return;
+
+    autoRecoveryTried.current = true;
+    try { localStorage.setItem(AUTO_RECOVERY_KEY, String(Date.now())); } catch { /* idem */ }
+
+    // Sem estado de "recuperando" de propósito: setState síncrono dentro de
+    // efeito dispara render em cascata (o lint do repo marca como erro), e o
+    // feedback que importa é o número mudando quando o reload entra.
+    syncPmpPubmatic()
+      .then((res) => {
+        // Só recarrega se a fonte de fato avançou — senão seria um reload à
+        // toa por cima de quem está lendo a tela.
+        if (res?.advanced) return reload();
+      })
+      .catch((e) => console.warn("[pmp auto-recovery]", e?.message || e));
+  }, [canSync, loading, syncRuns, reload]);
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const onSync = async () => {
