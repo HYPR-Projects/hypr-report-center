@@ -325,11 +325,17 @@ function LineList({ lines, onLineClick, onLinkClick, bare = false }) {
   if (!lines.length) return null;
   return (
     <div className={cn("overflow-hidden", !bare && "rounded-lg border border-border/60 bg-canvas-elevated")}>
-      <div className="overflow-x-auto scrollbar-hidden">
-        <div className="md:min-w-[920px]">
+      {/* scrollbar-thin + scroll-fade-x (ver PmpDealsPage/PmpComponents):
+          mesmo padrão de scroll horizontal visível usado no resto do PMP.
+          1112px = 1072px de trilhas+gaps do grid hidePi (coluna Entrega
+          incluída) + 40px do px-5 do próprio row — esse padding entra na
+          conta, senão a última trilha vaza sem gerar scroll pra revelar o
+          que sobrou (ver comentário do ROW_GRID em PmpComponents.jsx). */}
+      <div className="overflow-x-auto scrollbar-thin scroll-fade-x">
+        <div className="md:min-w-[1112px]">
           <PmpLineRowHeader hidePi />
         </div>
-        <div className="md:min-w-[920px] divide-y divide-border/30">
+        <div className="md:min-w-[1112px] divide-y divide-border/30">
           {lines.map((l) => (
             <PmpLineRow key={`${l.source || "xandr"}:${l.line_id}`} line={l}
                         onClick={onLineClick} onLinkClick={onLinkClick}
