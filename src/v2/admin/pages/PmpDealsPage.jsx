@@ -1628,18 +1628,35 @@ function ListView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLinkCl
 
   return (
     <div className="rounded-xl border border-border bg-canvas-elevated overflow-hidden">
-      {/* Scroll horizontal: o grid das rows tem 1330px de largura mínima e
-          estoura tanto o mobile (<768px, onde vira card — ver PmpLineRow)
-          quanto laptops com o rail aberto (1330px de tabela + ~250px de
-          rail não cabe nem num monitor de 1440px em janela restaurada).
+      {/* Scroll horizontal: o grid das rows tem 1402px de largura mínima
+          (1362px de trilhas + gaps, + 40px do px-5 do próprio row — ver
+          ROW_GRID em PmpComponents.jsx) e estoura tanto o mobile (<768px,
+          onde vira card — ver PmpLineRow) quanto laptops com o rail aberto
+          (não cabe nem num monitor de 1440px em janela restaurada).
           `scrollbar-thin` (barra reduzida mas VISÍVEL) + `scroll-fade-x`
           (sombra nas bordas que "acende" quando há mais conteúdo pro lado)
           substituem o antigo `scrollbar-hidden`: com a barra invisível e
           sem nenhuma outra pista, a última coluna simplesmente cortava na
           borda da tela e quem usa mouse (sem trackpad/swipe) não tinha
-          como descobrir que dava pra arrastar pra ver o resto. */}
+          como descobrir que dava pra arrastar pra ver o resto.
+
+          Isso por si só, porém, NÃO bastava: a última coluna (Entrega) era
+          `minmax(88px,0.44fr)` e o `fr` nunca crescia de verdade (ver
+          comentário do ROW_GRID em PmpComponents.jsx) — ela ficava travada
+          em 88px em qualquer largura, e valores tipo "R$ 13,4 mil ↗" (~90,5px,
+          sem espaço quebrável por causa do nbsp do Intl.NumberFormat) vazavam
+          pra fora da própria coluna e eram cortados pelo `overflow-hidden`
+          do card, SEM que nenhum scroll revelasse o resto — não existia
+          "resto" pra rolar até. Virou 120px fixo, medido com folga real.
+          IMPORTANTE: este `min-w` precisa incluir o padding horizontal do
+          próprio row (`px-5` = 40px) além da soma das trilhas — do
+          contrário o grid recebe menos espaço do que precisa e a ÚLTIMA
+          trilha (a única sem `minmax`/`fr` sobrando pra absorver o
+          déficit) vaza de novo, silenciosamente, sem gerar scroll algum
+          pra revelar o que sobrou. Confirmado com harness local rolando
+          até o fim real do scroll antes de fechar este fix. */}
       <div className="overflow-x-auto scrollbar-thin scroll-fade-x">
-        <div className="md:min-w-[1330px]">
+        <div className="md:min-w-[1402px]">
           <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
           <div className="divide-y divide-border/60">
         {items.map((it) => {
@@ -1785,7 +1802,7 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
           min-w pra preservar o cabeçalho fixo + a altura máxima da lista
           no desktop. */}
       <div className="overflow-x-auto scrollbar-thin scroll-fade-x">
-        <div className="md:min-w-[1330px]">
+        <div className="md:min-w-[1402px]">
           <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
           <div className="divide-y divide-border/60 max-h-[calc(100vh-380px)] overflow-y-auto">
         {sorted.map((it) => {
@@ -1828,7 +1845,9 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
 // ─── Subtotal inline minimalista (mesmo grid do row, sem cores berrantes) ───
 function InlineGroupSubtotal({ members, groupPi, groupPctReceber, groupPctReceberRev }) {
   const first = members[0];
-  const grid = "grid grid-cols-[12px_minmax(220px,2.4fr)_minmax(104px,0.36fr)_84px_112px_112px_128px_136px_58px_72px_72px_minmax(88px,0.44fr)] gap-x-3";
+  // Mesma trilha final fixa (120px) do ROW_GRID em PmpComponents.jsx — ver o
+  // comentário lá sobre por que o fr da última coluna nunca crescia.
+  const grid = "grid grid-cols-[12px_minmax(220px,2.4fr)_minmax(104px,0.36fr)_84px_112px_112px_128px_136px_58px_72px_72px_120px] gap-x-3";
   return (
     <div className={cn(grid, "hidden md:grid px-5 py-2.5 items-center border-t border-border/40 bg-surface/40 text-[12px]")}>
       <div />

@@ -126,12 +126,18 @@ export function PmpLineGroupCard({ lines, onLineClick, onLinkClick, variant = "d
       </header>
 
       {/* Lines individuais — sem coluna PI (já está no header).
-          Scroll horizontal: o grid hidePi tem ~920px e estoura tanto o
-          viewport <768px quanto laptops com o rail aberto. `scrollbar-thin`
-          + `scroll-fade-x` (ver PmpDealsPage) deixam explícito que dá pra
-          arrastar em vez de simplesmente cortar a última coluna. */}
+          Scroll horizontal: o grid hidePi precisa de 1112px (1072px de
+          trilhas+gaps + 40px do px-5 do próprio row — esse padding TEM que
+          entrar na conta, senão o grid recebe menos espaço do que precisa
+          e a última trilha, que não tem `fr` sobrando pra ceder, vaza
+          silenciosamente sem gerar scroll pra revelar o que sobrou) e
+          estoura tanto o viewport <768px quanto laptops com o rail aberto.
+          `scrollbar-thin` + `scroll-fade-x` (ver PmpDealsPage) deixam
+          explícito que dá pra arrastar em vez de simplesmente cortar a
+          última coluna — e a própria coluna Entrega agora tem piso real
+          (116px, ver ROW_GRID acima) em vez de um `fr` que nunca crescia. */}
       <div className="overflow-x-auto scrollbar-thin scroll-fade-x">
-        <div className="md:min-w-[920px] divide-y divide-border/30">
+        <div className="md:min-w-[1112px] divide-y divide-border/30">
           {lines.map((l) => (
             <PmpLineRow key={l.line_id} line={l}
                         onClick={onLineClick} onLinkClick={onLinkClick}
@@ -755,12 +761,13 @@ export function PmpCustomerAccordion({ customer, lines, onLineClick, onLinkClick
                               variant="nested" />
           ))}
           {/* Lines soltas — tabela minimalista sem header.
-              Scroll horizontal (grid completo ~1160px) — barra visível +
-              sombra de bordas (ver PmpDealsPage), não `scrollbar-hidden`. */}
+              Scroll horizontal (grid completo, 1402px = trilhas+gaps +
+              px-5 do row — ver ROW_GRID acima) — barra visível + sombra de
+              bordas (ver PmpDealsPage), não `scrollbar-hidden`. */}
           {singles.length > 0 && (
             <div className="rounded-lg border border-border/60 bg-canvas-elevated overflow-hidden">
               <div className="overflow-x-auto scrollbar-thin scroll-fade-x">
-                <div className="md:min-w-[1160px] divide-y divide-border/30">
+                <div className="md:min-w-[1402px] divide-y divide-border/30">
                   {singles.map(l => (
                     <PmpLineRow key={l.line_id} line={l}
                                 onClick={() => onLineClick?.(l)} onLinkClick={onLinkClick}
@@ -818,11 +825,29 @@ function Chevron({ open }) {
 // informação primária — sobrava "Amazon…", "Al…", às vezes um caractere só.
 // Com `minmax(220px, …)` a coluna nunca encolhe abaixo do legível; se a tela
 // for estreita, o container já tem overflow-x-auto e rola.
-const ROW_GRID = "grid grid-cols-[12px_minmax(220px,2.4fr)_minmax(104px,0.36fr)_84px_112px_112px_128px_136px_58px_72px_72px_minmax(88px,0.44fr)] gap-x-3";
+//
+// A ÚLTIMA COLUNA (Entrega) TAMBÉM PRECISA DE MÍNIMO REAL, NÃO SÓ FR. Estava
+// `minmax(88px,0.44fr)` — e na prática o `0.44fr` NUNCA cresce: com 3 trilhas
+// flexíveis de pesos bem desiguais (Cliente 2.4fr, Status 0.36fr, Entrega
+// 0.44fr), o algoritmo de free-space do CSS Grid "congela" as trilhas cujo
+// piso já excede a fatia proporcional que o fr daria — e é exatamente o caso
+// aqui, então TODO o espaço extra vai pro Cliente e Entrega fica travada em
+// 88px sempre, em qualquer largura de tela. Medido: "R$ 13,4 mil ↗" (valor +
+// seta) já ocupa ~90,5px sozinho — mais largo que os 88px do piso, SEM
+// margem nenhuma. Como o texto usa nbsp (espaço não-quebrável) do
+// Intl.NumberFormat entre "R$", o número e "mil", não há onde quebrar
+// linha: o texto simplesmente
+// vaza pra fora da coluna e é cortado pelo `overflow-hidden` do card — sem
+// que scroll horizontal ajude, porque a trilha nunca cresce pra caber. Não é
+// bug de "não dá pra ver que rola" (isso já foi corrigido à parte); é a
+// coluna genuinely pequena demais pro próprio conteúdo. 120px fixo (piso real
+// medido + ~30px de folga, mesmo padrão das colunas numéricas acima) resolve
+// definitivamente — sem fr, porque fr aqui nunca funcionou mesmo.
+const ROW_GRID = "grid grid-cols-[12px_minmax(220px,2.4fr)_minmax(104px,0.36fr)_84px_112px_112px_128px_136px_58px_72px_72px_120px] gap-x-3";
 
 export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "desc", onColumnClick = null }) {
   const grid = hidePi
-    ? "grid grid-cols-[12px_minmax(220px,2.6fr)_minmax(110px,0.4fr)_88px_116px_116px_138px_60px_minmax(82px,0.55fr)] gap-x-3"
+    ? "grid grid-cols-[12px_minmax(220px,2.6fr)_minmax(110px,0.4fr)_88px_116px_116px_138px_60px_116px] gap-x-3"
     : ROW_GRID;
   const interactive = !!onColumnClick;
 
@@ -926,7 +951,7 @@ function PmpLineRowInner({
   // Grid: quando hidePi, esconde a coluna PI (PI está no header do grupo).
   // Também esconde % Entrega per-line (faz sentido só ao nível do grupo).
   const grid = hidePi
-    ? "grid grid-cols-[12px_minmax(220px,2.6fr)_minmax(110px,0.4fr)_88px_116px_116px_138px_60px_minmax(82px,0.55fr)] gap-x-3"
+    ? "grid grid-cols-[12px_minmax(220px,2.6fr)_minmax(110px,0.4fr)_88px_116px_116px_138px_60px_116px] gap-x-3"
     : ROW_GRID;
 
   // content-visibility:auto — browser pula render/paint das rows fora do
