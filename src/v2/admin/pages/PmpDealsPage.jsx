@@ -1628,12 +1628,17 @@ function ListView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLinkCl
 
   return (
     <div className="rounded-xl border border-border bg-canvas-elevated overflow-hidden">
-      {/* Scroll horizontal em mobile: o grid das rows tem ~1160px e estoura o
-          viewport <768px. Mesmo padrão do CampaignListV2 — wrapper externo
-          preserva o border-radius, min-w mantém as colunas legíveis e o swipe
-          horizontal é UX padrão pra tabelas densas (Linear/Notion/Stripe).
-          Inert no desktop (o conteúdo cabe e a barra não aparece). */}
-      <div className="overflow-x-auto scrollbar-hidden">
+      {/* Scroll horizontal: o grid das rows tem 1330px de largura mínima e
+          estoura tanto o mobile (<768px, onde vira card — ver PmpLineRow)
+          quanto laptops com o rail aberto (1330px de tabela + ~250px de
+          rail não cabe nem num monitor de 1440px em janela restaurada).
+          `scrollbar-thin` (barra reduzida mas VISÍVEL) + `scroll-fade-x`
+          (sombra nas bordas que "acende" quando há mais conteúdo pro lado)
+          substituem o antigo `scrollbar-hidden`: com a barra invisível e
+          sem nenhuma outra pista, a última coluna simplesmente cortava na
+          borda da tela e quem usa mouse (sem trackpad/swipe) não tinha
+          como descobrir que dava pra arrastar pra ver o resto. */}
+      <div className="overflow-x-auto scrollbar-thin scroll-fade-x">
         <div className="md:min-w-[1330px]">
           <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
           <div className="divide-y divide-border/60">
@@ -1775,10 +1780,11 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
 
   return (
     <div className="rounded-xl border border-border bg-canvas-elevated overflow-hidden">
-      {/* Scroll horizontal em mobile (vide ListView). O overflow-y do corpo
-          fica aninhado dentro do min-w pra preservar o cabeçalho fixo + a
-          altura máxima da lista no desktop. */}
-      <div className="overflow-x-auto scrollbar-hidden">
+      {/* Scroll horizontal (vide ListView acima — mesma barra visível +
+          sombra de bordas). O overflow-y do corpo fica aninhado dentro do
+          min-w pra preservar o cabeçalho fixo + a altura máxima da lista
+          no desktop. */}
+      <div className="overflow-x-auto scrollbar-thin scroll-fade-x">
         <div className="md:min-w-[1330px]">
           <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
           <div className="divide-y divide-border/60 max-h-[calc(100vh-380px)] overflow-y-auto">
