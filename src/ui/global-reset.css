@@ -292,3 +292,26 @@
   }
   &:hover::-webkit-scrollbar-thumb { background: var(--color-fg-subtle); }
 }
+
+/* Sinaliza scroll horizontal sem depender de JS: um degradê "cobre" nas
+ * bordas esquerda/direita que anda JUNTO com o conteúdo (attachment local),
+ * empilhado sobre uma sombra fixa em relação ao viewport do elemento
+ * (attachment scroll). No início do scroll a borda esquerda fica "plana"
+ * (nada pra rolar pra trás) e a direita mostra a sombra (há mais conteúdo);
+ * ao chegar no fim, o inverso. Resolve o caso da tabela de PMP Deals: com
+ * `scrollbar-hidden` a última coluna simplesmente "sumia" na borda da tela
+ * sem nenhuma pista de que dava pra arrastar pra ver o resto — quem usa
+ * mouse (sem trackpad) ficava sem affordance nenhuma. Mesma técnica clássica
+ * de "scroll shadows" (Lea Verou), adaptada pro eixo X e às cores do tema
+ * (a cor de cobertura precisa bater com o fundo do elemento). */
+@utility scroll-fade-x {
+  background:
+    linear-gradient(to right, var(--color-canvas-elevated) 40%, rgba(0, 0, 0, 0)) left center,
+    linear-gradient(to left,  var(--color-canvas-elevated) 40%, rgba(0, 0, 0, 0)) right center,
+    linear-gradient(to right, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0)) left center,
+    linear-gradient(to left,  rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0)) right center;
+  background-repeat: no-repeat;
+  background-color: var(--color-canvas-elevated);
+  background-size: 28px 100%, 28px 100%, 16px 100%, 16px 100%;
+  background-attachment: local, local, scroll, scroll;
+}

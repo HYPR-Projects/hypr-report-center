@@ -126,9 +126,11 @@ export function PmpLineGroupCard({ lines, onLineClick, onLinkClick, variant = "d
       </header>
 
       {/* Lines individuais — sem coluna PI (já está no header).
-          Scroll horizontal em mobile: o grid hidePi tem ~920px e estoura o
-          viewport <768px. min-w mantém colunas legíveis; inert no desktop. */}
-      <div className="overflow-x-auto scrollbar-hidden">
+          Scroll horizontal: o grid hidePi tem ~920px e estoura tanto o
+          viewport <768px quanto laptops com o rail aberto. `scrollbar-thin`
+          + `scroll-fade-x` (ver PmpDealsPage) deixam explícito que dá pra
+          arrastar em vez de simplesmente cortar a última coluna. */}
+      <div className="overflow-x-auto scrollbar-thin scroll-fade-x">
         <div className="md:min-w-[920px] divide-y divide-border/30">
           {lines.map((l) => (
             <PmpLineRow key={l.line_id} line={l}
@@ -753,10 +755,11 @@ export function PmpCustomerAccordion({ customer, lines, onLineClick, onLinkClick
                               variant="nested" />
           ))}
           {/* Lines soltas — tabela minimalista sem header.
-              Scroll horizontal em mobile (grid completo ~1160px). */}
+              Scroll horizontal (grid completo ~1160px) — barra visível +
+              sombra de bordas (ver PmpDealsPage), não `scrollbar-hidden`. */}
           {singles.length > 0 && (
             <div className="rounded-lg border border-border/60 bg-canvas-elevated overflow-hidden">
-              <div className="overflow-x-auto scrollbar-hidden">
+              <div className="overflow-x-auto scrollbar-thin scroll-fade-x">
                 <div className="md:min-w-[1160px] divide-y divide-border/30">
                   {singles.map(l => (
                     <PmpLineRow key={l.line_id} line={l}
