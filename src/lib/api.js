@@ -1807,6 +1807,26 @@ export async function syncPmpV2({ interval = "last_7_days" } = {}) {
   return r.json();
 }
 
+/** Re-sync SÓ da PubMatic (+ refresh da enriched). Barato: 1 request de report
+ *  + MERGE idempotente, sem tocar no Xandr.
+ *
+ *  Existe no cliente por causa do auto-recovery do /admin/pmp: o cron das 04h
+ *  roda antes de a PubMatic fechar D-1, e quem abre o hub cedo pega a base um
+ *  dia atrás. Em vez de esperar o próximo horário do Cloud Scheduler, a página
+ *  dispara isto ao detectar o atraso. Ver PmpDealsPage.
+ */
+export async function syncPmpPubmatic() {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(`${API_URL}?action=pmp_sync_pubmatic`, {}, adminAuthHeaders(jwt));
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    // Corpo não-JSON (502 de gateway, HTML de erro): fica o "HTTP <status>".
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch { /* sem corpo útil */ }
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
 // ── Compplan Sheet (admin) ───────────────────────────────────────────────────
 // Planilha Google auto-atualizada com o compplan do PMP (1 row por deal,
 // all-time, modelo HYPR_PMP_Deals_All-Time). Integração singleton — push
