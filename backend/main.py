@@ -3061,6 +3061,14 @@ def report_data(request):
             except ValueError:
                 pass
 
+        # Cache antes de paginar: ver `_TYPEFORM_RESULTS_TTL`. A chave usa
+        # since/until JÁ resolvidos (não as datas cruas), porque é a janela
+        # efetivamente enviada ao Typeform que define o resultado.
+        tf_cache_key = f"{form_id}|{since_param}|{until_param}"
+        tf_cached = _cache_get(_typeform_results_cache, tf_cache_key, _TYPEFORM_RESULTS_TTL)
+        if tf_cached is not None:
+            return (jsonify(tf_cached), 200, headers)
+
         flat_counts = Counter()
         matrix_rows = {}
         has_matrix = False
@@ -3117,22 +3125,26 @@ def report_data(request):
                     row: {"counts": dict(cnt), "total": sum(cnt.values())}
                     for row, cnt in matrix_rows.items()
                 }
-                return (jsonify({
+                payload = {
                     "type": "matrix",
                     "rows": rows_out,
                     "total": total,
                     "form_id": form_id,
                     "first_response_at": first_at,
                     "last_response_at": last_at,
-                }), 200, headers)
-            return (jsonify({
+                }
+                _cache_set(_typeform_results_cache, tf_cache_key, payload)
+                return (jsonify(payload), 200, headers)
+            payload = {
                 "type": "choice",
                 "counts": dict(flat_counts),
                 "total": total,
                 "form_id": form_id,
                 "first_response_at": first_at,
                 "last_response_at": last_at,
-            }), 200, headers)
+            }
+            _cache_set(_typeform_results_cache, tf_cache_key, payload)
+            return (jsonify(payload), 200, headers)
         except urllib.error.HTTPError as e:
             logger.error(f"[ERROR typeform_proxy] HTTP {e.code} for form {form_id}: {e.reason}")
             msg = {
@@ -11469,6 +11481,30 @@ def _fetch_typeform_form_def(form_id, token):
 _TYPEFORM_LIST_TTL = 300  # 5 min — listagem muda pouco no horizonte de uma sessão
 _TYPEFORM_META_TTL = 600  # 10 min — definição de form muda menos ainda
 _typeform_meta_cache = {}  # form_id -> (timestamp, payload)
+
+# ── Cache de RESULTADOS do typeform_proxy ───────────────────────────────────
+# Era o único endpoint de survey sem cache, e o mais caro dos dois: ele
+# PAGINA as respostas (1000 por página) e soma em Python. No report da
+# L'Oréal isso é ~3 chamadas na API do Typeform por lado, por pergunta, a
+# cada abertura de report — com um token compartilhado por todo o Report
+# Center, que é onde o rate limit mora.
+#
+# Duas coisas dependem disso:
+#
+#   1. A aba Survey agora recarrega sozinha (a pergunta que originou isto foi
+#      "respondi no preview e o número não mexeu"). Sem cache aqui, cada
+#      ciclo de refresh viraria paginação nova na API do Typeform — trocar
+#      "não atualiza" por "toma 429" não é conserto.
+#   2. O TOTAL SOMADO fica coerente no tempo. O Max Attention já cacheava 5
+#      min; o Typeform não cacheava nada. Somar os dois entregava um número
+#      cujas metades eram de momentos diferentes, e ninguém conseguia dizer
+#      "esse total é de quando". Mesmo TTL nos dois = as duas metades são do
+#      mesmo instante.
+#
+# Chave inclui a janela (since/until) porque o filtro de período do admin não
+# pode contaminar a visão do cliente — mesma regra do cache do Max Attention.
+_TYPEFORM_RESULTS_TTL = 300  # 5 min — igual ao _MA_RESULTS_TTL, de propósito
+_typeform_results_cache = {}  # "form_id|since|until" -> (timestamp, payload)
 
 # ── Cache do Max Attention ──────────────────────────────────────────────────
 # `maxattention_results` é chamado no RENDER do report, por cliente, por

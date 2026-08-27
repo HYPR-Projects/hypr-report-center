@@ -232,33 +232,64 @@ somadas, e só uma delas é deste repo:
 | Camada | Defasagem | Onde |
 |---|---|---|
 | evento → `creative_events_raw` | quem escreve é o Worker de ingestão (o2o-platform) | fora deste repo |
-| cache de resultado do backend | **5 min** por criativo × pergunta × período | `_MA_RESULTS_TTL` |
-| frontend | refetch a cada mount da aba Survey; sem cache próprio | `SurveyTab.jsx` |
+| cache de resultado do backend | **5 min** por criativo × pergunta × período | `_MA_RESULTS_TTL`, `_TYPEFORM_RESULTS_TTL` |
+| frontend | ciclo de **60s** enquanto a aba estiver aberta e visível | `POLL_INTERVAL_MS` em `SurveyTab.jsx` |
 
 O cache do report (3h) **não** entra na conta: ele guarda a *config* da survey
 (qual criativo está amarrado), não as contagens.
+
+**A aba atualiza sozinha.** Não há botão de "Atualizar" e não deve haver: botão
+transfere pro leitor um trabalho que a máquina faz melhor, e quem não souber
+que ele existe fica olhando número velho sem saber. O ciclo é de 60s, mas a
+idade do dado é governada pelo TTL do backend (5 min) — o ciclo curto só
+garante que, assim que o cache vira, a tela pega na volta seguinte. Então:
+**dado no máximo ~5 min velho, sem ninguém fazer nada.**
+
+O ciclo é silencioso de propósito: não mostra spinner e não apaga o que está na
+tela. Falha transitória de uma fonte não vira erro — mantém o último número bom
+e tenta de novo em 60s. Guardado por teste em
+`src/dashboards/SurveyTab.autorefresh.test.js`.
 
 Duas armadilhas na hora de conferir a olho:
 
 1. **A unidade é sessão, não clique** (ver "A unidade é RESPONDENTE" acima).
    Responder 5× no mesmo preview move o painel da plataforma e **não** move o
    report: a sua sessão conta 1 vez por opção. Comparar os dois números lado a
-   lado sem isso parece bug e não é.
-2. **F5 não fura o cache de 5 min.** Pra isso existe `refresh=true`, admin-only:
+   lado sem isso parece bug e não é. Esta é a armadilha que sobra depois do
+   auto-refresh, e nenhuma mudança de cache resolve.
+2. **Nem F5 nem o ciclo furam o cache de 5 min** — os dois servem do cache. Pra
+   forçar query nova na hora existe `refresh=true`, admin-only:
 
        ...?action=maxattention_results&creative_id=<id>&ak=<chave>&refresh=true
 
    Sem credencial o parâmetro é ignorado (não recusado), pra que uma URL com
    `refresh=true` herdada por um cliente continue abrindo o report.
 
+Se 5 min for muito pro seu caso, o knob é um só: `_MA_RESULTS_TTL` em
+`main.py`. Ele é o que impede que audiência de report vire query no BigQuery, e
+o custo escala com **tempo**, não com audiência (o cache é compartilhado entre
+leitores) — baixar pra 120s multiplica a conta de query por ~2,5×.
+
 ## Custo
 
-O risco não é volume de dado, é **query por pageview**: `maxattention_results`
-é chamado no render do report, por cliente, por pergunta.
+O risco não é volume de dado, é **quantas vezes a query roda**:
+`maxattention_results` é chamado por cliente, por pergunta — e agora também em
+ciclo de 60s, enquanto a aba estiver aberta.
+
+O que segura isso é o cache: com ele, o custo escala com **tempo**, não com
+audiência nem com número de ciclos. Cem leitores no mesmo report, recarregando
+de minuto em minuto, batem na mesma entrada — a query só roda quando o TTL
+vira. É por isso que o cache é pré-requisito do auto-refresh, e não um detalhe
+de performance.
 
 - cache em memória de 5 min nos resultados, 10 min na listagem (chave por
   criativo × pergunta × período, então clientes diferentes no mesmo report
-  batem na mesma entrada);
+  batem na mesma entrada). O `typeform_proxy` ganhou o MESMO TTL: era o único
+  sem cache, é o mais caro dos dois (pagina 1000 respostas por página, com
+  token compartilhado por todo o Report Center) e sem ele o ciclo de
+  auto-refresh viraria paginação nova na API do Typeform a cada volta. TTL
+  igual nos dois também deixa o total somado coerente no tempo — antes as
+  duas metades da soma eram de momentos diferentes;
 - `use_query_cache` ligado, mas **hoje ele não pega nada**: a view filtra
   partição com `CURRENT_TIMESTAMP()`, e o BigQuery não cacheia resultado de
   query não-determinística. Ou seja, cold start re-varre de verdade — quem

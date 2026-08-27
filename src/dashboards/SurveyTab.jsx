@@ -11,6 +11,30 @@ import { fmt } from "../shared/format";
 import { SOURCE_LABELS, SOURCE_TINTS, reconciliationSummary } from "../shared/surveySources";
 import { liftSignificance, significanceLabel } from "../shared/surveyStats";
 
+// Auto-refresh: a aba recarrega sozinha enquanto estiver aberta.
+//
+// Nasceu de uma pergunta que não tinha resposta boa: "respondi no preview da
+// DSP e o número do report não mexeu". Não mexia mesmo — o fetch acontecia só
+// no mount, então a única forma de ver dado novo era F5. Botão de "Atualizar"
+// seria pior: transfere pro leitor um trabalho que a máquina faz melhor, e
+// quem não souber que o botão existe continua olhando número velho sem saber.
+//
+// 60s é o intervalo do CICLO, não a idade do dado: as duas fontes cacheiam 5
+// min no backend (`_MA_RESULTS_TTL` / `_TYPEFORM_RESULTS_TTL`), então o ciclo
+// mais frequente só garante que, assim que o cache vira, a tela pega na
+// próxima volta. Polling mais rápido que o TTL não deixaria o dado mais novo
+// — só gastaria invocação de Cloud Function.
+//
+// Três guardas, todas por motivo concreto:
+//   • só com a aba visível — navegador estrangula timer em aba de fundo, e
+//     recarregar report que ninguém está lendo é custo sem leitor;
+//   • `inFlight` — se um ciclo demora mais que o intervalo (Typeform paginando
+//     cold), o próximo não empilha em cima;
+//   • guard de 10s no foco — `visibilitychange` e `focus` disparam juntos ao
+//     voltar pra aba, e sem isso cada alt-tab custava duas requests idênticas
+//     (mesma correção que o DspHealthPanel já carrega).
+const POLL_INTERVAL_MS = 60000;
+
 // Quando `combinedItems` é passado (array de {short_token, label, survey}),
 // o SurveyTab opera em modo AGREGADO: busca cada mês, soma as contagens
 // brutas via combineSurveyQuestions e renderiza um único conjunto de
@@ -48,9 +72,16 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
 
   useEffect(()=>{
     let cancelled=false;
-    const load=async()=>{
-      setLoading(true);setError(null);
+    let inFlight=false;
+    // `silent` = ciclo de auto-refresh. Não mostra spinner e não apaga o que
+    // está na tela: sem isso a aba inteira piscaria de minuto em minuto, e
+    // piscar de graça é pior que não atualizar.
+    const load=async(silent=false)=>{
+      if(inFlight)return;
+      inFlight=true;
+      if(!silent){setLoading(true);setError(null);}
       try{
+        let next;
         if(isCombined){
           // Agregado: busca cada mês (filtrado pelo seu próprio range) e
           // soma as contagens brutas. Admin sem filtro vê tudo; admin com
@@ -61,22 +92,55 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
             const itemRange = isAdmin ? adminRangeParam : (cfg?.clientRange || null);
             return loadSurveyQuestions(it.survey, itemRange);
           }));
-          if(!cancelled) setQuestions(combineSurveyQuestions(perMonth));
-          return;
+          next = combineSurveyQuestions(perMonth);
+        }else{
+          // Single token — normalização delegada ao módulo compartilhado.
+          next = await loadSurveyQuestions(surveyJson, rangeParam);
         }
-        // Single token — normalização delegada ao módulo compartilhado.
-        const results = await loadSurveyQuestions(surveyJson, rangeParam);
-        if(!cancelled) setQuestions(results);
-      }catch(e){
         if(!cancelled){
+          setQuestions(next);
+          // Sucesso limpa erro anterior: falha transitória de uma fonte
+          // agora se resolve sozinha no ciclo seguinte, em vez de deixar a
+          // aba travada num erro até alguém dar F5.
+          setError(null);
+        }
+      }catch(e){
+        if(!cancelled && !silent){
           const msg = e?.message ? `Erro ao carregar survey: ${e.message}` : "Erro ao carregar dados do survey.";
           setError(msg);
         }
+        // Falha num ciclo automático NÃO vira erro na tela: o cliente estava
+        // lendo um número, e um 502 transitório do Typeform trocaria o número
+        // por uma mensagem de erro. Quem ainda não tem dado (load inicial)
+        // cai no ramo de cima e vê o erro normalmente.
       }
-      finally{if(!cancelled)setLoading(false);}
+      finally{
+        inFlight=false;
+        if(!cancelled && !silent)setLoading(false);
+      }
     };
     load();
-    return()=>{cancelled=true;};
+    const id=setInterval(()=>{
+      if(document.visibilityState!=="visible")return;
+      load(true);
+    },POLL_INTERVAL_MS);
+    // Voltar pra aba recarrega na hora, sem esperar o próximo tick — é o
+    // momento em que alguém MAIS quer o dado novo.
+    let lastFocusLoad=0;
+    const onFocus=()=>{
+      if(document.visibilityState!=="visible")return;
+      if(Date.now()-lastFocusLoad<10_000)return;
+      lastFocusLoad=Date.now();
+      load(true);
+    };
+    document.addEventListener("visibilitychange",onFocus);
+    window.addEventListener("focus",onFocus);
+    return()=>{
+      cancelled=true;
+      clearInterval(id);
+      document.removeEventListener("visibilitychange",onFocus);
+      window.removeEventListener("focus",onFocus);
+    };
   // rangeKey absorve adminRange (admin) e clientRange (cliente). combinedKey
   // cobre mudança dos meses agregados; surveyJson cobre config single.
   },[surveyJson,isAdmin,rangeKey,isCombined,combinedKey]);
