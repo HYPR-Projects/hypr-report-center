@@ -34,9 +34,21 @@ carregar `PUBMATIC_*`, `XANDR_*` nem `PMP_SCHEDULER_SECRET`.
 
 ### Opção A — Workload Identity Federation (recomendada)
 
-Sem chave de longa duração no repo. Do lado do GCP, criar um pool + provider
-para `HYPR-Projects/hypr-report-center` e ligá-lo a uma service account de
-deploy. Depois, em **Settings → Secrets and variables → Actions → Variables**:
+Sem chave de longa duração no repo. **Lado do GCP: `bash backend/setup_wif_deploy.sh`**
+— idempotente, e no fim ele imprime exatamente os dois valores pra colar no
+GitHub. Ele cria o pool + provider, a service account de deploy, os papéis, e
+o binding que deixa este repo (e só ele) impersonar a SA.
+
+Duas travas que o script aplica de propósito, porque errar aqui é silencioso:
+o `--attribute-condition` do provider aceita só o claim `repository` deste
+repo — sem ela, qualquer repo do GitHub poderia pedir credencial deste projeto
+— e o binding de `workloadIdentityUser` é escopado por
+`attribute.repository/<repo>`, não pelo pool inteiro.
+
+O que segue abaixo é o mesmo setup em prosa, pra quem preferir fazer à mão.
+Do lado do GCP, criar um pool + provider para
+`HYPR-Projects/hypr-report-center` e ligá-lo a uma service account de deploy.
+Depois, em **Settings → Secrets and variables → Actions → Variables**:
 
 | Variável | Valor |
 |---|---|
