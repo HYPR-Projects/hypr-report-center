@@ -2966,6 +2966,28 @@ def report_data(request):
         date_from = request.args.get("date_from", "").strip()
         date_to = request.args.get("date_to", "").strip()
         cache_key = f"{creative_id}|{question or ''}|{date_from}|{date_to}"
+        # `refresh=true` fura o cache de 5 min — mas SÓ pra admin.
+        #
+        # Por que existe: validar a coleta a olho ("respondi no preview, o
+        # número subiu?") era impossível. O endpoint é chamado no render do
+        # report, então F5 não refaz a query: cai na mesma entrada de cache. O
+        # que às vezes fazia o número mudar era cair em OUTRA instância da
+        # Cloud Function com o cache frio — ou seja, sorte, e sorte é pior que
+        # espera, porque ensina que o dado "às vezes atrasa" sem regra.
+        #
+        # Por que admin-only, num endpoint que de resto é aberto: é
+        # exatamente o cache que impede que audiência de report vire query no
+        # BigQuery (ver `_MA_RESULTS_TTL`). Um bypass aberto devolveria esse
+        # custo — uma aba recarregando em loop viraria N queries. Admin já se
+        # identifica aqui por `?ak=` ou Bearer, então o caminho manual é
+        # `...&action=maxattention_results&creative_id=...&ak=...&refresh=true`.
+        #
+        # Sem credencial o parâmetro é IGNORADO, não recusado: o cliente que
+        # herdar uma URL com `refresh=true` continua vendo o report, servido
+        # do cache, em vez de um 401 no meio de uma pergunta.
+        if request.args.get("refresh") == "true" and authenticate_admin(request):
+            with _cache_lock:
+                _ma_results_cache.pop(cache_key, None)
         cached = _cache_get(_ma_results_cache, cache_key, _MA_RESULTS_TTL)
         if cached is not None:
             return (jsonify(cached), 200, headers)

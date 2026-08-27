@@ -224,6 +224,33 @@ carregou (ou o cron de export da plataforma não rodou desde o deploy dela).
 Parar antes do passo 5 não quebra nada: os endpoints respondem 501 dizendo o
 que falta, a seção some do modal e o Typeform segue como sempre.
 
+## Quanto tempo o report demora pra refletir uma resposta
+
+Não é tempo real, e a pergunta certa não é "quantos minutos" — são três coisas
+somadas, e só uma delas é deste repo:
+
+| Camada | Defasagem | Onde |
+|---|---|---|
+| evento → `creative_events_raw` | quem escreve é o Worker de ingestão (o2o-platform) | fora deste repo |
+| cache de resultado do backend | **5 min** por criativo × pergunta × período | `_MA_RESULTS_TTL` |
+| frontend | refetch a cada mount da aba Survey; sem cache próprio | `SurveyTab.jsx` |
+
+O cache do report (3h) **não** entra na conta: ele guarda a *config* da survey
+(qual criativo está amarrado), não as contagens.
+
+Duas armadilhas na hora de conferir a olho:
+
+1. **A unidade é sessão, não clique** (ver "A unidade é RESPONDENTE" acima).
+   Responder 5× no mesmo preview move o painel da plataforma e **não** move o
+   report: a sua sessão conta 1 vez por opção. Comparar os dois números lado a
+   lado sem isso parece bug e não é.
+2. **F5 não fura o cache de 5 min.** Pra isso existe `refresh=true`, admin-only:
+
+       ...?action=maxattention_results&creative_id=<id>&ak=<chave>&refresh=true
+
+   Sem credencial o parâmetro é ignorado (não recusado), pra que uma URL com
+   `refresh=true` herdada por um cliente continue abrindo o report.
+
 ## Custo
 
 O risco não é volume de dado, é **query por pageview**: `maxattention_results`
@@ -232,8 +259,11 @@ O risco não é volume de dado, é **query por pageview**: `maxattention_results
 - cache em memória de 5 min nos resultados, 10 min na listagem (chave por
   criativo × pergunta × período, então clientes diferentes no mesmo report
   batem na mesma entrada);
-- `use_query_cache` ligado — segunda linha de defesa quando a instância morre
-  num cold start;
+- `use_query_cache` ligado, mas **hoje ele não pega nada**: a view filtra
+  partição com `CURRENT_TIMESTAMP()`, e o BigQuery não cacheia resultado de
+  query não-determinística. Ou seja, cold start re-varre de verdade — quem
+  segura custo aqui é o cache em memória mais a poda. Fica ligado porque é o
+  default certo e volta a valer sozinho se a view trocar por limite fixo;
 - teto de bytes por query (32 GiB). Ele já fez o trabalho dele: a primeira
   versão da LISTAGEM batia nele com `bytesBilledLimitExceeded`, e estava
   certo — eram 34 GiB por abertura de modal.

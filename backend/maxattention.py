@@ -269,9 +269,21 @@ def _job_config(params):
     return bigquery.QueryJobConfig(
         query_parameters=params,
         maximum_bytes_billed=MAX_BYTES_BILLED,
-        # Cache de query do BigQuery: resultado idêntico dentro de 24h não
-        # re-varre nem cobra. Some com o TTL do backend, é a segunda linha de
-        # defesa quando o cache em memória da instância morre num cold start.
+        # Cache de query do BigQuery: ligado, mas HOJE ele não pega nada —
+        # e o comentário anterior aqui dizia o contrário, o que é pior que
+        # não ter comentário.
+        #
+        # O BigQuery não cacheia resultado de query não-determinística, e a
+        # view (`backend/sql/ma_survey_view.sql`) filtra partição com
+        # `CURRENT_TIMESTAMP()`. Toda query daqui atravessa a view, então
+        # nenhuma é elegível: um cold start do backend re-varre de verdade,
+        # não "cai na segunda linha de defesa" — quem segura custo aqui é o
+        # cache em memória do backend (`main.py:_MA_RESULTS_TTL`) mais a poda
+        # de partição e cluster.
+        #
+        # Fica `True` de propósito: é o default certo, custo zero, e volta a
+        # valer sozinho no dia em que a view trocar `CURRENT_TIMESTAMP()` por
+        # um limite fixo.
         use_query_cache=True,
     )
 
