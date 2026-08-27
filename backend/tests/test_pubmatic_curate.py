@@ -19,6 +19,8 @@ O que cada bloco crava
   auditoria        diff API × BQ classificando missing_in_bq / value_mismatch /
                    extra_in_bq
 """
+import sys
+import types
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -189,14 +191,76 @@ def test_deal_id_placeholder_nao_polui_external_deal_id(raw, expected):
     assert pm._clean_deal_id(raw) == expected
 
 
+# ─── Cliente extraído do nome do deal ───────────────────────────────────────
+#
+# `_customer_from_deal_name` tem DOIS caminhos, e a versão anterior deste teste
+# só exercitava um — sem saber:
+#
+#     try:
+#         import pmp_deals
+#         if key in pmp_deals.CUSTOMER_DISPLAY:
+#             return pmp_deals.CUSTOMER_DISPLAY[key]     # canônico
+#     except Exception:
+#         pass                                          # engole o ImportError
+#     return t.replace("-", " ").title()                # fallback
+#
+# `pmp_deals` constrói o client do BigQuery no import, então sem ADC o import
+# ESTOURA, o `except` engole e a função cai no `.title()`. O teste antigo
+# afirmava exatamente esse fallback ("Tim", "Nestle") — e passava em todo
+# laptop sem credencial, porque nunca chegava no caminho canônico.
+#
+# Com credencial (o CI, a partir do primeiro run que de fato autenticou) o
+# import funciona e a função devolve "TIM" e "Nestlé", que são as grafias
+# CERTAS das marcas. Ou seja: o teste estava errado, não a função — e o
+# resultado dele dependia de ter credencial na máquina, que é o pior tipo de
+# teste: verde por acidente.
+#
+# A correção é parar de depender do ambiente. Injetamos um `pmp_deals` falso em
+# `sys.modules` (a função faz `import pmp_deals` a cada chamada, então pega o
+# nosso) e afirmamos os DOIS caminhos explicitamente.
+@pytest.fixture
+def customer_display(monkeypatch):
+    """Injeta um `pmp_deals` com o CUSTOMER_DISPLAY que o teste quiser."""
+    def _set(mapping):
+        fake = types.ModuleType("pmp_deals")
+        fake.CUSTOMER_DISPLAY = mapping
+        monkeypatch.setitem(sys.modules, "pmp_deals", fake)
+    return _set
+
+
+@pytest.mark.parametrize("deal_name,expected", [
+    ("HYPR_TIM_DV360_BETC_ROCK-IN-RIO_DEAL_FLEX-BID_VIDEO_PUBMATIC_AGO-26", "TIM"),
+    ("HYPR_NESTLE_AMAZON-DSP_WPP_KITKAT-F1_FIXED-BID_DEAL_DISPLAY", "Nestlé"),
+])
+def test_cliente_usa_a_grafia_canonica_da_marca(customer_display, deal_name, expected):
+    """Com o mapa disponível, vale a grafia da marca — não o title case.
+    "TIM" é maiúsculo e "Nestlé" tem acento; `.title()` erraria os dois."""
+    customer_display({"TIM": "TIM", "NESTLE": "Nestlé"})
+    assert pm._customer_from_deal_name(deal_name) == expected
+
+
 @pytest.mark.parametrize("deal_name,expected", [
     ("HYPR_TIM_DV360_BETC_ROCK-IN-RIO_DEAL_FLEX-BID_VIDEO_PUBMATIC_AGO-26", "Tim"),
     ("HYPR_NESTLE_AMAZON-DSP_WPP_KITKAT-F1_FIXED-BID_DEAL_DISPLAY", "Nestle"),
-    ("HYPR_PMP_DV360", None),          # só tokens de ruído
-    ("", None),
+    ("HYPR_ACME-CORP_DV360_DEAL_DISPLAY", "Acme Corp"),
 ])
-def test_cliente_parseado_do_nome_do_deal(deal_name, expected):
+def test_cliente_cai_no_title_case_quando_a_marca_nao_esta_no_mapa(
+    customer_display, deal_name, expected
+):
+    """Marca desconhecida ainda rende um nome legível — é o que o admin vê
+    antes de vincular o deal na mão."""
+    customer_display({})
     assert pm._customer_from_deal_name(deal_name) == expected
+
+
+@pytest.mark.parametrize("deal_name", [
+    "HYPR_PMP_DV360",   # só tokens de ruído
+    "",
+])
+def test_cliente_e_none_quando_nao_sobra_token_util(customer_display, deal_name):
+    """None é deliberado: admin resolve no link manual. Independe do mapa."""
+    customer_display({"TIM": "TIM"})
+    assert pm._customer_from_deal_name(deal_name) is None
 
 
 # ─── Colunas obrigatórias ───────────────────────────────────────────────────
