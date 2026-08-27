@@ -33,30 +33,7 @@ import { liftSignificance, significanceLabel } from "../shared/surveyStats";
 //   • guard de 10s no foco — `visibilitychange` e `focus` disparam juntos ao
 //     voltar pra aba, e sem isso cada alt-tab custava duas requests idênticas
 //     (mesma correção que o DspHealthPanel já carrega).
-//
-// ┌─ TEMPORÁRIO: 300s até o backend ser deployado ────────────────────────────┐
-// │ O valor de projeto é 60000. Está em 300000 porque o cache do              │
-// │ `typeform_proxy` — que é o que torna este ciclo barato — ESTÁ na main mas  │
-// │ NÃO está em produção: o deploy da Cloud Function é manual                 │
-// │ (`workflow_dispatch`) e não roda, porque o repo nunca teve credencial     │
-// │ GCP configurada. Os 3 runs do deploy-backend falharam no mesmo guard.     │
-// │                                                                          │
-// │ Sem o cache lá, cada ciclo vira paginação nova na API do Typeform: ~5     │
-// │ chamadas por pergunta (1 de definição do form, que também não cacheia, +  │
-// │ 1 por página de 1000 respostas), por aba aberta. O token é compartilhado  │
-// │ por todo o Report Center e o limite é ~120 req/min — umas 6 abas          │
-// │ simultâneas na aba Survey saturariam, e aí a survey quebra em TODOS os    │
-// │ reports. Trocar "não atualiza" por "toma 429" não é conserto.             │
-// │                                                                          │
-// │ 300s = o mesmo TTL que o backend vai ter. Corta a exposição em ~5× e a    │
-// │ feature continua fazendo o que precisa (atualizar sem ninguém pedir).     │
-// │                                                                          │
-// │ COMO REMOVER: configurar no repo as vars GCP_WORKLOAD_IDENTITY_PROVIDER   │
-// │ + GCP_DEPLOY_SERVICE_ACCOUNT (ou o secret GCP_SA_KEY), rodar o workflow   │
-// │ "Deploy backend (Cloud Function)", confirmar que o cache subiu — e então  │
-// │ voltar esta constante pra 60000 e apagar esta caixa.                      │
-// └──────────────────────────────────────────────────────────────────────────┘
-const POLL_INTERVAL_MS = 300000;
+const POLL_INTERVAL_MS = 60000;
 
 // Quando `combinedItems` é passado (array de {short_token, label, survey}),
 // o SurveyTab opera em modo AGREGADO: busca cada mês, soma as contagens

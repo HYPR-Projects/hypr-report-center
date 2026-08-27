@@ -233,7 +233,7 @@ somadas, e só uma delas é deste repo:
 |---|---|---|
 | evento → `creative_events_raw` | quem escreve é o Worker de ingestão (o2o-platform) | fora deste repo |
 | cache de resultado do backend | **5 min** por criativo × pergunta × período | `_MA_RESULTS_TTL`, `_TYPEFORM_RESULTS_TTL` |
-| frontend | ciclo enquanto a aba estiver aberta e visível — **300s hoje**, 60s quando o backend for deployado (ver aviso abaixo) | `POLL_INTERVAL_MS` em `SurveyTab.jsx` |
+| frontend | ciclo de **60s** enquanto a aba estiver aberta e visível | `POLL_INTERVAL_MS` em `SurveyTab.jsx` |
 
 O cache do report (3h) **não** entra na conta: ele guarda a *config* da survey
 (qual criativo está amarrado), não as contagens.
@@ -242,22 +242,8 @@ O cache do report (3h) **não** entra na conta: ele guarda a *config* da survey
 transfere pro leitor um trabalho que a máquina faz melhor, e quem não souber
 que ele existe fica olhando número velho sem saber. A idade do dado é
 governada pelo TTL do backend (5 min) — o ciclo só garante que, assim que o
-cache vira, a tela pega na volta seguinte. Então: **dado no máximo ~5 a 10 min
-velho, sem ninguém fazer nada** (~5 min quando o ciclo voltar pra 60s).
-
-> ⚠️ **O ciclo está em 300s, não 60s, e é temporário.** O cache do
-> `typeform_proxy` está nesta main mas **não está em produção**: o deploy da
-> Cloud Function é manual (`workflow_dispatch`) e não roda — o repo nunca teve
-> credencial GCP configurada, e os 3 runs do `deploy-backend` falharam no mesmo
-> guard. Sem o cache lá, cada ciclo vira paginação nova na API do Typeform (~5
-> chamadas por pergunta, por aba aberta) contra um token compartilhado com
-> limite de ~120 req/min: umas 6 abas simultâneas saturariam e a survey
-> quebraria em TODOS os reports.
->
-> **Para destravar:** configurar as vars `GCP_WORKLOAD_IDENTITY_PROVIDER` +
-> `GCP_DEPLOY_SERVICE_ACCOUNT` (ou o secret `GCP_SA_KEY`), rodar o workflow
-> *Deploy backend (Cloud Function)*, confirmar que o cache subiu, e então voltar
-> `POLL_INTERVAL_MS` pra 60000.
+cache vira, a tela pega na volta seguinte. Então: **dado no máximo ~5 min
+velho, sem ninguém fazer nada.**
 
 O ciclo é silencioso de propósito: não mostra spinner e não apaga o que está na
 tela. Falha transitória de uma fonte não vira erro — mantém o último número bom
