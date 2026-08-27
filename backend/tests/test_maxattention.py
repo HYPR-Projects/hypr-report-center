@@ -4,6 +4,8 @@ Testes das partes puras do leitor do Max Attention: validação da view
 nome dos criativos, que é o que amarra criativo → campanha → lado quando
 a plataforma não devolve short_token.
 """
+import os
+
 import pytest
 
 import maxattention as ma
@@ -117,3 +119,41 @@ def test_janela_sem_campanha_e_curta():
     # então o período é o que segura o custo.
     assert ma.UNSCOPED_LOOKBACK_DAYS <= 60
     assert ma.UNSCOPED_LOOKBACK_DAYS < ma.DEFAULT_LOOKBACK_DAYS
+
+
+# ── Bypass de cache: a trava é o que protege a conta do BigQuery ────────────
+#
+# Teste estrutural (mesmo espírito do test_pool_isolation): `refresh=true` no
+# `maxattention_results` existe pra conferência manual, e o endpoint é ABERTO
+# — o report roda no navegador do cliente. Se o bypass perder a checagem de
+# admin, cada pageview passa a poder virar query no BigQuery, que é
+# exatamente o que o cache de 5 min existe pra evitar. A regressão é silenciosa
+# (nada quebra, só a fatura sobe), então fica guardada aqui.
+
+_MAIN_PY = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"
+)
+
+
+def _ma_results_handler_source():
+    """Trecho do handler de `maxattention_results` em main.py."""
+    with open(_MAIN_PY, encoding="utf-8") as f:
+        source = f.read()
+    start = source.index('request.args.get("action") == "maxattention_results"')
+    end = source.index('action") == "typeform_proxy"', start)
+    return source[start:end]
+
+
+def test_bypass_de_cache_do_ma_results_e_admin_only():
+    block = _ma_results_handler_source()
+    assert '_ma_results_cache.pop' in block, (
+        "o bypass de cache saiu do handler de maxattention_results"
+    )
+    # A condição que autoriza o pop tem que mencionar authenticate_admin.
+    guard = block[: block.index("_ma_results_cache.pop")]
+    condicao = guard.rsplit('if request.args.get("refresh")', 1)
+    assert len(condicao) == 2, "o pop não está mais guardado por `refresh=true`"
+    assert "authenticate_admin" in condicao[1], (
+        "bypass de cache sem checagem de admin: um endpoint aberto passaria a "
+        "aceitar query no BigQuery por pageview"
+    )
