@@ -53,6 +53,13 @@ const EMPTY_SIDE = (defaultMode = "list") => ({
   mode: defaultMode,
   formId: "",
   url: "",
+  // Max Attention (Tap to Choose) como base PRINCIPAL do lado. Antes ele só
+  // existia como base SOMADA a um Typeform; agora é fonte de primeira classe,
+  // porque campanha que rodou a pesquisa só na mídia da HYPR não precisa de um
+  // Typeform fantasma pra caber aqui.
+  creativeId: "",
+  creativeName: "",
+  maQuestion: "",
   fileName: "",
   question: "",
   counts: {},
@@ -73,6 +80,7 @@ const EMPTY_BLOCK = (defaultMode = "list") => ({
 function primaryHasData(side) {
   if (!side) return false;
   if (side.source === "videoask") return sumCounts(side.counts) > 0;
+  if (side.source === "maxattention") return !!side.creativeId;
   return !!(side.formId || extractFormId(side.url));
 }
 
@@ -175,6 +183,8 @@ function detectSideMismatch(side, sideKey, formsById) {
   let title = "";
   if (side.source === "videoask") {
     title = side.fileName || "";
+  } else if (side.source === "maxattention") {
+    title = side.creativeName || "";
   } else if (side.mode === "list" && side.formId) {
     title = formsById.get(side.formId)?.title || "";
   } else {
@@ -384,6 +394,37 @@ function conflictsFor(formId, currentBlockIdx, currentSide, usageMap) {
   );
 }
 
+// Mesmo mapa, pro Max Attention: criativo → slots que já o usam, seja como
+// base principal ou somada. Repetir o mesmo criativo em dois slots dobra a
+// base em silêncio, então o picker precisa poder avisar.
+function buildMaUsageMap(blocks) {
+  const m = new Map();
+  blocks.forEach((b, blockIdx) => {
+    for (const side of ["ctrl", "exp"]) {
+      const s = b[side];
+      if (!s) continue;
+      const slotGroup = side === "ctrl" ? "controle" : "exposto";
+      const push = (id) => {
+        if (!id) return;
+        const arr = m.get(id) || [];
+        arr.push({ blockIdx, side, slotGroup });
+        m.set(id, arr);
+      };
+      if (s.source === "maxattention") push(s.creativeId);
+      for (const e of s.extras || []) push(e?.creativeId);
+    }
+  });
+  return m;
+}
+
+// Conflitos do criativo atual, excluindo o próprio slot.
+function maConflictsFor(creativeId, currentBlockIdx, currentSide, usageMap) {
+  if (!creativeId) return [];
+  return (usageMap.get(creativeId) || []).filter(
+    (u) => !(u.blockIdx === currentBlockIdx && u.side === currentSide),
+  );
+}
+
 function relativeTime(iso) {
   if (!iso) return "";
   const t = Date.parse(iso);
@@ -440,6 +481,11 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
   }, [forms]);
 
   const usageMap = useMemo(() => buildUsageMap(blocks), [blocks]);
+  const maUsageMap = useMemo(() => buildMaUsageMap(blocks), [blocks]);
+  const maById = useMemo(
+    () => new Map((maCreatives || []).map((c) => [c.creative_id, c])),
+    [maCreatives],
+  );
 
   // ── Lazy-fetch da meta (rows) por formId selecionado em modo list ─────────
   const metaByIdRef = useRef(metaById);
@@ -602,10 +648,21 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
             // as demais viram `extras`.
             const parts = side === "ctrl" ? q.ctrlParts : q.expParts;
             const extras = Array.isArray(parts) ? parts.slice(1).filter(Boolean) : [];
-            const maOnly =
-              Array.isArray(parts) && parts.length === 1 && parts[0]?.source === "maxattention";
-            if (maOnly) {
-              return { ...base, source: "typeform", extras: [parts[0]] };
+            // 1ª parte em Max Attention = o lado tem MA como base principal.
+            // Antes isso virava um lado Typeform vazio com o criativo jogado
+            // em `extras` — o que funcionava pro caso de uma base só e perdia
+            // a principal quando havia mais de uma.
+            const maPrimary =
+              Array.isArray(parts) && parts[0]?.source === "maxattention" ? parts[0] : null;
+            if (maPrimary) {
+              return {
+                ...base,
+                source: "maxattention",
+                extras,
+                creativeId: maPrimary.creativeId || "",
+                creativeName: maPrimary.creativeName || "",
+                maQuestion: maPrimary.question || "",
+              };
             }
             if (source === "videoask") {
               const counts = side === "ctrl" ? q.ctrlCounts : q.expCounts;
@@ -668,6 +725,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
     const ids = new Set();
     for (const b of blocks) {
       for (const k of ["ctrl", "exp"]) {
+        if (b[k]?.source === "maxattention" && b[k]?.creativeId) ids.add(b[k].creativeId);
         for (const e of b[k]?.extras || []) if (e?.creativeId) ids.add(e.creativeId);
       }
     }
@@ -683,6 +741,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
     blocks.forEach((b, idx) => {
       for (const side of ["ctrl", "exp"]) {
         if ((b[side]?.extras || []).length) continue;
+        if (b[side]?.source === "maxattention") continue;
         const sug = suggestMaForSide(
           maCreatives, side, b.nome, used, typeformOptionsOf(b[side]),
         );
@@ -802,6 +861,31 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
       if (!ok) return;
     }
 
+    // Mesmo criativo do Max Attention em 2+ slots dobra a base em silêncio.
+    // O picker já marca inline, mas salvar sem confirmar salvaria um número
+    // errado — mesma régua que já vale pro form repetido do Typeform.
+    const maDupes = [];
+    for (const [cid, uses] of maUsageMap.entries()) {
+      if (uses.length > 1) {
+        maDupes.push({ title: maById.get(cid)?.creative_name || cid, uses });
+      }
+    }
+    if (maDupes.length > 0) {
+      const lines = maDupes
+        .map((d) => {
+          const slots = d.uses
+            .map((u) => `P${u.blockIdx + 1} ${groupLabel(u.slotGroup)}`)
+            .join(" e ");
+          return `• ${d.title}\n   ${slots}`;
+        })
+        .join("\n\n");
+      const ok = window.confirm(
+        `Atenção: o mesmo criativo do Max Attention aparece em mais de um slot ` +
+          `(as respostas dele contariam duas vezes):\n\n${lines}\n\nSalvar mesmo assim?`,
+      );
+      if (!ok) return;
+    }
+
     setSaving(true);
     try {
       // Serializa cada lado independentemente. Lados vazios omitem TODOS
@@ -811,6 +895,11 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
       // sempre existiu. Continua sendo o que um leitor pré-v4 enxerga.
       const writePrimary = (out, side, prefix) => {
         out[`${prefix}Source`] = side.source;
+        // Max Attention não tem espelho em campos de fonte única: nenhum
+        // formato pré-v4 sabe lê-lo, e escrever um `*Url` vazio faria leitor
+        // antigo achar que existe Typeform aqui. `*Parts` (sempre escrito
+        // quando a principal é MA) é a única representação.
+        if (side.source === "maxattention") return;
         if (side.source === "videoask") {
           out[`${prefix}Counts`] = side.counts || {};
           if (side.fileName) out[`${prefix}FileName`] = side.fileName;
@@ -832,6 +921,14 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
 
       // A parte equivalente à base principal, pra montar `*Parts`.
       const primaryPart = (side) => {
+        if (side.source === "maxattention") {
+          return {
+            source: "maxattention",
+            creativeId: side.creativeId,
+            creativeName: side.creativeName || "",
+            question: side.maQuestion || "",
+          };
+        }
         if (side.source === "videoask") {
           return {
             source: "videoask",
@@ -862,7 +959,9 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
         if (hasPrimary) writePrimary(out, side, prefix);
 
         const parts = [...(hasPrimary ? [primaryPart(side)] : []), ...extras];
-        if (parts.length > 1 || !hasPrimary) out[`${prefix}Parts`] = parts;
+        if (parts.length > 1 || !hasPrimary || side.source === "maxattention") {
+          out[`${prefix}Parts`] = parts;
+        }
       };
       const payload = blocks.map((b) => {
         const out = { nome: b.nome.trim() };
@@ -946,7 +1045,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
         Brand Lift Survey para <strong>{shortToken}</strong>.
       </p>
       <p style={{ color: muted, fontSize: 12, marginBottom: 20, lineHeight: 1.6 }}>
-        Cada pergunta tem 2 slots independentes — <strong>Controle</strong> e <strong>Exposto</strong>. Em cada slot você escolhe a fonte: form do <strong>Typeform</strong>{forms.length ? <> ({forms.length} forms na pasta Survey)</> : null} ou arquivo do <strong>VideoAsk</strong> (.xlsx). Pode misturar fontes nos lados, e pode deixar um lado vazio — sem comparativo de lift nesse caso.
+        Cada pergunta tem 2 slots independentes — <strong>Controle</strong> e <strong>Exposto</strong>. Em cada slot você escolhe a fonte: form do <strong>Typeform</strong>{forms.length ? <> ({forms.length} forms na pasta Survey)</> : null}, criativo do <strong>Max Attention</strong> (Tap to Choose, buscável pelo nome) ou arquivo do <strong>VideoAsk</strong> (.xlsx). Pode misturar fontes nos lados, somar mais de uma base no mesmo lado, e pode deixar um lado vazio — sem comparativo de lift nesse caso.
       </p>
 
       {formsError && (
@@ -1105,6 +1204,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
                 maCreatives={maCreatives}
                 maStatus={maStatus}
                 maUsedIds={maUsedIds}
+                maUsageMap={maUsageMap}
                 forms={forms}
                 formsById={formsById}
                 emptyForms={emptyForms}
@@ -1128,6 +1228,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
                 maCreatives={maCreatives}
                 maStatus={maStatus}
                 maUsedIds={maUsedIds}
+                maUsageMap={maUsageMap}
                 forms={forms}
                 formsById={formsById}
                 emptyForms={emptyForms}
@@ -1144,6 +1245,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
               <FocusRowField
                 block={block}
                 metaById={metaById}
+                maById={maById}
                 onChange={(value) => updateBlock(idx, { focusRow: value })}
                 onRefreshMeta={buildRefreshMeta(block)}
                 theme={{ text, muted, modalBdr, inputBg }}
@@ -1178,7 +1280,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
         <ClientRangeField
           value={clientRange}
           onChange={setClientRange}
-          spanHint={getCombinedResponseSpan(blocks, formsById, responseSpanByForm)}
+          spanHint={getCombinedResponseSpan(blocks, formsById, responseSpanByForm, maById)}
           theme={{ text, muted, modalBdr, inputBg, cardBg }}
         />
       )}
@@ -1227,34 +1329,48 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
 // Combina spans de respostas de todos os lados preenchidos em um único
 // intervalo (min de firsts, max de lasts) — pra mostrar ao admin "tem dados
 // de A a B" como hint pra escolher o clientRange. Mistura typeform (lookup
-// no spanByForm) com videoask (timestamps embutidos no próprio side).
-function getCombinedResponseSpan(blocks, formsById, spanByForm) {
+// no spanByForm), videoask (timestamps embutidos no próprio side) e Max
+// Attention (first_at/last_at do criativo listado).
+function getCombinedResponseSpan(blocks, formsById, spanByForm, maById) {
   let firstISO = null;
   let lastISO = null;
   let totalSides = 0;
   let sidesWithData = 0;
+  const widen = (first, last) => {
+    if (first && (!firstISO || first < firstISO)) firstISO = first;
+    if (last  && (!lastISO  || last  > lastISO))  lastISO  = last;
+  };
+  // Uma BASE (principal ou somada) devolve o par de datas que conhece, ou
+  // null quando ela nem existe ainda. `undefined` nos campos = base existe,
+  // datas ainda não — é o que separa "sem base" de "base sem resposta".
+  const spanOfMa = (creativeId) => {
+    if (!creativeId) return null;
+    const c = maById?.get(creativeId);
+    return { first: c?.first_at || null, last: c?.last_at || null };
+  };
+  const account = (span) => {
+    if (!span) return;
+    totalSides++;
+    if (!span.first && !span.last) return;
+    sidesWithData++;
+    widen(span.first, span.last);
+  };
   for (const b of blocks) {
     for (const sideKey of ["ctrl", "exp"]) {
       const s = b[sideKey];
       if (!s) continue;
       if (s.source === "videoask") {
-        if (!s.fileName) continue;
-        totalSides++;
-        if (!s.firstAt && !s.lastAt) continue;
-        sidesWithData++;
-        if (s.firstAt && (!firstISO || s.firstAt < firstISO)) firstISO = s.firstAt;
-        if (s.lastAt  && (!lastISO  || s.lastAt  > lastISO))  lastISO  = s.lastAt;
-        continue;
+        account(s.fileName ? { first: s.firstAt, last: s.lastAt } : null);
+      } else if (s.source === "maxattention") {
+        account(spanOfMa(s.creativeId));
+      } else {
+        const id = s.mode === "list" ? s.formId : extractFormId(s.url);
+        const span = id ? spanByForm.get(id) : null;
+        account(id ? { first: span?.first || null, last: span?.last || null } : null);
       }
-      // typeform
-      const id = s.mode === "list" ? s.formId : extractFormId(s.url);
-      if (!id) continue;
-      totalSides++;
-      const span = spanByForm.get(id);
-      if (!span || (!span.first && !span.last)) continue;
-      sidesWithData++;
-      if (span.first && (!firstISO || span.first < firstISO)) firstISO = span.first;
-      if (span.last  && (!lastISO  || span.last  > lastISO))  lastISO  = span.last;
+      // Bases somadas contam igual: num lado que é só Max Attention elas são
+      // as únicas datas que existem.
+      for (const e of s.extras || []) account(spanOfMa(e?.creativeId));
     }
   }
   // Mantém nome legado nos campos pra não quebrar ClientRangeField
@@ -1287,7 +1403,7 @@ function ClientRangeField({ value, onChange, spanHint, theme }) {
     ? `Primeira resposta em ${fmtIsoToBRDate(spanHint.firstISO) || "—"}, última em ${fmtIsoToBRDate(spanHint.lastISO) || "—"}.`
     : spanHint?.totalForms > 0
       ? "Sem respostas registradas ainda — você ainda pode escolher um período pra exibir."
-      : "Selecione os forms acima pra ver as datas disponíveis de resposta.";
+      : "Selecione os forms ou criativos acima pra ver as datas disponíveis de resposta.";
   const isSet = !!(value.from && value.to);
 
   return (
@@ -1746,10 +1862,387 @@ function FormPicker({
   );
 }
 
+// ─── MaPicker ───────────────────────────────────────────────────────────────
+// Seletor de criativo do Max Attention com a MESMA ergonomia do FormPicker:
+// botão que abre uma lista com barra de busca no topo. O Max Attention entrou
+// no modal como um `<select>` nativo restrito aos candidatos daquele lado —
+// sem busca, e invisível quando o palpite automático não achava nada. Numa
+// campanha com dezenas de criativos de Tap to Choose, procurar pelo nome é o
+// único jeito prático de achar a base certa, e é o mesmo gesto que o admin já
+// faz pro Typeform.
+//
+// A lista não FILTRA por lado: ordena. Criativo cujo nome indica o outro lado
+// continua alcançável pela busca (nome nem sempre é confiável), só desce e
+// aparece marcado.
+function MaPicker({
+  creatives,
+  sideKey,            // "ctrl" | "exp"
+  value,              // creative_id selecionado ("" quando vazio)
+  valueLabel,         // nome salvo — cobre criativo fora da janela de listagem
+  onSelect,
+  conflictsOf,        // (creative_id) => [{blockIdx, slotGroup}]
+  placeholder,
+  theme,
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const wrapRef = useRef(null);
+  const { text, muted, modalBdr, inputBg, cardBg } = theme;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const wanted = sideKey === "ctrl" ? "controle" : "exposto";
+  const tint = SOURCE_TINTS.maxattention;
+
+  // Rank estável: lado certo primeiro, depois nome neutro, depois o oposto.
+  // Dentro de cada faixa preserva a ordem do backend (resposta mais recente
+  // primeiro), que é a que o admin espera ver no topo.
+  const pool = useMemo(() => {
+    const rank = (c) => (c.side === wanted ? 0 : c.side == null ? 1 : 2);
+    return (creatives || [])
+      .filter(Boolean)
+      .map((c, i) => ({ c, i }))
+      .sort((a, b) => rank(a.c) - rank(b.c) || a.i - b.i)
+      .map(({ c }) => c);
+  }, [creatives, wanted]);
+
+  const RENDER_CAP = 100;
+  const { filtered, hiddenCount } = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const matches = !q
+      ? pool
+      : pool.filter((c) => {
+          const hay = [c.creative_name, c.creative_id, ...(c.questions || []), ...(c.options || [])]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+          return hay.includes(q);
+        });
+    return {
+      filtered: matches.slice(0, RENDER_CAP),
+      hiddenCount: Math.max(0, matches.length - RENDER_CAP),
+    };
+  }, [pool, search]);
+
+  const selected = value ? (creatives || []).find((c) => c.creative_id === value) || null : null;
+  const ownConflicts = conflictsOf ? conflictsOf(value) : [];
+
+  const sideBadge = (side, key) => {
+    if (!side) return <span key={key} style={{ flexShrink: 0, width: 18 }} aria-hidden />;
+    const isCtrl = side === "controle";
+    return (
+      <span
+        key={key}
+        style={{
+          flexShrink: 0, width: 18, height: 18, borderRadius: 4, fontSize: 10, fontWeight: 700,
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          background: isCtrl ? "#27AE6020" : `${C.blue}20`,
+          color: isCtrl ? "#27AE60" : C.blue,
+          border: `1px solid ${isCtrl ? "#27AE60" : C.blue}40`,
+        }}
+        aria-label={groupLabel(side)}
+        title={groupLabel(side)}
+      >
+        {isCtrl ? "C" : "E"}
+      </span>
+    );
+  };
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        title={selected?.creative_name || valueLabel || ""}
+        style={{
+          width: "100%",
+          background: inputBg,
+          border: `1px solid ${value ? tint.bd : modalBdr}`,
+          borderRadius: 7,
+          padding: "9px 12px",
+          color: text,
+          fontSize: 13,
+          textAlign: "left",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+          outline: "none",
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
+          {value ? sideBadge(selected?.side, "sel") : null}
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {value ? (
+              selected?.creative_name || valueLabel || value
+            ) : (
+              <span style={{ color: muted }}>{placeholder || "Buscar criativo do Max Attention…"}</span>
+            )}
+          </span>
+        </span>
+        <span style={{ color: muted, fontSize: 10, flexShrink: 0 }}>
+          {selected?.responses != null
+            ? `${selected.responses.toLocaleString("pt-BR")} respostas`
+            : "▾"}
+        </span>
+      </button>
+
+      {value && !selected && (
+        <div style={{ marginTop: 6, fontSize: 11, color: muted, lineHeight: 1.5 }}>
+          Criativo salvo fora da janela de listagem — segue valendo no report.
+        </div>
+      )}
+
+      {ownConflicts.length > 0 && (
+        <div style={{ marginTop: 6, fontSize: 11, color: "#FFB95E", display: "flex", alignItems: "center", gap: 6 }}>
+          <span>⚠</span>
+          <span>
+            mesmo criativo em{" "}
+            {ownConflicts.map((u) => `P${u.blockIdx + 1} ${groupLabel(u.slotGroup)}`).join(", ")}
+          </span>
+        </div>
+      )}
+
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            right: 0,
+            background: cardBg,
+            border: `1px solid ${modalBdr}`,
+            borderRadius: 8,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.32)",
+            zIndex: 10,
+            overflow: "hidden",
+          }}
+        >
+          <input
+            autoFocus
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Buscar criativo, pergunta ou opção…"
+            style={{
+              width: "100%",
+              background: inputBg,
+              border: "none",
+              borderBottom: `1px solid ${modalBdr}`,
+              padding: "9px 12px",
+              color: text,
+              fontSize: 13,
+              outline: "none",
+            }}
+          />
+          <div style={{ maxHeight: 240, overflowY: "auto" }}>
+            {filtered.length === 0 ? (
+              <div style={{ padding: "12px 14px", color: muted, fontSize: 12 }}>
+                Nenhum criativo encontrado.
+              </div>
+            ) : (
+              <>
+                {filtered.map((c) => {
+                  const isSel = c.creative_id === value;
+                  const conflicts = conflictsOf ? conflictsOf(c.creative_id) : [];
+                  const hasConflict = conflicts.length > 0 && !isSel;
+                  const otherSide = c.side && c.side !== wanted;
+                  return (
+                    <button
+                      key={c.creative_id}
+                      type="button"
+                      onClick={() => {
+                        onSelect(c);
+                        setOpen(false);
+                        setSearch("");
+                      }}
+                      title={c.creative_name || c.creative_id}
+                      style={{
+                        width: "100%",
+                        background: isSel ? tint.bg : "none",
+                        border: "none",
+                        padding: "9px 12px",
+                        textAlign: "left",
+                        cursor: "pointer",
+                        color: text,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        borderBottom: `1px solid ${modalBdr}40`,
+                        opacity: hasConflict ? 0.55 : 1,
+                      }}
+                    >
+                      {sideBadge(c.side, "row")}
+                      <span style={{ minWidth: 0, flex: 1 }}>
+                        <span
+                          style={{
+                            display: "block",
+                            fontSize: 12.5,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {c.creative_name || c.creative_id}
+                        </span>
+                        {(c.questions?.length || otherSide) && (
+                          <span
+                            style={{
+                              display: "block",
+                              fontSize: 10.5,
+                              color: muted,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              marginTop: 2,
+                            }}
+                          >
+                            {otherSide ? `nome indica ${groupLabel(c.side)}` : null}
+                            {otherSide && c.questions?.length ? " · " : null}
+                            {c.questions?.length ? c.questions.join(" · ") : null}
+                          </span>
+                        )}
+                      </span>
+                      {hasConflict ? (
+                        <span
+                          style={{
+                            fontSize: 10, flexShrink: 0, color: "#FFB95E",
+                            background: "#FFB95E18", border: "1px solid #FFB95E40",
+                            borderRadius: 999, padding: "2px 8px", fontWeight: 600,
+                            whiteSpace: "nowrap",
+                          }}
+                          title={`Já usado em: ${conflicts.map((u) => `P${u.blockIdx + 1} ${groupLabel(u.slotGroup)}`).join(", ")}`}
+                        >
+                          {conflicts.length === 1
+                            ? `já em P${conflicts[0].blockIdx + 1} · ${groupLabel(conflicts[0].slotGroup)}`
+                            : `em uso em ${conflicts.length} slots`}
+                        </span>
+                      ) : (
+                        <span style={{ color: muted, fontSize: 10.5, flexShrink: 0, textAlign: "right" }}>
+                          <span style={{ display: "block" }}>
+                            {(c.responses || 0).toLocaleString("pt-BR")} resp.
+                          </span>
+                          {relativeTime(c.last_at) && (
+                            <span style={{ display: "block" }}>{relativeTime(c.last_at)}</span>
+                          )}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+                {hiddenCount > 0 && (
+                  <div
+                    style={{
+                      padding: "10px 14px", color: muted, fontSize: 11, textAlign: "center",
+                      background: inputBg + "80", fontStyle: "italic",
+                    }}
+                  >
+                    + {hiddenCount} criativo(s) — refine a busca pra ver mais
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Mensagem curta pro estado do Max Attention quando não dá pra listar nada.
+function maStatusNote(status) {
+  if (status === "loading") return "Carregando criativos do Max Attention…";
+  if (status === "off") return "Max Attention não configurado neste ambiente.";
+  if (status === "stale") return "Max Attention indisponível: o backend ainda não foi atualizado com esta versão.";
+  if (status === "error") return "Não consegui listar os criativos do Max Attention.";
+  return "";
+}
+
+// ─── MaPrimarySlot ──────────────────────────────────────────────────────────
+// Corpo do lado quando a fonte principal é o Max Attention: o picker com
+// busca + a escolha de pergunta quando o criativo coletou mais de uma.
+function MaPrimarySlot({
+  sideKey,
+  blockNome,
+  side,
+  creatives,
+  status,
+  maUsageMap,
+  blockIdx,
+  onChange,
+  theme,
+}) {
+  const { text, muted, modalBdr, inputBg } = theme;
+  const selected = (creatives || []).find((c) => c.creative_id === side.creativeId) || null;
+  const questions = selected?.questions || [];
+  const note = status === "ready" ? "" : maStatusNote(status);
+
+  return (
+    <div>
+      {note && (
+        <div style={{ fontSize: 11, color: muted, marginBottom: 6, lineHeight: 1.5 }}>
+          {note}
+          {status !== "loading" ? " O Typeform segue disponível como fonte." : null}
+        </div>
+      )}
+
+      <MaPicker
+        creatives={creatives}
+        sideKey={sideKey}
+        value={side.creativeId}
+        valueLabel={side.creativeName}
+        onSelect={(c) =>
+          onChange({
+            creativeId: c.creative_id,
+            creativeName: c.creative_name || "",
+            maQuestion: matchMaQuestion(c, blockNome),
+          })
+        }
+        conflictsOf={(id) => maConflictsFor(id, blockIdx, sideKey, maUsageMap)}
+        placeholder={
+          status === "ready" ? "Buscar criativo do Max Attention…" : "Nenhum criativo disponível"
+        }
+        theme={theme}
+      />
+
+      {questions.length > 1 && (
+        <div style={{ marginTop: 6 }}>
+          <select
+            value={side.maQuestion || ""}
+            onChange={(e) => onChange({ maQuestion: e.target.value })}
+            style={{
+              width: "100%", background: inputBg, border: `1px solid ${modalBdr}`,
+              borderRadius: 6, padding: "6px 8px", color: text, fontSize: 11.5,
+            }}
+          >
+            <option value="">Todas as perguntas do criativo</option>
+            {questions.map((q) => <option key={q} value={q}>{q}</option>)}
+          </select>
+          {!side.maQuestion && (
+            <div style={{ fontSize: 10.5, color: muted, marginTop: 4, lineHeight: 1.5 }}>
+              O criativo tem mais de uma pergunta — sem escolher uma, as respostas
+              de todas entram na conta.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── SideCard ───────────────────────────────────────────────────────────────
 // Card de UM lado da pergunta (Controle ou Exposto). Contém:
-//   - Header: rótulo do lado + segmented Typeform/VideoAsk + botão limpar
-//   - Body: input correspondente à fonte ativa (FormPicker ou UploadSlot)
+//   - Header: rótulo do lado + segmented Typeform/VideoAsk/Max Attention +
+//     botão limpar
+//   - Body: input correspondente à fonte ativa (FormPicker, UploadSlot ou
+//     MaPrimarySlot)
 //
 // Estado da fonte inativa é preservado no bloco — alternar source não destrói
 // dados (você pode voltar e o form/URL/arquivo anterior segue lá).
@@ -1764,6 +2257,7 @@ function SideCard({
   maCreatives,
   maStatus,
   maUsedIds,
+  maUsageMap,
   forms,
   formsById,
   emptyForms,
@@ -1778,19 +2272,29 @@ function SideCard({
 }) {
   const { text, muted, modalBdr, inputBg, cardBg } = theme;
   const filled = sideHasData(side);
-  const toggleBtn = (target) => ({
+  // Max Attention só some do toggle quando não existe neste ambiente
+  // (MA_SURVEY_VIEW ausente) — nos demais estados ele aparece desabilitado
+  // com o motivo, que é mais honesto que sumir sem explicação.
+  const maUsable = maStatus === "ready";
+  const tabs = [
+    { key: "typeform",     label: "Typeform",      on: C.blue,                        onText: "#fff" },
+    { key: "videoask",     label: "VideoAsk",      on: "#8E44AD",                     onText: "#fff" },
+    ...(maStatus === "off" && side.source !== "maxattention"
+      ? []
+      : [{ key: "maxattention", label: "Max Attention", on: SOURCE_TINTS.maxattention.fg, onText: "#1a1a1a" }]),
+  ];
+  const toggleBtn = (tab, disabled) => ({
     padding: "3px 9px",
     fontSize: 11,
     fontWeight: 700,
-    cursor: "pointer",
+    cursor: disabled ? "not-allowed" : "pointer",
     border: "none",
     borderRadius: 999,
     letterSpacing: 0.4,
     textTransform: "uppercase",
-    background: side.source === target
-      ? (target === "videoask" ? "#8E44AD" : C.blue)
-      : "transparent",
-    color: side.source === target ? "#fff" : muted,
+    background: side.source === tab.key ? tab.on : "transparent",
+    color: side.source === tab.key ? tab.onText : muted,
+    opacity: disabled ? 0.45 : 1,
   });
 
   return (
@@ -1826,12 +2330,21 @@ function SideCard({
             marginLeft: 4,
           }}
         >
-          <button type="button" onClick={() => onChange({ source: "typeform" })} style={toggleBtn("typeform")}>
-            Typeform
-          </button>
-          <button type="button" onClick={() => onChange({ source: "videoask" })} style={toggleBtn("videoask")}>
-            VideoAsk
-          </button>
+          {tabs.map((tab) => {
+            const disabled = tab.key === "maxattention" && !maUsable && side.source !== "maxattention";
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                disabled={disabled}
+                title={disabled ? maStatusNote(maStatus) : ""}
+                onClick={() => !disabled && onChange({ source: tab.key })}
+                style={toggleBtn(tab, disabled)}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
         </div>
         <div style={{ flex: 1 }} />
         {filled && (
@@ -1854,7 +2367,19 @@ function SideCard({
         )}
       </div>
 
-      {side.source === "typeform" ? (
+      {side.source === "maxattention" ? (
+        <MaPrimarySlot
+          sideKey={sideKey}
+          blockNome={blockNome}
+          side={side}
+          creatives={maCreatives}
+          status={maStatus}
+          maUsageMap={maUsageMap}
+          blockIdx={blockIdx}
+          onChange={onChange}
+          theme={{ text, muted, modalBdr, inputBg, cardBg }}
+        />
+      ) : side.source === "typeform" ? (
         <FormPicker
           forms={forms}
           formsById={formsById}
@@ -1910,6 +2435,8 @@ function SideCard({
       <ExtraSourceSlot
         sideKey={sideKey}
         label={label}
+        blockIdx={blockIdx}
+        maUsageMap={maUsageMap}
         blockNome={blockNome}
         typeformOptions={typeformOptions}
         extras={side.extras || []}
@@ -1991,6 +2518,8 @@ function SideCard({
 function ExtraSourceSlot({
   sideKey,
   label,
+  blockIdx,
+  maUsageMap,
   blockNome,
   typeformOptions,
   extras,
@@ -2008,6 +2537,13 @@ function ExtraSourceSlot({
   const candidates = useMemo(
     () => maCandidatesForSide(creatives, sideKey).filter((c) => !usedIds.has(c.creative_id)),
     [creatives, sideKey, usedIds],
+  );
+  // O picker vê TODOS os criativos livres, não só os do lado — quem busca
+  // pelo nome sabe o que quer, e o nome nem sempre declara o lado. A lista
+  // ordena por lado e marca o que destoa; quem decide é o admin.
+  const pickable = useMemo(
+    () => (creatives || []).filter((c) => !usedIds.has(c.creative_id)),
+    [creatives, usedIds],
   );
   const suggestion = useMemo(
     () => suggestMaForSide(creatives, sideKey, blockNome, usedIds, typeformOptions),
@@ -2115,24 +2651,15 @@ function ExtraSourceSlot({
       )}
 
       {!hasExtras && (!suggestion || picking) && (
-        <select
+        <MaPicker
+          creatives={pickable}
+          sideKey={sideKey}
           value=""
-          onChange={(e) => {
-            const c = byId.get(e.target.value);
-            if (c) { onAdd(c, matchMaQuestion(c, blockNome)); setPicking(false); }
-          }}
-          style={{
-            width: "100%", background: inputBg, border: `1px solid ${modalBdr}`,
-            borderRadius: 7, padding: "8px 10px", color: text, fontSize: 12,
-          }}
-        >
-          <option value="">+ Somar base do Max Attention a {label}…</option>
-          {candidates.map((c) => (
-            <option key={c.creative_id} value={c.creative_id}>
-              {c.creative_name} · {(c.responses || 0).toLocaleString("pt-BR")} respostas
-            </option>
-          ))}
-        </select>
+          onSelect={(c) => { onAdd(c, matchMaQuestion(c, blockNome)); setPicking(false); }}
+          conflictsOf={(id) => maConflictsFor(id, blockIdx, sideKey, maUsageMap)}
+          placeholder={`+ Somar base do Max Attention a ${label}…`}
+          theme={theme}
+        />
       )}
     </div>
   );
@@ -2266,32 +2793,52 @@ function UploadSlot({ state, onParsed, onClear, theme }) {
 //   - Rows conhecidos → <select>
 //   - Sem rows (manual em ambos OU tipos sem opções fixas) → input livre
 
-function FocusRowField({ block, metaById, onChange, onRefreshMeta, theme, inputStyle }) {
+function FocusRowField({ block, metaById, maById, onChange, onRefreshMeta, theme, inputStyle }) {
   const { text, muted, modalBdr, inputBg } = theme;
 
   // Rows vêm de qualquer lado preenchido: pra typeform pega `rows` da meta
-  // do form; pra videoask pega keys das contagens parseadas do XLSX.
+  // do form; pra videoask pega keys das contagens parseadas do XLSX; pra Max
+  // Attention pega as `options` que a própria listagem de criativos já traz —
+  // é a mesma informação, só que vinda do BigQuery em vez da API do Typeform.
+  //
+  // As bases SOMADAS entram junto: num slot que é só Max Attention (Typeform
+  // vazio) elas são a única fonte de opções que existe, e era exatamente aí
+  // que o campo dizia "não consegui detectar opções" com o dado na mão.
+  //
+  // Nuance conhecida: a listagem agrega as opções POR CRIATIVO, não por
+  // pergunta. Criativo com mais de uma pergunta oferece a união das opções
+  // das duas — mais do que o ideal, mas ainda a lista certa pra escolher.
   const rows = useMemo(() => {
     const seen = new Set();
     const out = [];
+    const add = (label) => {
+      const t = String(label ?? "").trim();
+      if (t && !seen.has(t)) { seen.add(t); out.push(t); }
+    };
     for (const sideKey of ["ctrl", "exp"]) {
       const s = block[sideKey];
       if (!s) continue;
       if (s.source === "videoask") {
-        for (const k of Object.keys(s.counts || {})) {
-          const t = String(k).trim();
-          if (t && !seen.has(t)) { seen.add(t); out.push(t); }
-        }
-        continue;
+        for (const k of Object.keys(s.counts || {})) add(k);
+      } else if (s.source === "maxattention") {
+        for (const o of maById?.get(s.creativeId)?.options || []) add(o);
+      } else {
+        const m = s.mode === "list" && s.formId ? metaById.get(s.formId) : null;
+        for (const r of m?.rows || []) add(r);
       }
-      const m = s.mode === "list" && s.formId ? metaById.get(s.formId) : null;
-      for (const r of (m?.rows || [])) {
-        const t = String(r).trim();
-        if (t && !seen.has(t)) { seen.add(t); out.push(t); }
+      for (const e of s.extras || []) {
+        for (const o of maById?.get(e?.creativeId)?.options || []) add(o);
       }
     }
     return out;
-  }, [block.ctrl, block.exp, metaById]);
+  }, [block, metaById, maById]);
+
+  // Um lado usa Max Attention em qualquer posição (principal ou somada)?
+  const maSides = ["ctrl", "exp"].filter((sideKey) => {
+    const s = block[sideKey];
+    if (!s) return false;
+    return s.source === "maxattention" || (s.extras || []).length > 0;
+  });
 
   const anyLoading = ["ctrl", "exp"].some((sideKey) => {
     const s = block[sideKey];
@@ -2300,13 +2847,23 @@ function FocusRowField({ block, metaById, onChange, onRefreshMeta, theme, inputS
     return metaById.get(s.formId)?.loading;
   });
   const isVideoask = block.ctrl?.source === "videoask" && block.exp?.source === "videoask";
-  // "Sem opção em dropdown" quando NENHUM lado tem fonte que provê opções
-  // — typeform manual sem meta carregada, ou videoask sem arquivo.
+  // "Sem opção em dropdown" quando NENHUM lado tem fonte que provê opções —
+  // typeform manual sem meta carregada, videoask sem arquivo, ou nenhum
+  // criativo do Max Attention escolhido.
   const noListSlot = ["ctrl", "exp"].every((sideKey) => {
     const s = block[sideKey];
     if (!s) return true;
+    if ((s.extras || []).length) return false;
     if (s.source === "videoask") return !sumCounts(s.counts);
+    if (s.source === "maxattention") return !s.creativeId;
     return s.mode !== "list";
+  });
+
+  // Há algum Typeform selecionado da pasta? É o que decide se o "recarregar
+  // opções" (que só recarrega meta de form) faz sentido nesta mensagem.
+  const anyListForm = ["ctrl", "exp"].some((sideKey) => {
+    const s = block[sideKey];
+    return s?.source === "typeform" && s.mode === "list" && !!s.formId;
   });
 
   const wrapperStyle = {
@@ -2339,11 +2896,20 @@ function FocusRowField({ block, metaById, onChange, onRefreshMeta, theme, inputS
       return metaById.get(s.formId)?.type === "matrix";
     });
     const anyVideoask = block.ctrl?.source === "videoask" || block.exp?.source === "videoask";
-    const sourceLabel = hasMatrix
-      ? "linhas detectadas no form (matrix)"
-      : anyVideoask
-        ? "opções de resposta detectadas no arquivo do VideoAsk"
-        : "opções de resposta detectadas no form";
+    const anyTypeform = ["ctrl", "exp"].some((sideKey) => {
+      const s = block[sideKey];
+      return s?.source === "typeform" && s.mode === "list" && !!metaById.get(s.formId)?.rows?.length;
+    });
+    // Com mais de uma base no bloco o rótulo diz de ONDE vieram as opções —
+    // ver "form + Max Attention" é o que deixa claro que a lista já é a união
+    // das duas bases, e não só a do Typeform.
+    const origins = [];
+    if (anyTypeform) origins.push(hasMatrix ? "linhas do form (matrix)" : "opções do form");
+    if (anyVideoask) origins.push("opções do arquivo do VideoAsk");
+    if (maSides.length) origins.push("opções do criativo do Max Attention");
+    const sourceLabel = origins.length
+      ? `Detectadas: ${origins.join(" + ")}`
+      : "Opções de resposta detectadas";
     return (
       <div style={wrapperStyle}>
         <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>
@@ -2409,10 +2975,12 @@ function FocusRowField({ block, metaById, onChange, onRefreshMeta, theme, inputS
           {noListSlot
             ? (isVideoask
                 ? "Envie os arquivos do VideoAsk acima pra ver as opções em dropdown."
-                : "Selecione os forms da pasta Survey pra ver as opções em dropdown.")
-            : "Não consegui detectar opções — digite manualmente ou tente recarregar."}
+                : "Selecione os forms da pasta Survey ou o criativo do Max Attention pra ver as opções em dropdown.")
+            : maSides.length && !anyListForm
+              ? "O criativo do Max Attention ainda não registrou opções de resposta — digite manualmente."
+              : "Não consegui detectar opções — digite manualmente ou tente recarregar."}
         </span>
-        {!noListSlot && !isVideoask && onRefreshMeta && (
+        {anyListForm && onRefreshMeta && (
           <button
             type="button"
             onClick={onRefreshMeta}
