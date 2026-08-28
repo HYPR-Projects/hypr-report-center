@@ -92,6 +92,13 @@ function sideHasData(side) {
   return primaryHasData(side) || (side.extras || []).length > 0;
 }
 
+// O lado já tem alguma base do Max Attention — principal ou somada?
+function sideHasMa(side) {
+  if (!side) return false;
+  if (side.source === "maxattention" && side.creativeId) return true;
+  return (side.extras || []).some((e) => e?.creativeId);
+}
+
 // Espelho frontend de _extract_typeform_form_id do backend.
 function extractFormId(value) {
   if (!value) return "";
@@ -198,22 +205,34 @@ function detectSideMismatch(side, sideKey, formsById) {
 
 const groupLabel = (g) => (g === "controle" ? "Controle" : g === "exposto" ? "Exposto" : "");
 
-// Acha o "irmão" do form: procura outro form com os MESMOS tokens (exceto
-// o token de grupo) e grupo oposto. Tolera diferença de 1 token nos demais
-// pra absorver typo no sufixo de data, etc.
-function findPartnerForm(formId, formsById, forms) {
-  if (!formId) return null;
-  const f = formsById.get(formId);
-  if (!f) return null;
-  const myMatch = matchGroupInTitle(f.title || "");
+// Núcleo do "par detectado": dado um NOME que carrega token de grupo, acha
+// entre os candidatos aquele com os MESMOS tokens (exceto o de grupo) e o
+// grupo oposto. Tolera diferença de 1 token nos demais pra absorver typo no
+// sufixo de data, etc.
+//
+// Genérico de propósito: a convenção de nome é a mesma no Typeform e no Max
+// Attention porque quem batiza é a mesma pessoa — o que faz o par funcionar
+// dentro de uma base E atravessando as duas ("form Controle" → "criativo
+// Exposto").
+//
+// `items`: [{ key, title, ref }]. Devolve o `ref` do melhor par, ou null.
+//
+// `maxMismatches` é quanta diferença nos tokens restantes ainda conta como
+// par. 1 (default) absorve typo no sufixo de data entre dois forms. Pro Max
+// Attention passamos 0: numa campanha os criativos de perguntas diferentes
+// diferem em exatamente UM token ("…_INTENCAO_SURVEY_CONTROLE" ×
+// "…_ASSOCIACAO_SURVEY_EXPOSTO"), então tolerar 1 casaria Intenção com
+// Associação — pior que não sugerir nada.
+function findPartnerByName(title, items, excludeKey, maxMismatches = 1) {
+  const myMatch = matchGroupInTitle(title || "");
   if (!myMatch) return null;
   const targetGroup = myMatch.group === "controle" ? "exposto" : "controle";
   const myRest = myMatch.tokens.filter((_, i) => i !== myMatch.tokenIdx);
 
   let best = null;
   let bestMismatches = Infinity;
-  for (const cand of forms) {
-    if (cand.id === formId) continue;
+  for (const cand of items) {
+    if (excludeKey != null && cand.key === excludeKey) continue;
     const cm = matchGroupInTitle(cand.title || "");
     if (!cm || cm.group !== targetGroup) continue;
     const candRest = cm.tokens.filter((_, i) => i !== cm.tokenIdx);
@@ -230,7 +249,58 @@ function findPartnerForm(formId, formsById, forms) {
       if (mismatches === 0) break;
     }
   }
-  return bestMismatches <= 1 ? best : null;
+  return bestMismatches <= maxMismatches ? best?.ref || null : null;
+}
+
+// Acha o "irmão" do form dentro da pasta Survey.
+function findPartnerForm(formId, formsById, forms) {
+  if (!formId) return null;
+  const f = formsById.get(formId);
+  if (!f) return null;
+  return findPartnerByName(
+    f.title,
+    forms.map((x) => ({ key: x.id, title: x.title, ref: x })),
+    formId,
+  );
+}
+
+// Nome do criativo do Max Attention que um lado já usa (principal ou somado)
+// — é o âncora do par. Só Max Attention entra: parear a partir de um Typeform
+// do outro lado ofereceria trocar a base de coleta do slot sem ninguém pedir,
+// e pra esse caso já existe o par de FORMS e a soma como base extra.
+function maAnchorName(side, byId) {
+  if (!side) return "";
+  if (side.source === "maxattention" && side.creativeId) {
+    return side.creativeName || byId?.get(side.creativeId)?.creative_name || "";
+  }
+  const extra = (side.extras || [])[0];
+  if (extra?.creativeId) {
+    return extra.creativeName || byId?.get(extra.creativeId)?.creative_name || "";
+  }
+  return "";
+}
+
+// Criativo do Max Attention que é o PAR do que já está no lado oposto —
+// mesma régua do "par detectado" do Typeform, e a razão de ela existir aqui:
+// escolher o Controle no Max Attention já diz qual criativo é o Exposto.
+function maPartnerForName(anchor, sideKey, creatives, used) {
+  if (!anchor) return null;
+  const skip = used || new Set();
+  const hit = findPartnerByName(
+    anchor,
+    (creatives || [])
+      .filter((c) => !skip.has(c.creative_id))
+      .map((c) => ({ key: c.creative_id, title: c.creative_name, ref: c })),
+    null,
+    0,
+  );
+  if (!hit) return null;
+  // O par tem que caber NESTE slot. Nome que declara o outro lado significa
+  // que o âncora estava no slot trocado — aí o aviso de mismatch é a resposta
+  // certa, não uma sugestão que propaga o engano.
+  const wanted = sideKey === "ctrl" ? "controle" : "exposto";
+  if (hit.side && hit.side !== wanted) return null;
+  return hit;
 }
 
 // Constrói mapa formId → [{blockIdx, side, slotGroup}] varrendo blocos.
@@ -302,6 +372,24 @@ function matchMaQuestion(creative, blockNome) {
   return bestScore >= MA_QUESTION_THRESHOLD ? best : "";
 }
 
+// O nome da pergunta costuma estar no nome do criativo:
+//
+//     Bloco "Intenção"  →  ID-NZLDUV_…_COR&TON_INTENCAO_SURVEY_CONTROLE
+//     Bloco "Associação" → ID-NZLDUV_…_COR&TON_ASSOCIACAO_SURVEY_EXPOSTO
+//
+// É o sinal que separa DUAS perguntas da mesma campanha quando não há
+// Typeform pra comparar opções — sem ele, todo criativo do lado certo parece
+// igualmente bom e a escolha caía no volume de respostas.
+function blockNameInCreative(creative, blockNome) {
+  const wanted = normalizeAndTokenize(blockNome).filter((t) => t.length >= 4);
+  if (!wanted.length) return false;
+  const name = normalizeAndTokenize(creative?.creative_name || "");
+  if (!name.length) return false;
+  return wanted.every((t) =>
+    name.some((n) => n === t || (n.length >= 4 && levenshtein(n, t) <= 1)),
+  );
+}
+
 // Criativos que servem pra um slot: o lado bate, ou o nome não diz nada e
 // aí cabe nos dois.
 //
@@ -347,18 +435,22 @@ function suggestMaForSide(creatives, sideKey, blockNome, alreadyUsed, typeformOp
     if (overlap !== null && overlap < MA_OPTION_THRESHOLD) continue;
 
     const question = matchMaQuestion(c, blockNome);
-    const hasEvidence = overlap !== null || !!question;
+    const nameHit = blockNameInCreative(c, blockNome);
+    const hasEvidence = overlap !== null || !!question || nameHit;
     if (!hasEvidence) continue;
 
     const score =
       (c.side === wanted ? 4 : 0) +
       (overlap !== null ? Math.round(overlap * 3) : 0) +
+      (nameHit ? 3 : 0) +
       (question ? 2 : 0) +
       (c.match === "short_token" ? 1 : 0);
 
     const why = overlap !== null
       ? `opções batem com o Typeform${c.side === wanted ? ` · nome indica ${wanted}` : ""}`
-      : `pergunta "${question}"${c.side === wanted ? ` · nome indica ${wanted}` : ""}`;
+      : nameHit
+        ? `nome do criativo cita "${blockNome.trim()}"${c.side === wanted ? ` · nome indica ${wanted}` : ""}`
+        : `pergunta "${question}"${c.side === wanted ? ` · nome indica ${wanted}` : ""}`;
 
     if (!best || score > best.score || (score === best.score && c.responses > best.creative.responses)) {
       best = { creative: c, question, score, why };
@@ -734,24 +826,65 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
 
   // Sugestões pra TODOS os slots ainda sem Max Attention, resolvidas em
   // sequência pra que dois slots não disputem o mesmo criativo.
+  //
+  // Três etapas, nesta ordem, porque a força da evidência é diferente:
+  //
+  //   1. PAR do que o admin já escolheu. Nome de criativo bate token a token
+  //      com o irmão, mudando só CONTROLE↔EXPOSTO — é a evidência mais forte
+  //      que existe aqui, e é a mesma que o Typeform já usava entre forms.
+  //   2. Evidência própria do slot (opções batem com o Typeform do lado, ou
+  //      o título da pergunta casa com o nome do bloco).
+  //   3. PAR de novo, na hora em que a etapa 2 resolve um lado — assim uma
+  //      campanha que roda SÓ no Max Attention fecha os dois lados sozinha.
+  //
+  // A ordem importa: numa campanha com várias perguntas, todo criativo do
+  // lado certo tem "uma pergunta declarada" e a etapa 2 sozinha escolheria
+  // pelo volume de respostas — o par pelo nome sabe qual é qual.
   const maSuggestions = useMemo(() => {
     if (maStatus !== "ready" || !maCreatives.length) return [];
     const used = new Set(maUsedIds);
     const out = [];
     blocks.forEach((b, idx) => {
+      const picked = {};
+      const take = (side, creative, question, why) => {
+        used.add(creative.creative_id);
+        picked[side] = creative;
+        out.push({ idx, side, creative, question, why });
+      };
+      const open = (side) => !sideHasMa(b[side]) && !picked[side];
+      const tryPair = (side, anchor) => {
+        const partner = maPartnerForName(anchor, side, maCreatives, used);
+        if (partner) take(side, partner, matchMaQuestion(partner, b.nome), "par pelo nome do criativo");
+      };
+
       for (const side of ["ctrl", "exp"]) {
-        if ((b[side]?.extras || []).length) continue;
-        if (b[side]?.source === "maxattention") continue;
+        if (!open(side)) continue;
+        tryPair(side, maAnchorName(b[side === "ctrl" ? "exp" : "ctrl"], maById));
+      }
+
+      for (const side of ["ctrl", "exp"]) {
+        if (!open(side)) continue;
         const sug = suggestMaForSide(
           maCreatives, side, b.nome, used, typeformOptionsOf(b[side]),
         );
         if (!sug) continue;
-        used.add(sug.creative.creative_id);
-        out.push({ idx, side, creative: sug.creative, question: sug.question });
+        take(side, sug.creative, sug.question, sug.why);
+        // Fecha o par do outro lado NA HORA: o irmão do criativo que acabou
+        // de entrar vale mais que o palpite que o outro lado faria sozinho.
+        const other = side === "ctrl" ? "exp" : "ctrl";
+        if (open(other)) tryPair(other, sug.creative.creative_name);
       }
     });
     return out;
-  }, [blocks, maCreatives, maStatus, maUsedIds, typeformOptionsOf]);
+  }, [blocks, maCreatives, maStatus, maUsedIds, maById, typeformOptionsOf]);
+
+  // Quantas dessas sugestões viram a base PRINCIPAL do slot (slot sem
+  // Typeform) — o resto entra somando. Muda o texto do aviso: "preencher" e
+  // "somar" são promessas diferentes.
+  const maSuggestionsAsPrimary = useMemo(
+    () => maSuggestions.filter((sg) => !primaryHasData(blocks[sg.idx]?.[sg.side])).length,
+    [maSuggestions, blocks],
+  );
 
   const applyMaSuggestions = () => {
     setBlocks((bs) =>
@@ -760,10 +893,24 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
         if (!mine.length) return b;
         const next = { ...b };
         for (const sg of mine) {
+          const side = next[sg.side];
+          // Slot sem base própria recebe o criativo como fonte PRINCIPAL —
+          // é a campanha que rodou a pesquisa só na mídia da HYPR. Com
+          // Typeform já configurado, o criativo entra somando, como antes.
+          if (!primaryHasData(side)) {
+            next[sg.side] = {
+              ...side,
+              source: "maxattention",
+              creativeId: sg.creative.creative_id,
+              creativeName: sg.creative.creative_name,
+              maQuestion: sg.question || "",
+            };
+            continue;
+          }
           next[sg.side] = {
-            ...next[sg.side],
+            ...side,
             extras: [
-              ...(next[sg.side].extras || []),
+              ...(side.extras || []),
               {
                 source: "maxattention",
                 creativeId: sg.creative.creative_id,
@@ -1098,7 +1245,11 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
           <span style={{ fontSize: 12, color: text, flex: "1 1 240px", lineHeight: 1.5 }}>
             Esta campanha tem <strong>{maSuggestions.length}</strong> criativo(s) de pesquisa
             no Max Attention que casam com {maSuggestions.length > 1 ? "estes slots" : "este slot"}.
-            Somar às respostas do Typeform?
+            {maSuggestionsAsPrimary === maSuggestions.length
+              ? " Usar como base desses slots?"
+              : maSuggestionsAsPrimary === 0
+                ? " Somar às respostas do Typeform?"
+                : " Conectar (somando onde já há Typeform)?"}
           </span>
           <button
             type="button"
@@ -1118,6 +1269,19 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
         <SkeletonBlock theme={{ inputBg, modalBdr }} />
       ) : (
         blocks.map((block, idx) => {
+          // Par no Max Attention pro slot vazio: o criativo irmão do que o
+          // outro lado já usa. É o gêmeo do "par detectado" do Typeform, e o
+          // que faz escolher o Controle já apontar o Exposto.
+          const maPartnerFor = (sideKey) => {
+            if (maStatus !== "ready") return null;
+            const me = block[sideKey];
+            if (!me || primaryHasData(me)) return null;
+            const other = sideKey === "ctrl" ? block.exp : block.ctrl;
+            return maPartnerForName(
+              maAnchorName(other, maById), sideKey, maCreatives, maUsedIds,
+            );
+          };
+
           const sidePartnerSuggestion = (side) => {
             // Sugestão: se o LADO OPOSTO está com typeform/list/formId definido,
             // tenta achar o "par" pelo nome (Eudora_Controle → Eudora_Exposto)
@@ -1211,6 +1375,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
                 usageMap={usageMap}
                 blockIdx={idx}
                 suggestion={sidePartnerSuggestion("ctrl")}
+                maPartner={maPartnerFor("ctrl")}
                 mismatch={detectSideMismatch(block.ctrl, "ctrl", formsById)}
                 onSwap={() => swapSides(idx)}
                 onChange={(patch) => updateSide(idx, "ctrl", patch)}
@@ -1235,6 +1400,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
                 usageMap={usageMap}
                 blockIdx={idx}
                 suggestion={sidePartnerSuggestion("exp")}
+                maPartner={maPartnerFor("exp")}
                 mismatch={detectSideMismatch(block.exp, "exp", formsById)}
                 onSwap={() => swapSides(idx)}
                 onChange={(patch) => updateSide(idx, "exp", patch)}
@@ -2264,6 +2430,7 @@ function SideCard({
   usageMap,
   blockIdx,
   suggestion,
+  maPartner,         // criativo do Max Attention sugerido como par deste slot
   mismatch,          // null | "ok" | "controle" | "exposto"
   onSwap,
   onChange,
@@ -2367,6 +2534,46 @@ function SideCard({
         )}
       </div>
 
+      {maPartner && (
+        <button
+          type="button"
+          onClick={() =>
+            onChange({
+              source: "maxattention",
+              creativeId: maPartner.creative_id,
+              creativeName: maPartner.creative_name || "",
+              maQuestion: matchMaQuestion(maPartner, blockNome),
+            })
+          }
+          title={maPartner.creative_name}
+          style={{
+            width: "100%",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "7px 10px",
+            marginBottom: 8,
+            background: SOURCE_TINTS.maxattention.bg,
+            border: `1px dashed ${SOURCE_TINTS.maxattention.bd}`,
+            borderRadius: 7,
+            color: SOURCE_TINTS.maxattention.fg,
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: "pointer",
+            textAlign: "left",
+          }}
+        >
+          <span aria-hidden style={{ fontSize: 12 }}>💡</span>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+            par no Max Attention: <span style={{ fontWeight: 700 }}>{maPartner.creative_name}</span>
+            <span style={{ fontWeight: 500, color: muted }}>
+              {" "}· {(maPartner.responses || 0).toLocaleString("pt-BR")} respostas
+            </span>
+          </span>
+          <span style={{ fontWeight: 700, flexShrink: 0 }}>usar →</span>
+        </button>
+      )}
+
       {side.source === "maxattention" ? (
         <MaPrimarySlot
           sideKey={sideKey}
@@ -2432,6 +2639,11 @@ function SideCard({
         />
       )}
 
+      {/* "Somar" pressupõe uma base pra somar EM. Sem base principal, o
+          primeiro criativo entra pelo toggle (ou pela sugestão de par acima),
+          não aqui — senão o mesmo card ofereceria duas coisas diferentes pro
+          mesmo clique. Extras já configurados continuam visíveis. */}
+      {(primaryHasData(side) || (side.extras || []).length > 0) && (
       <ExtraSourceSlot
         sideKey={sideKey}
         label={label}
@@ -2464,6 +2676,7 @@ function SideCard({
         }
         theme={{ text, muted, modalBdr, inputBg, cardBg }}
       />
+      )}
 
       {mismatch && mismatch !== "ok" && (
         <div
