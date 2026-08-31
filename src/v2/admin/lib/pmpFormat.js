@@ -4,7 +4,7 @@
 // Centraliza decisões visuais pra que componentes (LiveCard, ClientAccordion,
 // ListRow, Worklist) compartilhem o mesmo vocabulário.
 
-import { FEATURE_ADMINS } from "../../../shared/auth";
+import { FEATURE_ADMINS } from "../../../shared/auth.js";
 
 // ─── Permissões de edição ───────────────────────────────────────────────────
 // Lista de operadores que podem MUTAR campos do PMP (status, PI, command,

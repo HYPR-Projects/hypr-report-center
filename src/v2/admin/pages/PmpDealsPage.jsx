@@ -80,6 +80,7 @@ import {
   buildCampaigns, CAMPAIGN_SORTS, countCampaignBuckets, filterCampaigns, sortCampaigns,
   CAMPAIGN_SITUATIONS, CAMPAIGN_CYCLES,
 } from "../lib/pmpCampaign";
+import { filterPmpLines, FILTER_ALL } from "../lib/pmpFilters";
 import {
   PmpKpiStrip,
   PmpLiveCard, PmpLiveGroupCard, PmpCustomerAccordion,
@@ -92,7 +93,9 @@ import CompplanSheetCard from "../components/CompplanSheetCard";
 import { PmpFreshnessIndicator } from "../components/PmpFreshnessIndicator";
 import { isFeatureAdmin } from "../../../shared/auth";
 
-const ALL = "__ALL__";
+// Sentinela de "sem recorte" dos filtros de valor único (bid, fonte). Vem de
+// lib/pmpFilters pra que página e módulo de filtro nunca divirjam.
+const ALL = FILTER_ALL;
 
 // Auto-recovery do frescor (ver o efeito no PmpDealsPage). Cooldown por
 // navegador: recarregar a página 10 vezes não vira 10 syncs.
@@ -429,21 +432,14 @@ export default function PmpDealsPage({
   }, [lines]);
 
   // ── Filtros aplicados ─────────────────────────────────────────────────────
-  const applyFilters = (arr) => {
-    const term = search.trim().toLowerCase();
-    return arr.filter(l => {
-      if (customer.length > 0 && !customer.includes(l.customer)) return false;
-      if (bidType  !== ALL && (l.bid_type || "—") !== bidType) return false;
-      if (sourceFilter !== ALL && (l.source || "xandr") !== sourceFilter) return false;
-      if (status.length > 0 && !status.includes(effectiveStatus(l))) return false;
-      if (term) {
-        const hay = [l.line_id, l.line_name, l.customer, l.campaign_name, l.agency,
-                      l.short_token, l.io_name, l.cp_email, l.cs_email].filter(Boolean).join(" ").toLowerCase();
-        if (!hay.includes(term)) return false;
-      }
-      return true;
-    });
-  };
+  // A regra mora em lib/pmpFilters (função pura, testada) — antes era um
+  // closure aqui, e cada view decidia por conta própria se aplicava. Foi assim
+  // que o Analytics ficou sem filtro nenhum por um bom tempo.
+  const filterCriteria = useMemo(
+    () => ({ search, customers: customer, statuses: status, bidType, source: sourceFilter, statusOf: effectiveStatus }),
+    [search, customer, status, bidType, sourceFilter],
+  );
+  const applyFilters = (arr) => filterPmpLines(arr, filterCriteria);
   const liveFiltered      = useMemo(() => applyFilters(partitions.live),    [partitions.live, search, customer, bidType, status, sourceFilter]);
   // Histórico passa a ser LIFETIME: mostra TODOS os deals (ativos + encerrados
   // + arquivados), com filtros aplicados. Vira a aba "tudo".
@@ -549,6 +545,17 @@ export default function PmpDealsPage({
     [lines, search, customer, bidType, status, sourceFilter],
   );
 
+  // Dataset da aba Analytics: LIFETIME (todas as lines, como sempre foi) mas
+  // agora COM os filtros transversais aplicados. Antes o Analytics recebia
+  // `lines` cru — filtrar "Fonte · PubMatic" mudava a lista e os KPIs do topo
+  // e o Analytics seguia somando Xandr + PubMatic, mostrando dois totais
+  // contraditórios na mesma tela. Não entra o recorte de período do Histórico:
+  // o Analytics tem o próprio filtro de período.
+  const analyticsLines = useMemo(
+    () => filterPmpLines(lines, filterCriteria),
+    [lines, filterCriteria],
+  );
+
   // Campanhas da Carteira — mesmo dataset dos accordions por cliente, só que
   // agrupado por campanha (flights de 1 PI dentro). Ver lib/pmpCampaign.js.
   const campaigns = useMemo(() => buildCampaigns(clientLines), [clientLines]);
@@ -582,8 +589,13 @@ export default function PmpDealsPage({
     if (layout === "live")     return liveFiltered;
     if (layout === "history")  return histLines;
     if (layout === "client")   return carteiraLines;
+    // Analytics lê o MESMO conjunto que a aba renderiza (lifetime filtrado).
+    // Com `allFiltered` (só ativas), a faixa de KPIs dizia "Total PI 1,2 mi"
+    // enquanto o card logo abaixo dizia "PI contratado 15 mi" — dois números
+    // pra mesma pergunta, na mesma tela.
+    if (layout === "analytics") return analyticsLines;
     return allFiltered;
-  }, [layout, liveFiltered, histLines, carteiraLines, allFiltered]);
+  }, [layout, liveFiltered, histLines, carteiraLines, analyticsLines, allFiltered]);
 
   // ── KPIs ──────────────────────────────────────────────────────────────────
   // Big numbers refletem o dataset visível na aba ativa (com filtros).
@@ -1250,7 +1262,9 @@ export default function PmpDealsPage({
     live:      { shown: liveFiltered.length,     total: counts.live,    noun: "lines no ar" },
     client:    { shown: counts.client,           total: counts.client,  noun: carteiraGroup === "campaign" ? "campanhas" : "clientes" },
     history:   { shown: allLinesFiltered.length, total: lines.length,   noun: "lines" },
-    analytics: null,
+    // Analytics também recorta agora — sem este rótulo, um filtro ativo mexia
+    // nos gráficos sem dizer sobre quantas lines eles falavam.
+    analytics: { shown: analyticsLines.length,  total: lines.length,   noun: "lines" },
   }[layout];
   const resultLabel = viewTotals && activeFilters.length > 0
     ? `${viewTotals.shown} de ${viewTotals.total} ${viewTotals.noun}`
@@ -1488,7 +1502,7 @@ export default function PmpDealsPage({
                     <span className="size-5 rounded-full border-2 border-current border-t-transparent animate-spin text-signature" aria-hidden />
                   </div>
                 }>
-                  <PmpAnalytics lines={lines} timeseries={timeseries} tsStatus={tsStatus} onRetry={loadTimeseries} />
+                  <PmpAnalytics lines={analyticsLines} allLines={lines} timeseries={timeseries} tsStatus={tsStatus} onRetry={loadTimeseries} />
                 </Suspense>
               )}
             </>
