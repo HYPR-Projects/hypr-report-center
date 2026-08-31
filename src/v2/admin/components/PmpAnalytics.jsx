@@ -34,15 +34,21 @@ import { useThemeColors, useChartNeutral } from "../../hooks/useThemeColors";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { ChartCardV2 } from "../../components/ChartCardV2";
 import { DateRangeFilterV2 } from "../../components/DateRangeFilterV2";
-import { ymd, parseYmd, buildPresets } from "../../../shared/dateFilter";
+import { ymd, buildPresets } from "../../../shared/dateFilter";
 import { cn } from "../../../ui/cn";
 import { formatMonthLabel } from "../lib/format";
 import {
   formatBRL, formatBRLCompact, formatInt, formatIntCompact, formatRatioPct,
-  effectiveStatus, statusPillClass, bidTypeLabel, pctEntrega, resolveGroupPi,
-  buildDeliveryKeyResolver, lineKey, METRIC,
+  effectiveStatus, statusPillClass, lineKey, METRIC,
 } from "../lib/pmpFormat";
 import { buildMonthlyLedger } from "../lib/pmpCampaign";
+// Todo o pipeline de dados (recorte + agregações) vive em funções puras neste
+// módulo — o componente ficou só com a camada visual. Ver pmpAnalyticsData.test.js.
+import {
+  deriveAnalyticsOptions, pruneSelection, filterAnalyticsLines, filterTimeseries,
+  computeDataBounds, computeKpis, computeContract, computePrevPeriod,
+  buildSeries, buildStatusMix, buildContractRows, buildDealRows,
+} from "../lib/pmpAnalyticsData";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const num = (v) => Number(v) || 0;
@@ -74,7 +80,15 @@ const STATUS_COLOR = {
   Pendente:   "#94a3b8",
 };
 
-export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "idle", onRetry }) {
+export default function PmpAnalytics({
+  lines = [],
+  // Conjunto COMPLETO de lines da página (antes dos filtros). Só serve pra
+  // desambiguar rows de série sem `source` (backend antigo): a decisão
+  // "este line_id existe em uma fonte só?" tem que olhar o dataset inteiro,
+  // senão o próprio filtro de Fonte faria uma row ambígua parecer resolvida.
+  allLines,
+  timeseries = [], tsStatus = "idle", onRetry,
+}) {
   const hypr = useThemeColors();
   const accent = hypr.signature || "#22d3ee";
 
@@ -96,277 +110,106 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
   const [cmpMetric, setCmpMetric] = useState("revenue"); // "revenue" | "margin"
   const [cmpDim, setCmpDim] = useState("customer");      // "customer" | "campaign"
 
-  // Opções de filtro derivadas das lines.
-  const { customerOpts, campaignOpts, statusOpts, bidOpts } = useMemo(() => {
-    const c = new Set(), ca = new Set(), st = new Set(), bd = new Set();
-    for (const l of lines) {
-      if (l.customer) c.add(l.customer);
-      if (l.campaign_name) ca.add(l.campaign_name);
-      st.add(effectiveStatus(l));
-      if (l.bid_type) bd.add(l.bid_type);
-    }
-    const sort = (arr) => [...arr].sort((a, b) => a.localeCompare(b, "pt-BR"));
-    return {
-      customerOpts: sort(c),
-      campaignOpts: sort(ca),
-      statusOpts: sort(st),
-      bidOpts: [...bd].map((v) => ({ value: v, label: bidTypeLabel(v) || v })),
-    };
-  }, [lines]);
+  // Opções de filtro derivadas das lines que CHEGARAM na aba (já recortadas
+  // pelos filtros da página: busca, cliente, status, bid, fonte).
+  const { customerOpts, campaignOpts, statusOpts, bidOpts } = useMemo(
+    () => deriveAnalyticsOptions(lines),
+    [lines],
+  );
 
-  // Lines que passam nos filtros de dimensão → conjunto de line_ids ativos.
-  const filteredLines = useMemo(() => {
-    return lines.filter((l) => {
-      if (customers.length && !customers.includes(l.customer)) return false;
-      if (campaigns.length && !campaigns.includes(l.campaign_name)) return false;
-      if (statuses.length && !statuses.includes(effectiveStatus(l))) return false;
-      if (bidTypes.length && !bidTypes.includes(l.bid_type)) return false;
-      return true;
-    });
-  }, [lines, customers, campaigns, statuses, bidTypes]);
+  // Seleção efetiva = seleção do usuário ∩ opções existentes. Um filtro da
+  // página pode fazer o cliente/campanha escolhido aqui desaparecer — e o
+  // multi-select some da barra quando sobra ≤ 1 opção. Sem a poda, a seleção
+  // órfã continuaria valendo por baixo e zeraria a aba sem nada na tela
+  // explicando por quê.
+  const selCustomers = useMemo(() => pruneSelection(customers, customerOpts), [customers, customerOpts]);
+  const selCampaigns = useMemo(() => pruneSelection(campaigns, campaignOpts), [campaigns, campaignOpts]);
+  const selStatuses  = useMemo(() => pruneSelection(statuses, statusOpts), [statuses, statusOpts]);
+  const selBidTypes  = useMemo(() => pruneSelection(bidTypes, bidOpts), [bidTypes, bidOpts]);
 
-  // Casamento série × line pelo par (fonte, line_id) — um line_id do Xandr
-  // pode colidir com um dealMetaId da PubMatic. `rowKey` resolve a chave da
-  // row (e devolve null quando a row é ambígua num backend antigo, sem fonte).
-  const lineIds = useMemo(() => new Set(filteredLines.map(lineKey)), [filteredLines]);
-  const rowKey = useMemo(() => buildDeliveryKeyResolver(lines), [lines]);
+  // Lines que passam nos filtros de dimensão da aba.
+  const filteredLines = useMemo(
+    () => filterAnalyticsLines(lines, {
+      customers: selCustomers, campaigns: selCampaigns,
+      statuses: selStatuses, bidTypes: selBidTypes,
+    }),
+    [lines, selCustomers, selCampaigns, selStatuses, selBidTypes],
+  );
 
   // Janela de datas (ymd) do filtro de período.
   const fromYmd = period?.from ? ymd(period.from) : null;
   const toYmd = period?.to ? ymd(period.to) : null;
 
   // Rows da série dentro do conjunto de lines + janela de período.
-  // `_k` (chave resolvida) viaja junto pra não recalcular em cada agregação.
-  const tsFiltered = useMemo(() => {
-    const out = [];
-    for (const r of timeseries) {
-      const k = rowKey(r);
-      if (!k || !lineIds.has(k)) continue;
-      if (fromYmd && r.day < fromYmd) continue;
-      if (toYmd && r.day > toYmd) continue;
-      out.push(r._k === k ? r : { ...r, _k: k });
-    }
-    return out;
-  }, [timeseries, lineIds, rowKey, fromYmd, toYmd]);
+  const tsFiltered = useMemo(
+    () => filterTimeseries(timeseries, {
+      lines: filteredLines, resolverLines: allLines || lines,
+      from: fromYmd, to: toYmd,
+    }),
+    [timeseries, filteredLines, allLines, lines, fromYmd, toYmd],
+  );
 
   // Mesma filtragem por dimensão, SEM janela de período — base da tabela
-  // mensal (que é lifetime por design, ver MonthlyLedger).
-  const tsAllPeriods = useMemo(() => {
-    const out = [];
-    for (const r of timeseries) {
-      const k = rowKey(r);
-      if (!k || !lineIds.has(k)) continue;
-      out.push(r._k === k ? r : { ...r, _k: k });
-    }
-    return out;
-  }, [timeseries, lineIds, rowKey]);
+  // mensal (que é lifetime por design, ver MonthlyLedger) e do período anterior.
+  const tsAllPeriods = useMemo(
+    () => filterTimeseries(timeseries, { lines: filteredLines, resolverLines: allLines || lines }),
+    [timeseries, filteredLines, allLines, lines],
+  );
 
   // Bounds do calendário a partir da série disponível.
-  const dataBounds = useMemo(() => {
-    let lo = null, hi = null;
-    for (const r of timeseries) {
-      if (lo == null || r.day < lo) lo = r.day;
-      if (hi == null || r.day > hi) hi = r.day;
-    }
-    return { lo, hi };
-  }, [timeseries]);
+  const dataBounds = useMemo(() => computeDataBounds(timeseries), [timeseries]);
 
   // ── Agregados do período ────────────────────────────────────────────────────
-  const kpis = useMemo(() => {
-    let revenue = 0, margin = 0, cost = 0, imps = 0, viewable = 0, clicks = 0;
-    const ids = new Set();
-    for (const r of tsFiltered) {
-      revenue += num(r.curator_revenue);
-      margin += num(r.curator_margin);
-      cost += num(r.curator_total_cost);
-      imps += num(r.imps);
-      viewable += num(r.viewable_imps);
-      clicks += num(r.clicks);
-      ids.add(r._k);
-    }
-    return {
-      revenue, margin, cost, imps, viewable, clicks,
-      deals: ids.size,
-      marginPct: revenue > 0 ? margin / revenue : null,
-      ecpm: imps > 0 ? (revenue / imps) * 1000 : null,
-      ctr: imps > 0 ? clicks / imps : null,
-    };
-  }, [tsFiltered]);
+  const kpis = useMemo(() => computeKpis(tsFiltered), [tsFiltered]);
 
   // PI contratado (dedup por grupo — membros compartilham o mesmo PI) + %
   // entregue acumulada (margem lifetime ÷ PI). Independe da janela.
-  const contract = useMemo(() => {
-    const piByKey = new Map();
-    const marginByKey = new Map();
-    // Canceladas fora do contratado — mesma régua dos KPIs da página, que já
-    // as ignoravam. Sem isso, o "PI contratado" do Analytics ficava maior que
-    // o "Total PI" das outras abas com os mesmos filtros.
-    for (const l of filteredLines) {
-      if (effectiveStatus(l) === "Cancelado") continue;
-      const key = l.group_id ? `g:${l.group_id}` : `l:${lineKey(l)}`;
-      if (l.pi_brl != null && !piByKey.has(key)) piByKey.set(key, num(l.pi_brl));
-      if (l.group_id) {
-        if (!marginByKey.has(key)) marginByKey.set(key, num(l.group_curator_margin));
-      } else {
-        marginByKey.set(key, num(l.curator_margin));
-      }
-    }
-    const pi = [...piByKey.values()].reduce((s, v) => s + v, 0);
-    // só soma margem das chaves que têm PI (pra % fazer sentido)
-    let lifeMargin = 0;
-    for (const [k, m] of marginByKey) if (piByKey.has(k)) lifeMargin += m;
-    return { pi, pctEntregue: pi > 0 ? lifeMargin / pi : null, dealsWithPi: piByKey.size };
-  }, [filteredLines]);
+  const contract = useMemo(() => computeContract(filteredLines), [filteredLines]);
 
   // Comparação com o período imediatamente anterior (mesma duração). Só quando
   // há janela finita selecionada.
   const prev = useMemo(() => {
-    if (!period?.from || !period?.to) return null;
-    const fromD = parseYmd(fromYmd), toD = parseYmd(toYmd);
-    const days = Math.round((toD - fromD) / 86400000) + 1;
-    const prevToD = new Date(fromD); prevToD.setDate(prevToD.getDate() - 1);
-    const prevFromD = new Date(prevToD); prevFromD.setDate(prevFromD.getDate() - (days - 1));
-    const pf = ymd(prevFromD), pt = ymd(prevToD);
-    let revenue = 0, margin = 0, imps = 0;
-    for (const r of tsAllPeriods) {
-      if (r.day < pf || r.day > pt) continue;
-      revenue += num(r.curator_revenue);
-      margin += num(r.curator_margin);
-      imps += num(r.imps);
-    }
-    return { revenue, margin, imps, label: `${dayLong(pf)} – ${dayLong(pt)}` };
-  }, [tsAllPeriods, period, fromYmd, toYmd]);
+    const p = computePrevPeriod(tsAllPeriods, { from: fromYmd, to: toYmd });
+    return p ? { ...p, label: `${dayLong(p.from)} – ${dayLong(p.to)}` } : null;
+  }, [tsAllPeriods, fromYmd, toYmd]);
 
   const delta = (cur, base) => (base != null && base > 0 ? (cur - base) / base : null);
 
   // ── Séries temporais (dia ou mês) ─────────────────────────────────────────
-  const series = useMemo(() => {
-    const map = new Map();
-    for (const r of tsFiltered) {
-      const k = granularity === "month" ? r.day.slice(0, 7) : r.day;
-      let e = map.get(k);
-      if (!e) { e = { key: k, revenue: 0, margin: 0, cost: 0, imps: 0, clicks: 0 }; map.set(k, e); }
-      e.revenue += num(r.curator_revenue);
-      e.margin += num(r.curator_margin);
-      e.cost += num(r.curator_total_cost);
-      e.imps += num(r.imps);
-      e.clicks += num(r.clicks);
-    }
-    return [...map.values()]
-      .sort((a, b) => a.key.localeCompare(b.key))
-      .map((e) => ({ ...e, label: granularity === "month" ? formatMonthLabel(e.key, "short") : dayLabel(e.key) }));
-  }, [tsFiltered, granularity]);
+  const series = useMemo(
+    () => buildSeries(tsFiltered, granularity).map((e) => ({
+      ...e,
+      label: granularity === "month" ? formatMonthLabel(e.key, "short") : dayLabel(e.key),
+    })),
+    [tsFiltered, granularity],
+  );
 
   // Mix por status (receita no período; fatias por status workflow efetivo).
-  // count = nº de deals que ENTREGARAM no período naquele status (consistente
-  // com a receita, que também é do período).
-  const byStatus = useMemo(() => {
-    const lineToStatus = new Map(filteredLines.map((l) => [lineKey(l), effectiveStatus(l)]));
-    const rev = new Map(), ids = new Map();
-    for (const r of tsFiltered) {
-      const s = lineToStatus.get(r._k);
-      if (!s) continue;
-      rev.set(s, (rev.get(s) || 0) + num(r.curator_revenue));
-      if (!ids.has(s)) ids.set(s, new Set());
-      ids.get(s).add(r._k);
-    }
-    const rows = [...rev.entries()]
-      .map(([status, revenue]) => ({ status, revenue, count: ids.get(status)?.size || 0 }))
-      .filter((r) => r.revenue > 0)
-      .sort((a, b) => b.revenue - a.revenue);
-    const total = rows.reduce((s, r) => s + r.revenue, 0);
-    return { rows, total };
-  }, [tsFiltered, filteredLines]);
+  const byStatus = useMemo(() => buildStatusMix(tsFiltered, filteredLines), [tsFiltered, filteredLines]);
 
-  // Realizado vs. contratado (acumulado): por cliente OU por campanha, compara
-  // o que já foi gerado (lifetime) contra o PI total contratado. PI é valor de
-  // contrato — não tem janela —, então este card é SEMPRE acumulado e ignora o
-  // filtro de período (os filtros de dimensão continuam valendo). Régua de
-  // dedupe igual ao resto do PMP: lines do mesmo group_id compartilham o mesmo
-  // PI (conta 1×) e usam group_curator_* já agregado; solos usam curator_*.
-  const contractRows = useMemo(() => {
-    // 1ª passada: junta membros por unidade-de-conta (grupo ou line solta)
-    // dentro de cada bucket. O PI do grupo pode morar em QUALQUER membro
-    // (só quem tem Command vinculado tem pi_brl), então não dá pra decidir
-    // "tem PI?" olhando só o primeiro membro encontrado.
-    const units = new Map();  // dedupKey → { name, members: [] }
-    for (const l of filteredLines) {
-      if (effectiveStatus(l) === "Cancelado") continue;
-      const name = (cmpDim === "campaign"
-        ? (l.campaign_name || l.line_name)
-        : l.customer) || "—";
-      const groupKey = l.group_id ? `g:${l.group_id}` : `l:${lineKey(l)}`;
-      const dedupKey = `${name}|${groupKey}`;
-      let u = units.get(dedupKey);
-      if (!u) { u = { name, members: [] }; units.set(dedupKey, u); }
-      u.members.push(l);
-    }
-    // 2ª passada: 1 contribuição por unidade — PI do primeiro membro com PI,
-    // gerado do group_curator_* (grupo, já agregado) ou curator_* (solo).
-    const buckets = new Map();      // nome → { pi, revenue, margin }
-    for (const { name, members } of units.values()) {
-      const first = members[0];
-      const pi = num(first.group_id ? resolveGroupPi(members) : first.pi_brl);
-      if (pi <= 0) continue;                // sem PI não há "contratado" a comparar
-      const revenue = first.group_id ? num(first.group_curator_revenue) : num(first.curator_revenue);
-      const margin  = first.group_id ? num(first.group_curator_margin)  : num(first.curator_margin);
-
-      let b = buckets.get(name);
-      if (!b) { b = { name, pi: 0, revenue: 0, margin: 0 }; buckets.set(name, b); }
-      b.pi += pi;
-      b.revenue += revenue;
-      b.margin += margin;
-    }
-    return [...buckets.values()].map((b) => ({
-      ...b,
-      pctRevenue: b.pi > 0 ? b.revenue / b.pi : null,
-      pctMargin:  b.pi > 0 ? b.margin  / b.pi : null,
-    }));
-  }, [filteredLines, cmpDim]);
+  // Realizado vs. contratado (acumulado): por cliente OU por campanha. PI é
+  // valor de contrato — não tem janela —, então este card é SEMPRE acumulado e
+  // ignora o filtro de período (os de dimensão continuam valendo).
+  const contractRows = useMemo(() => buildContractRows(filteredLines, cmpDim), [filteredLines, cmpDim]);
 
   // Tabela: por deal, métricas do período + status + % entregue acumulada.
-  // Só deals que ENTREGARAM no período (revenue ou imps > 0) — alinhado aos
-  // gráficos/big numbers, que também são por período. Lines sem entrega na
-  // janela viram ruído de zeros e contradizem o "deals entregando".
-  const tableRows = useMemo(() => {
-    const per = new Map();
-    for (const r of tsFiltered) {
-      let e = per.get(r._k);
-      if (!e) { e = { revenue: 0, margin: 0, imps: 0, clicks: 0 }; per.set(r._k, e); }
-      e.revenue += num(r.curator_revenue);
-      e.margin += num(r.curator_margin);
-      e.imps += num(r.imps);
-      e.clicks += num(r.clicks);
-    }
-    return filteredLines
-      .map((l) => {
-        const p = per.get(lineKey(l)) || { revenue: 0, margin: 0, imps: 0, clicks: 0 };
-        return {
-          line: l,
-          revenue: p.revenue,
-          margin: p.margin,
-          imps: p.imps,
-          marginPct: p.revenue > 0 ? p.margin / p.revenue : null,
-          pctEntregue: pctEntrega(l),
-        };
-      })
-      .filter((r) => r.revenue > 0 || r.imps > 0)
-      .sort((a, b) => b.revenue - a.revenue);
-  }, [tsFiltered, filteredLines]);
+  const tableRows = useMemo(() => buildDealRows(tsFiltered, filteredLines), [tsFiltered, filteredLines]);
 
   // ── Fechamento mensal ──────────────────────────────────────────────────────
-  // Entrada de PI × consumo de receita/margem, mês a mês. É LIFETIME de
-  // propósito (ignora o filtro de período, respeita os de dimensão): serve pra
-  // controle financeiro — "quanto entrou de contrato em julho × quanto foi
-  // consumido em julho" —, e um PI de julho costuma ser consumido também em
-  // agosto. Filtrar por período esconderia exatamente a defasagem que a tabela
-  // existe pra mostrar.
+  // LIFETIME de propósito (ignora o filtro de período, respeita os de
+  // dimensão): serve pra controle financeiro — "quanto entrou de contrato em
+  // julho × quanto foi consumido em julho" —, e um PI de julho costuma ser
+  // consumido também em agosto. Filtrar por período esconderia exatamente a
+  // defasagem que a tabela existe pra mostrar.
   const ledger = useMemo(
     () => buildMonthlyLedger({ lines: filteredLines, tsRows: tsAllPeriods }),
     [filteredLines, tsAllPeriods],
   );
 
-  const filtersActive = !!period || customers.length || campaigns.length || statuses.length || bidTypes.length;
+  // "Limpar" só acende quando há recorte de verdade — seleção órfã (podada)
+  // não conta, senão o link ficaria ligado sem nada visível para limpar.
+  const filtersActive = !!period || selCustomers.length || selCampaigns.length
+    || selStatuses.length || selBidTypes.length;
   const clearFilters = () => {
     setPeriod(null); setPeriodPresetId("all");
     setCustomers([]); setCampaigns([]); setStatuses([]); setBidTypes([]);
@@ -409,16 +252,16 @@ export default function PmpAnalytics({ lines = [], timeseries = [], tsStatus = "
           triggerClassName="h-9 px-3 rounded-lg bg-canvas-deeper font-medium"
         />
         {customerOpts.length > 1 && (
-          <MultiFilter label="Cliente" allLabel="Todos os clientes" options={customerOpts} selected={customers} onChange={setCustomers} accent={accent} />
+          <MultiFilter label="Cliente" allLabel="Todos os clientes" options={customerOpts} selected={selCustomers} onChange={setCustomers} accent={accent} />
         )}
         {campaignOpts.length > 1 && (
-          <MultiFilter label="Campanha" allLabel="Todas as campanhas" options={campaignOpts} selected={campaigns} onChange={setCampaigns} accent={accent} />
+          <MultiFilter label="Campanha" allLabel="Todas as campanhas" options={campaignOpts} selected={selCampaigns} onChange={setCampaigns} accent={accent} />
         )}
         {statusOpts.length > 1 && (
-          <MultiFilter label="Status" allLabel="Todos os status" options={statusOpts} selected={statuses} onChange={setStatuses} accent={accent} />
+          <MultiFilter label="Status" allLabel="Todos os status" options={statusOpts} selected={selStatuses} onChange={setStatuses} accent={accent} />
         )}
         {bidOpts.length > 1 && (
-          <MultiFilter label="Bid" allLabel="Todos os tipos" options={bidOpts} selected={bidTypes} onChange={setBidTypes} accent={accent} />
+          <MultiFilter label="Bid" allLabel="Todos os tipos" options={bidOpts} selected={selBidTypes} onChange={setBidTypes} accent={accent} />
         )}
         {filtersActive ? (
           <button type="button" onClick={clearFilters}

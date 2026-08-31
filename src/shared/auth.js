@@ -23,8 +23,8 @@
  * the legacy `?ak=hypr2026` URL so admins keep working during the rollout.
  */
 
-import { API_URL } from "./config";
-import { evictStaleCache, evictAllCache } from "../lib/persistedCache";
+import { API_URL } from "./config.js";
+import { evictStaleCache, evictAllCache } from "../lib/persistedCache.js";
 
 // Sessão persiste 8h (jornada de trabalho) em localStorage. Diferente do
 // modelo antigo, agora o admin JWT do backend (também 8h) é persistido

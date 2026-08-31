@@ -34,7 +34,7 @@
 // (PI, receita, margem, custo, imps) mas continuam listadas na campanha, com o
 // pill de status, pra não sumirem do histórico.
 
-import { effectiveStatus, resolveGroupPi, LIVE_STATUSES, lineKey } from "./pmpFormat";
+import { effectiveStatus, resolveGroupPi, LIVE_STATUSES, lineKey } from "./pmpFormat.js";
 
 const num = (v) => Number(v) || 0;
 
