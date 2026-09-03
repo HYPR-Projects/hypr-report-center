@@ -4149,6 +4149,7 @@ def report_data(request):
     #   POST ?action=pmp_sync_v2                       → orquestra full sync
     #   POST ?action=pmp_sync_pubmatic                 → re-sync só da PubMatic
     #   GET  ?action=pmp_pubmatic_audit&days=N         → diff API × BQ (auditoria)
+    #   GET  ?action=pmp_enriched_status               → último refresh da enriched + tokens do Command
     #
     # `pmp_sync_v2` é o endpoint que o Cloud Scheduler dispara 1x/dia às 04:00
     # BRT (header X-Scheduler-Secret, body {"report_interval":"last_7_days"}).
@@ -4627,6 +4628,25 @@ def report_data(request):
     # value_mismatch / extra_in_bq) e não conserta nada. missing_in_bq e
     # value_mismatch somem rodando o sync (MERGE idempotente); extra_in_bq
     # precisa de decisão humana, porque apagar entrega é irreversível.
+    # Estado da tabela que a UI lê (último refresh, tokens do Command por
+    # line). Mesma regra de auth da auditoria: segredo do scheduler OU admin.
+    # Read-only. Nasceu porque o CI não tem permissão de query no BQ e a
+    # sondagem pós-deploy estourou o timeout do curl sem dizer se o refresh
+    # com o SQL novo (migração 003) tinha rodado.
+    if request.method == "GET" and request.args.get("action") == "pmp_enriched_status":
+        _st_secret = os.environ.get("PMP_SCHEDULER_SECRET", "")
+        _st_is_bot = bool(_st_secret) and \
+            request.headers.get("X-Scheduler-Secret", "") == _st_secret
+        if not _st_is_bot and not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            lim_raw = (request.args.get("limit") or "50").strip()
+            lim = int(lim_raw) if lim_raw.isdigit() else 50
+            return (jsonify(pmp_lines.enriched_status(sample_limit=max(1, min(lim, 200)))), 200, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_enriched_status] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
     if request.method == "GET" and request.args.get("action") == "pmp_pubmatic_audit":
         # Aceita o segredo do scheduler ALÉM do JWT de admin. A auditoria é
         # read-only (só compara API × BQ e classifica), e exigir login de

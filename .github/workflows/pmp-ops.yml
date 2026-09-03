@@ -162,6 +162,25 @@ jobs:
            GROUP BY source
            ORDER BY source'
 
+      # A tabela que a UI lê, via a própria função (a service account do CI
+      # não tem bigquery.jobs.create, então `bq query` direto é negado aqui).
+      # `view_refreshed_at` é a prova de que o refresh pós-sync rodou e, desde
+      # a migração 003, de que o SQL com N tokens do Command por line compila
+      # no BigQuery de verdade. As contagens mostram quantas lines já somam PI.
+      - name: 'Diagnóstico · pmp_lines_enriched (refresh e tokens do Command)'
+        if: inputs.acao != 'deploy'
+        continue-on-error: true
+        run: |
+          SECRET=$(gcloud secrets versions access latest \
+            --secret=PMP_SCHEDULER_SECRET --project="$PROJECT" 2>/dev/null || echo "")
+          if [ -z "$SECRET" ]; then
+            echo "::warning::PMP_SCHEDULER_SECRET não acessível — pulando"
+            exit 0
+          fi
+          curl -sS --max-time 120 \
+            -H "X-Scheduler-Secret: $SECRET" \
+            "$FN_URL?action=pmp_enriched_status&limit=50" | python3 -m json.tool
+
       # ── DEPLOY ──────────────────────────────────────────────────────────────
 
       - uses: actions/setup-python@v5
