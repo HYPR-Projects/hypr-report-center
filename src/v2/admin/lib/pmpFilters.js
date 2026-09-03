@@ -21,9 +21,19 @@ export function lineSource(line) {
 
 /** Texto onde a busca livre procura: ids, nomes, e-mails e token. */
 export function lineSearchHaystack(line) {
+  // Com N checklists por line, TODOS os tokens (e as campanhas de cada um)
+  // entram na busca — o operador procura pelo token da 2ª campanha e tem que
+  // achar o deal que a carrega.
+  const extraTokens = Array.isArray(line?.linked_tokens) && line.linked_tokens.length
+    ? line.linked_tokens
+    : (line?.extra_short_tokens || []);
+  const linkedCampaigns = Array.isArray(line?.linked_checklists)
+    ? line.linked_checklists.map((c) => c?.campaign_name)
+    : [];
   return [
     line?.line_id, line?.line_name, line?.customer, line?.campaign_name,
-    line?.agency, line?.short_token, line?.io_name, line?.cp_email, line?.cs_email,
+    line?.agency, line?.short_token, ...extraTokens, ...linkedCampaigns,
+    line?.io_name, line?.cp_email, line?.cs_email,
   ].filter(Boolean).join(" ").toLowerCase();
 }
 

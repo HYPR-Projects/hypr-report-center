@@ -22,6 +22,7 @@ import {
   effectiveStatus, formatLineStartPeriod,
   isNewLine, METRIC,
 } from "../lib/pmpFormat";
+import { lineTokens, extraTokenCount } from "../lib/pmpTokens";
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -41,6 +42,24 @@ export function SourceChip({ source, showXandr = false, className }) {
   return (
     <span className={cn("px-1.5 py-0.5 rounded text-[9px] font-medium border", m.cls, className)}>
       {m.label}
+    </span>
+  );
+}
+
+// "+N" ao lado do chip do token: a line carrega N checklists do Command além
+// do principal (PI = soma). O title lista todos — sem abrir o drawer o
+// operador já sabe quais campanhas rodam no deal.
+export function ExtraTokensBadge({ line, muted = false, className }) {
+  const extra = extraTokenCount(line);
+  if (extra <= 0) return null;
+  const all = lineTokens(line);
+  return (
+    <span className={cn("font-mono text-[10px] px-1.5 py-0.5 rounded shrink-0 border",
+                        muted ? "text-fg-subtle bg-surface border-border"
+                              : "text-signature bg-signature/10 border-signature/20",
+                        className)}
+          title={`${all.length} checklists do Command (PI somado): ${all.join(" + ")}`}>
+      +{extra}
     </span>
   );
 }
@@ -359,6 +378,7 @@ function PmpLiveCardInner({ line, onClick, onLinkClick }) {
                 {line.short_token}
               </span>
             )}
+            <ExtraTokensBadge line={line} />
           </div>
           <div className="mt-2">
             <div className="text-fg font-semibold text-base truncate">
@@ -1029,6 +1049,7 @@ function PmpLineRowInner({
               {line.short_token}
             </span>
           )}
+          <ExtraTokensBadge line={line} muted={isCancelado} />
           {/* Sem `showXandr`: medido na lista em produção, "Xandr" aparecia em
               93 de 94 lines e "PubMatic" em 1 — o chip gastava 39px + gap em
               toda linha pra não distinguir nada. É o comportamento default do
@@ -1256,6 +1277,7 @@ function PmpLineRowInner({
                   {line.short_token}
                 </span>
               )}
+              <ExtraTokensBadge line={line} muted={isCancelado} />
             </div>
             <div className="text-[11px] text-fg-subtle mt-0.5">
               {line.agency || "—"} <span className="mx-1">·</span> Line {line.line_id}
@@ -1429,7 +1451,7 @@ function WorklistBucket({ bucket, onLineClick, onLinkClick, focused }) {
                   {l.customer || "—"} <span className="text-fg-subtle mx-1">·</span> {l.campaign_name || "—"}
                 </div>
                 <div className="text-[10px] text-fg-subtle mt-0.5">
-                  Line {l.line_id} {l.short_token ? `· ${l.short_token}` : ""}
+                  Line {l.line_id} {lineTokens(l).length ? `· ${lineTokens(l).join(" + ")}` : ""}
                 </div>
               </div>
               <div className="text-right shrink-0">

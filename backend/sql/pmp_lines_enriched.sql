@@ -8,7 +8,10 @@
 -- `CREATE OR REPLACE TABLE` — barato (~250 linhas).
 --
 -- Coalesce hierarchy:
---   PI:        override manual > checklist.investment > NULL
+--   PI:        override manual > SOMA(checklist.investment dos N tokens) > NULL
+--              (uma line pode carregar N short_tokens do Command: o principal
+--              em `short_token` + os demais em `extra_short_tokens`. Ver
+--              migração 003 e o CTE line_checklists abaixo.)
 --   Customer:  override manual > checklist.client     > io.customer > parsed do nome
 --   Campaign:  override manual > checklist.campaign_name > line.name
 --   Agency:    override manual > checklist.agency     > NULL
@@ -43,6 +46,60 @@ line_groups AS (
     -- Total de membros do grupo (pra UI exibir "2 lines")
     COUNT(*) OVER (PARTITION BY g.group_id) AS group_member_count
   FROM `site-hypr.prod_assets.pmp_line_groups` g
+),
+-- Tokens do Command vinculados a cada line, na ordem: principal (short_token,
+-- offset 0) e depois os extras (extra_short_tokens, offset 1..N). Normaliza
+-- (UPPER/TRIM) e dedupe — um token repetido entre principal e extra conta 1x.
+line_tokens AS (
+  SELECT source, line_id, tk, MIN(o) AS o
+  FROM (
+    SELECT li.source, li.line_id, UPPER(TRIM(li.short_token)) AS tk, 0 AS o
+    FROM `site-hypr.prod_assets.pmp_line_items` li
+    WHERE li.short_token IS NOT NULL AND TRIM(li.short_token) != ''
+    UNION ALL
+    SELECT li.source, li.line_id, UPPER(TRIM(t)) AS tk, o + 1 AS o
+    FROM `site-hypr.prod_assets.pmp_line_items` li,
+         UNNEST(li.extra_short_tokens) AS t WITH OFFSET AS o
+    WHERE t IS NOT NULL AND TRIM(t) != ''
+  )
+  GROUP BY source, line_id, tk
+),
+-- Checklists do Command casados com CADA token da line. O PI da line é a SOMA
+-- dos investments encontrados — é isso que faz N campanhas rodando no mesmo
+-- deal consumirem contra o orçamento total, e não só contra o do 1º token.
+-- `linked_checklists` vai inteiro pra UI (breakdown por token, com `found`
+-- FALSE quando o token não existe no espelho → operador vê o typo).
+line_checklists AS (
+  SELECT
+    lt.source,
+    lt.line_id,
+    ARRAY_AGG(lt.tk ORDER BY lt.o)                       AS all_tokens,
+    COUNT(ck.short_token)                                AS matched_count,
+    SUM(ck.investment)                                   AS investment_total,
+    MIN(ck.start_date)                                   AS start_date,
+    MAX(ck.end_date)                                     AS end_date,
+    -- Fallbacks quando o token PRINCIPAL não casa mas algum extra casa:
+    -- primeiro valor não-nulo na ordem dos tokens.
+    ARRAY_AGG(ck.client        IGNORE NULLS ORDER BY lt.o LIMIT 1)[SAFE_OFFSET(0)] AS client,
+    ARRAY_AGG(ck.campaign_name IGNORE NULLS ORDER BY lt.o LIMIT 1)[SAFE_OFFSET(0)] AS campaign_name,
+    ARRAY_AGG(ck.agency        IGNORE NULLS ORDER BY lt.o LIMIT 1)[SAFE_OFFSET(0)] AS agency,
+    ARRAY_AGG(STRUCT(
+      lt.tk                 AS short_token,
+      ck.short_token IS NOT NULL AS found,
+      ck.id                 AS checklist_id,
+      ck.client             AS client,
+      ck.campaign_name      AS campaign_name,
+      ck.agency             AS agency,
+      ck.investment         AS investment,
+      ck.start_date         AS start_date,
+      ck.end_date           AS end_date,
+      ck.cp_name            AS cp_name,
+      ck.cs_name            AS cs_name
+    ) ORDER BY lt.o)                                     AS linked_checklists
+  FROM line_tokens lt
+  LEFT JOIN `site-hypr.prod_assets.checklists_mirror` ck
+    ON UPPER(ck.short_token) = lt.tk
+  GROUP BY lt.source, lt.line_id
 ),
 -- Soma de delivery POR GRUPO (todas as lines do grupo somadas — pode cruzar
 -- fontes: um grupo une entrega Xandr + PubMatic sob o mesmo PI).
@@ -149,6 +206,7 @@ joined AS (
     li.line_name,
     li.line_code,
     li.short_token,
+    li.extra_short_tokens,
     li.io_id,
     io.io_name,
     li.advertiser_id,
@@ -173,8 +231,9 @@ joined AS (
     -- datas nativas no report, então caímos pro checklist do Command quando
     -- vinculado (ck). start_date do PubMatic vem do 1º dia de entrega (setado
     -- no conector); end_date só existe se vinculado ao Command.
-    COALESCE(li.start_date, ck.start_date) AS start_date,
-    COALESCE(li.end_date,   ck.end_date)   AS end_date,
+    -- Com N tokens: início = menor start dos checklists, fim = maior end.
+    COALESCE(li.start_date, lc.start_date, ck.start_date) AS start_date,
+    COALESCE(li.end_date,   lc.end_date,   ck.end_date)   AS end_date,
     li.xandr_last_modified,
 
     -- Workflow / overrides
@@ -183,15 +242,26 @@ joined AS (
     COALESCE(li.is_archived, FALSE) AS is_archived,
 
     -- COALESCE de campos enriquecidos
-    COALESCE(li.client_pi_amount_override, ck.investment) AS pi_brl,
+    -- PI = override manual > soma dos checklists vinculados (1 ou N tokens).
+    -- `lc.investment_total` já inclui o token principal; ck.investment fica
+    -- como rede de segurança se o CTE não trouxer a line.
+    COALESCE(li.client_pi_amount_override, lc.investment_total, ck.investment) AS pi_brl,
     li.client_pi_amount_override IS NOT NULL AS pi_overridden,
+    -- Valor que o Command dá (soma), ANTES do override — a UI mostra
+    -- "Command tem R$ X" ao lado do campo de override.
+    COALESCE(lc.investment_total, ck.investment) AS command_pi_total,
+    -- Tokens vinculados (principal primeiro) + breakdown por checklist.
+    lc.all_tokens                                AS linked_tokens,
+    COALESCE(ARRAY_LENGTH(lc.all_tokens), 0)     AS linked_token_count,
+    COALESCE(lc.matched_count, 0)                AS linked_checklist_count,
+    lc.linked_checklists,
 
-    COALESCE(li.campaign_name_override, ck.campaign_name, li.line_name) AS campaign_name,
-    COALESCE(li.agency_override, ck.agency) AS agency,
+    COALESCE(li.campaign_name_override, ck.campaign_name, lc.campaign_name, li.line_name) AS campaign_name,
+    COALESCE(li.agency_override, ck.agency, lc.agency) AS agency,
     -- customer_override cobre fontes SEM insertion order (PubMatic): o conector
     -- grava ali o cliente parseado do nome do deal. No Xandr fica NULL e o
     -- comportamento é idêntico ao anterior (ck.client > io.customer).
-    COALESCE(ck.client, io.customer, li.customer_override) AS customer,
+    COALESCE(ck.client, lc.client, io.customer, li.customer_override) AS customer,
 
     ck.cp_name, ck.cp_email,
     ck.cs_name, ck.cs_email,
@@ -256,6 +326,8 @@ joined AS (
   -- SELECT FROM datasets em regions diferentes.
   LEFT JOIN `site-hypr.prod_assets.checklists_mirror` ck
     ON UPPER(ck.short_token) = UPPER(li.short_token)
+  -- N tokens por line (principal + extras) → soma de PI e breakdown.
+  LEFT JOIN line_checklists lc ON lc.source = li.source AND lc.line_id = li.line_id
   -- Todos os JOINs de delivery/grupo casam por (source, line_id) pra não
   -- cruzar dados entre fontes com line_id numericamente coincidente.
   LEFT JOIN delivery_agg d  ON d.source  = li.source AND d.line_id  = li.line_id
