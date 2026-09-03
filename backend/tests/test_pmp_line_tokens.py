@@ -61,19 +61,27 @@ class FakeBQ:
 @pytest.fixture
 def pl(monkeypatch):
     """Importa pmp_lines com o bq_client stubado. Reimporta a cada teste pra
-    zerar o singleton `_schema_ensured`."""
+    zerar o singleton `_schema_ensured`.
+
+    Devolve o `sys.modules["pmp_lines"]` ORIGINAL no teardown: quem importou
+    o módulo real antes (main.py, via test_effective_cost) não é afetado, e
+    quem importar depois não herda um módulo amarrado ao stub."""
     fake = FakeBQ()
     stub = types.ModuleType("bq_client")
     stub.get_client = lambda: fake
     monkeypatch.setitem(sys.modules, "bq_client", stub)
-    sys.modules.pop("pmp_lines", None)
+    original = sys.modules.pop("pmp_lines", None)
     import pmp_lines
     pmp_lines.bq = fake
     pmp_lines._schema_ensured = True   # DDL não interessa aqui
     monkeypatch.setattr(pmp_lines, "refresh_enriched_table", lambda: fake.calls.append(("REFRESH", {})))
     monkeypatch.setattr(pmp_lines, "get_line", lambda lid, src=None: {"line_id": lid, "source": src})
     pmp_lines._fake = fake
-    return pmp_lines
+    yield pmp_lines
+    if original is not None:
+        sys.modules["pmp_lines"] = original
+    else:
+        sys.modules.pop("pmp_lines", None)
 
 
 # ─── normalize_tokens / line_tokens ──────────────────────────────────────────
