@@ -13,17 +13,25 @@ após cada sync (ver `xandr_curate.refresh_enriched_table()`).
 
 Mutations:
   • save_line_overrides(line_id, fields) — campos manuais (status, notes, PI override)
-  • link_command_to_line(line_id, short_token) — escreve no Xandr via PUT
-    + atualiza local
+  • set_line_tokens(source, line_id, tokens) — define a LISTA de short_tokens
+    do Command vinculados à line (principal + extras). O principal vai pro
+    campo `code` da line no Xandr via PUT; os extras ficam só no BQ
+    (`extra_short_tokens`, campo manual que o sync não toca). O PI da line
+    passa a ser a SOMA dos investments dos checklists casados.
+  • set_line_code_local(line_id, code) — caminho legado de 1 token (mantém
+    os extras, só troca o principal)
   • suggest_command_links(line_id) — fuzzy match com checklists pra UI
     de auto-vinculação
+  • lookup_checklists(tokens) — preview de checklists por token (a UI mostra
+    cliente/campanha/PI antes de confirmar a vinculação)
 """
 
 import logging
 import os
 import re
+import threading
 import unicodedata
-from typing import List, Optional, Dict
+from typing import Callable, Iterable, List, Optional, Dict
 from google.cloud import bigquery
 
 import bq_client
@@ -54,6 +62,13 @@ GROUP_PROPAGATE_FIELDS = {"status", "is_archived", "client_pi_amount_override"}
 
 VALID_STATUSES = {"Pendente", "Andamento", "Revisão", "Finalizado", "Pausado", "Cancelado"}
 
+# Formato aceito pra short_token do Command: alfanumérico, 2–40 chars, com
+# `-`/`_` no meio (ex: NO2015, I4U4HR, FXR5US). Já normalizado (UPPER/TRIM).
+TOKEN_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{1,39}$")
+
+# Fonte padrão pra chamadas legadas sem `source`.
+DEFAULT_SOURCE = "xandr"
+
 # Client compartilhado: timeout obrigatório em toda query + pool HTTP
 # dimensionado pro paralelismo real. Ver bq_client.py.
 bq = bq_client.get_client()
@@ -61,6 +76,58 @@ bq = bq_client.get_client()
 
 def _full(t: str) -> str:
     return f"`{PROJECT_ID}.{DATASET}.{t}`"
+
+
+# ─── Schema (colunas manuais que nasceram depois da tabela) ──────────────────
+_schema_ensured = False
+_schema_lock = threading.Lock()
+
+
+def ensure_schema() -> None:
+    """Garante as colunas manuais que o código abaixo e o SQL da enriched
+    esperam em `pmp_line_items`. DDL idempotente (ADD COLUMN IF NOT EXISTS),
+    roda 1x por instância — é o que faz a migração 003 se auto-aplicar no
+    primeiro refresh após o deploy, em vez de depender de alguém rodar o .sql
+    na mão (e do PMP inteiro cair até isso acontecer)."""
+    global _schema_ensured
+    if _schema_ensured:
+        return
+    with _schema_lock:
+        if _schema_ensured:
+            return
+        try:
+            bq.query(
+                f"ALTER TABLE {_full(TABLE_LINE_ITEMS)} "
+                f"ADD COLUMN IF NOT EXISTS extra_short_tokens ARRAY<STRING>"
+            ).result()
+            _schema_ensured = True
+        except Exception as e:  # noqa: BLE001 — não derruba a operação
+            # Se o DDL falhar (permissão), o erro real reaparece na query
+            # seguinte com contexto melhor. Não marcamos como garantido pra
+            # tentar de novo na próxima chamada.
+            logger.warning(f"[pmp] ensure_schema falhou: {e}")
+
+
+def _jsonable(v):
+    """Converte recursivamente o que o client do BQ devolve (date/datetime,
+    Row, STRUCT→dict, ARRAY→list) em tipos que o jsonify serializa de forma
+    previsível. Os campos de topo já eram tratados; o breakdown de checklists
+    (`linked_checklists`, ARRAY<STRUCT>) trouxe datas aninhadas — sem isto o
+    Flask serializava DATE aninhado como "Wed, 01 Jan 2026 00:00:00 GMT"."""
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    if isinstance(v, dict):
+        return {k: _jsonable(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_jsonable(x) for x in v]
+    # google.cloud.bigquery.Row (STRUCT) expõe .items()
+    if hasattr(v, "items") and callable(v.items):
+        return {k: _jsonable(x) for k, x in v.items()}
+    return v
+
+
+def _row_to_dict(r) -> dict:
+    return {k: _jsonable(v) for k, v in dict(r).items()}
 
 
 # ─── Leitura ──────────────────────────────────────────────────────────────────
@@ -81,17 +148,7 @@ def list_lines(include_archived: bool = False, only_active: bool = True) -> List
           customer NULLS LAST,
           campaign_name NULLS LAST
     """
-    out = []
-    for r in bq.query(sql).result():
-        d = dict(r)
-        # Datetime → ISO
-        for k, v in list(d.items()):
-            if hasattr(v, "isoformat"):
-                d[k] = v.isoformat()
-            elif isinstance(v, list):
-                d[k] = list(v)
-        out.append(d)
-    return out
+    return [_row_to_dict(r) for r in bq.query(sql).result()]
 
 
 def window_metrics(date_from: str, date_to: str) -> Dict[str, dict]:
@@ -195,32 +252,42 @@ def timeseries(date_from: str, date_to: str) -> List[dict]:
     return out
 
 
-def get_line(line_id: int) -> Optional[dict]:
-    """Detalhe da line + timeseries diária."""
-    sql_master = f"SELECT * FROM {_full(TABLE_LINES_ENRICHED)} WHERE line_id = @lid"
+def get_line(line_id: int, source: Optional[str] = None) -> Optional[dict]:
+    """Detalhe da line + timeseries diária.
+
+    `source` é opcional por compatibilidade: sem ele, casa só por line_id
+    (comportamento antigo). Com ele, casa o PAR (source, line_id) — evita
+    devolver um deal PubMatic quando se pediu a line Xandr de mesmo número.
+    """
+    params = [bigquery.ScalarQueryParameter("lid", "INT64", int(line_id))]
+    where = "WHERE line_id = @lid"
+    if source:
+        where += " AND source = @src"
+        params.append(bigquery.ScalarQueryParameter("src", "STRING", source))
+    sql_master = f"SELECT * FROM {_full(TABLE_LINES_ENRICHED)} {where} LIMIT 1"
     rows = list(bq.query(sql_master, job_config=bigquery.QueryJobConfig(
-        query_parameters=[bigquery.ScalarQueryParameter("lid", "INT64", line_id)]
+        query_parameters=params
     )).result())
     if not rows:
         return None
-    line = dict(rows[0])
-    for k, v in list(line.items()):
-        if hasattr(v, "isoformat"):
-            line[k] = v.isoformat()
-        elif isinstance(v, list):
-            line[k] = list(v)
+    line = _row_to_dict(rows[0])
+    # Delivery casa pelo par (source, line_id) da line encontrada.
+    line_source = line.get("source") or source or DEFAULT_SOURCE
 
     sql_days = f"""
         SELECT day, imps, viewable_imps, clicks,
                curator_net_media_cost, curator_tech_fees,
                curator_total_cost, curator_revenue, curator_margin
         FROM {_full(TABLE_DELIVERY)}
-        WHERE line_id = @lid
+        WHERE line_id = @lid AND COALESCE(source, 'xandr') = @src
         ORDER BY day
     """
     daily = []
     for r in bq.query(sql_days, job_config=bigquery.QueryJobConfig(
-        query_parameters=[bigquery.ScalarQueryParameter("lid", "INT64", line_id)]
+        query_parameters=[
+            bigquery.ScalarQueryParameter("lid", "INT64", int(line_id)),
+            bigquery.ScalarQueryParameter("src", "STRING", line_source),
+        ]
     )).result():
         daily.append({
             "day":   r["day"].isoformat(),
@@ -375,6 +442,8 @@ def refresh_enriched_table() -> dict:
     Chamado após sync de IOs/Lines/delivery e após qualquer mutation.
     Custo: <2s pra ~250 linhas.
     """
+    # O SQL lê `extra_short_tokens` (migração 003); garante a coluna antes.
+    ensure_schema()
     sql_path = os.path.join(os.path.dirname(__file__), "sql", "pmp_lines_enriched.sql")
     with open(sql_path, "r") as f:
         sql = f.read()
@@ -449,36 +518,238 @@ def suggest_command_links(line_id: int, limit: int = 5) -> List[dict]:
     return candidates[:limit]
 
 
-def is_token_in_use(short_token: str, exclude_line_id: int = 0) -> Optional[int]:
-    """Retorna line_id que já está usando esse short_token, ou None."""
-    if not short_token:
-        return None
+def normalize_tokens(tokens: Optional[Iterable]) -> List[str]:
+    """Normaliza uma lista de short_tokens: UPPER/TRIM, ignora vazios, dedupe
+    preservando a ORDEM (o 1º é o principal). Levanta ValueError no primeiro
+    token fora do formato — a UI mostra a mensagem como está."""
+    out: List[str] = []
+    seen = set()
+    for raw in (tokens or []):
+        if raw is None:
+            continue
+        t = str(raw).strip().upper()
+        if not t:
+            continue
+        if not TOKEN_RE.match(t):
+            raise ValueError(f"short_token inválido: {raw!r}")
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
+def line_tokens(row: dict) -> List[str]:
+    """Lista de tokens de uma row de pmp_line_items/enriched: principal
+    (`short_token`) + `extra_short_tokens`, normalizada e sem repetição."""
+    base = [row.get("short_token")] + list(row.get("extra_short_tokens") or [])
+    try:
+        return normalize_tokens(base)
+    except ValueError:
+        # Dado legado fora do formato não pode derrubar leitura — mantém o
+        # que der pra normalizar sem validar formato.
+        out, seen = [], set()
+        for raw in base:
+            t = str(raw or "").strip().upper()
+            if t and t not in seen:
+                seen.add(t); out.append(t)
+        return out
+
+
+def _fetch_line_tokens(source: str, line_id: int) -> Optional[dict]:
+    """{source, line_id, line_code, short_token, extra_short_tokens} da
+    pmp_line_items, ou None se a line não existe."""
+    ensure_schema()
     sql = f"""
-        SELECT line_id FROM {_full(TABLE_LINE_ITEMS)}
-        WHERE UPPER(line_code) = UPPER(@t) AND line_id != @exclude
+        SELECT source, line_id, line_name, line_code, short_token, extra_short_tokens
+        FROM {_full(TABLE_LINE_ITEMS)}
+        WHERE line_id = @lid AND COALESCE(source, 'xandr') = @src
         LIMIT 1
     """
-    rows = list(bq.query(sql, job_config=bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("t", "STRING", short_token),
-            bigquery.ScalarQueryParameter("exclude", "INT64", int(exclude_line_id)),
-        ]
-    )).result())
-    return rows[0]["line_id"] if rows else None
+    rows = list(bq.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("lid", "INT64", int(line_id)),
+        bigquery.ScalarQueryParameter("src", "STRING", source or DEFAULT_SOURCE),
+    ])).result())
+    if not rows:
+        return None
+    d = _row_to_dict(rows[0])
+    d["extra_short_tokens"] = list(d.get("extra_short_tokens") or [])
+    return d
 
 
-def set_line_code_local(line_id: int, code: Optional[str], updated_by: str) -> None:
-    """Atualiza line_code/short_token localmente (após confirmação do PUT no
-    Xandr feito por `xandr_curate.set_line_code()`)."""
+def find_token_conflicts(tokens: Iterable[str],
+                         exclude_source: str = DEFAULT_SOURCE,
+                         exclude_line_id: int = 0) -> List[dict]:
+    """Outras lines que já carregam algum dos `tokens` (como principal OU
+    extra). Devolve [{short_token, source, line_id, line_name}] — vazio se
+    ninguém usa. O mesmo token em duas lines duplica PI nos KPIs (a não ser
+    que estejam agrupadas), por isso a UI pede confirmação."""
+    toks = normalize_tokens(tokens)
+    if not toks:
+        return []
+    ensure_schema()
+    sql = f"""
+        SELECT li.source, li.line_id, li.line_name, li.short_token, li.extra_short_tokens
+        FROM {_full(TABLE_LINE_ITEMS)} li
+        WHERE NOT (li.line_id = @lid AND COALESCE(li.source, 'xandr') = @src)
+          AND (
+            UPPER(TRIM(li.short_token)) IN UNNEST(@tokens)
+            OR EXISTS (
+              SELECT 1 FROM UNNEST(li.extra_short_tokens) x
+              WHERE UPPER(TRIM(x)) IN UNNEST(@tokens)
+            )
+          )
+    """
+    rows = bq.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("lid", "INT64", int(exclude_line_id or 0)),
+        bigquery.ScalarQueryParameter("src", "STRING", exclude_source or DEFAULT_SOURCE),
+        bigquery.ArrayQueryParameter("tokens", "STRING", toks),
+    ])).result()
+    out: List[dict] = []
+    wanted = set(toks)
+    for r in rows:
+        d = _row_to_dict(r)
+        for t in line_tokens(d):
+            if t in wanted:
+                out.append({
+                    "short_token": t,
+                    "source":      d.get("source") or DEFAULT_SOURCE,
+                    "line_id":     int(d["line_id"]),
+                    "line_name":   d.get("line_name"),
+                })
+    return out
+
+
+def is_token_in_use(short_token: str, exclude_line_id: int = 0,
+                    exclude_source: str = DEFAULT_SOURCE) -> Optional[int]:
+    """Retorna line_id que já está usando esse short_token (principal ou
+    extra), ou None. Mantido pela API legada; ver find_token_conflicts."""
+    if not short_token:
+        return None
+    try:
+        conflicts = find_token_conflicts([short_token], exclude_source, exclude_line_id)
+    except ValueError:
+        return None
+    return conflicts[0]["line_id"] if conflicts else None
+
+
+def set_line_tokens(source: str, line_id: int, tokens: Iterable[str],
+                    updated_by: str,
+                    xandr_put: Optional[Callable[[int, Optional[str]], object]] = None) -> dict:
+    """Define a LISTA COMPLETA de short_tokens da line. Fonte de verdade da
+    vinculação multi-checklist:
+
+      tokens[0]  → principal: `short_token`/`line_code` local e, se a line é
+                   Xandr, o campo `code` da line via PUT (`xandr_put`). Só
+                   faz o PUT quando o principal MUDOU — trocar/remover extras
+                   não toca no Xandr.
+      tokens[1:] → `extra_short_tokens` (só BQ; o sync não mexe).
+      []         → desvincula tudo (code=NULL no Xandr, colunas NULL/[] aqui).
+
+    Lines de outras fontes (PubMatic) não têm Xandr: só o BQ é atualizado.
+    Depois refresca a enriched e devolve a line completa (PI já somado).
+    Levanta ValueError pra token inválido ou line inexistente.
+    """
+    src = source or DEFAULT_SOURCE
+    toks = normalize_tokens(tokens)
+    cur = _fetch_line_tokens(src, line_id)
+    if cur is None:
+        raise ValueError(f"Line {src}:{line_id} não encontrada")
+
+    primary = toks[0] if toks else None
+    extras  = toks[1:]
+
+    if src == DEFAULT_SOURCE and xandr_put is not None:
+        cur_code = (cur.get("line_code") or "").strip().upper() or None
+        if cur_code != primary:
+            xandr_put(int(line_id), primary)
+
     sql = f"""
         UPDATE {_full(TABLE_LINE_ITEMS)}
         SET line_code = @code, short_token = @code,
+            extra_short_tokens = @extras,
             updated_by = @by, updated_at = CURRENT_TIMESTAMP()
-        WHERE line_id = @lid
+        WHERE line_id = @lid AND COALESCE(source, 'xandr') = @src
+    """
+    bq.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("lid",    "INT64",  int(line_id)),
+        bigquery.ScalarQueryParameter("src",    "STRING", src),
+        bigquery.ScalarQueryParameter("code",   "STRING", primary),
+        bigquery.ArrayQueryParameter("extras",  "STRING", extras),
+        bigquery.ScalarQueryParameter("by",     "STRING", updated_by),
+    ])).result()
+    refresh_enriched_table()
+    return get_line(int(line_id), src)
+
+
+def set_line_code_local(line_id: int, code: Optional[str], updated_by: str,
+                        source: str = DEFAULT_SOURCE) -> None:
+    """Caminho legado (1 token): troca só o PRINCIPAL local (após o PUT no
+    Xandr feito pelo chamador), preservando os extras — e tirando o novo
+    principal da lista de extras se ele já estava lá, pra não contar 2x."""
+    ensure_schema()
+    code_norm = (code or "").strip().upper() or None
+    sql = f"""
+        UPDATE {_full(TABLE_LINE_ITEMS)}
+        SET line_code = @code, short_token = @code,
+            extra_short_tokens = ARRAY(
+              SELECT t FROM UNNEST(extra_short_tokens) t
+              WHERE @code IS NULL OR UPPER(TRIM(t)) != @code
+            ),
+            updated_by = @by, updated_at = CURRENT_TIMESTAMP()
+        WHERE line_id = @lid AND COALESCE(source, 'xandr') = @src
     """
     bq.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("lid",  "INT64",  int(line_id)),
-        bigquery.ScalarQueryParameter("code", "STRING", code),
+        bigquery.ScalarQueryParameter("src",  "STRING", source or DEFAULT_SOURCE),
+        bigquery.ScalarQueryParameter("code", "STRING", code_norm),
         bigquery.ScalarQueryParameter("by",   "STRING", updated_by),
     ])).result()
     refresh_enriched_table()
+
+
+def lookup_checklists(tokens: Iterable[str]) -> List[dict]:
+    """Preview dos checklists do Command pra uma lista de tokens — a UI usa
+    pra mostrar cliente/campanha/PI ANTES de o operador confirmar o vínculo
+    (e pra avisar "token não existe" em vez de vincular um typo).
+
+    Devolve uma entrada POR TOKEN pedido, na ordem, com `found`=False quando
+    o espelho não tem o token."""
+    toks = normalize_tokens(tokens)
+    if not toks:
+        return []
+    sql = f"""
+        SELECT short_token, client, campaign_name, agency,
+               cp_name, cs_name, investment, deal_dv360, start_date, end_date
+        FROM {_full(TABLE_CHECKLISTS)}
+        WHERE UPPER(TRIM(short_token)) IN UNNEST(@tokens)
+    """
+    found: Dict[str, dict] = {}
+    for r in bq.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ArrayQueryParameter("tokens", "STRING", toks),
+    ])).result():
+        d = _row_to_dict(r)
+        key = str(d.get("short_token") or "").strip().upper()
+        if key and key not in found:
+            found[key] = d
+    out: List[dict] = []
+    for t in toks:
+        d = found.get(t)
+        if d is None:
+            out.append({"short_token": t, "found": False})
+            continue
+        inv = d.get("investment")
+        out.append({
+            "short_token":   t,
+            "found":         True,
+            "client":        d.get("client"),
+            "campaign_name": d.get("campaign_name"),
+            "agency":        d.get("agency"),
+            "cp_name":       d.get("cp_name"),
+            "cs_name":       d.get("cs_name"),
+            "investment":    float(inv) if inv is not None else None,
+            "deal_dv360":    d.get("deal_dv360"),
+            "start_date":    d.get("start_date"),
+            "end_date":      d.get("end_date"),
+        })
+    return out

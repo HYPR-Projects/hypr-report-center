@@ -22,6 +22,8 @@ import {
   effectiveStatus, formatLineStartPeriod,
   isNewLine, METRIC,
 } from "../lib/pmpFormat";
+import { lineTokens, extraTokenCount, lineChecklists, commandPiTotal } from "../lib/pmpTokens";
+import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -42,6 +44,62 @@ export function SourceChip({ source, showXandr = false, className }) {
     <span className={cn("px-1.5 py-0.5 rounded text-[9px] font-medium border", m.cls, className)}>
       {m.label}
     </span>
+  );
+}
+
+// "+N" ao lado do chip do token: a line carrega N checklists do Command além
+// do principal (PI = soma). O hover abre o breakdown — token, campanha e PI
+// de cada checklist — pra o operador saber o que roda no deal sem abrir o
+// drawer. Precisa de <TooltipProvider> acima (o PmpDealsPage já envolve tudo).
+export function ExtraTokensBadge({ line, muted = false, className }) {
+  const extra = extraTokenCount(line);
+  if (extra <= 0) return null;
+  const cks = lineChecklists(line);
+  const total = commandPiTotal(line);
+  return (
+    <Tooltip delayDuration={150}>
+      <TooltipTrigger asChild>
+        <span className={cn("font-mono text-[10px] px-1.5 py-0.5 rounded shrink-0 border cursor-help",
+                            muted ? "text-fg-subtle bg-surface border-border"
+                                  : "text-signature bg-signature/10 border-signature/20",
+                            className)}
+              aria-label={`${cks.length} checklists do Command: ${cks.map(c => c.short_token).join(", ")}`}>
+          +{extra}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" align="start" className="max-w-[360px] px-0 py-0 overflow-hidden">
+        <div className="px-3 py-2 border-b border-border flex items-center justify-between gap-4">
+          <span className="lbl-section text-signature">{cks.length} checklists · PI somado</span>
+          <span className="tabular-nums text-[12px] font-semibold text-fg">
+            {total != null ? formatBRL(total) : "—"}
+          </span>
+        </div>
+        <ul className="px-3 py-2 space-y-1.5">
+          {cks.map((c) => (
+            <li key={c.short_token} className="flex items-center gap-3 text-[11px]">
+              <span className={cn("font-mono shrink-0 w-[64px]", c.found === false ? "text-warning" : "text-signature")}>
+                {c.short_token}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-fg"
+                    title={c.campaign_name || undefined}>
+                {c.found === false
+                  ? <span className="text-warning">não encontrado no Command</span>
+                  : (c.campaign_name || <span className="text-fg-subtle">—</span>)}
+                {c.primary && <span className="ml-1.5 lbl-micro text-fg-subtle">principal</span>}
+              </span>
+              <span className={cn("tabular-nums shrink-0", c.investment != null ? "text-fg-muted" : "text-fg-subtle")}>
+                {c.investment != null ? formatBRL(c.investment) : "—"}
+              </span>
+            </li>
+          ))}
+        </ul>
+        {line?.pi_overridden && (
+          <div className="px-3 py-1.5 border-t border-border text-[10.5px] text-warning">
+            Override manual ativo: PI considerado {formatBRL(line.pi_brl)}
+          </div>
+        )}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -359,6 +417,7 @@ function PmpLiveCardInner({ line, onClick, onLinkClick }) {
                 {line.short_token}
               </span>
             )}
+            <ExtraTokensBadge line={line} />
           </div>
           <div className="mt-2">
             <div className="text-fg font-semibold text-base truncate">
@@ -1029,6 +1088,7 @@ function PmpLineRowInner({
               {line.short_token}
             </span>
           )}
+          <ExtraTokensBadge line={line} muted={isCancelado} />
           {/* Sem `showXandr`: medido na lista em produção, "Xandr" aparecia em
               93 de 94 lines e "PubMatic" em 1 — o chip gastava 39px + gap em
               toda linha pra não distinguir nada. É o comportamento default do
@@ -1256,6 +1316,7 @@ function PmpLineRowInner({
                   {line.short_token}
                 </span>
               )}
+              <ExtraTokensBadge line={line} muted={isCancelado} />
             </div>
             <div className="text-[11px] text-fg-subtle mt-0.5">
               {line.agency || "—"} <span className="mx-1">·</span> Line {line.line_id}
@@ -1429,7 +1490,7 @@ function WorklistBucket({ bucket, onLineClick, onLinkClick, focused }) {
                   {l.customer || "—"} <span className="text-fg-subtle mx-1">·</span> {l.campaign_name || "—"}
                 </div>
                 <div className="text-[10px] text-fg-subtle mt-0.5">
-                  Line {l.line_id} {l.short_token ? `· ${l.short_token}` : ""}
+                  Line {l.line_id} {lineTokens(l).length ? `· ${lineTokens(l).join(" + ")}` : ""}
                 </div>
               </div>
               <div className="text-right shrink-0">

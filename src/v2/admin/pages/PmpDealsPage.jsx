@@ -39,7 +39,7 @@ import "../../v2.css";
 
 import {
   listPmpLines, savePmpLineOverrides, syncPmpV2, syncPmpPubmatic,
-  suggestPmpLinks, linkPmpCommand, getPmpLine, pmpLineWindowMetrics,
+  setPmpLineTokens, getPmpLine, pmpLineWindowMetrics,
   pmpLinesTimeseries,
 } from "../../../lib/api";
 
@@ -88,6 +88,10 @@ import {
 } from "../components/PmpComponents";
 import { PmpCampaignView } from "../components/PmpCampaignView";
 import { GroupLinesModal } from "../components/GroupLinesModal";
+import { CommandLinksBlock, LinkCommandPopup } from "../components/PmpCommandLinks";
+import {
+  lineTokens, tokensLabel, withToken, commandPiTotal, matchedChecklistCount,
+} from "../lib/pmpTokens";
 import { buildCompplanRows, applyCompplanFormats } from "../lib/compplanExport";
 import CompplanSheetCard from "../components/CompplanSheetCard";
 import { PmpFreshnessIndicator } from "../components/PmpFreshnessIndicator";
@@ -339,7 +343,7 @@ export default function PmpDealsPage({
 
   // Toast pós-vinculação. Popup fecha imediatamente após sucesso, então sem
   // toast o operador fica em dúvida se a operação completou. Auto-dismiss 4s.
-  const [linkToast, setLinkToast] = useState(null);  // { token, lineLabel } | null
+  const [linkToast, setLinkToast] = useState(null);  // { token, lineLabel, verb } | null
   useEffect(() => {
     if (!linkToast) return;
     const t = setTimeout(() => setLinkToast(null), 4000);
@@ -889,13 +893,60 @@ export default function PmpDealsPage({
     }
   };
 
+  // Fonte de verdade da vinculação com o Command: grava a LISTA COMPLETA de
+  // tokens da line (principal primeiro; PI = soma dos checklists). Usado
+  // tanto pelo bloco do drawer (adicionar/remover/tornar principal) quanto
+  // pelo popup da lista. Atualiza `lines` E a line aberta no drawer com a
+  // versão já refrescada pelo servidor (pi_brl somado, breakdown, health).
+  // Sem UI otimista aqui de propósito: a resposta traz campos derivados
+  // (PI, % entrega) que não dá pra chutar no cliente, e o bloco já mostra
+  // spinner na linha em ação.
+  const onSetTokens = async (targetLine, tokens, opts = {}) => {
+    if (!targetLine) return null;
+    const key = lineKey(targetLine);
+    startSaving(targetLine.line_id);
+    try {
+      const updated = await setPmpLineTokens({
+        line_id: targetLine.line_id,
+        source: targetLine.source || "xandr",
+        short_tokens: tokens,
+        force: !!opts.force,
+      });
+      const merge = (l) => (lineKey(l) === key ? { ...l, ...updated } : l);
+      setLines(prev => prev.map(merge));
+      setEditing(prev => (prev && lineKey(prev) === key ? { ...prev, ...updated } : prev));
+      setLinking(prev => (prev && lineKey(prev) === key ? { ...prev, ...updated } : prev));
+      return updated;
+    } finally {
+      finishSaving(targetLine.line_id);
+    }
+  };
+
+  // Entrada pela lista ("🔗 vincular"): adiciona o token aos que a line já
+  // tem (normalmente nenhum) e fecha o popup com toast.
   const onLinkCommand = async (short_token, opts = {}) => {
     // Snapshot do nome ANTES de fechar o popup (setLinking(null) zera linking).
-    const lineLabel = linking?.line_name || linking?.campaign_name || `Line ${linking?.line_id}`;
-    const updated = await linkPmpCommand({ line_id: linking.line_id, short_token, force: opts.force || false });
-    setLines(prev => prev.map(l => l.line_id === updated.line_id ? { ...l, ...updated } : l));
+    const target = linking;
+    const lineLabel = target?.line_name || target?.campaign_name || `Line ${target?.line_id}`;
+    await onSetTokens(target, withToken(lineTokens(target), short_token), opts);
     setLinking(null);
-    setLinkToast({ token: short_token, lineLabel });
+    setLinkToast({ token: short_token, lineLabel, verb: "vinculado" });
+  };
+
+  // Do drawer: a line aberta é o alvo. Toast curto informando o que mudou
+  // (o drawer continua aberto e a lista já reflete o estado novo).
+  const onSetEditingTokens = async (tokens, opts = {}) => {
+    const target = editing;
+    const before = lineTokens(target);
+    const updated = await onSetTokens(target, tokens, opts);
+    const after = lineTokens(updated || { linked_tokens: tokens });
+    const lineLabel = target?.line_name || target?.campaign_name || `Line ${target?.line_id}`;
+    const added = after.find(t => !before.includes(t));
+    const removed = before.find(t => !after.includes(t));
+    if (added) setLinkToast({ token: added, lineLabel, verb: "vinculado" });
+    else if (removed) setLinkToast({ token: removed, lineLabel, verb: "removido" });
+    else if (after[0] && after[0] !== before[0]) setLinkToast({ token: after[0], lineLabel, verb: "agora é o principal" });
+    return updated;
   };
 
   const onExport = async () => {
@@ -904,7 +955,7 @@ export default function PmpDealsPage({
     const arr = visibleLines;
     const rows = arr.map(l => ({
       "Customer": l.customer || "", "Campaign": l.campaign_name || "",
-      "Agency": l.agency || "", "Line ID": l.line_id, "Token": l.short_token || "",
+      "Agency": l.agency || "", "Line ID": l.line_id, "Token": tokensLabel(l) || "",
       "Status workflow": effectiveStatus(l),
       "Estado entrega": effectiveDeliveryMeta(l).label,
       "Bid": bidTypeLabel(l.bid_type) || "—",
@@ -1513,7 +1564,7 @@ export default function PmpDealsPage({
       <PmpLineDrawer open={!!editing} onOpenChange={o => { if (!o) setEditing(null); }}
                      line={editing} onSave={onSaveOverrides}
                      canEdit={canEdit}
-                     onLinkClick={() => { if (!canEdit) return; setLinking(editing); setEditing(null); }}
+                     onSetTokens={onSetEditingTokens}
                      onGroupClick={() => { if (!canEdit) return; setGrouping(editing); setEditing(null); }} />
       <LinkCommandPopup open={!!linking} onOpenChange={o => { if (!o) setLinking(null); }}
                         line={linking} onLink={onLinkCommand} />
@@ -2360,7 +2411,7 @@ function formatDealIds(line) {
   return ids.join(" · ");
 }
 
-function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupClick, canEdit = false }) {
+function PmpLineDrawer({ open, onOpenChange, line, onSave, onSetTokens, onGroupClick, canEdit = false }) {
   const [form, setForm] = useState({});
   // Timeseries diária da line (impressões + margem). null = ainda carregando,
   // [] = sem dado. Refetch a cada line nova; cancelado se trocar antes da
@@ -2454,6 +2505,12 @@ function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupC
               )}
             </FieldGroup>
 
+            {/* Checklists do Command — é daqui que sai o PI (soma de N
+                checklists quando o mesmo deal roda várias campanhas). Fica
+                logo abaixo do status porque é a 2ª edição mais frequente e a
+                que destrava pacing/% entrega. */}
+            <CommandLinksBlock line={line} canEdit={canEdit} onSetTokens={onSetTokens} />
+
             {/* Grupo (PI compartilhado) — sempre visível, ação contextual */}
             <GroupBlock line={line} onGroupClick={onGroupClick} canEdit={canEdit} />
 
@@ -2465,15 +2522,9 @@ function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupC
               <div className="space-y-3 pt-1">
                 <MetaRow k="IO" v={line.io_name} />
                 <MetaRow k="Deal IDs" v={formatDealIds(line)} mono />
-                <MetaRow k="Command" v={line.short_token || "—"} mono />
+                <MetaRow k="Command" v={tokensLabel(line) || "—"} mono />
                 <MetaRow k="CP / CS" v={line.cp_email && line.cs_email
                   ? `${line.cp_email} / ${line.cs_email}` : "—"} />
-                {!line.short_token && canEdit && (
-                  <button onClick={onLinkClick}
-                          className="mt-1 w-full h-8 rounded-md border border-signature/40 bg-signature/10 text-signature text-xs hover:bg-signature/20 transition-colors">
-                    🔗 Vincular ao Hypr Command
-                  </button>
-                )}
                 <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 pt-2 border-t border-border">
                   <MetaRow k="Bid type" v={bidTypeLabel(line.bid_type) || "—"} compact />
                   <MetaRow k="Revenue type" v={line.revenue_type || "—"} compact />
@@ -2507,11 +2558,11 @@ function PmpLineDrawer({ open, onOpenChange, line, onSave, onLinkClick, onGroupC
             <Accordion label="Overrides avançados"
                        summary={overrideSummary(line, form)}>
               <div className="space-y-3 pt-1">
-                <FieldGroup label={`PI Override (BRL)${line.pi_brl != null && !line.pi_overridden ? ` — Command tem ${formatBRL(line.pi_brl)}` : ""}`}>
+                <FieldGroup label={piOverrideLabel(line)}>
                   <CurrencyInput value={form.client_pi_amount_override}
                                  onChange={v => set("client_pi_amount_override", v)}
                                  disabled={!canEdit}
-                                 placeholder={line.pi_brl != null ? "deixe vazio pra usar o do Command" : "0,00"}
+                                 placeholder={commandPiTotal(line) != null ? "deixe vazio pra usar a soma do Command" : "0,00"}
                                  className={inputCls("tabular-nums")} />
                 </FieldGroup>
                 <FieldGroup label="Campaign override">
@@ -2927,6 +2978,16 @@ function overrideSummary(line, form) {
   return flags.length === 0 ? "Nenhum override aplicado" : `Override: ${flags.join(", ")}`;
 }
 
+// Label do campo de override de PI: mostra o que o Command dá (soma de N
+// checklists) pra o operador decidir se precisa mesmo sobrescrever.
+function piOverrideLabel(line) {
+  const total = commandPiTotal(line);
+  if (total == null) return "PI Override (BRL)";
+  const n = matchedChecklistCount(line);
+  const src = n > 1 ? `soma de ${n} checklists` : "Command";
+  return `PI Override (BRL) — ${src}: ${formatBRL(total)}`;
+}
+
 function FieldGroup({ label, children }) {
   return (
     <div>
@@ -2987,133 +3048,6 @@ function formatCents(cents) {
   return `${sign}${reaisStr},${String(decimal).padStart(2, "0")}`;
 }
 
-function LinkCommandPopup({ open, onOpenChange, line, onLink }) {
-  const [suggestions, setSuggestions] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [manual, setManual] = useState("");
-  const [err, setErr] = useState(null);
-  const [conflict, setConflict] = useState(null);
-  // Token sendo linkado AGORA (string ou null). Drives all UI feedback:
-  // spinner no card clicado, opacity-40 nos outros, disabled no input
-  // manual, label "Vinculando…" no botão. Limpa em catch (no success o
-  // popup desmonta antes via setLinking(null) no parent).
-  const [linkingToken, setLinkingToken] = useState(null);
-  useEffect(() => {
-    if (!line) return;
-    setLoading(true); setErr(null); setConflict(null); setManual(""); setLinkingToken(null);
-    suggestPmpLinks(line.line_id).then(setSuggestions).catch(e => setErr(e.message)).finally(() => setLoading(false));
-  }, [line]);
-  if (!line) return null;
-  const tryLink = async (token, force = false) => {
-    if (!token || linkingToken) return; // ignora cliques durante operação em voo
-    setErr(null); setConflict(null); setLinkingToken(token);
-    try { await onLink(token, { force }); }
-    catch (e) {
-      setLinkingToken(null);
-      if (e.is_conflict) { setConflict(e.conflict_line_id); setErr(e.message); }
-      else setErr(e.message);
-    }
-  };
-  const isLinking = linkingToken != null;
-  return (
-    <Drawer open={open} onOpenChange={isLinking ? () => {} : onOpenChange}>
-      <DrawerContent widthClass="sm:w-[540px]">
-        <DrawerHeader title="Vincular ao Hypr Command" subtitle={`Line ${line.line_id} · ${line.line_name || ""}`} />
-        <DrawerBody>
-          <div className="text-xs text-fg-muted mb-5 leading-relaxed">
-            Escolha o checklist do Command. Vai escrever o token no campo <code className="text-fg bg-surface px-1 rounded">code</code> da line no Xandr
-            e puxar PI, agência e owners automaticamente.
-          </div>
-          {loading && <Skeleton className="h-16 w-full rounded-md" />}
-          {!loading && suggestions.length > 0 && (
-            <div className="space-y-2 mb-5">
-              <div className="lbl-section">Sugestões automáticas</div>
-              {suggestions.map(s => {
-                const linkingThis = linkingToken === s.short_token;
-                const dimmed = isLinking && !linkingThis;
-                return (
-                  <button key={s.short_token} onClick={() => tryLink(s.short_token)}
-                          disabled={isLinking}
-                          className={cn(
-                            "w-full text-left rounded-lg border px-4 py-3 transition-all",
-                            linkingThis ? "border-signature/60 bg-signature/[0.08]"
-                                        : "border-border bg-surface/40",
-                            !isLinking && "hover:bg-surface hover:border-border-strong cursor-pointer",
-                            dimmed && "opacity-40",
-                            isLinking && "cursor-default",
-                          )}>
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 font-mono text-xs text-signature">
-                        {linkingThis && <SpinnerIcon className="text-signature" />}
-                        {s.short_token}
-                      </div>
-                      <div className={cn(
-                            "text-[10px] tabular-nums",
-                            linkingThis ? "text-signature font-semibold" : "text-fg-subtle",
-                          )}>
-                        {linkingThis ? "vinculando…" : `match ${fmt(s.score * 100, 0)}%`}
-                      </div>
-                    </div>
-                    <div className="text-sm text-fg mt-1">{s.client} <span className="text-fg-subtle mx-1">·</span> {s.campaign_name}</div>
-                    <div className="text-[11px] text-fg-muted mt-0.5">
-                      {s.agency || "—"} · PI {formatBRL(s.investment)} · {s.cp_name || "?"} / {s.cs_name || "?"}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {!loading && suggestions.length === 0 && !err && (
-            <div className="text-xs text-fg-muted mb-5">Nenhuma sugestão automática encontrada.</div>
-          )}
-          <div className="space-y-2">
-            <div className="lbl-section">Vincular manualmente</div>
-            <div className="flex items-center gap-2">
-              <input type="text" value={manual} onChange={e => setManual(e.target.value.toUpperCase())}
-                     placeholder="ex: NO2015"
-                     disabled={isLinking}
-                     className={cn(
-                       "flex-1 h-10 px-3 rounded-md bg-surface border border-border text-sm text-fg uppercase font-mono",
-                       isLinking && "opacity-60 cursor-not-allowed",
-                     )} />
-              <Button variant="primary" size="md"
-                      onClick={() => tryLink(manual)}
-                      disabled={!manual.trim() || isLinking}>
-                {linkingToken === manual ? (
-                  <span className="inline-flex items-center gap-1.5"><SpinnerIcon /> Vinculando…</span>
-                ) : "Vincular"}
-              </Button>
-            </div>
-          </div>
-          {err && (
-            <div className="mt-4 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-              {err}
-              {conflict && (
-                <button onClick={() => tryLink(manual || suggestions[0]?.short_token, true)}
-                        disabled={isLinking}
-                        className="block mt-2 text-warning underline-offset-2 hover:underline text-xs disabled:opacity-40 disabled:no-underline">
-                  {isLinking ? "Sobrescrevendo…" : `Sobrescrever — desvincular da line ${conflict} e vincular aqui`}
-                </button>
-              )}
-            </div>
-          )}
-        </DrawerBody>
-      </DrawerContent>
-    </Drawer>
-  );
-}
-
-// Spinner SVG inline — 12px, usa currentColor pra herdar cor do contexto.
-// Tailwind animate-spin + path com strokeOpacity criando arco "girante".
-function SpinnerIcon({ className }) {
-  return (
-    <svg className={cn("animate-spin", className)} width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3.5" />
-      <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 // Toast flutuante pós-vinculação. Fica no canto inferior direito, fora do
 // fluxo do drawer (que já fechou). Auto-dismiss vem do effect no parent.
 // Tem botão "fechar" pra dismiss manual antes do timeout.
@@ -3131,7 +3065,7 @@ function LinkSuccessToast({ toast, onDismiss }) {
         <div className="min-w-0 flex-1 text-[12.5px] text-success">
           <div>
             <span className="font-mono font-semibold text-success">{toast.token}</span>
-            <span className="text-success/80"> vinculado</span>
+            <span className="text-success/80"> {toast.verb || "vinculado"}</span>
           </div>
           <div className="text-[11px] text-success/60 truncate mt-0.5" title={toast.lineLabel}>
             {toast.lineLabel}

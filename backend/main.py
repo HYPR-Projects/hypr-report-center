@@ -4143,7 +4143,9 @@ def report_data(request):
     #   GET  ?action=pmp_line_get&line_id=...          → drill-down + daily
     #   POST ?action=pmp_save_line_overrides           → campos manuais
     #   GET  ?action=pmp_suggest_links&line_id=...     → fuzzy match Command
-    #   POST ?action=pmp_link_command                  → PUT code no Xandr + local
+    #   POST ?action=pmp_link_command                  → PUT code no Xandr + local (1 token, legado)
+    #   POST ?action=pmp_set_line_tokens               → lista COMPLETA de tokens da line (N checklists, PI somado)
+    #   GET  ?action=pmp_checklist_lookup&tokens=A,B   → preview de checklists por token
     #   POST ?action=pmp_sync_v2                       → orquestra full sync
     #   POST ?action=pmp_sync_pubmatic                 → re-sync só da PubMatic
     #   GET  ?action=pmp_pubmatic_audit&days=N         → diff API × BQ (auditoria)
@@ -4219,7 +4221,9 @@ def report_data(request):
             line_id_raw = (request.args.get("line_id") or "").strip()
             if not line_id_raw.isdigit():
                 return (jsonify({"error": "line_id obrigatório (int)"}), 400, headers)
-            line = pmp_lines.get_line(int(line_id_raw))
+            # source opcional: sem ele casa só por line_id (compat).
+            source = (request.args.get("source") or "").strip() or None
+            line = pmp_lines.get_line(int(line_id_raw), source)
             if not line:
                 return (jsonify({"error": "Line não encontrada"}), 404, headers)
             return (jsonify(line), 200, headers)
@@ -4262,6 +4266,8 @@ def report_data(request):
             logger.exception(f"[ERROR pmp_suggest_links] {e}")
             return (jsonify({"error": str(e)}), 500, headers)
 
+    # Caminho legado de 1 token: troca o PRINCIPAL da line (PUT no Xandr +
+    # local), preservando os extras. Frontend atual usa `pmp_set_line_tokens`.
     if request.method == "POST" and request.args.get("action") == "pmp_link_command":
         admin = authenticate_admin(request)
         if not admin:
@@ -4269,26 +4275,107 @@ def report_data(request):
         try:
             body = request.get_json(silent=True) or {}
             line_id = int(body.get("line_id") or 0)
+            source  = (body.get("source") or "xandr").strip() or "xandr"
             short_token = (body.get("short_token") or "").strip().upper()
             if not line_id or not short_token:
                 return (jsonify({"error": "line_id e short_token obrigatórios"}), 400, headers)
-            existing = pmp_lines.is_token_in_use(short_token, exclude_line_id=line_id)
-            if existing and not body.get("force"):
+            conflicts = pmp_lines.find_token_conflicts([short_token], source, line_id)
+            if conflicts and not body.get("force"):
+                existing = conflicts[0]["line_id"]
                 return (jsonify({
                     "error": f"short_token {short_token} já está vinculado à line {existing}",
                     "conflict_line_id": existing,
+                    "conflicts": conflicts,
                 }), 409, headers)
-            # 1) PUT no Xandr (com retry pra token expirado)
-            xandr_curate.set_line_code(line_id, short_token)
+            # 1) PUT no Xandr (com retry pra token expirado) — só lines Xandr.
+            #    Deal PubMatic não tem line no Xandr: o vínculo é só no BQ.
+            if source == "xandr":
+                xandr_curate.set_line_code(line_id, short_token)
             # 2) Atualiza local + refresca tabela enriched
-            pmp_lines.set_line_code_local(line_id, short_token, admin.get("email","unknown"))
-            line = pmp_lines.get_line(line_id)
+            pmp_lines.set_line_code_local(line_id, short_token, admin.get("email","unknown"), source)
+            line = pmp_lines.get_line(line_id, source)
             return (jsonify(line), 200, headers)
+        except ValueError as ve:
+            return (jsonify({"error": str(ve)}), 400, headers)
         except xandr_curate.XandrError as xe:
             logger.warning(f"[pmp_link_command] xandr err: {xe}")
             return (jsonify({"error": str(xe)}), 502, headers)
         except Exception as e:
             logger.exception(f"[ERROR pmp_link_command] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    # Lista COMPLETA de short_tokens do Command vinculados à line. É o caminho
+    # da UI atual: adicionar/remover/reordenar checklists num deal que roda N
+    # campanhas. tokens[0] = principal (vai pro `code` da line no Xandr quando
+    # muda); o resto fica em `extra_short_tokens`. PI da line = soma dos
+    # investments (ver pmp_lines_enriched.sql). Lista vazia = desvincular tudo.
+    if request.method == "POST" and request.args.get("action") == "pmp_set_line_tokens":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            line_id_raw = body.get("line_id")
+            if not isinstance(line_id_raw, int) and not (isinstance(line_id_raw, str) and line_id_raw.isdigit()):
+                return (jsonify({"error": "line_id obrigatório (int)"}), 400, headers)
+            line_id = int(line_id_raw)
+            source  = (body.get("source") or "xandr").strip() or "xandr"
+            raw_tokens = body.get("short_tokens")
+            if raw_tokens is None:
+                raw_tokens = body.get("tokens")
+            if not isinstance(raw_tokens, list):
+                return (jsonify({"error": "short_tokens precisa ser lista"}), 400, headers)
+            tokens = pmp_lines.normalize_tokens(raw_tokens)
+            # Só tokens NOVOS nesta line disparam checagem de conflito — os que
+            # ela já carregava (e que por acaso estejam em outra line) não
+            # podem impedir de remover/reordenar.
+            current = pmp_lines._fetch_line_tokens(source, line_id)
+            if current is None:
+                return (jsonify({"error": "Line não encontrada"}), 404, headers)
+            already = set(pmp_lines.line_tokens(current))
+            new_tokens = [t for t in tokens if t not in already]
+            conflicts = pmp_lines.find_token_conflicts(new_tokens, source, line_id) if new_tokens else []
+            if conflicts and not body.get("force"):
+                return (jsonify({
+                    "error": "short_token já vinculado a outra line: "
+                             + ", ".join(f"{c['short_token']} (line {c['line_id']})" for c in conflicts),
+                    "conflict_line_id": conflicts[0]["line_id"],
+                    "conflicts": conflicts,
+                }), 409, headers)
+            line = pmp_lines.set_line_tokens(
+                source, line_id, tokens, admin.get("email", "unknown"),
+                xandr_put=xandr_curate.set_line_code,
+            )
+            if not line:
+                return (jsonify({"error": "Line não encontrada após atualizar"}), 404, headers)
+            return (jsonify(line), 200, headers)
+        except ValueError as ve:
+            return (jsonify({"error": str(ve)}), 400, headers)
+        except xandr_curate.XandrError as xe:
+            logger.warning(f"[pmp_set_line_tokens] xandr err: {xe}")
+            return (jsonify({"error": str(xe)}), 502, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_set_line_tokens] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    # Preview de checklists por token (cliente, campanha, PI, owners). A UI
+    # chama enquanto o operador digita um token manual, pra ele confirmar o
+    # vínculo vendo o que vai somar — e pra avisar "não existe" antes de gravar.
+    if request.method == "GET" and request.args.get("action") == "pmp_checklist_lookup":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            raw = (request.args.get("tokens") or request.args.get("token") or "").strip()
+            tokens = [t for t in re.split(r"[,\s]+", raw) if t]
+            if not tokens:
+                return (jsonify({"error": "tokens obrigatório"}), 400, headers)
+            if len(tokens) > 50:
+                return (jsonify({"error": "máximo de 50 tokens por consulta"}), 400, headers)
+            return (jsonify({"checklists": pmp_lines.lookup_checklists(tokens)}), 200, headers)
+        except ValueError as ve:
+            return (jsonify({"error": str(ve)}), 400, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_checklist_lookup] {e}")
             return (jsonify({"error": str(e)}), 500, headers)
 
     # ── Endpoints: PMP Line Groups (admin) ────────────────────────────────────

@@ -1704,11 +1704,14 @@ export async function pmpLinesTimeseries({ dateFrom, dateTo }) {
   return Array.isArray(d?.rows) ? d.rows : [];
 }
 
-/** Detalhe + timeseries diária de uma line. */
-export async function getPmpLine(lineId) {
+/** Detalhe + timeseries diária de uma line. `source` opcional (xandr |
+ *  pubmatic) desambigua line_id numericamente igual entre fontes. */
+export async function getPmpLine(lineId, source) {
   if (!lineId) return null;
   const jwt = await getOrIssueAdminJwt();
-  const r = await fetch(`${API_URL}?action=pmp_line_get&line_id=${encodeURIComponent(lineId)}`,
+  const qs = new URLSearchParams({ action: "pmp_line_get", line_id: String(lineId) });
+  if (source) qs.set("source", source);
+  const r = await fetch(`${API_URL}?${qs}`,
     { headers: { ...adminAuthHeaders(jwt) } });
   if (r.status === 404) return null;
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -1738,24 +1741,58 @@ export async function suggestPmpLinks(lineId) {
   return d.suggestions || [];
 }
 
-/** Vincula line ↔ short_token: PUT no Xandr + update local + refresh enriched. */
-export async function linkPmpCommand({ line_id, short_token, force = false }) {
+// Erro tipado dos endpoints de vinculação: 409 vira `is_conflict` com a lista
+// de lines que já carregam o token, pra UI oferecer "vincular mesmo assim".
+async function throwLinkError(r) {
+  let d = null;
+  try { d = await r.json(); } catch { /* corpo vazio */ }
+  const err = new Error(d?.error || `HTTP ${r.status}`);
+  if (r.status === 409) {
+    err.is_conflict = true;
+    err.conflict_line_id = d?.conflict_line_id;
+    err.conflicts = Array.isArray(d?.conflicts) ? d.conflicts : [];
+  }
+  throw err;
+}
+
+/** Vincula line ↔ short_token (1 token, caminho legado): troca o PRINCIPAL,
+ *  preservando os extras. PUT no Xandr + update local + refresh enriched. */
+export async function linkPmpCommand({ line_id, source = "xandr", short_token, force = false }) {
   const jwt = await getOrIssueAdminJwt();
   const r = await postJson(`${API_URL}?action=pmp_link_command`,
-    { line_id, short_token, force }, adminAuthHeaders(jwt));
-  if (r.status === 409) {
-    const d = await r.json();
-    const err = new Error(d.error || "Conflito");
-    err.conflict_line_id = d.conflict_line_id;
-    err.is_conflict = true;
-    throw err;
-  }
+    { line_id, source: source || "xandr", short_token, force }, adminAuthHeaders(jwt));
+  if (!r.ok) await throwLinkError(r);
+  return r.json();
+}
+
+/** Define a LISTA COMPLETA de short_tokens do Command vinculados à line.
+ *  `short_tokens[0]` é o principal (vai pro `code` da line no Xandr quando
+ *  muda); o resto fica em `extra_short_tokens`. PI da line = soma dos
+ *  checklists. Lista vazia = desvincular tudo. Devolve a line já refrescada. */
+export async function setPmpLineTokens({ line_id, source = "xandr", short_tokens, force = false }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(`${API_URL}?action=pmp_set_line_tokens`,
+    { line_id, source: source || "xandr", short_tokens, force }, adminAuthHeaders(jwt));
+  if (!r.ok) await throwLinkError(r);
+  return r.json();
+}
+
+/** Preview de checklists do Command por token: [{ short_token, found, client,
+ *  campaign_name, agency, investment, cp_name, cs_name, start_date, end_date }].
+ *  Uma entrada por token pedido, na ordem; `found=false` quando não existe. */
+export async function lookupPmpChecklists(tokens) {
+  const list = (Array.isArray(tokens) ? tokens : [tokens]).map(t => String(t || "").trim()).filter(Boolean);
+  if (list.length === 0) return [];
+  const jwt = await getOrIssueAdminJwt();
+  const qs = new URLSearchParams({ action: "pmp_checklist_lookup", tokens: list.join(",") });
+  const r = await fetch(`${API_URL}?${qs}`, { headers: { ...adminAuthHeaders(jwt) } });
   if (!r.ok) {
     let msg = `HTTP ${r.status}`;
-    try { const d = await r.json(); if (d?.error) msg = d.error; } catch {}
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch { /* sem corpo */ }
     throw new Error(msg);
   }
-  return r.json();
+  const d = await r.json();
+  return Array.isArray(d?.checklists) ? d.checklists : [];
 }
 
 /** Lista lines do mesmo cliente que podem ser agrupadas com `lineId`. */
