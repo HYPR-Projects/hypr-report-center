@@ -260,3 +260,25 @@ def test_set_line_code_local_keeps_extras_and_is_source_aware(pl):
     assert params["code"] == "NO2015" and params["src"] == "pubmatic"
     assert "UNNEST(extra_short_tokens)" in sql          # preserva extras
     assert fake.calls[-1][0] == "REFRESH"
+
+
+# ─── enriched_status (diagnóstico) ───────────────────────────────────────────
+def test_enriched_status_shapes_and_jsonables(pl):
+    fake = pl._fake
+    fake.queue = [
+        [{"view_refreshed_at": datetime(2026, 9, 3, 21, 20), "refreshed_minutes_ago": 7,
+          "lines": 250, "lines_with_token": 200, "lines_multi_token": 3,
+          "lines_token_without_match": 1, "lines_with_pi": 199, "pi_total": Decimal("12345.5")}],
+        [{"source": "xandr", "line_id": 1, "customer": "Amazon", "campaign_name": "Copa",
+          "linked_tokens": ["A1", "B2"], "linked_token_count": 2, "linked_checklist_count": 2,
+          "command_pi_total": Decimal("10"), "pi_brl": Decimal("10"), "pi_overridden": False, "status": "Andamento"}],
+        [{"n": 1}],
+    ]
+    out = pl.enriched_status(sample_limit=10)
+    assert out["summary"]["view_refreshed_at"] == "2026-09-03T21:20:00"
+    assert out["summary"]["lines_multi_token"] == 3
+    assert out["multi_token_lines"][0]["linked_tokens"] == ["A1", "B2"]
+    assert out["line_items_has_extra_short_tokens"] is True
+    sqls = fake.sql_calls()
+    assert "INFORMATION_SCHEMA.COLUMNS" in sqls[2]
+    assert fake.calls[1][1]["lim"] == 10

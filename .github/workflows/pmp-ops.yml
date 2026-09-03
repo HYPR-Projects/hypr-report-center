@@ -162,35 +162,24 @@ jobs:
            GROUP BY source
            ORDER BY source'
 
-      # A tabela que a UI lê. `view_refreshed_at` é a prova de que o refresh
-      # pós-sync rodou (e, desde a migração 003, de que o SQL com N tokens do
-      # Command por line compila no BigQuery de verdade). As contagens de
-      # tokens mostram quantas lines já usam a soma de PI.
+      # A tabela que a UI lê, via a própria função (a service account do CI
+      # não tem bigquery.jobs.create, então `bq query` direto é negado aqui).
+      # `view_refreshed_at` é a prova de que o refresh pós-sync rodou e, desde
+      # a migração 003, de que o SQL com N tokens do Command por line compila
+      # no BigQuery de verdade. As contagens mostram quantas lines já somam PI.
       - name: 'Diagnóstico · pmp_lines_enriched (refresh e tokens do Command)'
         if: inputs.acao != 'deploy'
         continue-on-error: true
         run: |
-          bq query --project_id="$PROJECT" --use_legacy_sql=false --format=prettyjson \
-          'SELECT
-             FORMAT_TIMESTAMP("%d/%m %H:%M", MAX(view_refreshed_at), "America/Sao_Paulo") AS refresh_brt,
-             TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX(view_refreshed_at), MINUTE) AS refresh_ha_min,
-             COUNT(*) AS lines,
-             COUNTIF(linked_token_count >= 1) AS lines_com_token,
-             COUNTIF(linked_token_count >= 2) AS lines_com_varios_tokens,
-             COUNTIF(linked_token_count > linked_checklist_count) AS lines_com_token_sem_match,
-             COUNTIF(pi_brl IS NOT NULL) AS lines_com_pi,
-             ROUND(SUM(CAST(pi_brl AS FLOAT64)), 2) AS pi_total
-           FROM `site-hypr.prod_assets.pmp_lines_enriched`'
-          echo
-          echo "── lines com mais de um token do Command ──"
-          bq query --project_id="$PROJECT" --use_legacy_sql=false --format=prettyjson \
-          'SELECT source, line_id, customer, campaign_name, linked_tokens,
-                  linked_checklist_count, CAST(command_pi_total AS STRING) AS command_pi_total,
-                  CAST(pi_brl AS STRING) AS pi_brl, pi_overridden
-           FROM `site-hypr.prod_assets.pmp_lines_enriched`
-           WHERE linked_token_count >= 2
-           ORDER BY customer, line_id
-           LIMIT 50'
+          SECRET=$(gcloud secrets versions access latest \
+            --secret=PMP_SCHEDULER_SECRET --project="$PROJECT" 2>/dev/null || echo "")
+          if [ -z "$SECRET" ]; then
+            echo "::warning::PMP_SCHEDULER_SECRET não acessível — pulando"
+            exit 0
+          fi
+          curl -sS --max-time 120 \
+            -H "X-Scheduler-Secret: $SECRET" \
+            "$FN_URL?action=pmp_enriched_status&limit=50" | python3 -m json.tool
 
       # ── DEPLOY ──────────────────────────────────────────────────────────────
 

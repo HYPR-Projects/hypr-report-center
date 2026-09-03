@@ -451,6 +451,64 @@ def refresh_enriched_table() -> dict:
     return {"refreshed": True}
 
 
+# ─── Diagnóstico da tabela que a UI lê ───────────────────────────────────────
+def enriched_status(sample_limit: int = 50) -> dict:
+    """Estado da `pmp_lines_enriched`: quando foi o último refresh, quantas
+    lines têm token do Command, quantas somam mais de um (migração 003) e
+    quais são. Read-only.
+
+    Existe porque a service account do CI não tem `bigquery.jobs.create` —
+    o diagnóstico do workflow não consegue consultar o BQ direto, mas a
+    função consegue. É a resposta a "o refresh pós-sync rodou com o SQL
+    novo?", que o log de um curl estourado em 300s não dá."""
+    sql_summary = f"""
+        SELECT
+          MAX(view_refreshed_at)                                   AS view_refreshed_at,
+          TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX(view_refreshed_at), MINUTE) AS refreshed_minutes_ago,
+          COUNT(*)                                                 AS lines,
+          COUNTIF(COALESCE(linked_token_count, 0) >= 1)            AS lines_with_token,
+          COUNTIF(COALESCE(linked_token_count, 0) >= 2)            AS lines_multi_token,
+          COUNTIF(COALESCE(linked_token_count, 0) > COALESCE(linked_checklist_count, 0))
+                                                                   AS lines_token_without_match,
+          COUNTIF(pi_brl IS NOT NULL)                              AS lines_with_pi,
+          SUM(pi_brl)                                              AS pi_total
+        FROM {_full(TABLE_LINES_ENRICHED)}
+    """
+    summary_rows = list(bq.query(sql_summary).result())
+    summary = _row_to_dict(summary_rows[0]) if summary_rows else {}
+
+    sql_sample = f"""
+        SELECT source, line_id, customer, campaign_name, linked_tokens,
+               linked_token_count, linked_checklist_count,
+               command_pi_total, pi_brl, pi_overridden, status
+        FROM {_full(TABLE_LINES_ENRICHED)}
+        WHERE COALESCE(linked_token_count, 0) >= 2
+        ORDER BY customer, line_id
+        LIMIT @lim
+    """
+    sample = [_row_to_dict(r) for r in bq.query(sql_sample, job_config=bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("lim", "INT64", int(sample_limit))]
+    )).result()]
+
+    # A coluna da migração 003 existe na tabela-fonte? (INFORMATION_SCHEMA é
+    # barato e responde sem depender do refresh.)
+    sql_col = f"""
+        SELECT COUNT(*) AS n
+        FROM `{PROJECT_ID}.{DATASET}.INFORMATION_SCHEMA.COLUMNS`
+        WHERE table_name = @t AND column_name = 'extra_short_tokens'
+    """
+    col_rows = list(bq.query(sql_col, job_config=bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("t", "STRING", TABLE_LINE_ITEMS)]
+    )).result())
+    has_col = bool(col_rows and int(col_rows[0]["n"] or 0) > 0)
+
+    return {
+        "summary": summary,
+        "multi_token_lines": sample,
+        "line_items_has_extra_short_tokens": has_col,
+    }
+
+
 # ─── Vinculação com Hypr Command ──────────────────────────────────────────────
 def _normalize(s: str) -> str:
     """Normalização leve pra fuzzy match: lowercase, sem acento, alfanum apenas."""
