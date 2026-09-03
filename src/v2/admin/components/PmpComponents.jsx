@@ -22,7 +22,8 @@ import {
   effectiveStatus, formatLineStartPeriod,
   isNewLine, METRIC,
 } from "../lib/pmpFormat";
-import { lineTokens, extraTokenCount } from "../lib/pmpTokens";
+import { lineTokens, extraTokenCount, lineChecklists, commandPiTotal } from "../lib/pmpTokens";
+import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -47,20 +48,58 @@ export function SourceChip({ source, showXandr = false, className }) {
 }
 
 // "+N" ao lado do chip do token: a line carrega N checklists do Command além
-// do principal (PI = soma). O title lista todos — sem abrir o drawer o
-// operador já sabe quais campanhas rodam no deal.
+// do principal (PI = soma). O hover abre o breakdown — token, campanha e PI
+// de cada checklist — pra o operador saber o que roda no deal sem abrir o
+// drawer. Precisa de <TooltipProvider> acima (o PmpDealsPage já envolve tudo).
 export function ExtraTokensBadge({ line, muted = false, className }) {
   const extra = extraTokenCount(line);
   if (extra <= 0) return null;
-  const all = lineTokens(line);
+  const cks = lineChecklists(line);
+  const total = commandPiTotal(line);
   return (
-    <span className={cn("font-mono text-[10px] px-1.5 py-0.5 rounded shrink-0 border",
-                        muted ? "text-fg-subtle bg-surface border-border"
-                              : "text-signature bg-signature/10 border-signature/20",
-                        className)}
-          title={`${all.length} checklists do Command (PI somado): ${all.join(" + ")}`}>
-      +{extra}
-    </span>
+    <Tooltip delayDuration={150}>
+      <TooltipTrigger asChild>
+        <span className={cn("font-mono text-[10px] px-1.5 py-0.5 rounded shrink-0 border cursor-help",
+                            muted ? "text-fg-subtle bg-surface border-border"
+                                  : "text-signature bg-signature/10 border-signature/20",
+                            className)}
+              aria-label={`${cks.length} checklists do Command: ${cks.map(c => c.short_token).join(", ")}`}>
+          +{extra}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" align="start" className="max-w-[360px] px-0 py-0 overflow-hidden">
+        <div className="px-3 py-2 border-b border-border flex items-center justify-between gap-4">
+          <span className="lbl-section text-signature">{cks.length} checklists · PI somado</span>
+          <span className="tabular-nums text-[12px] font-semibold text-fg">
+            {total != null ? formatBRL(total) : "—"}
+          </span>
+        </div>
+        <ul className="px-3 py-2 space-y-1.5">
+          {cks.map((c) => (
+            <li key={c.short_token} className="flex items-center gap-3 text-[11px]">
+              <span className={cn("font-mono shrink-0 w-[64px]", c.found === false ? "text-warning" : "text-signature")}>
+                {c.short_token}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-fg"
+                    title={c.campaign_name || undefined}>
+                {c.found === false
+                  ? <span className="text-warning">não encontrado no Command</span>
+                  : (c.campaign_name || <span className="text-fg-subtle">—</span>)}
+                {c.primary && <span className="ml-1.5 lbl-micro text-fg-subtle">principal</span>}
+              </span>
+              <span className={cn("tabular-nums shrink-0", c.investment != null ? "text-fg-muted" : "text-fg-subtle")}>
+                {c.investment != null ? formatBRL(c.investment) : "—"}
+              </span>
+            </li>
+          ))}
+        </ul>
+        {line?.pi_overridden && (
+          <div className="px-3 py-1.5 border-t border-border text-[10.5px] text-warning">
+            Override manual ativo: PI considerado {formatBRL(line.pi_brl)}
+          </div>
+        )}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
