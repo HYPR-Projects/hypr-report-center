@@ -18,6 +18,14 @@
 name: PMP ops (diagnóstico e deploy)
 
 on:
+  # Ronda diária às 09:30 BRT (12:30 UTC), só diagnóstico (sem inputs, nada de
+  # deploy nem sondagem). O passo "Veredito" FALHA o job quando há buraco na
+  # grade do cron, execução com erro nas últimas 24h ou a PubMatic parada em
+  # D-2+ com deal entregando na semana — e o GitHub manda o e-mail de falha.
+  # É o alarme que faltou em 19–21/08 e em 01–03/09: o painel só avisa quem
+  # abre o painel.
+  schedule:
+    - cron: '30 12 * * *'
   workflow_dispatch:
     inputs:
       acao:
@@ -108,59 +116,60 @@ jobs:
             echo
           done
 
-      # O ledger sabe de tudo: se rodou, a que horas, com qual credencial, e
-      # até que dia a fonte tinha dado em cada tentativa.
-      - name: 'Diagnóstico · execuções do sync nas últimas 72h'
-        if: inputs.acao != 'deploy'
-        continue-on-error: true
-        run: |
-          bq query --project_id="$PROJECT" --use_legacy_sql=false --format=prettyjson \
-          'SELECT
-             FORMAT_TIMESTAMP("%d/%m %H:%M", started_at, "America/Sao_Paulo") AS quando_brt,
-             source, status, actor, credential,
-             CAST(api_last_day AS STRING) AS dado_ate,
-             lag_days, rows_processed,
-             SUBSTR(IFNULL(error, ""), 0, 120) AS erro
-           FROM `site-hypr.prod_assets.pmp_sync_runs`
-           WHERE started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 72 HOUR)
-           ORDER BY started_at DESC
-           LIMIT 100'
+      # (Não há passo de Cloud Logging aqui de propósito: a SA de deploy não
+      # tem logging.logEntries.list — testado em 04/09, PERMISSION_DENIED. Um
+      # passo que sempre falha vira ruído que se aprende a ignorar, e foi
+      # exatamente assim que os `bq query` negados passaram despercebidos.)
 
-      # A pergunta que faz todo schedule fixo ser palpite: A QUE HORAS a
-      # PubMatic fecha D-1? Uma linha por dia, com a primeira hora em que o
-      # dado de D-1 apareceu. Se convergir, o schedule pode ser apertado por
-      # evidência; se variar, a janela larga está justificada.
-      - name: 'Diagnóstico · a que horas a PubMatic fecha D-1'
+      # O ledger sabe de tudo: se rodou, a que horas, com qual credencial, até
+      # que dia a fonte tinha dado em cada tentativa, e (missing_slots) quais
+      # horas da grade do cron NÃO dispararam. Vai pela função, e não por
+      # `bq query`, porque a service account do CI não tem
+      # bigquery.jobs.create — os três passos que faziam isso direto no BQ
+      # falharam com Access Denied em TODOS os runs deste workflow, escondidos
+      # pelo continue-on-error. A "auditoria" nunca tinha visto o ledger.
+      #
+      # Como ler:
+      #   missing_slots vazio + api_last_day parado → a PubMatic ainda não
+      #     reportou o dia (fonte); a base está igual à API (confira no passo
+      #     de auditoria: clean=true).
+      #   missing_slots com horas → o Cloud Scheduler não disparou (infra).
+      #   runs com status error/skipped → credencial/API (o erro vem junto).
+      #   d1_close_hours → a hora do dia em que a PubMatic fechou D-1, por dia.
+      - name: 'Diagnóstico · ledger de execuções, grade do cron e frescor por fonte'
         if: inputs.acao != 'deploy'
         continue-on-error: true
         run: |
-          bq query --project_id="$PROJECT" --use_legacy_sql=false --format=prettyjson \
-          'SELECT
-             DATE(started_at, "America/Sao_Paulo") AS dia_brt,
-             MIN(EXTRACT(HOUR FROM started_at AT TIME ZONE "America/Sao_Paulo")) AS primeira_hora_com_D1,
-             COUNT(*) AS runs_no_dia
-           FROM `site-hypr.prod_assets.pmp_sync_runs`
-           WHERE source = "pubmatic" AND status = "ok"
-             AND api_last_day = DATE_SUB(DATE(started_at, "America/Sao_Paulo"), INTERVAL 1 DAY)
-             AND started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 14 DAY)
-           GROUP BY dia_brt
-           ORDER BY dia_brt DESC'
-
-      # Onde a base está AGORA, por fonte. Confere o que o painel mostra.
-      - name: 'Diagnóstico · frescor da base por fonte'
-        if: inputs.acao != 'deploy'
-        continue-on-error: true
-        run: |
-          bq query --project_id="$PROJECT" --use_legacy_sql=false --format=prettyjson \
-          'SELECT
-             source,
-             CAST(MAX(day) AS STRING) AS ultimo_dia_na_base,
-             CAST(DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY) AS STRING) AS d_menos_1,
-             DATE_DIFF(DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY), MAX(day), DAY) AS dias_atras,
-             COUNT(DISTINCT line_id) AS lines
-           FROM `site-hypr.prod_assets.pmp_line_delivery_daily`
-           GROUP BY source
-           ORDER BY source'
+          SECRET=$(gcloud secrets versions access latest \
+            --secret=PMP_SCHEDULER_SECRET --project="$PROJECT" 2>/dev/null || echo "")
+          if [ -z "$SECRET" ]; then
+            echo "::warning::PMP_SCHEDULER_SECRET não acessível — pulando"
+            exit 0
+          fi
+          curl -sS --max-time 120 -o /tmp/status.json \
+            -H "X-Scheduler-Secret: $SECRET" \
+            "$FN_URL?action=pmp_sync_status&hours=72"
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open("/tmp/status.json"))
+          if "error" in d and "runs" not in d:
+              print(json.dumps(d, indent=2, ensure_ascii=False)); sys.exit(1)
+          print("== PubMatic ==", json.dumps(d.get("pubmatic"), ensure_ascii=False))
+          ms = d.get("missing_slots")
+          print("== Horas da grade SEM disparo do scheduler (72h):", ms if ms else "nenhuma — cron em dia")
+          print("== Frescor por fonte ==")
+          for r in d.get("delivery_freshness") or []: print("  ", r)
+          print("== A que hora a PubMatic fechou D-1 (por dia BRT) ==")
+          for r in d.get("d1_close_hours") or []: print("  ", r)
+          print("== Execuções (72h) ==")
+          for r in d.get("runs") or []:
+              print("  ", r.get("quando_brt"), r.get("source"), r.get("status"), r.get("actor"),
+                    r.get("credential") or "", "dado_ate=" + str(r.get("api_last_day")),
+                    "lag=" + str(r.get("lag_days")), "rows=" + str(r.get("rows_processed")),
+                    r.get("error") or "")
+          for k in ("runs_error", "d1_close_hours_error", "delivery_freshness_error"):
+              if d.get(k): print("::warning::" + k + ": " + d[k])
+          PY
 
       # A tabela que a UI lê, via a própria função (a service account do CI
       # não tem bigquery.jobs.create, então `bq query` direto é negado aqui).
@@ -235,10 +244,39 @@ jobs:
             echo "::warning::PMP_SCHEDULER_SECRET não acessível — pulando a sondagem"
             exit 0
           fi
-          curl -sS -X POST --max-time 300 \
+          # max-time = timeout da função (540s) + folga. Era 300s e estourava
+          # com 0 bytes — sem dizer se o sync tinha rodado. Agora, além do
+          # tempo maior, a resposta traz `timings_sec` por etapa (ledger,
+          # sync, refresh da enriched, compplan) pra apontar ONDE demorou.
+          code=$(curl -sS -X POST --max-time 560 -o /tmp/sync.json -w '%{http_code}' \
             -H "Content-Type: application/json" \
             -H "X-Scheduler-Secret: $SECRET" \
-            "$FN_URL?action=pmp_sync_pubmatic" | python3 -m json.tool
+            "$FN_URL?action=pmp_sync_pubmatic" || echo 000)
+          echo "HTTP $code"
+          python3 -m json.tool /tmp/sync.json || cat /tmp/sync.json || true
+          if [ "$code" != "200" ]; then
+            echo "::warning::sync não devolveu 200 — confira o ledger no passo seguinte (a row existe mesmo se o HTTP morreu)"
+          fi
+
+      # Mesmo que o curl acima tenha morrido, a row do ledger existe: mostra o
+      # que a sondagem viu (api_last_day) e se a grade do cron está inteira.
+      - name: 'Sondagem · ledger depois do sync'
+        if: inputs.sondar_agora
+        continue-on-error: true
+        run: |
+          SECRET=$(gcloud secrets versions access latest \
+            --secret=PMP_SCHEDULER_SECRET --project="$PROJECT" 2>/dev/null || echo "")
+          [ -z "$SECRET" ] && exit 0
+          curl -sS --max-time 120 -H "X-Scheduler-Secret: $SECRET" \
+            "$FN_URL?action=pmp_sync_status&hours=6" | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)
+          print("missing_slots (6h):", d.get("missing_slots"))
+          for r in (d.get("runs") or [])[:8]:
+              print("  ", r.get("quando_brt"), r.get("source"), r.get("status"), r.get("actor"),
+                    "dado_ate=" + str(r.get("api_last_day")), "lag=" + str(r.get("lag_days")),
+                    "dur=" + str(r.get("duration_sec")), r.get("error") or "")
+          '
 
       # Diff API × BQ: dias que a coleta perdeu, valores divergentes, rows
       # órfãs. Read-only — não conserta nada, classifica.
@@ -255,3 +293,54 @@ jobs:
           curl -sS --max-time 300 \
             -H "X-Scheduler-Secret: $SECRET" \
             "$FN_URL?action=pmp_pubmatic_audit&days=14" | python3 -m json.tool
+
+      # ── VEREDITO ────────────────────────────────────────────────────────────
+
+      # Veredito: o único passo do diagnóstico SEM continue-on-error. Falha o
+      # job (e dispara o e-mail do GitHub na ronda agendada) quando:
+      #   • há hora da grade do cron sem disparo do scheduler (cron parou);
+      #   • alguma execução da PubMatic deu error/skipped nas últimas 24h
+      #     (credencial/API);
+      #   • a PubMatic está parada em D-2 ou pior E alguma line dela entregou
+      #     nos últimos 7 dias (se nada entregou na semana, é fim de campanha,
+      #     não atraso — mesma guarda do painel).
+      # Só lê /tmp/status.json; se o passo anterior não conseguiu gerar o
+      # arquivo, isso também é falha (diagnóstico cego é o que se quer evitar).
+      - name: 'Veredito · o pipeline da PubMatic está saudável?'
+        # Só nos runs de diagnóstico puro (manual ou ronda agendada). Num run de
+        # deploy o veredito não roda: o status foi lido ANTES do deploy e um
+        # vermelho aqui seria lido como "o deploy falhou".
+        if: inputs.acao == 'diagnosticar' || github.event_name == 'schedule'
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          from datetime import datetime, timedelta, timezone
+          try:
+              d = json.load(open("/tmp/status.json"))
+          except Exception as e:
+              print(f"::error::sem /tmp/status.json ({e}) — o endpoint pmp_sync_status não respondeu")
+              sys.exit(1)
+          if "runs" not in d:
+              print("::error::pmp_sync_status sem `runs`: " + json.dumps(d, ensure_ascii=False)[:400])
+              sys.exit(1)
+          problems = []
+          ms = d.get("missing_slots") or []
+          if ms:
+              problems.append(f"cron: {len(ms)} hora(s) da grade sem disparo do scheduler → {ms}")
+          cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+          bad = [r for r in d["runs"]
+                 if r.get("source") == "pubmatic" and r.get("status") in ("error", "skipped")
+                 and datetime.fromisoformat(str(r["started_at"]).replace("Z", "+00:00")) >= cutoff]
+          if bad:
+              problems.append(f"execução: {len(bad)} run(s) da PubMatic com erro nas últimas 24h → "
+                              + "; ".join(f'{r.get("quando_brt")} {r.get("status")} {r.get("error") or ""}' for r in bad[:3]))
+          pm_fresh = next((r for r in d.get("delivery_freshness") or [] if r.get("source") == "pubmatic"), None)
+          if pm_fresh and int(pm_fresh.get("lines_7d") or 0) > 0 and int(pm_fresh.get("dias_atras") or 0) >= 2:
+              problems.append(f"fonte: PubMatic parada em {pm_fresh.get('ultimo_dia_na_base')} "
+                              f"({pm_fresh.get('dias_atras')} dias atrás de D-1) com {pm_fresh.get('lines_7d')} line(s) "
+                              "entregando na semana — conferir Media Console; se lá tem entrega, é ticket com a PubMatic")
+          if problems:
+              for p in problems: print("::error::" + p)
+              sys.exit(1)
+          print("OK — cron sem buracos, sem erro nas últimas 24h, dado da PubMatic dentro do esperado")
+          PY

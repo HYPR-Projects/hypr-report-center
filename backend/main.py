@@ -4150,13 +4150,14 @@ def report_data(request):
     #   POST ?action=pmp_sync_pubmatic                 → re-sync só da PubMatic
     #   GET  ?action=pmp_pubmatic_audit&days=N         → diff API × BQ (auditoria)
     #   GET  ?action=pmp_enriched_status               → último refresh da enriched + tokens do Command
+    #   GET  ?action=pmp_sync_status&hours=72          → ledger + buracos na grade do cron + frescor por fonte
     #
     # `pmp_sync_v2` é o endpoint que o Cloud Scheduler dispara 1x/dia às 04:00
     # BRT (header X-Scheduler-Secret, body {"report_interval":"last_7_days"}).
-    # `pmp_sync_pubmatic` é o mesmo secret, 4x/dia, e existe porque às 04h a
-    # PubMatic ainda não fechou D-1 — sozinho, o cron da madrugada deixava a
-    # base 2 dias atrás em regime permanente. Setup dos dois jobs é mantido
-    # idempotente em backend/deploy.sh.
+    # `pmp_sync_pubmatic` é o mesmo secret, de hora em hora (05h–23h BRT), e
+    # existe porque às 04h a PubMatic ainda não fechou D-1 — sozinho, o cron da
+    # madrugada deixava a base 2 dias atrás em regime permanente. Setup dos
+    # dois jobs é mantido idempotente em backend/deploy.sh.
     if request.method == "GET" and request.args.get("action") == "pmp_lines_list":
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
@@ -4548,14 +4549,14 @@ def report_data(request):
             logger.exception(f"[ERROR pmp_sync_v2] {e}")
             return (jsonify({"error": str(e)}), 500, headers)
 
-    # Re-sync SÓ da PubMatic (+ refresh da enriched). Roda 4x/dia pelo
-    # Cloud Scheduler `pmp-pubmatic-refresh`, e é o conserto do sintoma que
+    # Re-sync SÓ da PubMatic (+ refresh da enriched). Roda de hora em hora
+    # (05h–23h BRT) pelo Cloud Scheduler `pmp-pubmatic-refresh`, e é o conserto do sintoma que
     # abriu esta investigação: o hub mostrava "entrega há 2d" pro deal do TIM
     # enquanto a Media Console mostrava a entrega de ontem. Não era credencial
     # nem cron quebrado — era a hora da coleta. Às 04h BRT a PubMatic devolve
     # D-1 zerado, o conector descarta dia zerado (senão o deal apareceria "no
-    # ar" sem ter entregue) e D-1 só entrava no run seguinte. Rodando de novo
-    # às 10/14/18/22h, D-1 entra no dia em que a fonte o fecha.
+    # ar" sem ter entregue) e D-1 só entrava no run seguinte. Sondando de hora
+    # em hora, D-1 entra até ~1h depois de a fonte fechá-lo, seja quando for.
     #
     # Não toca no Xandr de propósito: o report do Xandr é o caminho caro e ele
     # já roda de madrugada. Aqui é 1 request de report + MERGE idempotente.
@@ -4570,13 +4571,26 @@ def report_data(request):
                 return (jsonify({"error": "Não autorizado"}), 401, headers)
             actor = admin.get("email", "unknown")
         try:
+            # Cronômetro por etapa. Em 03/09 a sondagem pós-deploy estourou
+            # 300s sem devolver 1 byte e o log não dizia ONDE o tempo foi —
+            # sync, refresh da enriched ou push do compplan. Agora diz.
+            _t_step = time.time()
+            timings = {}
+
+            def _lap(name):
+                nonlocal _t_step
+                timings[name] = round(time.time() - _t_step, 2)
+                _t_step = time.time()
+
             # Até onde a fonte tinha dado ANTES desta sondagem. É o que
             # distingue "a PubMatic finalmente fechou o dia" de "mais uma
             # sondagem no vazio" — a maioria das runs de hora em hora é a
             # segunda, e não deve arrastar o trabalho pesado junto.
             prev_api_day = pmp_sync_runs.last_ok_api_day("pubmatic")
+            _lap("ledger_read")
 
             pubmatic_res = _run_pubmatic_sync(actor)
+            _lap("sync")
             api_day = (pubmatic_res or {}).get("api_last_day")
             # None em prev = "não sei" (ledger sem frescor ainda). Nesse caso
             # faz o trabalho completo: pular baseado em desconhecimento é como
@@ -4590,6 +4604,7 @@ def report_data(request):
             # Roda SEMPRE, mesmo sem dia novo: a PubMatic restata dias já
             # fechados, e ~250 linhas de CREATE OR REPLACE é barato.
             pmp_lines.refresh_enriched_table()
+            _lap("refresh_enriched")
 
             # O push do compplan escreve numa planilha que gente olha, e custa
             # quota do Google. Só quando a fonte de fato avançou — senão são 19
@@ -4602,10 +4617,14 @@ def report_data(request):
                 except Exception as ce:
                     logger.warning(f"[pmp_sync_pubmatic compplan push] {ce}")
                     compplan_res = {"error": str(ce)}
+                _lap("compplan_push")
+            logger.info("[pmp_sync_pubmatic] actor=%s api_last_day %s→%s advanced=%s timings=%s",
+                        actor, prev_api_day, api_day, advanced, timings)
             return (jsonify({
                 "actor": actor,
                 "pubmatic": pubmatic_res,
                 "view_refreshed": True,
+                "timings_sec": timings,
                 # O par (antes, agora) é o que transforma o log das sondagens
                 # horárias no HORÁRIO REAL em que a PubMatic fecha D-1 — a
                 # pergunta que nunca foi respondida e que faz o schedule
@@ -4645,6 +4664,27 @@ def report_data(request):
             return (jsonify(pmp_lines.enriched_status(sample_limit=max(1, min(lim, 200)))), 200, headers)
         except Exception as e:
             logger.exception(f"[ERROR pmp_enriched_status] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    # Estado do LEDGER + grade do cron + frescor por fonte, num GET. Nasceu
+    # porque o workflow pmp-ops tentava ler isso com `bq query` e a service
+    # account do CI não tem bigquery.jobs.create: 3 dos 5 passos do
+    # diagnóstico falhavam com Access Denied desde o primeiro run, escondidos
+    # pelo continue-on-error. O que responde "o cron está disparando?" é o
+    # `missing_slots` (buraco na grade = infra; grade cheia e api_last_day
+    # parado = a própria PubMatic). Mesma auth do enriched_status.
+    if request.method == "GET" and request.args.get("action") == "pmp_sync_status":
+        _ss_secret = os.environ.get("PMP_SCHEDULER_SECRET", "")
+        _ss_is_bot = bool(_ss_secret) and \
+            request.headers.get("X-Scheduler-Secret", "") == _ss_secret
+        if not _ss_is_bot and not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            hours_raw = (request.args.get("hours") or "72").strip()
+            hours = int(hours_raw) if hours_raw.isdigit() else 72
+            return (jsonify(pmp_sync_runs.sync_status_report(hours=hours)), 200, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR pmp_sync_status] {e}")
             return (jsonify({"error": str(e)}), 500, headers)
 
     if request.method == "GET" and request.args.get("action") == "pmp_pubmatic_audit":

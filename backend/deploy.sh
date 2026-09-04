@@ -461,6 +461,16 @@ fi
 #
 # Não substitui o cron das 04h: aquele é o full sync (IOs, line items, Xandr,
 # espelho de checklists). Este só puxa a PubMatic de novo, mais tarde.
+#
+# attempt-deadline = 540s, igual ao --timeout da função. Era 300s: uma
+# execução que passasse disso (em 03/09 a sondagem pós-deploy levou mais de
+# 300s — sync + MERGE + refresh da enriched) era marcada FALHA no Scheduler
+# enquanto a função seguia e terminava o trabalho. Deadline menor que o
+# timeout do serviço só fabrica alarme falso; não interrompe nada.
+#
+# Atenção: delete + create ZERA o histórico de tentativas do job (lastAttemptTime,
+# status). Logo após um deploy o `describe` não prova nada sobre o cron — quem
+# prova é o ledger (`?action=pmp_sync_status`, campo missing_slots).
 if [ -n "$PMP_SCHEDULER_SECRET" ]; then
   echo ""
   echo "▸ Garantindo Cloud Scheduler pmp-pubmatic-refresh..."
@@ -483,7 +493,7 @@ if [ -n "$PMP_SCHEDULER_SECRET" ]; then
     --http-method=POST \
     --headers="Content-Type=application/json,X-Scheduler-Secret=${PMP_SCHEDULER_SECRET}" \
     --message-body='{}' \
-    --attempt-deadline=300s \
+    --attempt-deadline=540s \
     --description="Re-sync PubMatic (fecha D-1 no dia em que a fonte fecha)" \
     >/dev/null
   echo "  ✓ Job recriado (0 5-23 * * * America/Sao_Paulo → $PM_URI)"

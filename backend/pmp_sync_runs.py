@@ -55,7 +55,7 @@ clusterizada por source. Criada on-demand por `ensure_table()` (idempotente).
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from google.cloud import bigquery
@@ -111,6 +111,70 @@ _ADDED_COLUMNS = [
 # pmp_lines_list é chamado a cada mount da página.
 _cache: dict = {}
 _CACHE_TTL_S = 60
+
+# ── Grade horária esperada do sync PubMatic (BRT) ────────────────────────────
+# 04h = cron `pmp-xandr-daily-sync` (pmp_sync_v2, que também roda a PubMatic);
+# 05h–23h = `pmp-pubmatic-refresh`, de hora em hora. Espelha o deploy.sh — se
+# a grade mudar lá, muda aqui, senão o detector de buracos abaixo mente.
+PUBMATIC_SCHEDULE_HOURS_BRT = tuple(range(4, 24))
+# Um run "cobre" o slot se começou até este tanto depois da hora cheia. O
+# Scheduler dispara no minuto 0; a folga cobre fila/cold start.
+_SLOT_TOLERANCE = timedelta(minutes=50)
+BRT = timezone(timedelta(hours=-3))
+
+
+def expected_probe_slots(now: datetime, hours: int = 72) -> List[datetime]:
+    """Horas cheias (UTC) em que o Cloud Scheduler DEVERIA ter disparado a
+    PubMatic nas últimas `hours` horas, já descontadas as que ainda não
+    venceram (slot da hora corrente só conta depois da tolerância)."""
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now_brt = now.astimezone(BRT)
+    start = now_brt - timedelta(hours=hours)
+    cursor = start.replace(minute=0, second=0, microsecond=0)
+    out = []
+    while cursor <= now_brt:
+        if cursor.hour in PUBMATIC_SCHEDULE_HOURS_BRT and cursor >= start \
+                and cursor + _SLOT_TOLERANCE <= now_brt:
+            out.append(cursor.astimezone(timezone.utc))
+        cursor += timedelta(hours=1)
+    return out
+
+
+def missing_probe_slots(runs: List[dict], now: datetime, hours: int = 72,
+                        source: str = "pubmatic") -> List[str]:
+    """Slots da grade sem NENHUMA execução do scheduler (qualquer status).
+
+    É a pergunta que o painel e o describe do Cloud Scheduler não respondem:
+    o cron ESTÁ disparando? O describe zera a cada deploy (o deploy.sh recria
+    o job) e o painel só mostra a última execução — uma base velha porque a
+    fonte não fechou D-1 e uma base velha porque o Scheduler parou têm a
+    mesma cara ali. Aqui, buraco na grade = infra; grade cheia com
+    api_last_day parado = fonte.
+
+    `runs` no formato de `recent_by_source`/`_recent_rows` (started_at ISO ou
+    datetime, source, actor). Só runs com actor='scheduler' contam: um clique
+    manual no mesmo horário não prova que o cron está vivo.
+    Devolve os slots faltantes como "dd/mm HHh" BRT, mais antigos primeiro.
+    """
+    starts = []
+    for r in runs:
+        if (r.get("source") or "xandr") != source or r.get("actor") != "scheduler":
+            continue
+        ts = r.get("started_at")
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if ts is None:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        starts.append(ts)
+    missing = []
+    for slot in expected_probe_slots(now, hours):
+        covered = any(slot <= s < slot + _SLOT_TOLERANCE for s in starts)
+        if not covered:
+            missing.append(slot.astimezone(BRT).strftime("%d/%m %Hh"))
+    return missing
 
 
 def ensure_table() -> None:
@@ -399,3 +463,104 @@ def _latest_sql(with_freshness: bool) -> str:
         FROM last_run r
         LEFT JOIN last_ok o USING (source)
     """
+
+
+# ── Relatório de status pra automação (GET ?action=pmp_sync_status) ──────────
+def _rows(sql: str, params: Optional[list] = None) -> List[dict]:
+    job = bq.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=params or []))
+    out = []
+    for r in job.result():
+        d = dict(r)
+        for k, v in list(d.items()):
+            if hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+        out.append(d)
+    return out
+
+
+def sync_status_report(hours: int = 72, d1_days: int = 14) -> dict:
+    """Tudo que o diagnóstico do PMP precisa do BigQuery, num GET.
+
+    Por que existe
+    ──────────────
+    O workflow `pmp-ops` tentava ler o ledger com `bq query` e a service
+    account do CI não tem `bigquery.jobs.create` — 3 dos 5 passos de
+    diagnóstico falhavam com "Access Denied" desde o primeiro run, e ninguém
+    via porque eram `continue-on-error`. A auditoria "pela milésima vez"
+    continuava sem o dado que a responde. A função tem a permissão; então o
+    diagnóstico passa por ela.
+
+    Devolve:
+      runs               execuções das últimas `hours` horas, todas as fontes
+      missing_slots      horas da grade da PubMatic sem disparo do scheduler
+                         (buraco = cron; grade cheia = fonte)
+      d1_close_hours     por dia BRT, a primeira hora em que uma execução viu
+                         D-1 — o horário REAL em que a PubMatic fecha o dia
+      delivery_freshness até que dia cada fonte tem entrega gravada
+    Read-only e best-effort por bloco: um bloco que falha vira `error` no
+    próprio bloco, não derruba o resto.
+    """
+    hours = max(1, min(int(hours), 24 * 14))
+    d1_days = max(1, min(int(d1_days), 90))
+    now = datetime.now(timezone.utc)
+    out: dict = {"generated_at": now.isoformat(), "hours": hours}
+
+    try:
+        out["runs"] = _rows(f"""
+            SELECT
+              FORMAT_TIMESTAMP("%d/%m %H:%M", started_at, "America/Sao_Paulo") AS quando_brt,
+              started_at, source, status, actor, credential,
+              api_last_day, lag_days, rows_processed, duration_sec,
+              SUBSTR(IFNULL(error, ""), 0, 160) AS error
+            FROM `{_FQ}`
+            WHERE started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @hours HOUR)
+            ORDER BY started_at DESC
+            LIMIT 400
+        """, [bigquery.ScalarQueryParameter("hours", "INT64", hours)])
+        out["missing_slots"] = missing_probe_slots(out["runs"], now, hours)
+        pm = [r for r in out["runs"] if r.get("source") == "pubmatic"]
+        out["pubmatic"] = {
+            "runs": len(pm),
+            "scheduler_runs": sum(1 for r in pm if r.get("actor") == "scheduler"),
+            "errors": sum(1 for r in pm if r.get("status") in ("error", "skipped")),
+            "last_ok_api_last_day": next((r.get("api_last_day") for r in pm
+                                          if r.get("status") == "ok" and r.get("api_last_day")), None),
+            "distinct_api_last_days": sorted({r["api_last_day"] for r in pm
+                                              if r.get("api_last_day")}, reverse=True),
+        }
+    except Exception as e:  # noqa: BLE001 — diagnóstico parcial vale mais que nenhum
+        out["runs_error"] = str(e)[:300]
+
+    try:
+        out["d1_close_hours"] = _rows(f"""
+            SELECT
+              DATE(started_at, "America/Sao_Paulo") AS dia_brt,
+              MIN(EXTRACT(HOUR FROM DATETIME(started_at, "America/Sao_Paulo"))) AS primeira_hora_com_d1,
+              COUNT(*) AS runs_no_dia
+            FROM `{_FQ}`
+            WHERE source = "pubmatic" AND status = "ok"
+              AND api_last_day = DATE_SUB(DATE(started_at, "America/Sao_Paulo"), INTERVAL 1 DAY)
+              AND started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
+            GROUP BY dia_brt
+            ORDER BY dia_brt DESC
+        """, [bigquery.ScalarQueryParameter("days", "INT64", d1_days)])
+    except Exception as e:  # noqa: BLE001
+        out["d1_close_hours_error"] = str(e)[:300]
+
+    try:
+        out["delivery_freshness"] = _rows(f"""
+            SELECT
+              source,
+              MAX(day) AS ultimo_dia_na_base,
+              DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY) AS d_menos_1,
+              DATE_DIFF(DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY), MAX(day), DAY) AS dias_atras,
+              COUNT(DISTINCT line_id) AS lines,
+              COUNT(DISTINCT IF(day >= DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 7 DAY), line_id, NULL)) AS lines_7d
+            FROM `{PROJECT_ID}.{DATASET}.pmp_line_delivery_daily`
+            GROUP BY source
+            ORDER BY source
+        """)
+    except Exception as e:  # noqa: BLE001
+        out["delivery_freshness_error"] = str(e)[:300]
+
+    return out

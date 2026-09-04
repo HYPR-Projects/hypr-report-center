@@ -219,9 +219,18 @@ function deriveStatus(src) {
   const lag = deriveDataLag(src);
   if (lag && lag.days >= DATA_LAG_WARN_DAYS) {
     const d = fmtBrDate(lag.day);
-    return lag.days === DATA_LAG_WARN_DAYS
-      ? { tone: "warn",  summary: `Sync ok, mas o dado para em ${d} (1 dia atrás)` }
-      : { tone: "error", summary: `Sync ok, mas o dado para em ${d} (${lag.days} dias atrás)` };
+    // Quando o atraso foi MEDIDO contra a resposta da API (lagDays do ledger),
+    // o texto diz de quem é o atraso. "O dado para em X" lia como "a base não
+    // atualizou" — e em 03/09 a base estava idêntica à API (auditoria limpa):
+    // era a PubMatic que ainda não tinha reportado 01–02/09. Culpar o sync
+    // aqui mandava a investigação pro lugar errado.
+    const measured = src.lagDays != null && !!src.apiLastDay;
+    const who = measured ? "a API da PubMatic só tem dado até" : "o dado para em";
+    const tail = lag.days === DATA_LAG_WARN_DAYS ? "1 dia atrás" : `${lag.days} dias atrás`;
+    return {
+      tone: lag.days === DATA_LAG_WARN_DAYS ? "warn" : "error",
+      summary: `Sync ok, mas ${who} ${d} (${tail})`,
+    };
   }
   // "dado em dia" só quando o atraso foi MEDIDO e deu zero. Sem medida — fonte
   // que não reporta frescor (Xandr), ou ledger ainda sem as colunas — o painel
@@ -423,7 +432,7 @@ export function PmpFreshnessIndicator({
           )}
 
           <div className="px-4 py-2 border-t border-border text-[10.5px] text-fg-subtle leading-snug">
-            Cron às 04h · PubMatic re-sincroniza 10/14/18/22h ·
+            Cron às 04h · PubMatic sondada de hora em hora (05h–23h) ·
             {" "}referência <span className="font-medium">ontem</span>.
             {" "}Falha → reportar no #data-pipelines.
           </div>
