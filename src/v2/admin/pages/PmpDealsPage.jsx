@@ -719,7 +719,7 @@ export default function PmpDealsPage({
   // 2 dias atrás (às 04h BRT a fonte não fechou D-1, e dia zerado é
   // descartado). "Rodou" nunca foi o mesmo que "está fresco".
   const SOURCE_NOTES = {
-    pubmatic: "Sync às 04h + re-sync 10/14/18/22h — a fonte fecha D-1 ao longo do dia.",
+    pubmatic: "Sync às 04h + sondagem de hora em hora (05h–23h). \"Dado da fonte até\" é o que a própria API da PubMatic devolve — se para em D-2, a base está igual à fonte e é a PubMatic que ainda não reportou.",
   };
   const recentBySource = useMemo(() => {
     const by = new Map();
