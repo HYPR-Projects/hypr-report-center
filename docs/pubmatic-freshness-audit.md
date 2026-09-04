@@ -161,6 +161,23 @@ erro, e foi trocado (abaixo).
 | 13 | Painel dizia *"o dado para em X"*, lido como "a base não atualizou" | investigação apontava pro sync quando a base estava igual à API | quando o atraso foi medido contra a API, o texto diz *"a API da PubMatic só tem dado até X"*; nota da fonte explica o mesmo |
 | 14 | Notas do painel e comentários ainda falavam em "10/14/18/22h" | operador comparava o painel com uma grade que não existe mais | texto atualizado para a grade horária |
 
+### Ronda automática (o alarme que faltava)
+
+O `pmp-ops` roda sozinho todo dia às 09:30 BRT em modo diagnóstico. O passo
+**Veredito** falha o job — e o GitHub manda e-mail de falha para quem mantém o
+workflow — quando qualquer destas condições vale:
+
+- hora da grade do cron (04h + 05h–23h BRT) sem disparo do scheduler nas
+  últimas 72h;
+- execução da PubMatic com `error`/`skipped` nas últimas 24h;
+- PubMatic parada em D-2 ou pior **e** alguma line dela entregou nos últimos
+  7 dias (sem entrega na semana é fim de campanha, não atraso).
+
+Nos dois primeiros casos o conserto é nosso (infra/credencial). No terceiro, a
+base já está igual à API e a conversa é com a PubMatic ou com quem configurou
+o deal. Em 19–21/08 (401 por 3 dias) e em 01–03/09 (fonte parada) esse e-mail
+teria chegado no primeiro dia.
+
 ### Procedimento quando a base "não atualiza" (2 minutos, sem BigQuery)
 
 1. Actions → **PMP ops** → `diagnosticar` com `sondar_agora` ligado.
