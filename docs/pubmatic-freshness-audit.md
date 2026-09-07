@@ -197,6 +197,56 @@ teria chegado no primeiro dia.
    os dias recentes sumirem dessa lista, a fonte está atrasando mais que 1
    dia de forma consistente.
 
+## Quarta rodada (07/09): a pergunta de 25/08 finalmente respondida
+
+Reportado às ~08h BRT de 07/09: *"hoje os deals de PubMatic não atualizaram
+novamente"*. O painel mostrava amarelo, dado até 05/09.
+
+O ledger das últimas 72h (run #14 do `pmp-ops`): 61 execuções do scheduler,
+0 erros, nenhuma hora da grade sem disparo. E a coluna `d1_close_hours` — a
+primeira hora do dia em que uma sondagem viu D-1 — respondeu a pergunta que em
+25/08 fez o schedule virar horário:
+
+| Dia BRT | Hora em que a PubMatic liberou D-1 |
+|---|---|
+| 27/08 | 10h |
+| 28/08 | 10h |
+| 29/08 | 09h |
+| 30/08 | 09h |
+| 31/08 | 09h |
+| 01/09 | 08h |
+| 04/09 | 08h |
+| 05/09 | 09h |
+| 06/09 | 09h |
+| 07/09 | 08h (sondagem manual 08:22 já trouxe 06/09) |
+
+**A API da PubMatic fecha o dia anterior entre 08h e 10h BRT, todo dia.** Das
+04h às 08h a resposta ainda é "até anteontem" — e o painel pintava isso de
+amarelo (*"1 dia atrás"*) exatamente no horário em que o hub é aberto de
+manhã. Três dias seguidos de "não atualizou de novo" com o pipeline saudável.
+(02–03/09 faltam na tabela porque nesses dias a fonte não liberou 01 e 02/09
+— o episódio da terceira rodada; ela pulou direto pra 03/09 em 04/09.)
+
+### Conserto
+
+- **Painel:** antes das 11h BRT, PubMatic com dado até D-2 fica **cinza**,
+  com o texto *"Sync ok · aguardando a fonte fechar ontem (costuma liberar
+  entre 08h e 10h)"*. Depois das 11h, 1 dia atrás volta a ser amarelo e 2+
+  vermelho — aí é atraso de verdade. Constante `SOURCE_CLOSE_HOUR_BRT` no
+  `PmpFreshnessIndicator`; se a PubMatic mudar de horário, `d1_close_hours`
+  mostra e o número se ajusta ali.
+- **Nada no backend:** o sync já grava até ~1h depois de a fonte liberar
+  (sondagem horária). Não há como puxar o dia antes de a PubMatic fechá-lo.
+
+### Como ler o painel da PubMatic de manhã
+
+| Hora BRT | Painel | Significa |
+|---|---|---|
+| até 10h | cinza, "aguardando a fonte fechar ontem" | normal; a sondagem das 09h/10h traz |
+| 11h+ | amarelo, "só tem dado até D-2" | a PubMatic atrasou hoje; conferir Media Console |
+| qualquer | vermelho, "só tem dado até D-3+" | fonte parada (01–03/09) ou deal fora do report; ronda diária já avisou por e-mail |
+| qualquer | vermelho, "Sync falhando" | nosso problema: erro vem no popover; rodar `pmp-ops` |
+
 ## Como auditar daqui pra frente
 
 ```

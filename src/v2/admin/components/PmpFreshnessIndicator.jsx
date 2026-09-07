@@ -47,7 +47,9 @@
 //
 // Régua do DADO (só quando `expectsDelivery`), aplicada sobre o mesmo dot:
 //   • dado até D-1                                   → não mexe (em dia)
-//   • dado em D-2                                    → amarelo
+//   • dado em D-2 antes da hora em que a fonte fecha → cinza (aguardando a fonte;
+//     PubMatic libera D-1 entre 08h e 10h BRT, ver SOURCE_CLOSE_HOUR_BRT)
+//   • dado em D-2 depois dessa hora                  → amarelo
 //   • dado em D-3 ou mais velho                      → vermelho
 //
 // D-2 é amarelo e não verde de propósito: é exatamente o estado em que a base
@@ -73,6 +75,17 @@ const CUTOFF_HOUR_BR = 5;
 // não na lógica. Hoje 1 dia = amarelo porque foi exatamente em D-2 que a base
 // da PubMatic ficou parada por semanas sem ninguém ver.
 const DATA_LAG_WARN_DAYS = 1;
+
+// Hora (BRT) até a qual é NORMAL a fonte ainda não ter fechado D-1. Medido no
+// ledger (`d1_close_hours` do ?action=pmp_sync_status), 24/08–06/09: a API da
+// PubMatic libera o dia anterior entre 08h e 10h BRT, todo dia. Antes disso,
+// "dado até anteontem" não é atraso — é o horário da fonte. O painel pintava
+// isso de amarelo às 08h da manhã, e de manhã é justamente quando o hub é
+// aberto: virou "a PubMatic não atualizou de novo" três dias seguidos com o
+// pipeline 100% saudável. Depois desta hora, 1 dia atrás volta a ser amarelo.
+// Só a PubMatic tem medida; fonte sem entrada aqui não ganha tolerância.
+const SOURCE_CLOSE_HOUR_BRT = { pubmatic: 11 };
+const SOURCE_CLOSE_WINDOW_LABEL = { pubmatic: "entre 08h e 10h" };
 
 function brDateString(iso) {
   const d = iso ? new Date(iso) : new Date();
@@ -225,6 +238,18 @@ function deriveStatus(src) {
     // era a PubMatic que ainda não tinha reportado 01–02/09. Culpar o sync
     // aqui mandava a investigação pro lugar errado.
     const measured = src.lagDays != null && !!src.apiLastDay;
+    // 1 dia atrás ANTES da hora em que a fonte costuma fechar D-1 é o estado
+    // normal da manhã, não um alerta. As sondagens de hora em hora pegam o dia
+    // assim que a fonte liberar (ver SOURCE_CLOSE_HOUR_BRT).
+    const closeHour = SOURCE_CLOSE_HOUR_BRT[src.key];
+    if (measured && lag.days === DATA_LAG_WARN_DAYS && closeHour != null
+        && brHour(now) < closeHour) {
+      return {
+        tone: "neutral",
+        summary: `Sync ok · aguardando a fonte fechar ontem (costuma liberar ${SOURCE_CLOSE_WINDOW_LABEL[src.key]})`,
+        waitingSourceClose: true,
+      };
+    }
     const who = measured ? "a API da PubMatic só tem dado até" : "o dado para em";
     const tail = lag.days === DATA_LAG_WARN_DAYS ? "1 dia atrás" : `${lag.days} dias atrás`;
     return {
@@ -378,9 +403,11 @@ export function PmpFreshnessIndicator({
                     {s.apiLastDay && (
                       <Row
                         label="Dado da fonte até"
-                        value={s.dataLag && s.dataLag.days >= 1
-                          ? `${fmtBrDate(s.apiLastDay)} · ${s.dataLag.days}d atrás`
-                          : `${fmtBrDate(s.apiLastDay)} · em dia`}
+                        value={s.status.waitingSourceClose
+                          ? `${fmtBrDate(s.apiLastDay)} · ontem ainda não fechou na fonte`
+                          : s.dataLag && s.dataLag.days >= 1
+                            ? `${fmtBrDate(s.apiLastDay)} · ${s.dataLag.days}d atrás`
+                            : `${fmtBrDate(s.apiLastDay)} · em dia`}
                       />
                     )}
                     {s.linesCount != null && (
