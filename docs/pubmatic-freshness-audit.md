@@ -291,5 +291,12 @@ contabilidade de dias zerados (incluindo zerado no meio ≠ atraso), chain de
 credencial na auth e no report, propagação do frescor pro ledger, e o diff da
 auditoria nas três classes.
 
-**Sem cobertura automatizada:** a régua do `PmpFreshnessIndicator` — o repo não
-tem runner de teste JS. Validada por build + lint.
+`backend/tests/test_pmp_sync_runs_status.py` (9 testes): grade do cron ×
+ledger — quais horas ficaram sem disparo do scheduler (`missing_slots`).
+
+`src/v2/admin/lib/pmpFreshness.test.js` (14 testes, `npm test`): a régua do
+painel com a hora congelada — cada estado que já foi lido errado em produção
+(sync quebrado, job verde com base velha, fonte parada em D-3, e o amarelo das
+08h quando a PubMatic só ainda não fechou ontem). A régua saiu do componente
+pra `lib/pmpFreshness.js` justamente pra ter teste; até 07/09 era validada só
+por build + lint.
