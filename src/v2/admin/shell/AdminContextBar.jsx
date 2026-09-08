@@ -19,7 +19,7 @@
 // e ambos ficam alcançáveis em qualquer posição de scroll.
 
 import { cn } from "../../../ui/cn";
-import { ChevronLeftIcon, DensityIcon, MenuIcon } from "./navIcons";
+import { DensityIcon, MenuIcon, PanelLeftIcon } from "./navIcons";
 import { DENSITY_COZY, DENSITY_DENSE } from "./useShellState";
 
 export function AdminContextBar({
@@ -82,7 +82,7 @@ export function AdminContextBar({
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
         )}
       >
-        <ChevronLeftIcon className={cn("transition-transform duration-200", collapsed && "rotate-180")} />
+        <PanelLeftIcon size={16} collapsed={collapsed} />
       </button>
 
       {/* Rastro de navegação. Em mobile a seção some (o espaço é do que
