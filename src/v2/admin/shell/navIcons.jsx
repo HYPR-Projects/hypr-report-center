@@ -126,6 +126,30 @@ export function ChevronLeftIcon({ size = 15, className }) {
   );
 }
 
+// O toggle do rail precisa comunicar "isso esconde/mostra o painel
+// lateral" sem depender do hover pra explicar (o title só chega depois).
+// Uma seta solta não carrega esse significado sozinha — é o mesmo glifo
+// usado pra "voltar" ou "anterior" em qualquer outro canto da UI. O
+// desenho de "painel com coluna lateral" é o que Notion/Linear/VS Code
+// consolidaram pra essa função específica, e a coluna preenchida vs. vazia
+// já denuncia o estado atual sem precisar ler o tooltip.
+export function PanelLeftIcon({ size = 15, className, collapsed = false }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <rect x="3" y="4" width="18" height="16" rx="2.5" />
+      <path d="M9.5 4v16" />
+      <path
+        d="M8.5 5.5H5.5a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h3"
+        fill="currentColor"
+        stroke="none"
+        opacity={collapsed ? 0 : 0.55}
+        style={{ transition: "opacity 150ms" }}
+      />
+    </svg>
+  );
+}
+
 export function MenuIcon({ size = 17 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
