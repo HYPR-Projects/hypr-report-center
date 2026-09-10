@@ -40,6 +40,10 @@ on:
         description: 'Sync PubMatic + auditoria ao final (prova viva do pipeline)'
         type: boolean
         default: true
+      sonda_api_crua:
+        description: 'Chamar a API da PubMatic direto do runner e imprimir a resposta crua (ver backend/scripts/pubmatic_probe.py)'
+        type: boolean
+        default: false
 
 concurrency:
   group: pmp-ops
@@ -293,6 +297,23 @@ jobs:
           curl -sS --max-time 300 \
             -H "X-Scheduler-Secret: $SECRET" \
             "$FN_URL?action=pmp_pubmatic_audit&days=14" | python3 -m json.tool
+
+      # ── SONDA CRUA DA API ───────────────────────────────────────────────────
+
+      # Quando o ledger diz `api_last_day` parado e a auditoria diz clean, a
+      # base está igual à API — e a pergunta que sobra é o que a API devolve
+      # LITERALMENTE pros dias que faltam (zero explícito? dia ausente? dado
+      # noutra dimensão?). O runner alcança api.pubmatic.com e o Secret
+      # Manager; o container de dev não alcança nenhum dos dois. Só leitura.
+      - name: 'Sonda · resposta crua da API da PubMatic'
+        if: inputs.sonda_api_crua
+        continue-on-error: true
+        run: |
+          U=$(gcloud secrets versions access latest --secret=PUBMATIC_USER --project="$PROJECT")
+          P=$(gcloud secrets versions access latest --secret=PUBMATIC_PASS --project="$PROJECT")
+          echo "::add-mask::$U"; echo "::add-mask::$P"
+          PUBMATIC_USER="$U" PUBMATIC_PASS="$P" PROBE_DAYS=6 PROBE_TIMEOUT=240 \
+            python3 backend/scripts/pubmatic_probe.py
 
       # ── VEREDITO ────────────────────────────────────────────────────────────
 
