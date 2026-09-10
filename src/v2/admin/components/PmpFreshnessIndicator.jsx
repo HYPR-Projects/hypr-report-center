@@ -198,6 +198,8 @@ export function PmpFreshnessIndicator({
                         label="Dado da fonte até"
                         value={s.status.waitingSourceClose
                           ? `${fmtBrDate(s.apiLastDay)} · ontem ainda não fechou na fonte`
+                          : s.status.closedZero
+                            ? `${fmtBrDate(s.apiLastDay)} · fonte em dia, entrega zero depois disso`
                           : s.dataLag && s.dataLag.days >= 1
                             ? `${fmtBrDate(s.apiLastDay)} · ${s.dataLag.days}d atrás`
                             : `${fmtBrDate(s.apiLastDay)} · em dia`}

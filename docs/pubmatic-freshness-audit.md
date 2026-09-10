@@ -247,6 +247,97 @@ manhã. Três dias seguidos de "não atualizou de novo" com o pipeline saudável
 | qualquer | vermelho, "só tem dado até D-3+" | fonte parada (01–03/09) ou deal fora do report; ronda diária já avisou por e-mail |
 | qualquer | vermelho, "Sync falhando" | nosso problema: erro vem no popover; rodar `pmp-ops` |
 
+## Quinta rodada (10/09): "não atualizou" pela milésima vez — e a API estava certa
+
+Reportado às ~11h BRT de 10/09: painel vermelho (*"Sync falhando há 0 dias · The
+read operation timed out"*), dado até 07/09, 2 dias atrás. A ronda das 09:30
+tinha falhado 3 dias seguidos (08, 09 e 10/09): *"PubMatic parada em 07/09 com 1
+line entregando na semana — conferir Media Console"*.
+
+Desta vez a API foi lida **crua**, do runner do GitHub (que alcança
+`api.pubmatic.com` e o Secret Manager — o container de dev não alcança nenhum
+dos dois): passo `sonda_api_crua` do `pmp-ops`, script
+`backend/scripts/pubmatic_probe.py`. Runs #19 e #20 do workflow.
+
+### O que a API devolve, literalmente
+
+Request idêntico ao do conector, 45 dias, deal `753376` (TIM · Rock in Rio):
+
+| Dia | Sem | Imps | Spend | Dia | Sem | Imps | Spend |
+|---|---|---|---|---|---|---|---|
+| 18/08 | ter | **0** | 0 | 01/09 | ter | **0** | 0 |
+| 19/08 | qua | 474.107 | 17.628 | 02/09 | qua | **0** | 0 |
+| 20–24/08 | | 420–550k/dia | 12–14k | 03/09 | qui | 5 | 0 |
+| 25/08 | **ter** | 463.063 | 15.799 | 04/09 | sex | 8.410 | 1.007 |
+| 26/08 | **qua** | 394.444 | 13.986 | 05/09 | sáb | 41.659 | 7.116 |
+| 27–30/08 | | 400–435k/dia | 13–16k | 06/09 | dom | 369.137 | 46.943 |
+| 31/08 | seg | 283.169 | 9.723 | 07/09 | seg | 345.685 | 27.877 |
+| | | | | 08/09 | ter | **0** | 0 |
+| | | | | 09/09 | qua | **0** | 0 |
+
+Os zeros são **explícitos** (a row existe, com 0 em todas as métricas) em
+todas as combinações de dimensão testadas (`dealMetaId,date`, `date`,
+`dspId,date`, `dealMetaId,dspId,date`). Latência de 0,4–3s por request.
+
+### Leitura
+
+1. **01 e 02/09 nunca foram preenchidos.** Oito dias depois a API continua
+   zerada neles. Se fosse atraso de report, o dado teria chegado. Foi um
+   intervalo entre duas fases do deal: a de agosto (~R$ 33 de CPM, 400–550k
+   imps/dia, todo dia inclusive terça e quarta) terminou em 31/08; a de
+   setembro começou em 03/09 (5 imps), subiu até 06–07/09 (R$ 80–127 de CPM,
+   outro preço = outra line do comprador) e parou em 08/09.
+2. **08 e 09/09 têm a mesma cara.** A fase de setembro concentra a entrega de
+   quinta a segunda (04–07/09, pico no domingo) — flight de fim de semana,
+   coerente com um evento. Terça e quarta zeradas são o comprador (BETC, no
+   DV360) não comprando, não a PubMatic não reportando.
+3. **A base estava igual à API o tempo todo** (auditoria `clean: true`,
+   `api_day_rows == bq_day_rows`). O pipeline não tinha o que consertar.
+4. **Os timeouts eram reais, mas isolados**: 3 em 3 dias (08/09 09h, 09/09
+   07h, 10/09 11h), com a sondagem seguinte OK e a API respondendo em ~1s na
+   sonda. Cada um custava a hora inteira e pintava o painel de vermelho
+   ("Sync falhando há 0 dias") com a base em dia.
+
+O erro de leitura, pela terceira vez, foi o mesmo: **o painel chamava de
+"atraso" um dia que a fonte já tinha fechado com zero.** A régua media
+`api_last_day` (último dia COM ENTREGA) contra D-1, e isso não separa "a
+PubMatic não fechou o dia" de "o deal não entregou no dia" — dois estados com
+consertos opostos (esperar/ticket × nada a fazer).
+
+### Consertos
+
+| # | Falha | Conserto |
+|---|---|---|
+| 15 | Timeout de 90s no report, sem retry; o timeout de LEITURA subia cru (`TimeoutError`) sem dizer quanto esperou | `REPORT_TIMEOUT_S=120`, até 3 tentativas com backoff (5s, 15s) só pra falha transitória (timeout, rede, 5xx/429); 400 segue falhando na primeira. Orçamento 380s < 540s da função, coberto por teste |
+| 16 | Painel vermelho "Sync falhando" por UMA sondagem horária falha com a anterior OK há 30 min | Falha com OK há < 3h é transitória: o dot segue a régua de dado sobre a última OK (mínimo amarelo) e o texto diz "última sondagem falhou" |
+| 17 | Ledger não distinguia dia AUSENTE da resposta de dia devolvido como ZERO | Coluna `trailing_zero_days` no `pmp_sync_runs` (dos dias que faltam, quantos vieram zerados) |
+| 18 | Depois das 11h, zero explícito era "a API só tem dado até X" (amarelo/vermelho) | `trailing_zero_days >= lag_days` → **verde** "dado em dia: a PubMatic reporta entrega zero em 08/09 e 09/09" (até 2 dias); 3+ dias → cinza "confirmar com o comprador se a line pausou" |
+| 19 | Ronda falhava (e mandava e-mail) todo dia de pausa do deal | Zero explícito vira `::warning::` com o texto certo; só dia que a API NEM devolveu falha o job |
+| 20 | Diagnóstico dependia de deploy pra ver o que a API devolve | `sonda_api_crua` no `pmp-ops`: resposta literal, matriz dia × deal com dia da semana, latência, variantes de dimensão/endpoint |
+
+### O que a sonda também respondeu (pra não perguntar de novo)
+
+- `dimensions=publisherDealId,date` → 500 interno da PubMatic ("Historic API
+  Internal Error"); `publisherId` → 400 "wrong dimension"; `dspId` funciona
+  (80 = DV360, 290 = Amazon DSP).
+- `dateUnit=hour` devolve 1 linha por dia (não é horário de verdade);
+  `hourly` → 400.
+- Não existe `/analytics/data/curator/…` nem `/auctionpackage/…` (404);
+  `/buyer/74689` responde vazio; `/publisher/74689` → 403 pro usuário 60.131.
+  O Data Provider Analytics é o único report que este usuário enxerga.
+- A resposta traz `currency: BRL` e um campo `alert` (null até agora).
+
+### Como ler o painel da PubMatic depois desta rodada
+
+| Painel | Significa | Ação |
+|---|---|---|
+| cinza "aguardando a fonte fechar ontem" (até 11h) | normal | nenhuma |
+| verde "entrega zero em 08/09 e 09/09" | fonte em dia; o deal não entregou nesses dias | nenhuma (é pacing/flight do comprador) |
+| cinza "entrega zero há 3+ dias — confirmar com o comprador" | fonte em dia; deal parado há 3+ dias com flight aberto | perguntar ao comprador se pausou |
+| amarelo/vermelho "a API só tem dado até X" (depois das 11h) | a API NEM devolveu o dia — fonte atrasada de verdade | rodar `pmp-ops` com `sonda_api_crua`; se persistir, ticket PubMatic |
+| amarelo "… · última sondagem falhou" | 1 timeout isolado, base em dia | nenhuma; 3 seguidos viram vermelho |
+| vermelho "Sync falhando" | 3+ sondagens seguidas falhando | erro no popover; `pmp-ops` |
+
 ## Como auditar daqui pra frente
 
 ```
@@ -286,7 +377,7 @@ conta e apagaria o alerta justo no caso mais grave).
 
 ## Cobertura
 
-`backend/tests/test_pubmatic_curate.py` (38 testes, sem I/O): corte D-1 em BRT,
+`backend/tests/test_pubmatic_curate.py` (45 testes, sem I/O): corte D-1 em BRT,
 contabilidade de dias zerados (incluindo zerado no meio ≠ atraso), chain de
 credencial na auth e no report, propagação do frescor pro ledger, e o diff da
 auditoria nas três classes.
@@ -294,7 +385,7 @@ auditoria nas três classes.
 `backend/tests/test_pmp_sync_runs_status.py` (9 testes): grade do cron ×
 ledger — quais horas ficaram sem disparo do scheduler (`missing_slots`).
 
-`src/v2/admin/lib/pmpFreshness.test.js` (14 testes, `npm test`): a régua do
+`src/v2/admin/lib/pmpFreshness.test.js` (20 testes, `npm test`): a régua do
 painel com a hora congelada — cada estado que já foi lido errado em produção
 (sync quebrado, job verde com base velha, fonte parada em D-3, e o amarelo das
 08h quando a PubMatic só ainda não fechou ontem). A régua saiu do componente

@@ -94,6 +94,50 @@ test("fonte sem deal que deveria entregar não alarma (fim de campanha ≠ atras
   assert.equal(deriveDataLag(pubmatic({ expectsDelivery: false }), brt(7, 15)), null);
 });
 
+test("depois das 11h, dias que faltam vieram como ZERO explícito → verde 'entrega zero em …'", () => {
+  // 10/09/2026 12h: api_last_day 07/09, lag 2, trailing_zero_days 2 — a API
+  // devolveu 08 e 09/09 com 0 em tudo (sonda crua). Fonte em dia; o deal é
+  // que não entregou.
+  const ran10 = { lastRunAt: brt(10, 11).toISOString(), lastOkAt: brt(10, 11).toISOString() };
+  const s = deriveStatus(pubmatic({
+    ...ran10, apiLastDay: "2026-09-07", lagDays: 2, trailingZeroDays: 2,
+  }), brt(10, 12));
+  assert.equal(s.tone, "ok");
+  assert.equal(s.closedZero, true);
+  assert.deepEqual(s.zeroDays, ["2026-09-08", "2026-09-09"]);
+  assert.match(s.summary, /entrega zero em 08\/09 e 09\/09/);
+});
+
+test("zero explícito ANTES das 11h continua 'aguardando a fonte fechar' (a API pré-preenche D-1 com zero)", () => {
+  const s = deriveStatus(pubmatic({
+    apiLastDay: "2026-09-05", lagDays: 1, trailingZeroDays: 1,
+  }), brt(7, 8, 10));
+  assert.equal(s.tone, "neutral");
+  assert.equal(s.waitingSourceClose, true);
+});
+
+test("dia que faltou e a API NEM devolveu (trailing_zero < lag) → amarelo/vermelho como antes", () => {
+  const ran10 = { lastRunAt: brt(10, 11).toISOString(), lastOkAt: brt(10, 11).toISOString() };
+  const s = deriveStatus(pubmatic({
+    ...ran10, apiLastDay: "2026-09-07", lagDays: 2, trailingZeroDays: 0,
+  }), brt(10, 12));
+  assert.equal(s.tone, "error");
+  assert.match(s.summary, /a API da PubMatic só tem dado até 07\/09/);
+  // Backend antigo, sem a coluna: mesma régua de antes.
+  const legacy = deriveStatus(pubmatic({ ...ran10, apiLastDay: "2026-09-08", lagDays: 1 }), brt(10, 12));
+  assert.equal(legacy.tone, "warn");
+});
+
+test("3+ dias de zero explícito em deal com flight aberto → cinza informativo, não verde", () => {
+  const s = deriveStatus(pubmatic({
+    lastRunAt: brt(10, 11).toISOString(), lastOkAt: brt(10, 11).toISOString(),
+    apiLastDay: "2026-09-06", lagDays: 3, trailingZeroDays: 3,
+  }), brt(10, 12));
+  assert.equal(s.tone, "neutral");
+  assert.match(s.summary, /entrega zero há 3 dias \(07\/09, 08\/09, 09\/09\)/);
+  assert.match(s.summary, /confirmar com o comprador/);
+});
+
 test("ledger com frescor e nenhum dia com dado → nada a afirmar sobre atraso", () => {
   assert.equal(deriveDataLag(pubmatic({ apiLastDay: null, lagDays: null }), brt(7, 15)), null);
 });
@@ -104,6 +148,38 @@ test("último run com erro domina qualquer régua de data", () => {
   }), brt(7, 9));
   assert.equal(s.tone, "error");
   assert.match(s.summary, /Sync falhando há 3 dias/);
+});
+
+test("timeout isolado com a sondagem anterior OK há 30 min → amarelo, não 'Sync falhando'", () => {
+  // 10/09/2026 11:00: "The read operation timed out"; 10:31 rodou OK com dado
+  // até 07/09 (2 dias atrás de D-1 → a régua de dado já é vermelha). O tom vem
+  // da régua de dado calculada sobre a última OK; o erro não some do texto.
+  const s = deriveStatus(pubmatic({
+    lastRunStatus: "error", lastRunAt: brt(10, 11).toISOString(),
+    lastOkAt: brt(10, 10, 31).toISOString(), apiLastDay: "2026-09-07", lagDays: 2,
+  }), brt(10, 11, 5));
+  assert.equal(s.tone, "error");                 // pelo DADO (D-3), não pelo timeout
+  assert.equal(s.transientError, true);
+  assert.match(s.summary, /só tem dado até 07\/09 \(2 dias atrás\)/);
+  assert.match(s.summary, /última sondagem falhou/);
+
+  // Mesma falha com o dado em dia: amarelo, com o texto do dado em dia.
+  const fresh = deriveStatus(pubmatic({
+    lastRunStatus: "error", lastRunAt: brt(10, 11).toISOString(),
+    lastOkAt: brt(10, 10, 31).toISOString(), apiLastDay: "2026-09-09", lagDays: 0,
+  }), brt(10, 11, 5));
+  assert.equal(fresh.tone, "warn");
+  assert.match(fresh.summary, /dado em dia · última sondagem falhou/);
+});
+
+test("três sondagens seguidas falhando (última OK há 3h+) → vermelho 'Sync falhando'", () => {
+  const s = deriveStatus(pubmatic({
+    lastRunStatus: "error", lastRunAt: brt(10, 13).toISOString(),
+    lastOkAt: brt(10, 9, 50).toISOString(),
+  }), brt(10, 13, 5));
+  assert.equal(s.tone, "error");
+  assert.match(s.summary, /Sync falhando há 0 dias/);
+  assert.equal(s.transientError, undefined);
 });
 
 test("'skipped' (sem credencial) é vermelho, não silêncio", () => {

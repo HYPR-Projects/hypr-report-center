@@ -719,7 +719,7 @@ export default function PmpDealsPage({
   // 2 dias atrás (às 04h BRT a fonte não fechou D-1, e dia zerado é
   // descartado). "Rodou" nunca foi o mesmo que "está fresco".
   const SOURCE_NOTES = {
-    pubmatic: "A API da PubMatic libera o dia anterior entre 08h e 10h BRT (medido no ledger); a sondagem de hora em hora (05h–23h) grava assim que ela libera. Antes das 10h, \"dado até anteontem\" é o horário da fonte, não atraso. \"Dado da fonte até\" é o que a própria API devolve — a base está sempre igual a ela.",
+    pubmatic: "A API da PubMatic libera o dia anterior entre 08h e 10h BRT (medido no ledger); a sondagem de hora em hora (05h–23h) grava assim que ela libera. Antes das 11h, \"dado até anteontem\" é o horário da fonte, não atraso. Depois das 11h, dia que a API devolve zerado é dia fechado sem entrega do deal (não é atraso de report). A base está sempre igual ao que a API devolve.",
   };
   const recentBySource = useMemo(() => {
     const by = new Map();
@@ -770,6 +770,9 @@ export default function PmpDealsPage({
           credential:    run?.credential || null,
           apiLastDay:    run?.api_last_day || null,
           lagDays:       run?.lag_days ?? null,
+          // Dos dias que faltam, quantos a API devolveu como zero explícito
+          // (dia fechado sem entrega) — ver pmpFreshness.deriveStatus.
+          trailingZeroDays: run?.trailing_zero_days ?? null,
           // Distingue "o ledger mediu e não há dado" de "este backend nem sabe
           // medir" — o indicador trata os dois casos de forma diferente.
           hasFreshness:  !!run && "api_last_day" in run,
