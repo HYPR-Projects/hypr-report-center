@@ -1,0 +1,57 @@
+# Sonda da API da PubMatic — resposta crua + latência, sem passar pela função.
+#
+# Quando o ledger diz "api_last_day parado" a base está igual à API, e a
+# pergunta que sobra é o que a API está devolvendo LITERALMENTE pros dias que
+# faltam (zero explícito? dia ausente? outra dimensão?). O container de dev não
+# alcança api.pubmatic.com nem o Secret Manager; o runner alcança os dois.
+#
+# Só leitura: nada é gravado no BigQuery. Gera 1 Bearer por execução.
+name: PMP · sonda da API da PubMatic
+
+on:
+  workflow_dispatch:
+    inputs:
+      dias:
+        description: 'Janela (dias) do request principal'
+        type: string
+        default: '6'
+      timeout:
+        description: 'Timeout por request (s)'
+        type: string
+        default: '240'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: site-hypr
+
+      - name: Ler credenciais da PubMatic (Secret Manager) e mascarar
+        id: creds
+        run: |
+          U=$(gcloud secrets versions access latest --secret=PUBMATIC_USER --project=site-hypr)
+          P=$(gcloud secrets versions access latest --secret=PUBMATIC_PASS --project=site-hypr)
+          echo "::add-mask::$U"; echo "::add-mask::$P"
+          echo "PUBMATIC_USER=$U" >> "$GITHUB_ENV"
+          echo "PUBMATIC_PASS=$P" >> "$GITHUB_ENV"
+          echo "credenciais lidas (mascaradas)"
+
+      - name: Sondar a API
+        env:
+          PROBE_DAYS: ${{ inputs.dias }}
+          PROBE_TIMEOUT: ${{ inputs.timeout }}
+        run: python3 backend/scripts/pubmatic_probe.py
