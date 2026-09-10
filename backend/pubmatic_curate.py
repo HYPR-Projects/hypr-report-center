@@ -93,6 +93,7 @@ import json
 import logging
 import os
 import re
+import socket
 import time
 import urllib.error
 import urllib.parse
@@ -118,6 +119,24 @@ SOURCE = "pubmatic"
 # não importa pro resultado (testado date,dealMetaId ⇔ dealMetaId,date).
 REPORT_DIMENSIONS = "dealMetaId,date"
 REPORT_METRICS = "paidImpressions,spend,transactionRevenue,dataRevenue,clicks"
+
+# ── Timeout e re-tentativa do report ─────────────────────────────────────────
+# Era `timeout=90` sem retry. O ledger de 08–10/09/2026 mostra "The read
+# operation timed out" em 3 sondagens horárias em 3 dias (08/09 09h, 09/09 07h,
+# 10/09 11h) — o report do Data Provider Analytics às vezes passa de 90s pra
+# responder, e cada estouro custava a sondagem inteira daquela hora (sem
+# api_last_day, painel em vermelho, e-mail da ronda). Agora: timeout maior e
+# até REPORT_ATTEMPTS tentativas com backoff, só pra falha TRANSITÓRIA
+# (timeout, rede, 5xx/429). 400 continua falhando alto na primeira — é bug de
+# request nosso, e re-tentar só esconderia a mensagem que o diagnostica.
+#
+# Orçamento: a função tem 540s. 3 × 120s + backoff (5s + 15s) = 380s no pior
+# caso, sobrando ~2,5 min pro MERGE e pro refresh da enriched. Não aumentar
+# sem olhar esse total: estourar o timeout da função mata a request SEM row no
+# ledger — que é o silêncio que o ledger existe pra impedir.
+REPORT_TIMEOUT_S = int(os.environ.get("PUBMATIC_REPORT_TIMEOUT_S", "120"))
+REPORT_ATTEMPTS = int(os.environ.get("PUBMATIC_REPORT_ATTEMPTS", "3"))
+REPORT_BACKOFF_S = (5, 15)
 
 # BRT = UTC-3, fixo (o Brasil abandonou o horário de verão em 2019). Offset
 # literal em vez de ZoneInfo de propósito: `zoneinfo` depende do tzdata do
@@ -183,11 +202,19 @@ class PubMaticError(RuntimeError):
 class _ReportAuthError(PubMaticError):
     """401/403 no endpoint de REPORT — a credencial autenticou e foi recusada
     na leitura. Separado do PubMaticError genérico porque só este merece
-    re-tentativa: Bearer novo primeiro, depois o próximo par da chain."""
+    re-tentativa de CREDENCIAL: Bearer novo primeiro, depois o próximo par da
+    chain."""
 
     def __init__(self, code: int, body: str):
         super().__init__(f"HTTP {code} GET dataprovider: {body[:400]}")
         self.code = code
+
+
+class _TransientError(PubMaticError):
+    """Falha que vale re-tentar COM A MESMA credencial: timeout de leitura,
+    erro de rede, 5xx/429 da API. A resposta seguinte tende a ser diferente
+    sem que nada mude do nosso lado — ao contrário de um 400, que repete."""
+    pass
 
 
 def available_credentials() -> list:
@@ -301,6 +328,7 @@ def _report_get_once(url: str, token: str, timeout: int) -> dict:
     req = urllib.request.Request(url, method="GET")
     req.add_header("accept", "application/json")
     req.add_header("authorization", f"Bearer {token}")
+    t0 = time.time()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
@@ -308,15 +336,57 @@ def _report_get_once(url: str, token: str, timeout: int) -> dict:
         raw = e.read().decode("utf-8", "ignore")
         if e.code in (401, 403):
             raise _ReportAuthError(e.code, raw)
+        if e.code == 429 or e.code >= 500:
+            raise _TransientError(f"HTTP {e.code} GET dataprovider: {raw[:400]}")
         raise PubMaticError(f"HTTP {e.code} GET dataprovider: {raw[:400]}")
+    except (socket.timeout, TimeoutError) as e:
+        # `urlopen` só embrulha em URLError o timeout de CONEXÃO; o de LEITURA
+        # (`r.read()` esperando o corpo do report) sobe cru como TimeoutError
+        # — foi assim que "The read operation timed out" chegou ao ledger sem
+        # dizer quanto tempo esperou nem que era o report.
+        raise _TransientError(
+            f"timeout GET dataprovider após {time.time() - t0:.0f}s "
+            f"(limite {timeout}s): {e}")
     except urllib.error.URLError as e:
-        raise PubMaticError(f"Falha de rede GET dataprovider: {e}")
+        if isinstance(e.reason, (socket.timeout, TimeoutError)):
+            raise _TransientError(
+                f"timeout GET dataprovider após {time.time() - t0:.0f}s "
+                f"(limite {timeout}s): {e.reason}")
+        raise _TransientError(f"Falha de rede GET dataprovider: {e}")
 
 
-def _report_get(params: dict, timeout: int = 90) -> dict:
-    """GET no Data Provider Analytics API. Devolve o JSON parsed.
+def _report_get(params: dict, timeout: Optional[int] = None,
+                attempts: Optional[int] = None) -> dict:
+    """GET no Data Provider Analytics API com re-tentativa de falha transitória.
 
-    Escada de re-tentativa em cima de 401/403 (e SÓ dela):
+    Timeout, rede e 5xx/429 são re-tentados com a MESMA credencial até
+    `attempts` vezes (backoff REPORT_BACKOFF_S). Qualquer outro erro sobe na
+    primeira. O erro final lista cada tentativa e o tempo total, pra o ledger
+    dizer "3 tentativas, 120s cada" em vez de "The read operation timed out".
+    """
+    timeout = REPORT_TIMEOUT_S if timeout is None else timeout
+    attempts = max(1, REPORT_ATTEMPTS if attempts is None else attempts)
+    t0 = time.time()
+    failures: List[str] = []
+    for i in range(attempts):
+        try:
+            return _report_get_with_credential_chain(params, timeout)
+        except _TransientError as e:
+            failures.append(f"#{i + 1}: {e}")
+            if i + 1 >= attempts:
+                break
+            wait = REPORT_BACKOFF_S[min(i, len(REPORT_BACKOFF_S) - 1)]
+            logger.warning("[pubmatic] falha transitória no report (%s); "
+                           "tentativa %d/%d em %ds", e, i + 2, attempts, wait)
+            time.sleep(wait)
+    raise PubMaticError(
+        f"Report da PubMatic falhou {len(failures)}x em {time.time() - t0:.0f}s "
+        f"(timeout {timeout}s por tentativa) → " + " | ".join(failures))
+
+
+def _report_get_with_credential_chain(params: dict, timeout: int) -> dict:
+    """Uma tentativa de GET (do ponto de vista de falha transitória), com a
+    escada de re-tentativa de CREDENCIAL em cima de 401/403 (e SÓ dela):
       1. token em cache — o caminho normal;
       2. Bearer novo do MESMO par — cobre token velho numa instância antiga;
       3. próximo par da chain — cobre a credencial que autentica mas perdeu

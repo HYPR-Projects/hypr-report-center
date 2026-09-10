@@ -96,6 +96,15 @@ SCHEMA = [
     # NULL nas fontes que ainda não reportam frescor (o painel degrada).
     bigquery.SchemaField("api_last_day",   "DATE"),
     bigquery.SchemaField("lag_days",       "INT64"),
+    # Quantos dos dias que faltam (entre api_last_day e D-1) a API devolveu
+    # como ZERO EXPLÍCITO — a row existe, com 0 em tudo. `== lag_days` quer
+    # dizer que a fonte JÁ FECHOU esses dias e o que ela reporta é "não houve
+    # entrega"; `< lag_days` quer dizer que há dia que a API nem devolveu
+    # (aí sim é a fonte atrasada). Sem isto, os dois casos eram o mesmo
+    # "dado até X (2d atrás)" — e em 01–03/09 e 08–10/09 foram lidos como
+    # "PubMatic parada" quando eram dias sem entrega do deal (a API nunca
+    # preencheu 01–02/09 depois; a sonda de 10/09 confirmou).
+    bigquery.SchemaField("trailing_zero_days", "INT64"),
 ]
 
 # Colunas adicionadas DEPOIS que a tabela já existia em produção. `ensure_table`
@@ -103,9 +112,11 @@ SCHEMA = [
 # falharia calado (insert_rows_json rejeita campo desconhecido) — o ledger
 # perderia exatamente a informação que ele foi estendido pra carregar.
 _ADDED_COLUMNS = [
-    ("api_last_day", "DATE"),
-    ("lag_days",     "INT64"),
+    ("api_last_day",       "DATE"),
+    ("lag_days",           "INT64"),
+    ("trailing_zero_days", "INT64"),
 ]
+_FRESHNESS_COLS = tuple(n for n, _ in _ADDED_COLUMNS)
 
 # Cache do painel: a query é barata (tabela minúscula, particionada), mas o
 # pmp_lines_list é chamado a cada mount da página.
@@ -224,7 +235,8 @@ def record(source: str,
            credential: Optional[str] = None,
            error: Optional[str] = None,
            api_last_day: Optional[str] = None,
-           lag_days: Optional[int] = None) -> None:
+           lag_days: Optional[int] = None,
+           trailing_zero_days: Optional[int] = None) -> None:
     """Grava uma execução. Best-effort: exceção aqui é logada, nunca propagada
     (o ledger observa o sync, não pode derrubá-lo).
 
@@ -253,14 +265,15 @@ def record(source: str,
             "duration_sec":   round((finished - started_at).total_seconds(), 2),
             "api_last_day":   api_last_day,
             "lag_days":       int(lag_days) if lag_days is not None else None,
+            "trailing_zero_days": (int(trailing_zero_days)
+                                   if trailing_zero_days is not None else None),
         }
         errors = bq.insert_rows_json(_FQ, [row])
         if errors:
             # Causa provável: as colunas de frescor não existem nesta tabela
             # (ALTER falhou por permissão). Re-tenta sem elas — perder o frescor
             # é ruim, perder a row inteira é o silêncio que o ledger combate.
-            legacy = {k: v for k, v in row.items()
-                      if k not in ("api_last_day", "lag_days")}
+            legacy = {k: v for k, v in row.items() if k not in _FRESHNESS_COLS}
             retry = bq.insert_rows_json(_FQ, [legacy])
             if retry:
                 logger.warning("[pmp_sync_runs] insert errors: %s", errors[:2])
@@ -298,8 +311,9 @@ def recent_by_source(days: int = 2, per_source: int = 14) -> List[dict]:
         return hit[1]
 
     for with_freshness in (True, False):
-        cols = ("api_last_day, lag_days" if with_freshness
-                else "CAST(NULL AS DATE) AS api_last_day, CAST(NULL AS INT64) AS lag_days")
+        cols = ("api_last_day, lag_days, trailing_zero_days" if with_freshness
+                else "CAST(NULL AS DATE) AS api_last_day, CAST(NULL AS INT64) AS lag_days, "
+                     "CAST(NULL AS INT64) AS trailing_zero_days")
         sql = f"""
             SELECT * EXCEPT(rn) FROM (
               SELECT
@@ -426,9 +440,10 @@ def latest_by_source(days: int = 90) -> List[dict]:
 
 
 def _latest_sql(with_freshness: bool) -> str:
-    ok_cols = ("source, started_at AS last_ok_at, api_last_day, lag_days"
+    ok_cols = ("source, started_at AS last_ok_at, api_last_day, lag_days, trailing_zero_days"
                if with_freshness else "source, started_at AS last_ok_at")
-    ok_select = ("o.last_ok_at,\n          o.api_last_day,\n          o.lag_days"
+    ok_select = ("o.last_ok_at,\n          o.api_last_day,\n          o.lag_days,\n"
+                 "          o.trailing_zero_days"
                  if with_freshness else "o.last_ok_at")
     return f"""
         WITH runs AS (
@@ -510,7 +525,7 @@ def sync_status_report(hours: int = 72, d1_days: int = 14) -> dict:
             SELECT
               FORMAT_TIMESTAMP("%d/%m %H:%M", started_at, "America/Sao_Paulo") AS quando_brt,
               started_at, source, status, actor, credential,
-              api_last_day, lag_days, rows_processed, duration_sec,
+              api_last_day, lag_days, trailing_zero_days, rows_processed, duration_sec,
               SUBSTR(IFNULL(error, ""), 0, 160) AS error
             FROM `{_FQ}`
             WHERE started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @hours HOUR)

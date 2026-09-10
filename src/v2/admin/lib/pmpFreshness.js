@@ -45,6 +45,15 @@ export const DATA_LAG_WARN_DAYS = 1;
 // PubMatic tem medida; fonte sem entrada aqui não ganha tolerância. Se a
 // PubMatic mudar de horário, `d1_close_hours` mostra e o número se ajusta aqui.
 export const SOURCE_CLOSE_HOUR_BRT = { pubmatic: 11 };
+
+// Dias seguidos de zero explícito (dia fechado pela fonte, sem entrega) a
+// partir dos quais o dot deixa de ser verde e vira cinza informativo.
+export const CLOSED_ZERO_NEUTRAL_DAYS = 3;
+
+// Falha da ÚLTIMA execução com uma execução OK há menos que isto é tratada
+// como transitória (sondagem horária que estourou): amarelo, não vermelho.
+// 3h = três sondagens seguidas falhando antes de virar "Sync falhando".
+export const TRANSIENT_ERROR_MAX_HOURS = 3;
 export const SOURCE_CLOSE_WINDOW_LABEL = { pubmatic: "entre 08h e 10h" };
 
 export function brDateString(iso, now) {
@@ -158,6 +167,24 @@ export function deriveStatus(src, now = new Date()) {
   const { lastRunAt, lastRunStatus, lastOkAt } = src;
 
   if (lastRunStatus === "error") {
+    // Uma sondagem horária que falhou com a anterior OK há menos de
+    // TRANSIENT_ERROR_MAX_HOURS não é "sync falhando": a base é a mesma de
+    // 30 min atrás e a próxima sondagem vem em ≤1h. Em 08–10/09/2026 foram 3
+    // timeouts isolados em 3 dias, cada um pintando o painel de vermelho
+    // ("Sync falhando há 0 dias") com a base em dia. O dot segue a régua de
+    // DADO calculada sobre a última execução OK, no mínimo amarelo, e o texto
+    // diz que a última sondagem falhou — o erro continua no popover.
+    const ageH = lastOkAt ? (now - new Date(lastOkAt)) / 3_600_000 : null;
+    if (ageH != null && ageH >= 0 && ageH < TRANSIENT_ERROR_MAX_HOURS) {
+      const base = deriveStatus({ ...src, lastRunStatus: "ok", lastRunAt: lastOkAt }, now);
+      const tone = worstTone([base.tone, "warn"]);
+      return {
+        ...base,
+        tone,
+        summary: `${base.summary} · última sondagem falhou (a anterior, ${fmtBrDateTime(lastOkAt).slice(6)}, rodou ok)`,
+        transientError: true,
+      };
+    }
     const behind = lastOkAt ? daysBetweenBr(lastOkAt, now) : null;
     return {
       tone: "error",
@@ -206,6 +233,30 @@ export function deriveStatus(src, now = new Date()) {
         tone: "neutral",
         summary: `Sync ok · aguardando a fonte fechar ontem (costuma liberar ${SOURCE_CLOSE_WINDOW_LABEL[src.key]})`,
         waitingSourceClose: true,
+      };
+    }
+    // Depois da hora em que a fonte fecha D-1, dia devolvido pela API como
+    // ZERO EXPLÍCITO (a row existe, com 0 em tudo) é dia fechado SEM ENTREGA
+    // — não é atraso de ninguém. Em 01–03/09 e 08–10/09/2026 o painel dizia
+    // "a API só tem dado até X (2 dias atrás)" e a leitura foi "PubMatic
+    // parada"; a sonda crua de 10/09 mostrou 08 e 09/09 zerados em todas as
+    // dimensões e 01–02/09 NUNCA preenchidos depois: o deal não entregou
+    // nesses dias (flight por fim de semana). `trailingZeroDays >= lag.days`
+    // = todos os dias que faltam vieram como zero explícito. Verde até 2 dias
+    // (pausa curta é rotina); de 3 em diante vira cinza informativo, porque aí
+    // vale confirmar com o comprador se a line pausou mesmo.
+    if (lag.measured && closeHour != null && brHour(now) >= closeHour
+        && src.trailingZeroDays != null && src.trailingZeroDays >= lag.days) {
+      const zeroDays = Array.from({ length: lag.days }, (_, i) => addDaysIso(lag.day, i + 1));
+      const list = zeroDays.map(fmtBrDate).join(zeroDays.length === 2 ? " e " : ", ");
+      const many = lag.days >= CLOSED_ZERO_NEUTRAL_DAYS;
+      return {
+        tone: many ? "neutral" : "ok",
+        summary: many
+          ? `Sync ok · a PubMatic reporta entrega zero há ${lag.days} dias (${list}) — confirmar com o comprador se a line pausou`
+          : `Sync ok · dado em dia: a PubMatic reporta entrega zero em ${list}`,
+        closedZero: true,
+        zeroDays,
       };
     }
     // Quando o atraso foi MEDIDO contra a resposta da API, o texto diz de

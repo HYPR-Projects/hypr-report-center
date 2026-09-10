@@ -249,6 +249,10 @@ def _run_pubmatic_sync(actor):
         # Frescor da FONTE: "rodou com sucesso" e "a base está em dia" são
         # afirmações diferentes, e era só a primeira que chegava ao painel.
         api_last_day=res.get("api_last_day"), lag_days=res.get("lag_days"),
+        # Dos dias que faltam, quantos a API devolveu como zero explícito —
+        # separa "o deal não entregou" (fonte fechou o dia) de "a fonte ainda
+        # não tem o dia". Ver pmp_sync_runs.SCHEMA.
+        trailing_zero_days=res.get("trailing_zero_days"),
     )
     return res
 # Central de DSPs (admin): saúde de entrega por fonte. Mesmo racional do

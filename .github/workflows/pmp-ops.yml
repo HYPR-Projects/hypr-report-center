@@ -40,6 +40,18 @@ on:
         description: 'Sync PubMatic + auditoria ao final (prova viva do pipeline)'
         type: boolean
         default: true
+      sonda_api_crua:
+        description: 'Chamar a API da PubMatic direto do runner e imprimir a resposta crua (ver backend/scripts/pubmatic_probe.py)'
+        type: boolean
+        default: false
+      sonda_dias:
+        description: 'Sonda crua: janela em dias (PROBE_DAYS); "completa" liga todas as variantes de request'
+        type: string
+        default: '6'
+      sonda_completa:
+        description: 'Sonda crua: rodar também as variantes de dimensão/endpoint (várias requests)'
+        type: boolean
+        default: true
 
 concurrency:
   group: pmp-ops
@@ -165,8 +177,8 @@ jobs:
           for r in d.get("runs") or []:
               print("  ", r.get("quando_brt"), r.get("source"), r.get("status"), r.get("actor"),
                     r.get("credential") or "", "dado_ate=" + str(r.get("api_last_day")),
-                    "lag=" + str(r.get("lag_days")), "rows=" + str(r.get("rows_processed")),
-                    r.get("error") or "")
+                    "lag=" + str(r.get("lag_days")), "zeros=" + str(r.get("trailing_zero_days")),
+                    "rows=" + str(r.get("rows_processed")), r.get("error") or "")
           for k in ("runs_error", "d1_close_hours_error", "delivery_freshness_error"):
               if d.get(k): print("::warning::" + k + ": " + d[k])
           PY
@@ -294,6 +306,25 @@ jobs:
             -H "X-Scheduler-Secret: $SECRET" \
             "$FN_URL?action=pmp_pubmatic_audit&days=14" | python3 -m json.tool
 
+      # ── SONDA CRUA DA API ───────────────────────────────────────────────────
+
+      # Quando o ledger diz `api_last_day` parado e a auditoria diz clean, a
+      # base está igual à API — e a pergunta que sobra é o que a API devolve
+      # LITERALMENTE pros dias que faltam (zero explícito? dia ausente? dado
+      # noutra dimensão?). O runner alcança api.pubmatic.com e o Secret
+      # Manager; o container de dev não alcança nenhum dos dois. Só leitura.
+      - name: 'Sonda · resposta crua da API da PubMatic'
+        if: inputs.sonda_api_crua
+        continue-on-error: true
+        run: |
+          U=$(gcloud secrets versions access latest --secret=PUBMATIC_USER --project="$PROJECT")
+          P=$(gcloud secrets versions access latest --secret=PUBMATIC_PASS --project="$PROJECT")
+          echo "::add-mask::$U"; echo "::add-mask::$P"
+          PUBMATIC_USER="$U" PUBMATIC_PASS="$P" PROBE_TIMEOUT=240 \
+            PROBE_DAYS="${{ inputs.sonda_dias }}" \
+            PROBE_FULL="${{ inputs.sonda_completa && '1' || '0' }}" \
+            python3 backend/scripts/pubmatic_probe.py
+
       # ── VEREDITO ────────────────────────────────────────────────────────────
 
       # Veredito: o único passo do diagnóstico SEM continue-on-error. Falha o
@@ -336,9 +367,32 @@ jobs:
                               + "; ".join(f'{r.get("quando_brt")} {r.get("status")} {r.get("error") or ""}' for r in bad[:3]))
           pm_fresh = next((r for r in d.get("delivery_freshness") or [] if r.get("source") == "pubmatic"), None)
           if pm_fresh and int(pm_fresh.get("lines_7d") or 0) > 0 and int(pm_fresh.get("dias_atras") or 0) >= 2:
-              problems.append(f"fonte: PubMatic parada em {pm_fresh.get('ultimo_dia_na_base')} "
-                              f"({pm_fresh.get('dias_atras')} dias atrás de D-1) com {pm_fresh.get('lines_7d')} line(s) "
-                              "entregando na semana — conferir Media Console; se lá tem entrega, é ticket com a PubMatic")
+              # Dois estados com a mesma cara no `dias_atras`, consertos opostos:
+              #   • a API devolveu os dias que faltam como ZERO EXPLÍCITO
+              #     (trailing_zero_days >= lag_days no último run OK) → a fonte
+              #     fechou esses dias e reporta "sem entrega". Não é atraso de
+              #     ninguém: em 01–03/09 e 08–10/09/2026 o deal da TIM não
+              #     entregou nesses dias (flight por fim de semana; a sonda
+              #     crua confirmou e a API nunca preencheu 01–02/09 depois).
+              #     Aviso, não falha — falhar todo dia de pausa ensina a
+              #     ignorar o e-mail.
+              #   • a API NEM devolveu o dia (trailing_zero_days < lag_days)
+              #     → aí sim é a PubMatic atrasada: falha.
+              last_ok = next((r for r in d["runs"] if r.get("source") == "pubmatic"
+                              and r.get("status") == "ok" and r.get("api_last_day")), None)
+              tz = (last_ok or {}).get("trailing_zero_days")
+              lag = (last_ok or {}).get("lag_days")
+              base = (f"PubMatic: última entrega gravada em {pm_fresh.get('ultimo_dia_na_base')} "
+                      f"({pm_fresh.get('dias_atras')} dias atrás de D-1), {pm_fresh.get('lines_7d')} line(s) "
+                      "entregando na semana")
+              if tz is not None and lag is not None and int(tz) >= int(lag):
+                  print(f"::warning::{base} — a API devolve os dias que faltam com entrega ZERO "
+                        "(dia fechado, sem entrega do deal). Não é atraso de report; se o comprador "
+                        "diz que a line entregou nesses dias, aí é ticket com a PubMatic.")
+              else:
+                  problems.append(f"fonte: {base} — a API ainda não devolveu o(s) dia(s) que falta(m) "
+                                  "(fonte atrasada de verdade). Se persistir depois das 11h BRT, ticket com a PubMatic "
+                                  "citando /v1/analytics/data/dataprovider/74689.")
           if problems:
               for p in problems: print("::error::" + p)
               sys.exit(1)

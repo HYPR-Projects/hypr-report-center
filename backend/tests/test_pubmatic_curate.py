@@ -582,3 +582,103 @@ def test_backfill_de_janela_antiga_nao_reporta_atraso_falso(api, fixed_today):
 
     assert stats["expected_last_day"] == "2026-07-05"
     assert stats["lag_days"] == 0
+
+
+# ─── Falha transitória no report: timeout, rede, 5xx ────────────────────────
+# Ledger de 08–10/09/2026: "The read operation timed out" em 3 sondagens
+# horárias em 3 dias, cada uma perdendo a hora inteira (sem api_last_day,
+# painel vermelho, e-mail da ronda). O timeout de LEITURA sobe cru do
+# `r.read()` (não vem embrulhado em URLError) e nada re-tentava.
+def test_timeout_de_leitura_vira_erro_transitorio_com_o_tempo(monkeypatch):
+    import urllib.request
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): raise TimeoutError("The read operation timed out")
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp())
+    with pytest.raises(pm._TransientError, match=r"timeout GET dataprovider .*limite 7s"):
+        pm._report_get_once("http://x", "t", 7)
+
+
+def test_timeout_de_conexao_embrulhado_em_urlerror_tambem_e_transitorio(monkeypatch):
+    import socket
+    import urllib.error
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            urllib.error.URLError(socket.timeout("timed out"))))
+    with pytest.raises(pm._TransientError, match="timeout"):
+        pm._report_get_once("http://x", "t", 7)
+
+
+def test_5xx_e_429_sao_transitorios_e_400_nao(monkeypatch):
+    import urllib.request
+    for code, exc in ((500, pm._TransientError), (502, pm._TransientError),
+                      (503, pm._TransientError), (429, pm._TransientError),
+                      (400, pm.PubMaticError), (404, pm.PubMaticError)):
+        monkeypatch.setattr(urllib.request, "urlopen",
+                            lambda *a, **k: (_ for _ in ()).throw(_http_error(code)))
+        with pytest.raises(exc) as e:
+            pm._report_get_once("http://x", "t", 5)
+        if exc is pm.PubMaticError:
+            assert not isinstance(e.value, pm._TransientError)
+
+
+def test_report_re_tenta_timeout_e_devolve_na_segunda(monkeypatch, creds):
+    monkeypatch.setattr(pm, "_request_token", lambda u, p: "bearer")
+    monkeypatch.setattr(pm.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def fake_once(url, token, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise pm._TransientError("timeout GET dataprovider após 120s")
+        return {"columns": [], "rows": []}
+    monkeypatch.setattr(pm, "_report_get_once", fake_once)
+
+    assert pm._report_get({"x": 1}, timeout=120, attempts=3) == {"columns": [], "rows": []}
+    assert calls["n"] == 2
+
+
+def test_report_esgotando_tentativas_lista_cada_uma_no_erro(monkeypatch, creds):
+    """O ledger guarda `str(e)`: tem que dizer quantas vezes, quanto tempo e o
+    que cada tentativa viu — e não só 'The read operation timed out'."""
+    monkeypatch.setattr(pm, "_request_token", lambda u, p: "bearer")
+    slept = []
+    monkeypatch.setattr(pm.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(pm, "_report_get_once",
+                        lambda url, token, timeout: (_ for _ in ()).throw(
+                            pm._TransientError(f"timeout GET dataprovider após {timeout}s")))
+
+    with pytest.raises(pm.PubMaticError) as e:
+        pm._report_get({"x": 1}, timeout=120, attempts=3)
+    msg = str(e.value)
+    assert "falhou 3x" in msg and "timeout 120s por tentativa" in msg
+    assert "#1:" in msg and "#2:" in msg and "#3:" in msg
+    # Backoff entre tentativas, nenhum depois da última.
+    assert slept == [5, 15]
+
+
+def test_erro_de_request_nao_e_re_tentado_como_transitorio(monkeypatch, creds):
+    monkeypatch.setattr(pm, "_request_token", lambda u, p: "bearer")
+    monkeypatch.setattr(pm.time, "sleep", lambda s: pytest.fail("não devia dormir"))
+    calls = {"n": 0}
+
+    def fake_once(url, token, timeout):
+        calls["n"] += 1
+        raise pm.PubMaticError("HTTP 400 GET dataprovider: invalid dateUnit")
+    monkeypatch.setattr(pm, "_report_get_once", fake_once)
+    with pytest.raises(pm.PubMaticError, match="invalid dateUnit"):
+        pm._report_get({"x": 1}, attempts=3)
+    assert calls["n"] == 1
+
+
+def test_orcamento_de_retry_cabe_no_timeout_da_funcao():
+    """3 × 120s + 5s + 15s = 380s, com a função em 540s. Se alguém subir o
+    timeout ou as tentativas sem olhar o total, o sync morre sem row no ledger
+    — o silêncio que o ledger existe pra impedir."""
+    worst = pm.REPORT_TIMEOUT_S * pm.REPORT_ATTEMPTS + sum(
+        pm.REPORT_BACKOFF_S[min(i, len(pm.REPORT_BACKOFF_S) - 1)]
+        for i in range(pm.REPORT_ATTEMPTS - 1))
+    assert worst <= 400, worst
