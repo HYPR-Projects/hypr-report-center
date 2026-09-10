@@ -44,6 +44,14 @@ on:
         description: 'Chamar a API da PubMatic direto do runner e imprimir a resposta crua (ver backend/scripts/pubmatic_probe.py)'
         type: boolean
         default: false
+      sonda_dias:
+        description: 'Sonda crua: janela em dias (PROBE_DAYS); "completa" liga todas as variantes de request'
+        type: string
+        default: '6'
+      sonda_completa:
+        description: 'Sonda crua: rodar também as variantes de dimensão/endpoint (várias requests)'
+        type: boolean
+        default: true
 
 concurrency:
   group: pmp-ops
@@ -312,7 +320,9 @@ jobs:
           U=$(gcloud secrets versions access latest --secret=PUBMATIC_USER --project="$PROJECT")
           P=$(gcloud secrets versions access latest --secret=PUBMATIC_PASS --project="$PROJECT")
           echo "::add-mask::$U"; echo "::add-mask::$P"
-          PUBMATIC_USER="$U" PUBMATIC_PASS="$P" PROBE_DAYS=6 PROBE_TIMEOUT=240 \
+          PUBMATIC_USER="$U" PUBMATIC_PASS="$P" PROBE_TIMEOUT=240 \
+            PROBE_DAYS="${{ inputs.sonda_dias }}" \
+            PROBE_FULL="${{ inputs.sonda_completa && '1' || '0' }}" \
             python3 backend/scripts/pubmatic_probe.py
 
       # ── VEREDITO ────────────────────────────────────────────────────────────

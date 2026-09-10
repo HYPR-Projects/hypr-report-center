@@ -28,6 +28,8 @@ BASE = "https://api.pubmatic.com"
 ACCOUNT = os.environ.get("PUBMATIC_ACCOUNT_ID", "74689")
 DAYS = int(os.environ.get("PROBE_DAYS", "6"))
 TIMEOUT = int(os.environ.get("PROBE_TIMEOUT", "240"))
+# PROBE_FULL=0 → só o request do conector + resumo por dia (1 request).
+FULL = os.environ.get("PROBE_FULL", "1") != "0"
 BRT = timezone(timedelta(hours=-3))
 
 
@@ -104,7 +106,11 @@ def main():
     p = show("A · request do conector (dealMetaId,date)",
              *get(base, {"dimensions": "dealMetaId,date", "metrics": std_metrics,
                          "fromDate": start.isoformat(), "toDate": today.isoformat(),
-                         "dateUnit": "date"}, tok))
+                         "dateUnit": "date"}, tok), max_rows=0 if not FULL else 60)
+    if not FULL:
+        summary(p, today, start)
+        print(f"\nFim · {now_brt()}")
+        return
 
     # 2. Só por dia (sem deal): se o total da conta tem dado em D-1/D-2 e o
     #    recorte por deal não, a atribuição por deal é que está atrasada.
@@ -156,28 +162,50 @@ def main():
                          "toDate": today.isoformat(), "dateUnit": "date"}, tok, timeout=90),
              max_rows=10)
 
-    # 8. Resumo por dia do request A: zero explícito × dia ausente.
-    if p:
-        cols = p["columns"]; di = cols.index("date")
-        ii = cols.index("paidImpressions"); si = cols.index("spend")
-        by_day = {}
-        for r in p.get("rows") or []:
-            d = str(r[di])[:10]
-            agg = by_day.setdefault(d, {"rows": 0, "imps": 0, "spend": 0.0})
-            agg["rows"] += 1
-            agg["imps"] += int(float(r[ii] or 0)); agg["spend"] += float(r[si] or 0)
-        print("\n=== Resumo por dia (request A) ===")
-        d = today
-        while d >= start:
-            k = d.isoformat()
-            if k in by_day:
-                a = by_day[k]
-                tag = "ZERO explícito" if a["imps"] == 0 and a["spend"] == 0 else "com dado"
-                print(f"    {k}  rows={a['rows']:2d} imps={a['imps']:>10,} spend={a['spend']:>12,.2f}  {tag}")
-            else:
-                print(f"    {k}  — dia AUSENTE da resposta")
-            d -= timedelta(days=1)
+    summary(p, today, start)
     print(f"\nFim · {now_brt()}")
+
+
+WEEKDAYS = ("seg", "ter", "qua", "qui", "sex", "sáb", "dom")
+
+
+def summary(p, today, start):
+    """Resumo por dia e por deal do request A: zero explícito × dia ausente,
+    com o dia da semana — é o que mostra se o zero segue um padrão semanal
+    (flight/dayparting do comprador) ou é buraco de reporting."""
+    if not p:
+        return
+    cols = p["columns"]; di = cols.index("date"); ki = cols.index("dealMetaId")
+    ii = cols.index("paidImpressions"); si = cols.index("spend")
+    names = ((p.get("displayValue") or {}).get("dealMetaId")) or {}
+    by_day = {}
+    for r in p.get("rows") or []:
+        d = str(r[di])[:10]
+        agg = by_day.setdefault(d, {})
+        agg[str(r[ki])] = (int(float(r[ii] or 0)), float(r[si] or 0))
+    deals = sorted({str(r[ki]) for r in p.get("rows") or []})
+    print("\n=== Resumo por dia (request A) ===")
+    for k in deals:
+        print(f"    deal {k} = {names.get(k)}")
+    print("    dia          sem  " + "  ".join(f"{k:>24}" for k in deals))
+    d = today
+    while d >= start:
+        k = d.isoformat()
+        wd = WEEKDAYS[d.weekday()]
+        if k in by_day:
+            cells = []
+            for deal in deals:
+                v = by_day[k].get(deal)
+                if v is None:
+                    cells.append(f"{'(sem row)':>24}")
+                elif v[0] == 0 and v[1] == 0:
+                    cells.append(f"{'ZERO':>24}")
+                else:
+                    cells.append(f"{v[0]:>10,} / R$ {v[1]:>9,.0f}")
+            print(f"    {k}   {wd}  " + "  ".join(cells))
+        else:
+            print(f"    {k}   {wd}  — dia AUSENTE da resposta")
+        d -= timedelta(days=1)
 
 
 if __name__ == "__main__":
