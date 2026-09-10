@@ -12,15 +12,21 @@
 //
 // Esta barra carrega justamente o que muda:
 //
-//   [☰/⇤]  Seção / View  · contagem        [densidade] [ações da view]
+//   [☰/⇤]  Seção / View  · contagem     [status de operação] │ [ações da view]
 //
-// A marca subiu pro rail. Status e alertas viraram o grupo Operação. Tema
-// e Sair estão no menu do usuário. O que sobra aqui é contexto e ação —
-// e ambos ficam alcançáveis em qualquer posição de scroll.
+// A marca subiu pro rail. Tema, densidade e Sair estão no menu do usuário.
+// O que sobra aqui é contexto, estado e ação — e tudo fica alcançável em
+// qualquer posição de scroll.
+//
+// Status de operação (Bases, DSPs, Alertas, Sync das curadorias) morou no
+// rail como grupo "Operação" entre ago e set/26. Saiu de lá porque o rail é
+// navegação: 3 linhas de status com dot no meio de 10 destinos disputavam o
+// mesmo olhar, e o rail colapsado escondia justamente o dot que importava.
+// Aqui eles ficam ao lado das ações, no canto onde se olha pra "fazer algo"
+// — e a densidade, que era preferência e não ação, foi pro menu do usuário.
 
 import { cn } from "../../../ui/cn";
-import { DensityIcon, MenuIcon, PanelLeftIcon } from "./navIcons";
-import { DENSITY_COZY, DENSITY_DENSE } from "./useShellState";
+import { MenuIcon, PanelLeftIcon } from "./navIcons";
 
 export function AdminContextBar({
   sectionLabel,
@@ -31,14 +37,13 @@ export function AdminContextBar({
   collapsed,
   onToggleCollapsed,
   onOpenDrawer,
-  density,
-  onDensityChange,
+  // Status de operação (popovers já montados pela página)
+  status = null,
   // Ações da view (nós React já montados pela página)
   actions = null,
   // Sinal discreto de refetch em andamento
   busy = false,
 }) {
-  const isDense = density === DENSITY_DENSE;
 
   return (
     <div
@@ -133,52 +138,25 @@ export function AdminContextBar({
 
       {/* ── Ações ──────────────────────────────────────────────────────── */}
       <div className="ml-auto flex items-center gap-1.5 shrink-0">
-        {/* Densidade — dois estados num segmentado curto. Fica aqui (e
-            não só no menu do usuário) porque é a preferência que muda com
-            a TAREFA: varrer 490 linhas pede compacto, revisar uma campanha
-            pede confortável. Preferência de tarefa mora perto da tarefa. */}
-        <div
-          role="group"
-          aria-label="Densidade das linhas"
-          className="hidden lg:inline-flex items-center gap-px p-0.5 rounded-md bg-canvas-deeper border border-border"
-        >
-          <DensityButton
-            active={!isDense}
-            label="Densidade confortável"
-            onClick={() => onDensityChange(DENSITY_COZY)}
-            dense={false}
-          />
-          <DensityButton
-            active={isDense}
-            label="Densidade compacta"
-            onClick={() => onDensityChange(DENSITY_DENSE)}
-            dense
-          />
-        </div>
+        {/* Status de operação: botões-ícone de 32px com dot de severidade,
+            cada um abrindo o próprio popover pra baixo. Ficam ANTES das
+            ações e separados por uma régua: estado à esquerda, ação à
+            direita — a ordem em que se lê ("está tudo bem? então faça"). */}
+        {status && (
+          <div
+            role="group"
+            aria-label="Status de operação"
+            className="flex items-center gap-1.5"
+          >
+            {status}
+          </div>
+        )}
+        {status && actions && (
+          <span aria-hidden="true" className="mx-1 h-5 w-px bg-border shrink-0" />
+        )}
 
         {actions}
       </div>
     </div>
-  );
-}
-
-function DensityButton({ active, label, onClick, dense }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      aria-label={label}
-      title={label}
-      className={cn(
-        "size-6 grid place-items-center rounded cursor-pointer border-0 transition-colors",
-        active
-          ? "bg-canvas-elevated text-fg shadow-sm"
-          : "bg-transparent text-fg-subtle hover:text-fg-muted",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
-      )}
-    >
-      <DensityIcon size={12} dense={dense} />
-    </button>
   );
 }

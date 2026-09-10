@@ -1363,9 +1363,8 @@ export default function PmpDealsPage({
       busy={loading && lines.length > 0}
       user={user}
       onLogout={onLogout}
-      operationSlots={
+      status={
         <PmpFreshnessIndicator
-          variant="rail"
           sources={syncSources}
           onSync={canSync ? onSync : undefined}
           syncing={syncing}

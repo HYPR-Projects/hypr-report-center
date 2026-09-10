@@ -11,8 +11,10 @@
 // mais destrutiva da tela tinha mais peso visual que 14 alertas críticos.
 //
 // Aqui ficam só as duas últimas naturezas: identidade e preferência.
-// Estado de sistema e fila de trabalho subiram pro grupo "Operação" do
-// rail, onde têm rótulo escrito e dot de severidade.
+// Estado de sistema e fila de trabalho vivem na barra de contexto, ao lado
+// das ações da view (ver AdminContextBar). A densidade mora SÓ aqui desde
+// set/26: o segmentado que ficava na barra de contexto disputava espaço com
+// os status e é preferência, não ação — troca-se uma vez, não por tarefa.
 //
 // O menu abre pra CIMA porque o gatilho é a última coisa do rail. No rail
 // colapsado ele solta pra direita com largura fixa — sem isso viraria um

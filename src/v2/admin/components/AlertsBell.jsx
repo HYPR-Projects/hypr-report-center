@@ -221,7 +221,7 @@ export function AlertsBell({
             aria-label={`Alertas — ${unreadCriticalCount} críticos não vistos`}
             title={triggerTitle}
             className={cn(
-              "relative inline-flex items-center justify-center size-9 rounded-full cursor-pointer",
+              "relative inline-flex items-center justify-center size-8 rounded-full cursor-pointer",
               "border border-border bg-surface text-fg-muted",
               "hover:border-border-strong hover:bg-surface-strong hover:text-fg",
               "transition-[colors,transform] duration-150",

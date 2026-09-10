@@ -47,8 +47,10 @@ export function AdminShell({
   tally,
   actions,
   busy = false,
-  // Operação (popovers já montados pela página — cada um traz seu fetch)
-  operationSlots,
+  // Status de operação (popovers já montados pela página — cada um traz
+  // seu fetch): Bases, DSPs, Alertas, Sync das curadorias. Vão pra barra
+  // de contexto, à esquerda das ações da view.
+  status,
   // Usuário
   user,
   onLogout,
@@ -136,7 +138,6 @@ export function AdminShell({
     counts: navCounts,
     onNavigate: handleNavigate,
     onSearch: focusSearch,
-    operationSlots,
     user, onLogout,
     density, onDensityChange: setDensity,
   };
@@ -206,8 +207,7 @@ export function AdminShell({
             collapsed={collapsed}
             onToggleCollapsed={toggleCollapsed}
             onOpenDrawer={openDrawer}
-            density={density}
-            onDensityChange={setDensity}
+            status={status}
             actions={actions}
             busy={busy}
           />
