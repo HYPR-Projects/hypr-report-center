@@ -3,20 +3,25 @@
 // O rail. Três blocos fixos e um scrollável no meio:
 //
 //   marca         — logo (vira monograma colapsado) + botão de colapsar
-//   [scroll]      — busca global, grupos de navegação, grupo Operação
+//   [scroll]      — busca global, grupos de navegação
 //   pé            — usuário → menu (tema, densidade, demo, sair)
+//
+// O rail é SÓ navegação. Os status de operação (Bases, DSPs, Alertas, Sync
+// das curadorias) moraram aqui como grupo "Operação" entre ago e set/26 e
+// foram pra barra de contexto, ao lado das ações da view — ver o cabeçalho
+// de AdminContextBar.jsx.
 //
 // Por que os grupos são colapsáveis mas nascem abertos
 // ────────────────────────────────────────────────────────────────────────
-// Reports (5) + PMP (5) + Operação (3) = 13 linhas de 33px + 3 cabeçalhos.
-// Cabe em ~520px, folgado em qualquer viewport de trabalho. Deixar tudo à
-// vista é o que faz o salto entre seções custar UM clique — que era
-// exatamente o problema do botão "PMP Deals" perdido no herói. Quem não
-// usa uma seção pode fechá-la, e a escolha persiste.
+// Reports (5) + PMP (5) = 10 linhas de 32px + 2 cabeçalhos. Cabe em ~400px,
+// folgado em qualquer viewport de trabalho. Deixar tudo à vista é o que faz
+// o salto entre seções custar UM clique — que era exatamente o problema do
+// botão "PMP Deals" perdido no herói. Quem não usa uma seção pode fechá-la,
+// e a escolha persiste.
 //
 // Grupos colapsados no rail colapsado: não. Com 68px de largura não há
 // rótulo de grupo pra clicar, e esconder ícones atrás de um acordeão
-// invisível é pior que mostrar 13 ícones. No estado colapsado os grupos
+// invisível é pior que mostrar 10 ícones. No estado colapsado os grupos
 // ficam sempre abertos e o separador vira uma régua curta.
 
 import { useCallback, useEffect, useState } from "react";
@@ -44,9 +49,6 @@ export function AdminSidebar({
   counts = {},
   onNavigate,
   onSearch,
-  // Slots de Operação — o AdminShell injeta os popovers já montados
-  // (Bases, DSPs, Alertas) porque cada um traz o próprio estado e fetch.
-  operationSlots = null,
   // Mobile
   isDrawer = false,
   onCloseDrawer,
@@ -199,14 +201,6 @@ export function AdminSidebar({
             </div>
           );
         })}
-
-        {/* ── Operação ─────────────────────────────────────────────────── */}
-        {operationSlots && (
-          <div className="mb-2">
-            <GroupLabel label="Operação" open collapsible={false} />
-            {operationSlots}
-          </div>
-        )}
       </nav>
 
       {/* ── Pé ─────────────────────────────────────────────────────────── */}

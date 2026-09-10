@@ -1241,22 +1241,21 @@ export default function CampaignMenuV2({
       busy={refreshing && !loading}
       user={user}
       onLogout={onLogout}
-      operationSlots={
+      status={
         <>
           {/* Sino de alertas — o motor prioriza riscos por severidade ×
               impacto BRL. Admin-only por estar dentro do gate do App.jsx. */}
           <AlertsBell
-            variant="rail"
             alerts={alerts}
             teamMap={teamMap}
             onDrillCampaign={handleDrillCampaign}
             onOpenDiagnostico={handleOpenDiagnosticoFromAlert}
           />
           {/* Frescor do rollup diário das bases (pipeline). */}
-          <DataFreshnessIndicator variant="rail" user={user} />
+          <DataFreshnessIndicator user={user} />
           {/* Saúde de ENTREGA por DSP (volume/negócio) — complementa o
               indicador acima, que cobre pipeline/frescor. */}
-          <DspHealthPanel variant="rail" onOpenReport={onOpenReport} />
+          <DspHealthPanel onOpenReport={onOpenReport} />
         </>
       }
       actions={

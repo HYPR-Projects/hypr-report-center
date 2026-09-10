@@ -514,10 +514,10 @@ export default function ClientDetailPage({
       user={user}
       onLogout={onLogout}
       wide={false}
-      operationSlots={
+      status={
         <>
-          <DataFreshnessIndicator variant="rail" user={user} />
-          <DspHealthPanel variant="rail" onOpenReport={onOpenReport} />
+          <DataFreshnessIndicator user={user} />
+          <DspHealthPanel onOpenReport={onOpenReport} />
         </>
       }
       // Button do DS, não um <button> com classes à mão: a ação primária do
