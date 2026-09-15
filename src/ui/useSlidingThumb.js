@@ -31,10 +31,16 @@
 //
 // `count` precisa estar nas deps pra re-medir quando o conjunto de opções muda
 // (hoje só os toggles fixos, mas deixa pronto pra filtros dinâmicos).
+//
+// `opts.twoAxis`: o container pode QUEBRAR LINHA (flex-wrap) — o thumb passa
+// a receber também Y e altura, pra acompanhar a aba ativa em qualquer linha.
+// Quem usa deve posicionar o thumb em `top-0 left-0` e deixar a altura vir do
+// style (não fixar via classe). Default false: comportamento original, só X.
 
 import { useLayoutEffect, useRef, useState } from "react";
 
-export function useSlidingThumb(activeIndex, count) {
+export function useSlidingThumb(activeIndex, count, opts = {}) {
+  const twoAxis = !!opts.twoAxis;
   const containerRef = useRef(null);
   const itemsRef = useRef([]);
   const [thumbStyle, setThumbStyle] = useState({
@@ -61,9 +67,11 @@ export function useSlidingThumb(activeIndex, count) {
       // lugar errado. Somar scrollLeft converte pra coordenada do conteúdo.
       const x = iRect.left - cRect.left + container.scrollLeft;
       const w = iRect.width;
+      const y = twoAxis ? iRect.top - cRect.top + container.scrollTop : 0;
       setThumbStyle({
-        transform: `translate3d(${x}px, 0, 0)`,
+        transform: `translate3d(${x}px, ${y}px, 0)`,
         width: w,
+        ...(twoAxis ? { height: iRect.height } : {}),
         opacity: 1,
         // Após a primeira medição, todas as transições subsequentes deslizam.
         transition: measuredOnceRef.current
@@ -86,7 +94,7 @@ export function useSlidingThumb(activeIndex, count) {
     // texto trocando) sem o container mudar de tamanho.
     itemsRef.current.forEach((el) => el && ro.observe(el));
     return () => ro.disconnect();
-  }, [activeIndex, count]);
+  }, [activeIndex, count, twoAxis]);
 
   const setItemRef = (idx) => (el) => {
     itemsRef.current[idx] = el;

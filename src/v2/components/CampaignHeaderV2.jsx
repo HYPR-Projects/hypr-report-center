@@ -763,9 +763,14 @@ function MergeViewSwitcher({ members, activeToken, currentView, onChange, switch
     if (activeIndex < 0) activeIndex = 0;
   }
 
+  // twoAxis: as abas QUEBRAM LINHA quando não cabem (grupo com 4+ meses em
+  // tela estreita). Antes era overflow-x com scrollbar escondida: no desktop
+  // as abas excedentes ficavam cortadas sem nenhuma pista, e o usuário achava
+  // que os meses "não tinham entrado" no grupo. O thumb acompanha X e Y.
   const { containerRef, setItemRef, thumbStyle } = useSlidingThumb(
     activeIndex,
     sortedMembers.length + 1,
+    { twoAxis: true },
   );
 
   return (
@@ -774,18 +779,18 @@ function MergeViewSwitcher({ members, activeToken, currentView, onChange, switch
       role="tablist"
       aria-label="Selecionar report do grupo"
       className={[
-        "relative mt-4 inline-flex items-stretch gap-0.5 p-1 rounded-xl",
-        "bg-canvas-deeper border border-border max-w-full overflow-x-auto scrollbar-hidden",
+        "relative mt-4 inline-flex flex-wrap items-stretch gap-0.5 p-1 rounded-xl",
+        "bg-canvas-deeper border border-border max-w-full",
         "motion-reduce:[&_[data-thumb]]:!transition-none",
       ].join(" ")}
     >
       {/* Thumb deslizante — desliza pra aba ativa. z-0, atrás do conteúdo.
-          Altura casa com o botão (h-9) via top-1 + calc; largura/posição vêm
-          do hook (thumbStyle). */}
+          Posição, largura E altura vêm do hook (twoAxis) — assim ele cai na
+          linha certa quando as abas quebram. */}
       <span
         data-thumb
         aria-hidden="true"
-        className="absolute top-1 left-0 h-[calc(100%-0.5rem)] rounded-lg bg-signature shadow-[0_1px_2px_rgba(0,0,0,0.18)] pointer-events-none z-0"
+        className="absolute top-0 left-0 rounded-lg bg-signature shadow-[0_1px_2px_rgba(0,0,0,0.18)] pointer-events-none z-0"
         style={thumbStyle}
       />
 
