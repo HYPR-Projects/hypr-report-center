@@ -592,9 +592,25 @@ def update_merge_settings(
 def list_mergeable_tokens(short_token: str) -> list[dict]:
     """Lista tokens do MESMO cliente que podem ser mergeados com `short_token`.
 
-    "Mergeáveis" = mesmo client_name canônico, ainda não pertencentes a
-    OUTRO grupo. Tokens já no mesmo grupo do `short_token` aparecem
-    marcados como `already_in_group=True` (UI mostra como selecionados).
+    Lista TODOS os tokens do mesmo client_name canônico — inclusive os que
+    já estão em algum grupo. Cada item diz em que situação está:
+
+      - `already_in_group`: já no MESMO grupo do `short_token` (UI mostra
+        pré-selecionado).
+      - `in_other_group`: em um grupo do qual o `short_token` NÃO faz
+        parte. O que a UI faz com isso depende do token base:
+          * base já agrupado  → bloqueado ("em outro grupo"; fundir dois
+            grupos exige desfazer um antes — merge_tokens levanta
+            TokenAlreadyMergedError nesse caso).
+          * base sem grupo    → selecionável: marcar um membro significa
+            fazer o base ENTRAR nesse grupo (merge_tokens já trata "1 grupo
+            existente + tokens novos" adicionando os novos ao grupo). Sem
+            isso, o admin que abria o modal a partir do PI novo via todos
+            os membros do grupo bloqueados e concluía que "não dá pra
+            agrupar mais que N tokens".
+      - `merge_id`: o grupo em que o candidato está (None se solto). A UI
+        usa pra selecionar/deselecionar o grupo inteiro de uma vez e pra
+        impedir seleção de dois grupos distintos.
 
     Não inclui o próprio `short_token` na lista.
 
@@ -604,7 +620,8 @@ def list_mergeable_tokens(short_token: str) -> list[dict]:
         "campaign_name": str,
         "start_date": str | None,
         "end_date": str | None,
-        "in_other_group": bool,   -- já em grupo de outro
+        "merge_id": str | None,   -- grupo atual do candidato
+        "in_other_group": bool,   -- em grupo do qual o base não faz parte
         "already_in_group": bool, -- já no MESMO grupo do short_token
       }
     """
@@ -662,6 +679,7 @@ def list_mergeable_tokens(short_token: str) -> list[dict]:
             "campaign_name":    r["campaign_name"],
             "start_date":       str(r["start_date"]) if r["start_date"] else None,
             "end_date":         str(r["end_date"])   if r["end_date"]   else None,
+            "merge_id":         info["merge_id"] if info else None,
             "in_other_group":   in_other,
             "already_in_group": already_in,
         })
