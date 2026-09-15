@@ -8,7 +8,7 @@
 // Fluxo
 // -----
 // 1. Abre via CampaignDrawer ("Gerenciar Merge"). Recebe a campanha base.
-// 2. Carrega lista de tokens elegíveis (mesmo cliente, não em outro grupo)
+// 2. Carrega lista de tokens do mesmo cliente (soltos e agrupados)
 //    via listMergeableTokens. Tokens já no MESMO grupo do base já vêm
 //    marcados (already_in_group=true).
 // 3. Se base tem merge_id, carrega config atual do grupo (rmnd/pdooh mode)
@@ -29,6 +29,21 @@
 //   para ambos cobre o caso comum.
 // • Lista vazia (sem tokens elegíveis) mostra estado vazio amigável em
 //   vez de modal vazio confuso.
+// • Base SEM grupo pode ENTRAR em um grupo existente: os membros desse
+//   grupo aparecem selecionáveis (badge "grupo existente") e marcar um
+//   marca todos — entrar no grupo é uma decisão sobre o grupo, não sobre
+//   um membro. Membros de um SEGUNDO grupo ficam bloqueados enquanto houver
+//   um grupo escolhido (backend rejeita fundir dois grupos). Antes disso,
+//   quem abria o modal a partir do PI novo via os membros do grupo todos
+//   bloqueados como "em outro grupo" e não tinha o que marcar — parecia um
+//   limite de N tokens por grupo, que nunca existiu.
+// • Base JÁ agrupado + membros de OUTRO grupo: selecionáveis, mas salvar
+//   pede confirmação e manda `merge_groups=true` — o backend dissolve o outro
+//   grupo e traz todos os membros pro grupo do base. Marcar um membro marca o
+//   grupo inteiro (mesma lógica tudo-ou-nada). Antes isso era bloqueado com
+//   um badge "em outro grupo" sem explicação nem saída.
+// • A lista é dividida em seções (neste grupo / soltos / cada outro grupo)
+//   pra que o estado de cada token e o efeito de marcá-lo sejam óbvios.
 
 import { useState, useEffect, useMemo } from "react";
 import {
@@ -97,6 +112,56 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
     return () => { cancelled = true; };
   }, [baseToken, baseInGroup, campaign?.merge_id]);
 
+  // ── Grupos existentes entre os candidatos ─────────────────────────────
+  // token → merge_id (só pra quem já está em algum grupo).
+  const candidateGroup = useMemo(() => {
+    const m = new Map();
+    for (const c of candidates) if (c.merge_id) m.set(c.short_token, c.merge_id);
+    return m;
+  }, [candidates]);
+
+  const baseGroupId = campaign?.merge_id || null;
+  // Candidato pertence a um grupo do qual o base NÃO faz parte.
+  const isOtherGroup = (c) => !!c.merge_id && c.merge_id !== baseGroupId;
+
+  // Algum membro de OUTRO grupo marcado → esse grupo vai se juntar ao base
+  // ao salvar: base solto ENTRA nele; base agrupado FUNDE os dois. null
+  // quando só há tokens soltos (ou do próprio grupo) marcados.
+  const otherGroupId = useMemo(() => {
+    for (const t of selected) {
+      const g = candidateGroup.get(t);
+      if (g && g !== baseGroupId) return g;
+    }
+    return null;
+  }, [selected, candidateGroup, baseGroupId]);
+
+  const otherGroupSize = otherGroupId
+    ? candidates.filter((c) => c.merge_id === otherGroupId).length
+    : 0;
+  // Tamanho do grupo do base (base + membros já agrupados) — só pro texto
+  // da confirmação de fusão.
+  const baseGroupSize = 1 + candidates.filter((c) => c.already_in_group).length;
+
+  const joiningGroup = !!otherGroupId && !baseInGroup; // base solto entra
+  const fusingGroups = !!otherGroupId &&  baseInGroup; // dois grupos viram um
+
+  // Marca/desmarca um candidato. Membro de OUTRO grupo: a ação vale pro
+  // grupo inteiro — juntar-se a um grupo é tudo-ou-nada (o backend move o
+  // grupo por completo). Membro do próprio grupo ou token solto: individual.
+  const toggleCandidate = (c, next) => {
+    setSelected((prev) => {
+      const ns = new Set(prev);
+      const affected = isOtherGroup(c)
+        ? candidates.filter((x) => x.merge_id === c.merge_id).map((x) => x.short_token)
+        : [c.short_token];
+      for (const t of affected) {
+        if (next) ns.add(t);
+        else      ns.delete(t);
+      }
+      return ns;
+    });
+  };
+
   // ── Diff entre estado inicial e atual ──────────────────────────────────
   const diff = useMemo(() => {
     const toAdd = [];
@@ -116,14 +181,29 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
 
   // ── Save: aplica diff em sequência (cada chamada invalida cache) ───────
   const handleSave = async () => {
+    if (fusingGroups) {
+      const ok = confirm(
+        `Fundir grupos?\n\n` +
+        `Os ${otherGroupSize} reports do outro grupo passam para este grupo ` +
+        `(${baseGroupSize} reports). O outro grupo deixa de existir e as ` +
+        `configurações de RMND/PDOOH deste grupo valem para todos.`
+      );
+      if (!ok) return;
+    }
     setSaving(true);
     try {
-      // 1) Adiciona novos: 1 chamada com base + adicionados
+      // 1) Adiciona novos: 1 chamada com base + adicionados. Se há OUTRO
+      //    grupo envolvido, `toAdd` inclui os membros dele: base solto → o
+      //    backend detecta um merge_id único e insere só quem falta; base
+      //    agrupado → `merge_groups` autoriza fundir (senão 409). Nos dois
+      //    casos os modes do grupo que fica prevalecem.
+      const keepGroupModes = baseInGroup || !!otherGroupId;
       if (diff.toAdd.length > 0) {
         await mergeTokens({
           tokens: [baseToken, ...diff.toAdd],
-          rmnd_mode:  baseInGroup ? undefined : rmndMode,
-          pdooh_mode: baseInGroup ? undefined : pdoohMode,
+          rmnd_mode:  keepGroupModes ? undefined : rmndMode,
+          pdooh_mode: keepGroupModes ? undefined : pdoohMode,
+          merge_groups: fusingGroups || undefined,
         });
       }
       // 2) Remove: 1 chamada por token a remover
@@ -146,7 +226,11 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
           });
         }
       }
-      toast.success("Agrupamento salvo");
+      toast.success(
+        fusingGroups ? "Grupos fundidos"
+          : joiningGroup ? "Token adicionado ao grupo"
+          : "Agrupamento salvo"
+      );
       onSaved?.();
     } catch (e) {
       toast.error("Erro ao salvar agrupamento: " + (e.message || e));
@@ -184,16 +268,24 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
 
   if (!campaign) return null;
 
-  // Tokens elegíveis pra mostrar (exclui os em outro grupo, que não dá pra
-  // mexer mesmo). Mantemos eles na lista com badge "em outro grupo" pra
-  // dar contexto.
-  const sortedCandidates = candidates.slice().sort((a, b) => {
-    // Já-no-grupo primeiro, depois por start_date desc
-    if (a.already_in_group !== b.already_in_group) {
-      return a.already_in_group ? -1 : 1;
+  // Seções: membros do grupo do base, tokens soltos e cada OUTRO grupo
+  // separadamente (com seu período), ordenados por start_date desc dentro
+  // de cada bloco. Deixa explícito o que marcar cada token significa.
+  const byStartDesc = (a, b) => (b.start_date || "").localeCompare(a.start_date || "");
+  const inGroup = candidates.filter((c) => c.already_in_group).sort(byStartDesc);
+  const loose   = candidates.filter((c) => !c.merge_id).sort(byStartDesc);
+  const otherGroups = [];
+  {
+    const idx = new Map();
+    for (const c of candidates.slice().sort(byStartDesc)) {
+      if (!isOtherGroup(c)) continue;
+      if (!idx.has(c.merge_id)) {
+        idx.set(c.merge_id, otherGroups.length);
+        otherGroups.push({ merge_id: c.merge_id, members: [] });
+      }
+      otherGroups[idx.get(c.merge_id)].members.push(c);
     }
-    return (b.start_date || "").localeCompare(a.start_date || "");
-  });
+  }
 
   return (
     <ModalShell
@@ -259,20 +351,20 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
               <div className="text-3xl mb-2 opacity-50">∅</div>
               <p className="text-sm text-fg">Sem campanhas elegíveis</p>
               <p className="text-xs text-fg-muted mt-1 max-w-[360px] mx-auto leading-relaxed">
-                Não encontrei outros tokens deste cliente para agrupar.
-                Para agrupar, é preciso ter ao menos 2 reports do mesmo
-                cliente registrados.
+                Não encontrei outros tokens com o mesmo nome de cliente
+                ({campaign.client_name}). Se o PI que você quer agrupar
+                existe, confira se o cliente dele está grafado igual.
               </p>
             </div>
           )}
 
           {!loading && !error && candidates.length > 0 && (
             <>
-              <div className="text-[10px] uppercase tracking-[0.16em] font-bold text-fg-subtle mb-3">
-                Tokens do cliente
-              </div>
+              {/* ── Grupo do base (ou só o base, se solto) ───────── */}
+              <SectionTitle>
+                {baseInGroup ? `Neste grupo · ${baseGroupSize} reports` : "Token base"}
+              </SectionTitle>
               <ul className="space-y-1.5">
-                {/* Token base (sempre presente, fixo) */}
                 <li>
                   <CandidateRow
                     token={baseToken}
@@ -284,34 +376,114 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
                     disabled
                   />
                 </li>
-                {sortedCandidates.map((c) => {
-                  const inOther = c.in_other_group;
-                  return (
-                    <li key={c.short_token}>
-                      <CandidateRow
-                        token={c.short_token}
-                        campaignName={c.campaign_name}
-                        startDate={c.start_date}
-                        endDate={c.end_date}
-                        checked={selected.has(c.short_token)}
-                        disabled={inOther}
-                        disabledReason={inOther ? "em outro grupo" : null}
-                        alreadyMerged={c.already_in_group}
-                        onChange={(next) => {
-                          setSelected((prev) => {
-                            const ns = new Set(prev);
-                            if (next) ns.add(c.short_token);
-                            else      ns.delete(c.short_token);
-                            return ns;
-                          });
-                        }}
-                      />
-                    </li>
-                  );
-                })}
+                {inGroup.map((c) => (
+                  <li key={c.short_token}>
+                    <CandidateRow
+                      token={c.short_token}
+                      campaignName={c.campaign_name}
+                      startDate={c.start_date}
+                      endDate={c.end_date}
+                      checked={selected.has(c.short_token)}
+                      alreadyMerged
+                      onChange={(next) => toggleCandidate(c, next)}
+                    />
+                  </li>
+                ))}
               </ul>
+              {baseInGroup && (
+                <p className="text-[10.5px] text-fg-subtle mt-1.5 leading-relaxed">
+                  Desmarcar um token o tira do grupo ao salvar.
+                </p>
+              )}
 
-              {/* ── Settings (avançado) ─────────────────────────── */}
+              {/* ── Tokens soltos ─────────────────────────────────── */}
+              {loose.length > 0 && (
+                <>
+                  <SectionTitle className="mt-6">
+                    {baseInGroup ? "Adicionar ao grupo" : "Agrupar com"}
+                  </SectionTitle>
+                  <ul className="space-y-1.5">
+                    {loose.map((c) => (
+                      <li key={c.short_token}>
+                        <CandidateRow
+                          token={c.short_token}
+                          campaignName={c.campaign_name}
+                          startDate={c.start_date}
+                          endDate={c.end_date}
+                          checked={selected.has(c.short_token)}
+                          onChange={(next) => toggleCandidate(c, next)}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+
+              {/* ── Outros grupos deste cliente ───────────────────── */}
+              {otherGroups.map((g) => {
+                const chosen  = otherGroupId === g.merge_id;
+                const blocked = !!otherGroupId && !chosen;
+                const period  = formatDateRange(
+                  g.members.reduce((acc, m) => (!acc || (m.start_date && m.start_date < acc)) ? m.start_date : acc, null),
+                  g.members.reduce((acc, m) => (!acc || (m.end_date && m.end_date > acc)) ? m.end_date : acc, null),
+                );
+                return (
+                  <div key={g.merge_id} className="mt-6">
+                    <SectionTitle>
+                      Grupo existente · {g.members.length} {g.members.length === 1 ? "report" : "reports"}
+                      {period && <span className="font-normal tracking-normal normal-case text-fg-subtle"> · {period}</span>}
+                    </SectionTitle>
+                    <ul className="space-y-1.5">
+                      {g.members.map((c) => (
+                        <li key={c.short_token}>
+                          <CandidateRow
+                            token={c.short_token}
+                            campaignName={c.campaign_name}
+                            startDate={c.start_date}
+                            endDate={c.end_date}
+                            checked={selected.has(c.short_token)}
+                            disabled={blocked}
+                            disabledReason={blocked ? "outro grupo já escolhido" : null}
+                            existingGroup={!blocked}
+                            onChange={(next) => toggleCandidate(c, next)}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="text-[10.5px] text-fg-subtle mt-1.5 leading-relaxed">
+                      {blocked
+                        ? "Só dá pra juntar um grupo por vez. Desmarque o outro grupo para escolher este."
+                        : baseInGroup
+                          ? "Marcar qualquer token deste grupo funde os dois grupos em um só."
+                          : "Marcar qualquer token deste grupo coloca o token base dentro dele."}
+                    </p>
+                  </div>
+                );
+              })}
+
+              {/* ── Aviso do efeito do save quando há outro grupo ─── */}
+              {otherGroupId && (
+                <p className="mt-4 text-xs text-fg-muted leading-relaxed rounded-lg border border-signature/30 bg-signature/5 px-3 py-2">
+                  {fusingGroups ? (
+                    <>
+                      <span className="text-fg font-semibold">Ao salvar, os dois grupos viram um só</span>{" "}
+                      ({baseGroupSize} + {otherGroupSize} reports). O outro grupo deixa de existir;
+                      as configurações de RMND e PDOOH deste grupo valem para todos.
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-fg font-semibold">Este token vai entrar em um grupo que já existe</span>{" "}
+                      ({otherGroupSize} {otherGroupSize === 1 ? "report" : "reports"}).
+                      As configurações de RMND e PDOOH do grupo são mantidas.
+                    </>
+                  )}
+                </p>
+              )}
+
+              {/* ── Settings (avançado) — só quando fazem efeito: grupo
+                  novo (define modes) ou grupo do base (edita modes). Ao
+                  entrar em grupo existente os modes dele prevalecem. */}
+              {!joiningGroup && (
               <div className="mt-6">
                 <button
                   type="button"
@@ -346,6 +518,7 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
                   </div>
                 )}
               </div>
+              )}
             </>
           )}
         </div>
@@ -379,9 +552,13 @@ const MergeModal = ({ campaign, onClose, onSaved, theme }) => {
             >
               {saving
                 ? "Salvando…"
-                : baseInGroup
-                  ? "Salvar mudanças"
-                  : `Agrupar ${diff.toAdd.length || ""}`.trim()}
+                : fusingGroups
+                  ? "Fundir grupos"
+                  : joiningGroup
+                    ? "Entrar no grupo"
+                    : baseInGroup
+                      ? "Salvar mudanças"
+                      : `Agrupar ${diff.toAdd.length || ""}`.trim()}
             </button>
           </div>
         </footer>
@@ -405,6 +582,7 @@ function CandidateRow({
   disabled,
   disabledReason,
   alreadyMerged,
+  existingGroup,
   isBase,
   onChange,
 }) {
@@ -445,6 +623,14 @@ function CandidateRow({
               agrupado
             </span>
           )}
+          {existingGroup && (
+            <span
+              className="text-[9px] uppercase tracking-widest font-bold text-signature"
+              title="Marcar este token faz o token base entrar no grupo inteiro"
+            >
+              grupo existente
+            </span>
+          )}
           {disabledReason && (
             <span className="text-[9px] uppercase tracking-widest font-bold text-fg-subtle">
               {disabledReason}
@@ -458,6 +644,14 @@ function CandidateRow({
         )}
       </div>
     </label>
+  );
+}
+
+function SectionTitle({ children, className = "" }) {
+  return (
+    <div className={`text-[10px] uppercase tracking-[0.16em] font-bold text-fg-subtle mb-3 ${className}`}>
+      {children}
+    </div>
   );
 }
 

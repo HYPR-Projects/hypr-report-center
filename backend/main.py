@@ -3489,7 +3489,7 @@ def report_data(request):
     #
     #   GET  ?action=list_mergeable_tokens&token=<short_token>     → tokens elegíveis
     #   GET  ?action=get_merge_group&merge_id=<id>                 → estado do grupo
-    #   POST ?action=merge_tokens   {tokens: [...], rmnd_mode?, pdooh_mode?} → cria/anexa
+    #   POST ?action=merge_tokens   {tokens: [...], rmnd_mode?, pdooh_mode?, merge_groups?} → cria/anexa/funde
     #   POST ?action=unmerge_token  {short_token}                  → remove do grupo
     #   POST ?action=dissolve_merge_group {merge_id}               → dissolve grupo inteiro
     #   POST ?action=update_merge_settings {merge_id, rmnd_mode?, pdooh_mode?}
@@ -3537,6 +3537,10 @@ def report_data(request):
             tokens     = body.get("tokens") or []
             rmnd_mode  = body.get("rmnd_mode")
             pdooh_mode = body.get("pdooh_mode")
+            # merge_groups=true: admin confirmou fundir grupos distintos num
+            # só (ver merges.merge_tokens). Sem a flag, tokens de 2+ grupos
+            # continuam dando 409.
+            merge_groups = bool(body.get("merge_groups"))
             if not isinstance(tokens, list):
                 return (jsonify({"error": "tokens deve ser array"}), 400, headers)
             group = merges.merge_tokens(
@@ -3544,6 +3548,7 @@ def report_data(request):
                 admin_email=admin.get("email", "unknown"),
                 rmnd_mode=rmnd_mode,
                 pdooh_mode=pdooh_mode,
+                merge_groups=merge_groups,
             )
             # Invalida cache de cada membro + caches da lista. Audit log
             # vai uma row POR membro do grupo — assim cada report mostra a

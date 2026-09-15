@@ -302,16 +302,26 @@ def merge_tokens(
     admin_email: str,
     rmnd_mode: str | None = None,
     pdooh_mode: str | None = None,
+    merge_groups: bool = False,
 ) -> dict:
     """Cria um novo grupo com `tokens`, ou adiciona ao grupo existente.
 
     Regra de fusão:
       - Se nenhum dos tokens já está em um grupo → cria grupo novo.
-      - Se exatamente 1 dos tokens já está em um grupo → adiciona os
+      - Se os tokens já agrupados pertencem a UM só grupo → adiciona os
         outros a esse grupo existente (preservando rmnd_mode/pdooh_mode
-        já definidos do grupo, a menos que o caller informe novos).
-      - Se 2+ tokens já estão em grupos diferentes → raise (precisa
-        unmerge antes; merge entre grupos é decisão explícita do admin).
+        do grupo — settings só mudam via update_merge_settings).
+      - Se os tokens já agrupados pertencem a 2+ grupos distintos:
+          * merge_groups=False (default) → raise TokenAlreadyMergedError.
+            Fundir grupos é decisão explícita do admin; a UI pede
+            confirmação e reenvia com merge_groups=True.
+          * merge_groups=True → funde tudo num grupo-alvo (o grupo de
+            `tokens[0]`, que a UI manda como token base; se o base está
+            solto, o grupo com mais membros). Os OUTROS grupos são
+            dissolvidos por inteiro e todos os seus membros migram pro
+            alvo — mesmo os que o caller não listou, porque grupo é uma
+            unidade: não faz sentido deixar metade de um grupo pra trás.
+            Modes do alvo prevalecem.
 
     Validações:
       - Min 2 tokens.
@@ -375,9 +385,16 @@ def merge_tokens(
     distinct_merge_ids = {r["merge_id"] for r in existing_rows}
 
     if len(distinct_merge_ids) > 1:
-        raise TokenAlreadyMergedError(
-            "Tokens já pertencem a grupos distintos. "
-            "Desfaça o merge antes de unificar."
+        if not merge_groups:
+            raise TokenAlreadyMergedError(
+                "Tokens já pertencem a grupos distintos. "
+                "Confirme a fusão dos grupos ou desfaça um deles antes."
+            )
+        return _fuse_groups(
+            clean_tokens=clean_tokens,
+            existing_by_token=existing_by_token,
+            client_name=canonical_client,
+            admin_email=admin_email,
         )
 
     if len(distinct_merge_ids) == 1:
@@ -417,6 +434,76 @@ def merge_tokens(
         admin_email=admin_email,
     )
     return get_merge_group(new_merge_id) or {}
+
+
+def _fuse_groups(
+    clean_tokens: list[str],
+    existing_by_token: dict,
+    client_name: str,
+    admin_email: str,
+) -> dict:
+    """Funde 2+ grupos (mais tokens soltos, se houver) num único grupo-alvo.
+
+    Alvo = grupo de `clean_tokens[0]` (o token base da UI). Se o base está
+    solto, alvo = grupo com mais membros (tamanho real, não só os tokens
+    listados) entre os envolvidos — menos linhas pra mover. Os demais grupos são apagados por inteiro e TODOS os seus
+    membros (listados ou não pelo caller) entram no alvo com os modes do
+    alvo.
+
+    Ordem: DELETE dos outros grupos antes do INSERT no alvo. Se o INSERT
+    falhar no meio, os tokens ficam soltos (recuperável pelo admin) — o
+    inverso deixaria um token em dois grupos, violando UNIQUE(short_token)
+    e tornando get_merge_id_for_token não-determinístico.
+    """
+    involved_ids = sorted({info["merge_id"] for info in existing_by_token.values()})
+    groups = {}
+    for mid in involved_ids:
+        g = get_merge_group(mid)
+        if g:
+            groups[mid] = g
+    if not groups:
+        raise InvalidMergeError("Nenhum dos grupos envolvidos foi encontrado")
+
+    base_info = existing_by_token.get(clean_tokens[0])
+    if base_info and base_info["merge_id"] in groups:
+        target_id = base_info["merge_id"]
+    else:
+        # Tamanho REAL do grupo (todos os membros), não só os tokens que o
+        # caller listou — o que importa é mover menos linhas.
+        target_id = max(groups, key=lambda mid: (len(groups[mid]["members"]), mid))
+
+    target_group = groups[target_id]
+    rmnd_mode  = target_group["rmnd_mode"]
+    pdooh_mode = target_group["pdooh_mode"]
+    target_members = {m["short_token"].upper() for m in target_group["members"]}
+
+    to_move: list[str] = []
+    for mid, group in groups.items():
+        if mid == target_id:
+            continue
+        to_move.extend(m["short_token"].upper() for m in group["members"])
+        _delete_group_rows(mid)
+
+    # Tokens soltos que vieram junto no pedido
+    to_move.extend(t for t in clean_tokens if t not in existing_by_token)
+
+    new_tokens = []
+    seen = set(target_members)
+    for t in to_move:
+        if t in seen:
+            continue
+        seen.add(t)
+        new_tokens.append(t)
+
+    _insert_members(
+        merge_id=target_id,
+        tokens=new_tokens,
+        client_name=client_name,
+        rmnd_mode=rmnd_mode,
+        pdooh_mode=pdooh_mode,
+        admin_email=admin_email,
+    )
+    return get_merge_group(target_id) or {}
 
 
 def _insert_members(
@@ -592,9 +679,25 @@ def update_merge_settings(
 def list_mergeable_tokens(short_token: str) -> list[dict]:
     """Lista tokens do MESMO cliente que podem ser mergeados com `short_token`.
 
-    "Mergeáveis" = mesmo client_name canônico, ainda não pertencentes a
-    OUTRO grupo. Tokens já no mesmo grupo do `short_token` aparecem
-    marcados como `already_in_group=True` (UI mostra como selecionados).
+    Lista TODOS os tokens do mesmo client_name canônico — inclusive os que
+    já estão em algum grupo. Cada item diz em que situação está:
+
+      - `already_in_group`: já no MESMO grupo do `short_token` (UI mostra
+        pré-selecionado).
+      - `in_other_group`: em um grupo do qual o `short_token` NÃO faz
+        parte. O que a UI faz com isso depende do token base:
+          * base já agrupado  → bloqueado ("em outro grupo"; fundir dois
+            grupos exige desfazer um antes — merge_tokens levanta
+            TokenAlreadyMergedError nesse caso).
+          * base sem grupo    → selecionável: marcar um membro significa
+            fazer o base ENTRAR nesse grupo (merge_tokens já trata "1 grupo
+            existente + tokens novos" adicionando os novos ao grupo). Sem
+            isso, o admin que abria o modal a partir do PI novo via todos
+            os membros do grupo bloqueados e concluía que "não dá pra
+            agrupar mais que N tokens".
+      - `merge_id`: o grupo em que o candidato está (None se solto). A UI
+        usa pra selecionar/deselecionar o grupo inteiro de uma vez e pra
+        impedir seleção de dois grupos distintos.
 
     Não inclui o próprio `short_token` na lista.
 
@@ -604,7 +707,8 @@ def list_mergeable_tokens(short_token: str) -> list[dict]:
         "campaign_name": str,
         "start_date": str | None,
         "end_date": str | None,
-        "in_other_group": bool,   -- já em grupo de outro
+        "merge_id": str | None,   -- grupo atual do candidato
+        "in_other_group": bool,   -- em grupo do qual o base não faz parte
         "already_in_group": bool, -- já no MESMO grupo do short_token
       }
     """
@@ -662,6 +766,7 @@ def list_mergeable_tokens(short_token: str) -> list[dict]:
             "campaign_name":    r["campaign_name"],
             "start_date":       str(r["start_date"]) if r["start_date"] else None,
             "end_date":         str(r["end_date"])   if r["end_date"]   else None,
+            "merge_id":         info["merge_id"] if info else None,
             "in_other_group":   in_other,
             "already_in_group": already_in,
         })

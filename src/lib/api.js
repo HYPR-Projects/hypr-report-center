@@ -1531,12 +1531,17 @@ export async function getMergeGroup(merge_id) {
  * cria um novo. Se algum já está, anexa os outros a esse mesmo grupo.
  *
  * `rmnd_mode` / `pdooh_mode`: "merge" | "latest" | undefined (default = "merge")
+ * `merge_groups`: true quando os tokens pertencem a 2+ grupos e o admin
+ * confirmou a fusão. Sem a flag o backend devolve 409 nesse caso.
  */
-export async function mergeTokens({ tokens, rmnd_mode, pdooh_mode }) {
+export async function mergeTokens({ tokens, rmnd_mode, pdooh_mode, merge_groups }) {
   const jwt = await getOrIssueAdminJwt();
   const body = { tokens };
   if (rmnd_mode  !== undefined) body.rmnd_mode  = rmnd_mode;
   if (pdooh_mode !== undefined) body.pdooh_mode = pdooh_mode;
+  // Admin confirmou fundir grupos distintos num só (backend dissolve os
+  // outros grupos e move todos os membros pro grupo do token base).
+  if (merge_groups) body.merge_groups = true;
   const r = await postJson(
     `${API_URL}?action=merge_tokens`,
     body,
