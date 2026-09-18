@@ -26,7 +26,7 @@ import {
   campaignTotals, sortCampaigns,
   CAMPAIGN_SITUATIONS, CAMPAIGN_CYCLES,
 } from "../lib/pmpCampaign";
-import { PmpLineRow, PmpLineRowHeader, SourceChip } from "./PmpComponents";
+import { PmpLineRow, PmpLineRowHeader, SourceChip, PMP_ROW_MIN_W_NOPI } from "./PmpComponents";
 
 const MONTH_ABBR = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
 
@@ -327,15 +327,13 @@ function LineList({ lines, onLineClick, onLinkClick, bare = false }) {
     <div className={cn("overflow-hidden", !bare && "rounded-lg border border-border/60 bg-canvas-elevated")}>
       {/* scrollbar-thin + scroll-fade-x (ver PmpDealsPage/PmpComponents):
           mesmo padrão de scroll horizontal visível usado no resto do PMP.
-          1112px = 1072px de trilhas+gaps do grid hidePi (coluna Entrega
-          incluída) + 40px do px-5 do próprio row — esse padding entra na
-          conta, senão a última trilha vaza sem gerar scroll pra revelar o
-          que sobrou (ver comentário do ROW_GRID em PmpComponents.jsx). */}
+          O piso vem de PMP_ROW_MIN_W_NOPI — mesma fonte única que define as
+          trilhas do grid, pra header e corpo nunca saírem do prumo. */}
       <div className="overflow-x-auto scrollbar-thin scroll-fade-x">
-        <div className="md:min-w-[1112px]">
+        <div className={PMP_ROW_MIN_W_NOPI}>
           <PmpLineRowHeader hidePi />
         </div>
-        <div className="md:min-w-[1112px] divide-y divide-border/30">
+        <div className={cn(PMP_ROW_MIN_W_NOPI, "divide-y divide-border/30")}>
           {lines.map((l) => (
             <PmpLineRow key={`${l.source || "xandr"}:${l.line_id}`} line={l}
                         onClick={onLineClick} onLinkClick={onLinkClick}

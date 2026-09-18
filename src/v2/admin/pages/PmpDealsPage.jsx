@@ -85,6 +85,7 @@ import {
   PmpKpiStrip,
   PmpLiveCard, PmpLiveGroupCard, PmpCustomerAccordion,
   PmpLineRow, PmpLineRowHeader, PmpLineGroupCard,
+  PMP_ROW_GRID, PMP_ROW_MIN_W,
 } from "../components/PmpComponents";
 import { PmpCampaignView } from "../components/PmpCampaignView";
 import { GroupLinesModal } from "../components/GroupLinesModal";
@@ -1695,35 +1696,26 @@ function ListView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLinkCl
 
   return (
     <div className="rounded-xl border border-border bg-canvas-elevated overflow-hidden">
-      {/* Scroll horizontal: o grid das rows tem 1402px de largura mínima
-          (1362px de trilhas + gaps, + 40px do px-5 do próprio row — ver
-          ROW_GRID em PmpComponents.jsx) e estoura tanto o mobile (<768px,
-          onde vira card — ver PmpLineRow) quanto laptops com o rail aberto
-          (não cabe nem num monitor de 1440px em janela restaurada).
-          `scrollbar-thin` (barra reduzida mas VISÍVEL) + `scroll-fade-x`
-          (sombra nas bordas que "acende" quando há mais conteúdo pro lado)
-          substituem o antigo `scrollbar-hidden`: com a barra invisível e
-          sem nenhuma outra pista, a última coluna simplesmente cortava na
-          borda da tela e quem usa mouse (sem trackpad/swipe) não tinha
-          como descobrir que dava pra arrastar pra ver o resto.
+      {/* Scroll horizontal — hoje é rede de segurança, não o caminho normal.
+          O grid das rows foi remedido trilha a trilha (ver o bloco de
+          larguras em PmpComponents.jsx) e caiu de 1402px pra PMP_ROW_MIN_W
+          = 1266px, que cabe inteiro num MacBook de 14" com o rail recolhido
+          (1440px de viewport − 68px de rail − 48px de padding = 1324px). O
+          scroll continua montado porque com o rail ABERTO, ou numa janela
+          restaurada, ainda pode faltar largura — e aí `scrollbar-thin`
+          (barra reduzida mas VISÍVEL) + `scroll-fade-x` (sombra nas bordas
+          que "acende" quando há mais conteúdo pro lado) são o que avisa que
+          dá pra arrastar. Com `scrollbar-hidden` a última coluna
+          simplesmente cortava na borda e quem usa mouse (sem trackpad) não
+          tinha como descobrir que havia mais.
 
-          Isso por si só, porém, NÃO bastava: a última coluna (Entrega) era
-          `minmax(88px,0.44fr)` e o `fr` nunca crescia de verdade (ver
-          comentário do ROW_GRID em PmpComponents.jsx) — ela ficava travada
-          em 88px em qualquer largura, e valores tipo "R$ 13,4 mil ↗" (~90,5px,
-          sem espaço quebrável por causa do nbsp do Intl.NumberFormat) vazavam
-          pra fora da própria coluna e eram cortados pelo `overflow-hidden`
-          do card, SEM que nenhum scroll revelasse o resto — não existia
-          "resto" pra rolar até. Virou 120px fixo, medido com folga real.
-          IMPORTANTE: este `min-w` precisa incluir o padding horizontal do
-          próprio row (`px-5` = 40px) além da soma das trilhas — do
-          contrário o grid recebe menos espaço do que precisa e a ÚLTIMA
-          trilha (a única sem `minmax`/`fr` sobrando pra absorver o
-          déficit) vaza de novo, silenciosamente, sem gerar scroll algum
-          pra revelar o que sobrou. Confirmado com harness local rolando
-          até o fim real do scroll antes de fechar este fix. */}
+          IMPORTANTE: o `min-w` inclui o `px-5` (40px) do próprio row além da
+          soma de trilhas e gaps — sem isso o grid recebe menos espaço do que
+          precisa e a ÚLTIMA trilha (a única sem `fr` sobrando pra absorver o
+          déficit) vaza silenciosamente, sem gerar scroll algum pra revelar o
+          que sobrou. */}
       <div className="overflow-x-auto scrollbar-thin scroll-fade-x">
-        <div className="md:min-w-[1402px]">
+        <div className={PMP_ROW_MIN_W}>
           <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
           <div className="divide-y divide-border/60">
         {items.map((it) => {
@@ -1869,7 +1861,7 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
           min-w pra preservar o cabeçalho fixo + a altura máxima da lista
           no desktop. */}
       <div className="overflow-x-auto scrollbar-thin scroll-fade-x">
-        <div className="md:min-w-[1402px]">
+        <div className={PMP_ROW_MIN_W}>
           <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
           <div className="divide-y divide-border/60 max-h-[calc(100vh-380px)] overflow-y-auto">
         {sorted.map((it) => {
@@ -1912,11 +1904,11 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
 // ─── Subtotal inline minimalista (mesmo grid do row, sem cores berrantes) ───
 function InlineGroupSubtotal({ members, groupPi, groupPctReceber, groupPctReceberRev }) {
   const first = members[0];
-  // Mesma trilha final fixa (120px) do ROW_GRID em PmpComponents.jsx — ver o
-  // comentário lá sobre por que o fr da última coluna nunca crescia.
-  const grid = "grid grid-cols-[12px_minmax(220px,2.4fr)_minmax(104px,0.36fr)_84px_112px_112px_128px_136px_58px_72px_72px_120px] gap-x-3";
+  // Mesmas trilhas do row (PMP_ROW_GRID, fonte única em PmpComponents.jsx).
+  // Antes era uma cópia literal da string — e cópia de grid é exatamente
+  // como o subtotal saía do prumo das colunas que ele soma.
   return (
-    <div className={cn(grid, "hidden md:grid px-5 py-2.5 items-center border-t border-border/40 bg-surface/40 text-[12px]")}>
+    <div className={cn(PMP_ROW_GRID, "hidden md:grid px-5 py-2.5 items-center border-t border-border/40 bg-surface/40 text-[12px]")}>
       <div />
       <div className="lbl-section text-fg-muted">
         Subtotal do grupo · {members.length} lines
