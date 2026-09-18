@@ -3894,6 +3894,17 @@ def report_data(request):
             return (jsonify({
                 "sources":     landings,
                 "unified_max": unified_max,
+                # MAX(date) por fonte DENTRO do consolidado. Já vinha calculado
+                # (query_data_freshness é um GROUP BY source) e era descartado
+                # no max() acima — o front só via o total e por isso pintava
+                # "Consolidado 17/09" de verde enquanto a `unified` estava sem
+                # uma linha de Amazon desde 13/09 (incidente de 14–17/09/2026).
+                # Fresco na data e incompleto no conteúdo são coisas diferentes,
+                # e só este campo separa as duas.
+                "unified_by_source": [
+                    {"source": r["source"], "max_date": r["max_date"]}
+                    for r in unified_rows
+                ],
                 "server_now":  datetime.now(timezone.utc).isoformat(),
             }), 200, headers)
         except Exception as e:

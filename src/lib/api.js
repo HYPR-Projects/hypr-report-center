@@ -1946,6 +1946,10 @@ export async function getDataFreshness() {
   return {
     sources:    Array.isArray(data?.sources) ? data.sources : [],
     unifiedMax: data?.unified_max || null,
+    // MAX(date) por fonte dentro do consolidado. Backend anterior a 18/09/2026
+    // não manda — a régua trata a ausência como "não dá pra afirmar" em vez de
+    // acusar todas as fontes de faltarem (ver deriveUnifiedStatus).
+    unifiedBySource: Array.isArray(data?.unified_by_source) ? data.unified_by_source : null,
     serverNow:  data?.server_now || null,
   };
 }
