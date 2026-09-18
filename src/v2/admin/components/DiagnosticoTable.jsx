@@ -146,7 +146,11 @@ function Th({ children, align = "left", sortable = false, active = false, dir, o
         "px-2 py-2.5 dense:py-1.5",
         "lbl-section",
         "border-b border-border",
-        "whitespace-nowrap",
+        // `overflow-hidden` é a trava, não o plano: as larguras acima já
+        // foram medidas pra caber. Ele existe pra que um rótulo novo (ou um
+        // zoom de navegador) nunca volte a escrever por cima da coluna
+        // vizinha — falha recortando, não sobrepondo.
+        "whitespace-nowrap overflow-hidden",
         sortable && "cursor-pointer select-none hover:text-fg",
         align === "right"  && "text-right",
         align === "center" && "text-center",
@@ -202,7 +206,12 @@ function Td({ children, align = "left", className, tabular = false, title }) {
         "px-2 py-2.5 dense:py-1.5",
         "text-xs text-fg",
         "border-b border-border/40",
-        "whitespace-nowrap",
+        // `truncate` (nowrap + overflow + reticências): o único conteúdo que
+        // pode passar da coluna é o período cruzando o ano
+        // ("01/09/25 → 30/09/26", 103px contra ~92 úteis). Reticências com o
+        // `title` da célula preservado degradam melhor do que texto
+        // atropelando o número da coluna do lado.
+        "truncate",
         tabular && "tabular-nums",
         align === "right"  && "text-right",
         align === "center" && "text-center",
@@ -381,42 +390,64 @@ export function DiagnosticoTable({
               consistente — sem table-fixed o browser distribui excesso de
               forma desigual e a grade fica visualmente "respirando" demais
               entre as colunas numéricas. */}
-          <table className="w-full text-left table-fixed min-w-[1180px]">
+          <table className="w-full text-left table-fixed min-w-[1300px]">
             <thead>
               <tr>
-                {/* Larguras balanceadas: colunas com texto (Cliente, Campanha)
-                    ganham espaço; colunas com % curto (Entregue, View, CTR,
-                    Tech) encolhem. Ontem (D-1) encolheu porque virou só
-                    "número + ✓/✗" depois da remoção do delta vs média.
-                    Soma = 100%. */}
-                <Th align="left"  {...headerProps("status")}            className="w-[7%] px-2">Status</Th>
-                <Th align="left"  {...headerProps("client_name")}       className="w-[10%]">Cliente</Th>
-                <Th align="left"  {...headerProps("campaign_name")}     className="w-[14%]">Campanha</Th>
-                <Th align="left"  {...headerProps("cs_name")}           className="w-[5%]">CS</Th>
-                <Th align="left"  {...headerProps("start_date")}        className="w-[7%]">Período</Th>
-                <Th align="right" {...headerProps("totalEntreguePct")}  className="w-[5%]">Entregue</Th>
+                {/* Larguras derivadas de medição, não de intuição.
+                    ────────────────────────────────────────────────────────
+                    A régua anterior (7/10/14/5/7/5 … somando 100%) era
+                    proporcional, mas nenhuma fatia tinha sido conferida
+                    contra o que a célula realmente escreve. Com `table-fixed`
+                    + `whitespace-nowrap` isso não encolhe o texto: ele
+                    TRANSBORDA por cima da coluna vizinha. Medido na Urbanist,
+                    o rótulo "CONTRATADO ⌛" ocupa 96,5px e, com o `px-2`,
+                    pede 112px — mas 7% só entregava 92px num painel de
+                    1322px. "ENTREGUE" (88px), "IDEAL/DIA" (80px),
+                    "PROJETADA" (85px), o veredito "Super Over ↘" (113px) e
+                    o período cruzando o ano ("15/12/25 → 20/01/26", 118px)
+                    caíam no mesmo buraco: sete colunas invadindo a vizinha
+                    da esquerda ao mesmo tempo.
+
+                    Agora cada fatia é `max(rótulo, conteúdo) + px-2` — os
+                    valores acima saíram de medição no browser, não de
+                    estimativa — normalizada sobre os 1300px do `min-w` (que
+                    é a soma real). O piso subiu 120px e continua cabendo sem
+                    scroll num 14" com o rail recolhido: 1440 − 68 − 48 =
+                    1324px. Acima disso tudo cresce junto, proporcionalmente,
+                    e a Campanha (a única que trunca por desenho, com o nome
+                    inteiro no `title`) é quem absorve a folga.
+
+                    As duas variantes do miolo (histórico × ao vivo) somam o
+                    MESMO 28,2%, então as colunas de fora não dançam quando
+                    se troca o período. */}
+                <Th align="left"  {...headerProps("status")}            className="w-[8.8%] px-2">Status</Th>
+                <Th align="left"  {...headerProps("client_name")}       className="w-[8.9%]">Cliente</Th>
+                <Th align="left"  {...headerProps("campaign_name")}     className="w-[9.4%]">Campanha</Th>
+                <Th align="left"  {...headerProps("cs_name")}           className="w-[5.1%]">CS</Th>
+                <Th align="left"  {...headerProps("start_date")}        className="w-[9.1%]">Período</Th>
+                <Th align="right" {...headerProps("totalEntreguePct")}  className="w-[6.8%]">Entregue</Th>
                 {historical ? (
                   <>
                     {/* Janela fechada: volumes absolutos no lugar de projeção/
                         falta-dia/D-1 — o que aconteceu, não o que vai acontecer. */}
-                    <Th align="right" {...headerProps("delivered")}        className="w-[7%]">Entregue #</Th>
-                    <Th align="right" {...headerProps("negotiated")}       className="w-[7%]">Contratado ⌛</Th>
-                    <Th align="right" {...headerProps("mediaDiariaAtual")} className="w-[6%]">Média/Dia</Th>
-                    <Th align="right" {...headerProps("idealDiaria")}      className="w-[5%]">Ideal/Dia</Th>
+                    <Th align="right" {...headerProps("delivered")}        className="w-[6.9%]">Entregue #</Th>
+                    <Th align="right" {...headerProps("negotiated")}       className="w-[8.8%]">Contratado ⌛</Th>
+                    <Th align="right" {...headerProps("mediaDiariaAtual")} className="w-[6.4%]">Média/Dia</Th>
+                    <Th align="right" {...headerProps("idealDiaria")}      className="w-[6.1%]">Ideal/Dia</Th>
                   </>
                 ) : (
                   <>
-                    <Th align="right" {...headerProps("projetadaPct")}      className="w-[6%]">Projetada</Th>
-                    <Th align="right" {...headerProps("minDiariaContratada")} className="w-[6%]">Falta/Dia</Th>
-                    <Th align="right" {...headerProps("mediaDiariaAtual")}  className="w-[6%]">Média/Dia</Th>
-                    <Th align="right" {...headerProps("deliveredD1")}       className="w-[7%]">Ontem (D-1)</Th>
+                    <Th align="right" {...headerProps("projetadaPct")}      className="w-[6.9%]">Projetada</Th>
+                    <Th align="right" {...headerProps("minDiariaContratada")} className="w-[6.5%]">Falta/Dia</Th>
+                    <Th align="right" {...headerProps("mediaDiariaAtual")}  className="w-[6.9%]">Média/Dia</Th>
+                    <Th align="right" {...headerProps("deliveredD1")}       className="w-[7.9%]">Ontem (D-1)</Th>
                   </>
                 )}
-                <Th align="right" {...headerProps("realEcpm")}          className="w-[5%]">CPM</Th>
-                <Th align="right" {...headerProps("realTotalCost")}     className="w-[8%]">Custo</Th>
-                <Th align="right" {...headerProps("techCostPct")}       className="w-[4%]">Tech</Th>
-                <Th align="right" {...headerProps("viewability")}       className="w-[5%]">View.</Th>
-                <Th align="right" {...headerProps("ctr")}               className="w-[5%]">CTR</Th>
+                <Th align="right" {...headerProps("realEcpm")}          className="w-[4.8%]">CPM</Th>
+                <Th align="right" {...headerProps("realTotalCost")}     className="w-[6.8%]">Custo</Th>
+                <Th align="right" {...headerProps("techCostPct")}       className="w-[3.8%]">Tech</Th>
+                <Th align="right" {...headerProps("viewability")}       className="w-[4.0%]">View.</Th>
+                <Th align="right" {...headerProps("ctr")}               className="w-[4.3%]">CTR</Th>
               </tr>
             </thead>
             <tbody>
@@ -467,7 +498,7 @@ export function DiagnosticoTable({
                       "focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-signature"
                     )}
                   >
-                    <Td align="left" className="w-[7%] px-2">
+                    <Td align="left" className="w-[8.8%] px-2">
                       <StatusVerdict row={r} />
                     </Td>
                     <Td align="left" title={r.client_name || undefined}>
