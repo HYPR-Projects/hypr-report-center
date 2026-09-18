@@ -3911,6 +3911,23 @@ def report_data(request):
             logger.error(f"[ERROR data_freshness] {e}")
             return (jsonify({"error": "Erro ao buscar freshness"}), 500, headers)
 
+    # GET ?action=dsp_landing_audit&source=amazon — admin-only. Diagnóstico de
+    # UMA fonte: a DSP parou de entregar ou a integração quebrou? O painel de
+    # frescor não responde isso (mede MAX(date), e os dois casos dão a mesma
+    # tela), e quem faz a pergunta é o ad ops no hub, não alguém com gcloud.
+    # Mesmo papel do pmp_pubmatic_audit pro PMP. Só leitura.
+    if request.method == "GET" and request.args.get("action") == "dsp_landing_audit":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        source = (request.args.get("source") or "amazon").strip()
+        try:
+            return (jsonify(query_dsp_landing_audit(source)), 200, headers)
+        except ValueError as e:
+            return (jsonify({"error": str(e)}), 400, headers)
+        except Exception as e:
+            logger.exception(f"[ERROR dsp_landing_audit] {e}")
+            return (jsonify({"error": "Erro ao auditar aterrissagem da fonte"}), 500, headers)
+
     # POST ?action=rebuild_unified — admin-only. Escape manual pra re-disparar
     # o job do Dagster que reconstrói as bases unificadas, quando o run diário
     # falhou (tipicamente porque uma fonte atrasou e a DAG pulou o `unified`).
@@ -6482,6 +6499,246 @@ def query_dsp_health():
     }
     _cache_set(_dsp_health_cache, "all", payload)
     return payload
+
+
+# ── Auditoria de aterrissagem por DSP ───────────────────────────────────────
+# Responde a pergunta que o painel de frescor NÃO responde: a fonte parou
+# porque não teve entrega, ou porque a integração quebrou? O painel mede
+# MAX(date) por fonte, e os dois cenários produzem exatamente a mesma tela.
+#
+# Precisa existir AQUI, no backend, e não numa sonda de CI: quem faz essa
+# pergunta é o ad ops no hub, não alguém com gcloud na mão. É a mesma
+# conclusão do `?action=pmp_pubmatic_audit` (falha #8 da auditoria da
+# PubMatic): "a fonte não atualizou" tem de virar diagnóstico, não discussão.
+#
+# CUIDADO com o raciocínio circular: com MAX(date) parado em D-5, os dias
+# seguintes estão AUSENTES da staging por definição, então "o dia existe com
+# zero?" não separa nada sozinho. O que separa é SIMULTANEIDADE e CONTRATO:
+#
+#   - campanhas distintas por dia no unified. Flight acabando derruba uma
+#     campanha de cada vez; cano quebrado derruba TODAS no mesmo dia.
+#   - campanha com fim contratado no futuro que entregava e parou. Essa é
+#     decisiva: não existe explicação de mercado pra isso.
+#   - histórico de dias na staging. Se a tabela tem TODOS os dias por 30 dias
+#     (inclusive fim de semana e dia fraco) e para seco, o export roda diário
+#     e deixou de rodar.
+_LANDING_AUDIT_SOURCES = {
+    # label: (dataset_raw, tabela_raw, tabela_tratada)
+    "Amazon":     ("staging", "amazon_daily_performance_metrics",    "amazon_daily_performance_metrics"),
+    "StackAdapt": ("staging", "stackadapt_campaign_daily_metrics",   "stackadapt_daily_performance_metrics"),
+    "Yahoo":      ("staging", "yahoo_dsp_daily_performance_metrics", "yahoo_daily_performance_metrics"),
+}
+
+_landing_audit_cache = {}
+_LANDING_AUDIT_CACHE_TTL = 300
+
+
+def query_dsp_landing_audit(source_label):
+    """Diagnóstico de UMA fonte: fonte parada × integração quebrada.
+
+    Devolve {source, maxes, staging_days, unified_daily, live_without_data,
+    verdict}. Só leitura. Região US, como as demais.
+
+    DV360 fica de fora: a raw dele é wildcard sobre tabelas efêmeras (o
+    delete_dv360_staging_tables_job apaga às 22h), então "dia ausente" é
+    estado normal à noite e não significa nada — ver _query_dv360_raw_landing.
+    """
+    label = (source_label or "").strip().title()
+    for k in _LANDING_AUDIT_SOURCES:
+        if k.lower() == label.lower():
+            label = k
+            break
+    if label not in _LANDING_AUDIT_SOURCES:
+        raise ValueError(
+            f"Fonte '{source_label}' não auditável. Use: "
+            + ", ".join(_LANDING_AUDIT_SOURCES)
+        )
+
+    cached = _cache_get(_landing_audit_cache, label, _LANDING_AUDIT_CACHE_TTL)
+    if cached is not None:
+        return cached
+
+    dataset, raw_table, treated_table = _LANDING_AUDIT_SOURCES[label]
+    raw = f"`{PROJECT_ID}.{dataset}.{raw_table}`"
+    treated = f"`{PROJECT_ID}.{DATASET_ASSETS}.{treated_table}`"
+    unified = f"`{PROJECT_ID}.{DATASET_ASSETS}.unified_daily_performance_metrics`"
+    checklist = f"`{PROJECT_ID}.{DATASET_ASSETS}.checklist_info`"
+    up = label.upper()
+
+    def _run(sql):
+        return list(bq.query(sql, job_config=bigquery.QueryJobConfig(), location="US").result())
+
+    # 1. Onde congelou. Três camadas, três culpados: DSP, dbt, consolidação.
+    maxes_sql = f"""
+        SELECT 'raw' AS layer, {_max_date_expr('date')} AS max_date FROM {raw}
+        UNION ALL
+        SELECT 'treated', {_max_date_expr('date')} FROM {treated}
+        UNION ALL
+        SELECT 'unified', MAX(date) FROM {unified} WHERE UPPER(source) = '{up}'
+        UNION ALL
+        SELECT 'today', CURRENT_DATE("America/Sao_Paulo")
+    """
+
+    # 2. Dias presentes na staging (30d). Buraco no meio da série é tão
+    #    informativo quanto a ponta: diz se o export costuma escrever TODO dia.
+    days_sql = f"""
+        SELECT
+          FORMAT_DATE('%Y-%m-%d', d) AS date,
+          IFNULL(t.n, 0) AS rows_count
+        FROM UNNEST(GENERATE_DATE_ARRAY(
+               DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 30 DAY),
+               DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY))) AS d
+        LEFT JOIN (
+          SELECT SAFE_CAST(SUBSTR(CAST(date AS STRING), 1, 10) AS DATE) AS dd,
+                 COUNT(*) AS n
+          FROM {raw}
+          GROUP BY dd
+        ) t ON t.dd = d
+        ORDER BY d
+    """
+
+    # 3. Série diária no unified. `tokens` é o sinal que decide o formato da
+    #    queda: N campanhas → 0 num dia só é cano; N → N-1 → N-2 é fim de flight.
+    daily_sql = f"""
+        SELECT
+          FORMAT_DATE('%Y-%m-%d', date) AS date,
+          SUM(impressions)            AS impressions,
+          SUM(total_cost)             AS total_cost,
+          COUNT(DISTINCT short_token) AS tokens
+        FROM {unified}
+        WHERE date >= DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 21 DAY)
+          AND UPPER(source) = '{up}'
+          AND short_token IS NOT NULL
+        GROUP BY date ORDER BY date
+    """
+
+    # 4. A prova decisiva: campanha com fim contratado no FUTURO que entregava
+    #    e parou. Não existe leitura de mercado pra isso.
+    live_sql = f"""
+        WITH entregou AS (
+          SELECT short_token, MAX(date) AS last_date, SUM(impressions) AS imps
+          FROM {unified}
+          WHERE date >= DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 21 DAY)
+            AND UPPER(source) = '{up}'
+            AND short_token IS NOT NULL AND impressions > 0
+          GROUP BY short_token
+        )
+        SELECT
+          e.short_token, e.last_date, e.imps,
+          c.client_name, c.campaign_name, c.end_date
+        FROM entregou e
+        JOIN {checklist} c USING (short_token)
+        WHERE c.end_date >= CURRENT_DATE("America/Sao_Paulo")
+          AND e.last_date < DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY)
+        ORDER BY e.last_date DESC, e.imps DESC
+        LIMIT 50
+    """
+
+    # Serial de propósito: são 4 queries pequenas e o endpoint não está no
+    # caminho quente. Submeter ao _query_pool aqui arriscaria o pool aninhado
+    # que envenenou a instância em 2026-08-04.
+    maxes = {r["layer"]: (r["max_date"].isoformat() if r["max_date"] else None)
+             for r in _run(maxes_sql)}
+    staging_days = [{"date": r["date"], "rows": int(r["rows_count"] or 0)}
+                    for r in _run(days_sql)]
+    unified_daily = [{
+        "date": r["date"],
+        "impressions": int(r["impressions"] or 0),
+        "total_cost": float(r["total_cost"] or 0.0),
+        "tokens": int(r["tokens"] or 0),
+    } for r in _run(daily_sql)]
+    live = [{
+        "short_token":   r["short_token"],
+        "client_name":   r["client_name"],
+        "campaign_name": r["campaign_name"],
+        "last_date":     r["last_date"].isoformat() if r["last_date"] else None,
+        "end_date":      r["end_date"].isoformat() if r["end_date"] else None,
+        "impressions":   int(r["imps"] or 0),
+    } for r in _run(live_sql)]
+
+    payload = {
+        "source":            label,
+        "maxes":             maxes,
+        "staging_days":      staging_days,
+        "unified_daily":     unified_daily,
+        "live_without_data": live,
+        "verdict":           _landing_audit_verdict(maxes, staging_days, unified_daily, live),
+        "server_now":        datetime.now(timezone.utc).isoformat(),
+    }
+    _cache_set(_landing_audit_cache, label, payload)
+    return payload
+
+
+def _landing_audit_verdict(maxes, staging_days, unified_daily, live):
+    """Traduz os quatro sinais num veredito com CULPADO, não numa tabela.
+
+    Ordem importa: campanha no ar sem dado vence tudo, porque é a única
+    evidência que não admite leitura de mercado.
+    """
+    # `today` vem do BigQuery (mesma query das camadas): um fuso só pra toda a
+    # régua, e imune a relógio do runtime discordando da base.
+    today_iso = maxes.get("today")
+    raw = maxes.get("raw")
+    if not today_iso:
+        return {"code": "sem_leitura",
+                "title": "Não foi possível estabelecer a data de referência",
+                "detail": "A query de camadas não devolveu CURRENT_DATE."}
+    today = date.fromisoformat(today_iso)
+    if not raw:
+        return {"code": "sem_leitura",
+                "title": "Não foi possível ler a camada raw",
+                "detail": "A staging não devolveu data válida: tabela vazia, renomeada ou com a coluna de data em outro formato."}
+
+    behind = (today - date.fromisoformat(raw)).days
+
+    if behind <= 1:
+        treated, unified = maxes.get("treated"), maxes.get("unified")
+        if treated and treated < raw:
+            return {"code": "dbt",
+                    "title": "A fonte entregou; o modelo dbt não rodou",
+                    "detail": f"Raw em {raw} e tratada em {treated}. Problema é o build, não a DSP."}
+        if unified and unified < raw:
+            return {"code": "consolidacao",
+                    "title": "Fonte e tratada prontas; a consolidação não pegou",
+                    "detail": f"Raw em {raw} e unified em {unified}. 'Reconstruir agora' resolve."}
+        return {"code": "ok", "title": "Fonte em dia", "detail": f"Último dia na staging: {raw}."}
+
+    if live:
+        nomes = ", ".join(f"{c['client_name']} · {c['campaign_name']}" for c in live[:3])
+        mais = f" (+{len(live) - 3})" if len(live) > 3 else ""
+        return {"code": "integracao",
+                "title": "Erro de integração — não é fim de entrega",
+                "detail": (f"{len(live)} campanha(s) com fim contratado no futuro pararam de entregar: "
+                           f"{nomes}{mais}. Campanha no ar sem dado não é mercado.")}
+
+    # Sem prova pelo contrato: o formato da queda decide. Todas as campanhas
+    # caindo no MESMO dia é cano; uma de cada vez é fim de flight.
+    delivered = [d for d in unified_daily if d["tokens"] > 0]
+    if delivered:
+        last = delivered[-1]
+        prev = delivered[-2] if len(delivered) > 1 else None
+        if last["tokens"] >= 2 and (prev is None or prev["tokens"] >= 2):
+            return {"code": "integracao_provavel",
+                    "title": "Provável erro de integração",
+                    "detail": (f"{last['tokens']} campanhas entregavam em {last['date']} e todas pararam "
+                               f"no mesmo dia. Flight acabando derruba uma de cada vez.")}
+        return {"code": "sem_entrega_provavel",
+                "title": "Provável fim de entrega",
+                "detail": (f"A queda foi gradual e no último dia restava(m) {last['tokens']} campanha(s). "
+                           "Confirme no console da DSP antes de acionar integração.")}
+
+    # Dias presentes na staging DEPOIS do último dia com entrega significam que
+    # o export continuou rodando e voltou vazio: é a fonte, não o cano.
+    after = [d for d in staging_days if d["date"] > raw and d["rows"] > 0]
+    if after:
+        return {"code": "sem_entrega",
+                "title": "A fonte entregou o arquivo, sem delivery",
+                "detail": "Há dias posteriores com linhas na staging. O export roda; não houve entrega."}
+
+    return {"code": "inconclusivo",
+            "title": "Inconclusivo",
+            "detail": (f"Staging parada há {behind} dias, sem campanha com contrato vigente parada e sem "
+                       "série de entrega na janela. Confirme no console da DSP.")}
 
 
 # ── Trigger de reconstrução das bases unificadas via Dagster+ ────────────────

@@ -36,8 +36,9 @@ import { getDataFreshness, getRebuildStatus, triggerUnifiedRebuild } from "../..
 import { isFeatureAdmin } from "../../../shared/auth";
 import {
   deriveStatus, daysBehindBr, brHour, fmtBrDate, humanizeSource, toneForDays,
-  CUTOFF_HOUR_BR, SOURCE_DOWN_DAYS,
+  CUTOFF_HOUR_BR, SOURCE_DOWN_DAYS, isAuditable,
 } from "../lib/dspFreshness";
+import { DspLandingAuditModal } from "./DspLandingAuditModal";
 
 const REFETCH_MS = 5 * 60 * 1000;
 
@@ -65,6 +66,10 @@ export function DataFreshnessIndicator({ className, user, variant = "icon" }) {
   // Estado do botão de reconstrução manual (dispara o job no Dagster+).
   // `polling` = run em andamento sendo acompanhada até o fim.
   const [rebuild, setRebuild] = useState({ busy: false, polling: false, ok: null, msg: "", runUrl: null });
+
+  // Fonte sendo auditada no modal ("por que parou?"). Fora do popover: o modal
+  // é overlay e clicar nele fecharia o popover por outside-click.
+  const [auditSource, setAuditSource] = useState(null);
 
   // Ref pra cancelar fetches stale (modo strict + unmount durante refetch).
   const cancelRef = useRef({ cancelled: false });
@@ -199,6 +204,7 @@ export function DataFreshnessIndicator({ className, user, variant = "icon" }) {
     : (state.unifiedMax ? formatRailClock(state.unifiedMax) : undefined);
 
   return (
+    <>
     <Popover.Root>
       <Popover.Trigger asChild>
         {isRail ? (
@@ -349,6 +355,30 @@ export function DataFreshnessIndicator({ className, user, variant = "icon" }) {
             </div>
           )}
 
+          {/* "Por que parou?" — a pergunta que o dot não responde. Liberado
+              pra qualquer admin: reconstruir custa uma run de BQ e por isso é
+              restrito, mas LER o diagnóstico é barato, e quem precisa dele é
+              exatamente quem não tem gcloud na mão. */}
+          {status.blockers.filter((b) => isAuditable(b.source)).length > 0 && (
+            <div className="px-4 pt-2 pb-1 border-t border-border">
+              {status.blockers.filter((b) => isAuditable(b.source)).map((b) => (
+                <button
+                  key={b.source}
+                  type="button"
+                  onClick={() => setAuditSource(b.source)}
+                  className={cn(
+                    "w-full h-8 rounded-md text-[12px] font-medium transition-colors mb-1 last:mb-0",
+                    "border border-border bg-surface text-fg",
+                    "hover:bg-surface-strong hover:border-border-strong cursor-pointer",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
+                  )}
+                >
+                  Por que a {humanizeSource(b.source)} parou?
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Reconstrução manual — escape pra quando a consolidação atrasou com
               as fontes prontas. NÃO resolve fonte que não entregou (upstream):
               o hint abaixo deixa isso explícito pra não dar falsa esperança.
@@ -429,6 +459,10 @@ export function DataFreshnessIndicator({ className, user, variant = "icon" }) {
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
+    {auditSource && (
+      <DspLandingAuditModal source={auditSource} onClose={() => setAuditSource(null)} />
+    )}
+    </>
   );
 }
 
