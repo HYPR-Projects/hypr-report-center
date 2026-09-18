@@ -7,6 +7,28 @@
 
 Dois problemas independentes, e só um deles é nosso.
 
+## 0. Resposta (18/09, medido no BigQuery)
+
+**O connector parou de rodar.** `staging.amazon_daily_performance_metrics` tem
+última ingestão em **14/09 às 05:10** e nada depois. Não é "roda e vem vazio":
+não roda há dias. A cadência normal é diária, ~05h.
+
+**Mas essa tabela não é a que entrega número no report.** Ela é Amazon Ads /
+RMN: colunas `purchases_*`, `sales_*`, `units_sold_*`, e campanhas
+`ID-ACYUTU_..._RMN_AMZ` (Pepsico Tostitos), `ID-9MXTRZ_..._RMND_AMAZON`
+(Kimberly Clark), `HYPR_Loreal`, `HYPR_Diageo`. As impressões que o report
+mostra como "Amazon" vêm de outra linha, `ID-FXR5US_HYPR_LOREAL_..._DISPLAY_
+O2O_AR-LIVRE_LI-PREMIUM-LIST`, que **não existe nessa staging**.
+
+**E o RMN já não entregava desde 31/08.** As quatro campanhas têm última
+impressão em 31/08 (a da Diageo nunca teve nenhuma), todas ainda `ENABLED`. De
+01/09 a 13/09 o connector escreveu linha todo dia com tudo zerado. Fazia 13 dias
+que não trazia número quando finalmente parou.
+
+Consequência prática: o ponto vermelho é verdadeiro sobre um connector
+quebrado, e enganoso sobre o que o operador conclui dele. "Amazon não entregou
+D-1" lê como "o report está sem entrega de DSP", e não é isso.
+
 ## 1. A fonte (upstream — NÃO corrigido aqui)
 
 Último dado da Amazon: **13/09, um domingo**. O export pousa D-1 entre 05:02 e
@@ -55,12 +77,22 @@ Possibilidades, em ordem de probabilidade:
 > `backend/main.py` tem que mudar junto: o painel precisa medir exatamente o que
 > o gate mede. Hoje os dois divergem, e essa divergência é a hipótese acima.
 
-### Impacto que ninguém contabilizou
+### Impacto: NENHUM nos reports (corrigido em 18/09, com o BQ na mão)
 
-De 14 a 17/09 a `unified_daily_performance_metrics` não teve **uma linha de
-Amazon**. Todo report de cliente com campanha na Amazon DSP saiu subnotificado
-por 4 dias, sem aviso nenhum na tela. Antes de reprocessar, vale levantar quais
-tokens têm entrega Amazon no período e avisar quem recebeu número parcial.
+A primeira versão deste doc afirmava que a `unified` não tinha uma linha de
+Amazon entre 14 e 17/09 e que reports de cliente saíram subnotificados por 4
+dias. **As duas coisas estão erradas.** A consulta direta mostra:
+
+- a `unified` TEM linhas de Amazon em 14–17/09, zeradas (a série é preenchida
+  por dia, não só quando há entrega). Por isso, aliás, a detecção de
+  "consolidado parcial" do #248 não acende pra Amazon: a fonte está lá dentro;
+- a única campanha Amazon entregando no período era `FXR5US` (L'Oréal ·
+  La Roche-Posay Aircilium), **com fim contratado em 31/08**, entregando 13 dias
+  além do contratado. As outras três acabaram em 31/08 e pararam ali.
+
+Ou seja: ninguém recebeu número parcial. A lição fica: afirmar impacto em
+cliente a partir de `MAX(date)` de painel, sem abrir a base, produz alarme
+falso — que é o mesmo defeito que este doc estava documentando.
 
 ## 2. O alerta que não alarmou (corrigido aqui)
 
