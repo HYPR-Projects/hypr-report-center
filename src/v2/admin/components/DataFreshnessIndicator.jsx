@@ -4,23 +4,23 @@
 // StackAdapt). Visível só pra admin, mora ao lado do toggle de tema no
 // header.
 //
-// Regras (hora-local America/Sao_Paulo, computada a partir do
-// `server_now` UTC pro client não depender do clock local):
+// A RÉGUA mora em ../lib/dspFreshness.js (pura, testada). Aqui fica só a
+// apresentação. Em resumo do que ela decide:
 //
-//   Antes das 07h BR → "aguardando rollup 06h" (cinza, neutro). Falsos
-//     positivos seriam comuns se julgasse aqui: dependendo do horário,
-//     o batch ainda está rodando, e a base de ontem (esperada) só vira
-//     `MAX(date)` quando termina.
-//   Depois das 07h BR, cruzando aterrissagem por-fonte × consolidado:
-//     fonte parada (landing > 1d)            → upstream; reconstruir NÃO ajuda
-//     unified atrasado, fontes prontas       → consolidação pendente; reconstruir AJUDA
-//     tudo a ≤1d                             → verde (ok)
+//   Severidade por DIAS de atraso, não por quantidade de fontes: 1 fonte
+//     parada há 5 dias é vermelho. Até 18/09/2026 era `blockers.length >= 2 ?
+//     error : warn` e a Amazon passou 5 dias amarela no cabeçalho com a
+//     própria linha dela vermelha logo abaixo.
+//   Antes das 07h BR, atraso de 1–2 dias não se julga (o rollup ainda pode
+//     estar rodando). Fonte PARADA (>= 3 dias) alarma em qualquer hora —
+//     nenhum rollup das 06h explica três dias.
+//   Consolidado é medido no total E por fonte: fresco na data com uma DSP
+//     faltando dentro é PARCIAL, não verde.
 //
-// CRÍTICO: as fontes são medidas na sua própria tabela TRATADA
+// CRÍTICO: as fontes são medidas na própria camada raw/tratada
 // (`query_source_landings` no backend), não no `unified`. Ler o `unified`
 // (output) fazia uma fonte travada pintar TODAS de vermelho e escondia fonte
-// parada há +7d (fora da janela). O `unifiedMax` separado é o headline real de
-// "report atualizado?". "Stale" = `dias_atrás(max_date) > 1` (D-1 é o esperado).
+// parada há +7d (fora da janela).
 //
 // Refresh
 // -------
@@ -34,118 +34,12 @@ import { AdminRailRow, StatusDot } from "../shell/AdminNavItem";
 import { cn } from "../../../ui/cn";
 import { getDataFreshness, getRebuildStatus, triggerUnifiedRebuild } from "../../../lib/api";
 import { isFeatureAdmin } from "../../../shared/auth";
+import {
+  deriveStatus, daysBehindBr, brHour, fmtBrDate, humanizeSource, toneForDays,
+  CUTOFF_HOUR_BR, SOURCE_DOWN_DAYS,
+} from "../lib/dspFreshness";
 
-const REFETCH_MS       = 5 * 60 * 1000;
-const CUTOFF_HOUR_BR   = 7;
-const TZ_BR            = "America/Sao_Paulo";
-
-// Labels humanizados pros valores brutos de `source` em BQ. Se o backend
-// passar a expor uma nova plataforma (ex: TheTradeDesk), aparece com o
-// valor cru até o label entrar aqui — sem quebrar nada.
-const SOURCE_LABELS = {
-  XANDR:      "Xandr",
-  DV360:      "DV360",
-  STACKADAPT: "StackAdapt",
-  AMAZON:     "Amazon",
-  YAHOO:      "Yahoo",
-};
-
-const humanizeSource = (s) => {
-  if (!s) return "?";
-  return SOURCE_LABELS[String(s).toUpperCase()] || s;
-};
-
-// "2026-05-18" → "18/05". Aceita TIMESTAMP/DATE ISO; pega só DD/MM.
-const fmtBrDate = (iso) => {
-  if (!iso) return "—";
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
-  return m ? `${m[3]}/${m[2]}` : iso;
-};
-
-// Extrai YYYY-MM-DD do `now` UTC convertendo pro fuso BR. `Intl` em
-// "en-CA" devolve ISO-compatível direto (YYYY-MM-DD), evitando
-// reordenação manual de partes.
-function brDateString(utcIso) {
-  const d = utcIso ? new Date(utcIso) : new Date();
-  const fmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: TZ_BR,
-    year:  "numeric",
-    month: "2-digit",
-    day:   "2-digit",
-  });
-  return fmt.format(d);
-}
-
-function brHour(utcIso) {
-  const d = utcIso ? new Date(utcIso) : new Date();
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ_BR,
-    hour:    "2-digit",
-    hour12:  false,
-  }).formatToParts(d);
-  return Number(parts.find((p) => p.type === "hour")?.value ?? 0);
-}
-
-// Diff de dias entre hoje BR e a data ISO. > 1 = stale.
-function daysBehindBr(maxDateIso, serverNowIso) {
-  if (!maxDateIso) return null;
-  const today = brDateString(serverNowIso);
-  const a = new Date(`${maxDateIso.slice(0, 10)}T00:00:00Z`);
-  const b = new Date(`${today}T00:00:00Z`);
-  return Math.round((b - a) / 86_400_000);
-}
-
-// Tone do indicador a partir das fontes + do consolidado + relógio do servidor.
-//
-// `sources` = aterrissagem REAL por fonte, medida no que a DSP escreve (camada
-// raw, com a tratada só como piso — ver query_source_landings no backend).
-// `unifiedMax` = frescor do output consolidado que os reports consomem. Cruzar os
-// dois é o que permite contar a história certa e gatear o botão Reconstruir:
-//   - fonte parada (landing > 1d)  → upstream; reconstruir NÃO resolve.
-//   - unified atrasado mas fontes prontas → consolidação pendente; reconstruir RESOLVE.
-function deriveStatus(sources, unifiedMax, serverNowIso) {
-  if (!Array.isArray(sources) || sources.length === 0) {
-    return { tone: "neutral", summary: "Sem dados de frescor", blockers: [], rebuildHelps: false };
-  }
-  const hour = brHour(serverNowIso);
-  if (hour < CUTOFF_HOUR_BR) {
-    return { tone: "neutral", summary: "Aguardando rollup 06h", blockers: [], rebuildHelps: false };
-  }
-  // Fontes que não entregaram D-1 na própria camada raw (verdade por-fonte — não
-  // some por janela, não contamina as outras e não depende do build das 06h ter
-  // rodado: era o que fazia o painel culpar as 4 DSPs quando só a consolidação
-  // havia falhado, incidente de 2026-08-19).
-  const blockers = sources.filter((s) => {
-    const d = daysBehindBr(s.max_date, serverNowIso);
-    return d != null && d > 1;
-  });
-  // O consolidado é o que os reports servem — headline real de "atualizado?".
-  const uDays = daysBehindBr(unifiedMax, serverNowIso);
-  const unifiedStale = uDays != null && uDays > 1;
-
-  if (blockers.length > 0) {
-    // Tem fonte sem entregar → a montante (connector/export da DSP).
-    // Reconstruir não materializa dado que a fonte não mandou.
-    const names = blockers.map((b) => humanizeSource(b.source)).join(", ");
-    const plural = blockers.length > 1;
-    return {
-      tone: (blockers.length >= 2 || unifiedStale) ? "error" : "warn",
-      summary: `${names} não ${plural ? "entregaram" : "entregou"} D-1`,
-      blockers,
-      rebuildHelps: false,
-    };
-  }
-  if (unifiedStale) {
-    // Fontes prontas, só o consolidado não rodou → reconstruir resolve.
-    return {
-      tone: "warn",
-      summary: "Consolidação atrasada — fontes prontas",
-      blockers: [],
-      rebuildHelps: true,
-    };
-  }
-  return { tone: "ok", summary: "Bases atualizadas", blockers: [], rebuildHelps: false };
-}
+const REFETCH_MS = 5 * 60 * 1000;
 
 const TONE_CLASSES = {
   ok:      { dot: "bg-success",   text: "text-success",   ring: "ring-success/30" },
@@ -163,6 +57,7 @@ export function DataFreshnessIndicator({ className, user, variant = "icon" }) {
     error:      null,
     sources:    [],
     unifiedMax: null,
+    unifiedBySource: null,
     serverNow:  null,
     lastFetch:  null,
   });
@@ -186,6 +81,7 @@ export function DataFreshnessIndicator({ className, user, variant = "icon" }) {
         error:      null,
         sources:    data.sources || [],
         unifiedMax: data.unifiedMax || null,
+        unifiedBySource: data.unifiedBySource || null,
         serverNow:  data.serverNow,
         lastFetch:  Date.now(),
       });
@@ -278,20 +174,20 @@ export function DataFreshnessIndicator({ className, user, variant = "icon" }) {
   }, []);
 
   const status = useMemo(
-    () => deriveStatus(state.sources, state.unifiedMax, state.serverNow),
-    [state.sources, state.unifiedMax, state.serverNow],
+    () => deriveStatus({
+      sources:         state.sources,
+      unifiedMax:      state.unifiedMax,
+      unifiedBySource: state.unifiedBySource,
+      serverNow:       state.serverNow,
+    }),
+    [state.sources, state.unifiedMax, state.unifiedBySource, state.serverNow],
   );
   const tone = TONE_CLASSES[status.tone] || TONE_CLASSES.neutral;
 
-  // Tom da linha "Consolidado" (o que os reports servem de fato).
-  const unifiedDays = daysBehindBr(state.unifiedMax, state.serverNow);
-  const preCutoff = brHour(state.serverNow) < CUTOFF_HOUR_BR;
-  const unifiedTone = TONE_CLASSES[
-    preCutoff || unifiedDays == null ? "neutral"
-    : unifiedDays <= 1 ? "ok"
-    : unifiedDays === 2 ? "warn"
-    : "error"
-  ];
+  // Tom da linha "Consolidado" (o que os reports servem de fato) — vem da
+  // régua, que cruza o MAX global com o MAX por fonte lá dentro. Calcular só
+  // pela data aqui era o que pintava de verde um consolidado sem Amazon.
+  const unifiedTone = TONE_CLASSES[status.unified?.tone || "neutral"];
 
   const isRail = variant === "rail";
   // Meta da linha do rail: a hora do último rollup consolidado. É o número
@@ -398,20 +294,23 @@ export function DataFreshnessIndicator({ className, user, variant = "icon" }) {
               <ul>
                 {state.sources.map((s) => {
                   const d = daysBehindBr(s.max_date, state.serverNow);
-                  // Pré-cutoff: sem julgamento, mostra cinza pra todos.
+                  // Pré-cutoff: sem julgamento pra quem está só atrasado —
+                  // o rollup das 06h ainda pode estar rodando. Fonte PARADA
+                  // (>= SOURCE_DOWN_DAYS) pinta em qualquer hora.
                   const hour = brHour(state.serverNow);
                   const isPreCutoff = hour < CUTOFF_HOUR_BR;
-                  const rowTone = isPreCutoff
+                  // Mesma régua do cabeçalho (toneForDays). Antes eram duas
+                  // implementações e elas discordavam: linha vermelha embaixo
+                  // de cabeçalho amarelo, 18/09/2026.
+                  const rowTone = isPreCutoff && (d == null || d < SOURCE_DOWN_DAYS)
                     ? "neutral"
-                    : d == null     ? "neutral"
-                    : d <= 1        ? "ok"
-                    : d === 2       ? "warn"
-                    : "error";
+                    : toneForDays(d);
                   const rc = TONE_CLASSES[rowTone];
                   return (
                     <li
                       key={s.source}
                       className="flex items-center gap-3 px-4 py-2 text-[12px]"
+                      title={d == null ? undefined : d <= 1 ? "em dia" : `${d} dias atrás`}
                     >
                       <span className={cn("size-1.5 rounded-full shrink-0", rc.dot)} />
                       <span className="font-medium text-fg flex-1">
@@ -433,8 +332,18 @@ export function DataFreshnessIndicator({ className, user, variant = "icon" }) {
           {state.unifiedMax && (
             <div className="flex items-center gap-3 px-4 py-2 text-[12px] border-t border-border bg-surface-strong/40">
               <span className={cn("size-1.5 rounded-full shrink-0", unifiedTone.dot)} />
-              <span className="font-medium text-fg-muted flex-1">Consolidado (reports)</span>
-              <span className={cn("font-mono tabular-nums", unifiedTone.text)}>
+              <span className="font-medium text-fg-muted flex-1 min-w-0">
+                Consolidado (reports)
+                {/* Fonte que não entrou no build. Sem isto a linha dizia só a
+                    data — e a data estava certa; o que faltava era metade da
+                    verdade. */}
+                {status.unified?.label && (
+                  <span className={cn("block truncate font-normal", unifiedTone.text)}>
+                    {status.unified.label}
+                  </span>
+                )}
+              </span>
+              <span className={cn("font-mono tabular-nums shrink-0", unifiedTone.text)}>
                 {fmtBrDate(state.unifiedMax)}
               </span>
             </div>
@@ -448,15 +357,19 @@ export function DataFreshnessIndicator({ className, user, variant = "icon" }) {
           <div className="px-4 pt-2 pb-3 border-t border-border">
             {!rebuild.msg && status.blockers.length > 0 && (
               <p className="mb-2 text-[11px] leading-snug text-danger">
-                {status.blockers.map((b) => humanizeSource(b.source)).join(", ")}{" "}
-                não entregou a montante (export/connector da DSP). Reconstruir não
-                traz dado que a fonte não mandou — corrija na origem.
+                {status.blockers
+                  .map((b) => `${humanizeSource(b.source)} (${b.days}d)`)
+                  .join(", ")}{" "}
+                não {status.blockers.length > 1 ? "entregaram" : "entregou"} a
+                montante (export/connector da DSP). Reconstruir não traz dado que
+                a fonte não mandou — corrija na origem.
               </p>
             )}
             {!rebuild.msg && status.rebuildHelps && (
               <p className="mb-2 text-[11px] leading-snug text-warning">
-                Fontes prontas, consolidação atrasada — reconstruir monta o
-                unified agora.
+                {status.unified?.missing?.length
+                  ? "A fonte entregou e o build não pegou — reconstruir monta o unified com ela agora."
+                  : "Fontes prontas, consolidação atrasada — reconstruir monta o unified agora."}
               </p>
             )}
             {/* Desabilitado também após disparo OK: a run leva minutos e
