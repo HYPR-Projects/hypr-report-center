@@ -19,8 +19,16 @@
 // (campanha com fim no futuro parada não tem leitura de mercado). O backend
 // já entrega o veredito pronto; aqui a gente mostra a evidência embaixo dele,
 // pra ninguém ter de confiar no veredito no escuro.
+//
+// PORTAL, obrigatório: `position: fixed` se ancora na viewport SÓ enquanto
+// nenhum ancestral cria containing block. `transform`, `filter`, `backdrop-filter`,
+// `perspective`, `will-change` e `contain` criam — e o AdminContextBar, onde este
+// modal é disparado, tem `backdrop-blur-md`. Renderizado na árvore do header, o
+// `inset-0` se ancorava NA BARRA: modal deslocado, cortado em cima e pintado por
+// baixo do popover (que é portalado pelo Radix e por isso ganhava o empilhamento).
 
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "../../../ui/cn";
 import { getDspLandingAudit } from "../../../lib/api";
 import { fmtBrDate, humanizeSource } from "../lib/dspFreshness";
@@ -60,7 +68,7 @@ export function DspLandingAuditModal({ source, onClose }) {
   const d = state.data;
   const tone = VERDICT_TONE[d?.verdict?.code] || fallbackTone;
 
-  return (
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -185,7 +193,8 @@ export function DspLandingAuditModal({ source, onClose }) {
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

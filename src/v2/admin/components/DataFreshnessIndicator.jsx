@@ -70,6 +70,10 @@ export function DataFreshnessIndicator({ className, user, variant = "icon" }) {
   // Fonte sendo auditada no modal ("por que parou?"). Fora do popover: o modal
   // é overlay e clicar nele fecharia o popover por outside-click.
   const [auditSource, setAuditSource] = useState(null);
+  // Popover controlado só por causa disto: abrir o modal tem de FECHAR o
+  // popover. Os dois abertos juntos deixavam o popover por cima do modal,
+  // tapando metade da tabela.
+  const [popoverOpen, setPopoverOpen] = useState(false);
 
   // Ref pra cancelar fetches stale (modo strict + unmount durante refetch).
   const cancelRef = useRef({ cancelled: false });
@@ -205,7 +209,7 @@ export function DataFreshnessIndicator({ className, user, variant = "icon" }) {
 
   return (
     <>
-    <Popover.Root>
+    <Popover.Root open={popoverOpen} onOpenChange={setPopoverOpen}>
       <Popover.Trigger asChild>
         {isRail ? (
           // Variante de rail: linha nomeada com dot de severidade e a hora
@@ -365,7 +369,7 @@ export function DataFreshnessIndicator({ className, user, variant = "icon" }) {
                 <button
                   key={b.source}
                   type="button"
-                  onClick={() => setAuditSource(b.source)}
+                  onClick={() => { setPopoverOpen(false); setAuditSource(b.source); }}
                   className={cn(
                     "w-full h-8 rounded-md text-[12px] font-medium transition-colors mb-1 last:mb-0",
                     "border border-border bg-surface text-fg",
