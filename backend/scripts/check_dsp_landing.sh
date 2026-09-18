@@ -51,7 +51,36 @@ command -v bq >/dev/null || { echo "✗ 'bq' não está no PATH. Instale o Googl
 # --format=csv + tail -n +2 descarta o cabeçalho; --quiet tira a barra de
 # progresso que polui o log do Actions.
 q()  { bq query --use_legacy_sql=false --project_id="$PROJECT" --format=csv --quiet "$1" 2>&1 | tail -n +2; }
-qt() { bq query --use_legacy_sql=false --project_id="$PROJECT" --format=prettyjson --quiet "$1" 2>&1; }
+
+# ── 0. Preflight de permissão ───────────────────────────────────────────────
+# CRÍTICO: sem isto, um erro de credencial DA SONDA é indistinguível de
+# "a tabela sumiu" e vira veredito de integração — foi exatamente o que a
+# primeira execução (run #1, 18/09/2026) imprimiu, com a conta do CI sem
+# bigquery.jobUser. Diagnóstico que erra o culpado é pior que diagnóstico
+# nenhum: manda cobrar a DSP por um problema de IAM nosso.
+PING=$(bq query --use_legacy_sql=false --project_id="$PROJECT" --format=csv --quiet \
+       "SELECT 1" 2>&1 | tail -n +2)
+if ! [[ "$PING" =~ ^1$ ]]; then
+  echo "✗ A SONDA NÃO CONSEGUE CONSULTAR O BIGQUERY — isto NÃO é diagnóstico da fonte."
+  echo
+  echo "$PING" | head -3 | sed 's/^/   /'
+  echo
+  SA=$(gcloud config get-value account 2>/dev/null)
+  echo "   Conta em uso: ${SA:-<desconhecida>}"
+  echo
+  echo "   A conta precisa de DOIS acessos, só leitura:"
+  echo "     gcloud projects add-iam-policy-binding $PROJECT \\"
+  echo "       --member=\"serviceAccount:$SA\" \\"
+  echo "       --role=\"roles/bigquery.jobUser\""
+  echo
+  echo "     bq add-iam-policy-binding --member=\"serviceAccount:$SA\" \\"
+  echo "       --role=\"roles/bigquery.dataViewer\" $PROJECT:staging"
+  echo "     bq add-iam-policy-binding --member=\"serviceAccount:$SA\" \\"
+  echo "       --role=\"roles/bigquery.dataViewer\" $PROJECT:$ASSETS"
+  echo
+  echo "   Depois é só redisparar este workflow. Nada aqui grava nada."
+  exit 1
+fi
 
 # MAX(date) agnóstico de tipo físico (DATE, TIMESTAMP ou STRING), mesma tática
 # do _max_date_expr no backend e do sensor do Dagster.
@@ -168,9 +197,14 @@ echo " VEREDITO"
 echo "═══════════════════════════════════════════════════════════════"
 
 if [ -z "${RAW_MAX:-}" ] || ! [[ "${RAW_MAX:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
-  echo " ✗ Não consegui ler a staging \`$PROJECT.$RAW\`."
-  echo "   Tabela renomeada, movida ou sem permissão de leitura — em qualquer"
-  echo "   caso é INTEGRAÇÃO, e o painel continuaria mostrando fonte parada."
+  echo " ~ A staging \`$PROJECT.$RAW\` respondeu, mas sem data válida."
+  echo
+  echo "   O preflight passou, então a sonda LÊ o BigQuery — o problema está na"
+  echo "   tabela: vazia, renomeada, ou com a coluna de data em outro formato."
+  echo "   Tabela vazia ou renomeada É integração. Formato de coluna diferente"
+  echo "   é bug DESTA SONDA (o espelho de _SOURCE_RAW_TABLES saiu de sincronia"
+  echo "   com backend/main.py). Confira qual dos dois antes de cobrar a DSP:"
+  echo "     bq show --schema $PROJECT.$RAW"
   exit 0
 fi
 
