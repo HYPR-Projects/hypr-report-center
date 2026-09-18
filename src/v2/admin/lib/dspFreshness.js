@@ -56,6 +56,18 @@ export const SOURCE_LABELS = {
   YAHOO:      "Yahoo",
 };
 
+// Fontes com camada raw ESTÁVEL em `staging` — as únicas que o
+// ?action=dsp_landing_audit consegue auditar honestamente. DV360 fica de fora:
+// a raw dele é wildcard sobre tabelas efêmeras (o delete_dv360_staging_tables_job
+// apaga às 22h), então "dia ausente" é estado normal à noite e a auditoria
+// concluiria integração quebrada todo fim de expediente. Espelho de
+// _LANDING_AUDIT_SOURCES em backend/main.py.
+export const AUDITABLE_SOURCES = new Set(["AMAZON", "STACKADAPT", "YAHOO"]);
+
+export function isAuditable(source) {
+  return AUDITABLE_SOURCES.has(String(source || "").toUpperCase());
+}
+
 export function humanizeSource(s) {
   if (!s) return "?";
   return SOURCE_LABELS[String(s).toUpperCase()] || s;

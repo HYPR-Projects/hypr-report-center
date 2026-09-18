@@ -1955,6 +1955,25 @@ export async function getDataFreshness() {
 }
 
 /**
+ * Auditoria de aterrissagem de UMA fonte: a DSP parou de entregar ou a
+ * integração quebrou? O painel de frescor não separa os dois (mede MAX(date),
+ * e os dois casos dão a mesma tela). Só leitura, admin-only.
+ */
+export async function getDspLandingAudit(source = "amazon") {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=dsp_landing_audit&source=${encodeURIComponent(source)}`,
+    { headers: adminAuthHeaders(jwt) },
+  );
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+/**
  * Dispara a reconstrução manual das bases unificadas (job dbt no Dagster+).
  * Escape pra quando o run diário falhou (fonte atrasada). Devolve
  * { run_id, run_url } pra UI linkar a run no Dagster. Lança com mensagem
