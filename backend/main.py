@@ -6625,12 +6625,12 @@ def query_dsp_landing_audit(source_label):
         )
         SELECT
           e.short_token, e.last_date, e.imps,
-          c.client_name, c.campaign_name, c.end_date
+          c.client_name, c.campaign_name, c.end_date,
+          c.end_date >= CURRENT_DATE("America/Sao_Paulo") AS contrato_vigente
         FROM entregou e
         JOIN {checklist} c USING (short_token)
-        WHERE c.end_date >= CURRENT_DATE("America/Sao_Paulo")
-          AND e.last_date < DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY)
-        ORDER BY e.last_date DESC, e.imps DESC
+        WHERE e.last_date < DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY)
+        ORDER BY contrato_vigente DESC, e.last_date DESC, e.imps DESC
         LIMIT 50
     """
 
@@ -6647,14 +6647,20 @@ def query_dsp_landing_audit(source_label):
         "total_cost": float(r["total_cost"] or 0.0),
         "tokens": int(r["tokens"] or 0),
     } for r in _run(daily_sql)]
-    live = [{
+    # TODA campanha que parou, com o contrato marcado. Filtrar por `end_date >=
+    # hoje` na query escondia exatamente o caso de borda que decide: flight que
+    # terminou ONTEM sumia da lista, e aí o veredito não tinha como saber se a
+    # campanha devia ou não estar entregando.
+    stopped = [{
         "short_token":   r["short_token"],
         "client_name":   r["client_name"],
         "campaign_name": r["campaign_name"],
         "last_date":     r["last_date"].isoformat() if r["last_date"] else None,
         "end_date":      r["end_date"].isoformat() if r["end_date"] else None,
         "impressions":   int(r["imps"] or 0),
+        "contract_live": bool(r["contrato_vigente"]),
     } for r in _run(live_sql)]
+    live = [c for c in stopped if c["contract_live"]]
 
     payload = {
         "source":            label,
@@ -6662,14 +6668,15 @@ def query_dsp_landing_audit(source_label):
         "staging_days":      staging_days,
         "unified_daily":     unified_daily,
         "live_without_data": live,
-        "verdict":           _landing_audit_verdict(maxes, staging_days, unified_daily, live),
+        "stopped_campaigns": stopped,
+        "verdict":           _landing_audit_verdict(maxes, staging_days, unified_daily, live, stopped),
         "server_now":        datetime.now(timezone.utc).isoformat(),
     }
     _cache_set(_landing_audit_cache, label, payload)
     return payload
 
 
-def _landing_audit_verdict(maxes, staging_days, unified_daily, live):
+def _landing_audit_verdict(maxes, staging_days, unified_daily, live, stopped=None):
     """Traduz os quatro sinais num veredito com CULPADO, não numa tabela.
 
     Ordem importa: campanha no ar sem dado vence tudo, porque é a única
@@ -6711,34 +6718,69 @@ def _landing_audit_verdict(maxes, staging_days, unified_daily, live):
                 "detail": (f"{len(live)} campanha(s) com fim contratado no futuro pararam de entregar: "
                            f"{nomes}{mais}. Campanha no ar sem dado não é mercado.")}
 
-    # Sem prova pelo contrato: o formato da queda decide. Todas as campanhas
-    # caindo no MESMO dia é cano; uma de cada vez é fim de flight.
-    delivered = [d for d in unified_daily if d["tokens"] > 0]
-    if delivered:
-        last = delivered[-1]
-        prev = delivered[-2] if len(delivered) > 1 else None
-        if last["tokens"] >= 2 and (prev is None or prev["tokens"] >= 2):
-            return {"code": "integracao_provavel",
-                    "title": "Provável erro de integração",
-                    "detail": (f"{last['tokens']} campanhas entregavam em {last['date']} e todas pararam "
-                               f"no mesmo dia. Flight acabando derruba uma de cada vez.")}
-        return {"code": "sem_entrega_provavel",
-                "title": "Provável fim de entrega",
-                "detail": (f"A queda foi gradual e no último dia restava(m) {last['tokens']} campanha(s). "
-                           "Confirme no console da DSP antes de acionar integração.")}
+    # A PROVA, e ela vem de graça nos dados que já buscamos.
+    #
+    # Se existe no histórico um dia de entrega ZERO que MESMO ASSIM tem linha na
+    # staging, então este export escreve o dia sem delivery. Com isso provado,
+    # dia AUSENTE deixa de ser ambíguo: não é "não teve entrega" (que teria
+    # linha), é o export não tendo rodado.
+    #
+    # Isto substitui o palpite de simultaneidade que vivia aqui, e que errava
+    # feio em fonte de uma campanha só: sem 2+ campanhas pra cair juntas ele
+    # caía no galho benigno e dizia "a queda foi gradual" sobre uma série que
+    # ia de 20 mil a zero de um dia pro outro. Benigno por omissão é o mesmo
+    # defeito do painel antigo.
+    rows_by_date = {d["date"]: d["rows"] for d in staging_days}
+    zero_with_rows = [d["date"] for d in unified_daily
+                      if d["impressions"] == 0 and rows_by_date.get(d["date"], 0) > 0]
+    missing_after = [d["date"] for d in staging_days
+                     if d["date"] > raw and d["rows"] == 0]
 
-    # Dias presentes na staging DEPOIS do último dia com entrega significam que
-    # o export continuou rodando e voltou vazio: é a fonte, não o cano.
+    if zero_with_rows and missing_after:
+        amostra = ", ".join(fmt_br(x) for x in zero_with_rows[-3:])
+        return {"code": "integracao",
+                "title": "Erro de integração — o export parou de rodar",
+                "detail": (f"Este export ESCREVE o dia mesmo sem entrega: {amostra} "
+                           f"entregaram zero e têm linha na staging. Já {len(missing_after)} dia(s) "
+                           f"a partir de {fmt_br(missing_after[0])} não têm linha nenhuma. "
+                           "Dia sem entrega e dia sem arquivo são coisas diferentes, e este é o segundo.")}
+
+    # Dias COM linha depois do último dia de entrega: o export rodou e veio
+    # vazio. Aí é a fonte mesmo.
     after = [d for d in staging_days if d["date"] > raw and d["rows"] > 0]
     if after:
         return {"code": "sem_entrega",
                 "title": "A fonte entregou o arquivo, sem delivery",
                 "detail": "Há dias posteriores com linhas na staging. O export roda; não houve entrega."}
 
+    # Sem a prova acima, o formato da queda ainda ajuda — mas SÓ com 2+
+    # campanhas, que é quando "todas caíram juntas" significa alguma coisa.
+    delivered = [d for d in unified_daily if d["tokens"] > 0 and d["impressions"] > 0]
+    if delivered and delivered[-1]["tokens"] >= 2:
+        last = delivered[-1]
+        return {"code": "integracao_provavel",
+                "title": "Provável erro de integração",
+                "detail": (f"{last['tokens']} campanhas entregavam em {fmt_br(last['date'])} e todas "
+                           "pararam no mesmo dia. Flight acabando derruba uma de cada vez.")}
+
+    # Fonte de UMA campanha não tem sinal de simultaneidade. Em vez de chutar,
+    # diz o que falta pra decidir e aponta a campanha.
+    alvo = (stopped or [None])[0]
+    quem = (f"{alvo['client_name']} · {alvo['campaign_name']} (fim contratado "
+            f"{fmt_br(alvo['end_date'])})") if alvo else "a campanha da fonte"
     return {"code": "inconclusivo",
-            "title": "Inconclusivo",
-            "detail": (f"Staging parada há {behind} dias, sem campanha com contrato vigente parada e sem "
-                       "série de entrega na janela. Confirme no console da DSP.")}
+            "title": "Não dá pra cravar daqui",
+            "detail": (f"Staging parada há {behind} dias e a fonte tem campanha demais de menos pro sinal "
+                       f"de simultaneidade valer. Decide olhando o flight de {quem}: se devia estar no ar "
+                       "em algum dos dias que faltam, é integração.")}
+
+
+def fmt_br(iso):
+    """'2026-09-13' → '13/09'. Data em veredito é pra ser lida, não parseada."""
+    if not iso:
+        return "—"
+    p = str(iso)[:10].split("-")
+    return f"{p[2]}/{p[1]}" if len(p) == 3 else str(iso)
 
 
 # ── Trigger de reconstrução das bases unificadas via Dagster+ ────────────────
