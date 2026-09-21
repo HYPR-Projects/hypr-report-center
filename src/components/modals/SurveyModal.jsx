@@ -2405,9 +2405,15 @@ function MaPicker({
                                   border: `1px solid ${tint.bd}`, borderRadius: 999,
                                   padding: "0 6px", marginRight: 6, verticalAlign: "middle",
                                 }}
-                                title={c.match === "short_token" ? "Token da campanha declarado pela plataforma" : "Token da campanha no nome da peça"}
+                                title={
+                                  c.match === "short_token"
+                                    ? "Token da campanha declarado pela plataforma"
+                                    : c.match === "client"
+                                      ? "Peça do mesmo cliente da campanha (o nome não leva o token)"
+                                      : "Token da campanha no nome da peça"
+                                }
                               >
-                                {campaignToken || "campanha"}
+                                {c.match === "client" ? "mesmo cliente" : campaignToken || "campanha"}
                               </span>
                             ) : null}
                             {otherSide ? `nome indica ${groupLabel(c.side)}` : null}

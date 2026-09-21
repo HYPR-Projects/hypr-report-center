@@ -97,7 +97,13 @@ DEFAULT_LOOKBACK_DAYS = 180
 # (partição, entra na estimativa) e a de detalhe ainda filtra por creative_id
 # (cluster, só reduz o custo real). Um cap apertado mataria query que custa
 # centavos. Lá, um cap apertado zerou painel em produção.
-MAX_BYTES_BILLED = str(32 * 1024 ** 3)  # 32 GiB de ESTIMATIVA
+# 48 GiB, não 32: o ramo AMPLO da listagem (todas as campanhas, 30 dias) é
+# estimado em ~36 GiB porque a view faz DISTINCT sobre todas as colunas e o
+# planejador não consegue podar coluna nem cluster. Custo real por query fria
+# ~R$1, admin-only, cacheado 10 min. Se a listagem voltar a bater aqui, o
+# conserto é materializar `survey_answer` numa tabela pequena, não subir de
+# novo.
+MAX_BYTES_BILLED = str(48 * 1024 ** 3)  # 48 GiB de ESTIMATIVA
 
 # Teto de opções distintas devolvidas por criativo na LISTAGEM. Serve pra
 # comparar conjuntos de opções, não pra exibir: uma dúzia já decide se duas
@@ -235,41 +241,93 @@ def _weight_expr(has_session_col, has_responses_col):
     return "COUNT(*)"
 
 
-def _dim_creatives_for_token(token, limit=500):
+def _client_key(name):
+    """Chave frouxa de comparação de nome de cliente: minúsculo, sem acento,
+    só letras e números. "NINTENDO" == "Nintendo"; "L'Oréal" == "LOREAL"."""
+    return re.sub(r"[^a-z0-9]", "", _strip_accents(str(name or "")).lower())
+
+
+def same_client(a, b):
+    """Dois nomes de cliente apontam pro mesmo anunciante? Igualdade pela
+    chave frouxa, ou um contido no outro quando o menor tem 4+ caracteres
+    ("Diageo" ⊂ "Diageo Brasil"). Curto demais não casa: "VW" cairia em
+    qualquer coisa."""
+    ka, kb = _client_key(a), _client_key(b)
+    if not ka or not kb:
+        return False
+    if ka == kb:
+        return True
+    short, long_ = sorted((ka, kb), key=len)
+    return len(short) >= 4 and short in long_
+
+
+def _dim_creatives_for_token(token, client_name=None, limit=500):
     """Criativos de uma campanha, resolvidos na DIMENSÃO (não no lake).
 
     Alguns KB contra dezenas de GB: a dimensão tem uma linha por criativo,
     enquanto o lake tem uma por evento. E é o que devolve a chave líder do
     cluster pro filtro seguinte.
 
-    Casa pela convenção de nome ("ID-FXR5US_..."), que é a mesma regra que a
-    view usa pra derivar `short_token`. Devolve `[{creative_id, creative_name}]`
-    — o nome volta junto porque, quando a listagem sai vazia, é ele que diz
-    ao admin QUAIS peças a campanha tem e por que nenhuma entrou.
+    Dois vínculos, do mais forte pro mais fraco:
+
+      "name"   — token no nome da peça ("ID-FXR5US_..."), a mesma regra que
+                 a view usa pra derivar `short_token`;
+      "client" — peça do MESMO CLIENTE da campanha (`client_name` da
+                 dimensão × cliente da campanha no Report Center).
+
+    O segundo existe porque a convenção de nome não é seguida na prática:
+    74% das respostas do lake vêm de peças sem token (caso Nintendo:
+    `HYPR_NINTENDO_FY27_SURVEY_..._CONTROLE`, campanha PS604Q). Sem ele a
+    campanha não tinha lista, e a busca ampla, cara, era o único caminho.
+    Casar pelo cliente traz as peças certas pela chave líder do cluster, e
+    o admin ainda confirma qual é qual pelo nome.
+
+    Devolve `[{creative_id, creative_name, match}]` — o nome volta junto
+    porque, quando a listagem sai vazia, é ele que diz ao admin QUAIS peças
+    a campanha tem e por que nenhuma entrou.
     """
     dim = creatives_dim_table()
-    sql = f"""
-        SELECT creative_id, creative_name
-        FROM `{dim}`
-        WHERE REGEXP_CONTAINS(UPPER(COALESCE(creative_name, '')), @token_re)
-        LIMIT {int(limit)}
-    """
-    params = [
-        bigquery.ScalarQueryParameter(
+    token = (token or "").strip()
+    conds = []
+    params = []
+    if token:
+        conds.append("REGEXP_CONTAINS(UPPER(COALESCE(creative_name, '')), @token_re)")
+        params.append(bigquery.ScalarQueryParameter(
             "token_re", "STRING",
-            r"(^|[^A-Z0-9])" + re.escape(token.strip().upper()) + r"([^A-Z0-9]|$)",
-        )
-    ]
+            r"(^|[^A-Z0-9])" + re.escape(token.upper()) + r"([^A-Z0-9]|$)",
+        ))
+    if client_name:
+        # Pré-filtro largo no SQL (cliente preenchido); a comparação frouxa
+        # de nome fica no Python, onde é fácil de testar e de explicar.
+        conds.append("client_name IS NOT NULL AND TRIM(client_name) != ''")
+    if not conds:
+        return []
+    sql = f"""
+        SELECT creative_id, creative_name, client_name
+        FROM `{dim}`
+        WHERE {' OR '.join(f'({c})' for c in conds)}
+        LIMIT {int(limit) * 10}
+    """
     rows = _client().query(sql, job_config=_job_config(params)).result()
-    return [
-        {"creative_id": r["creative_id"], "creative_name": r["creative_name"] or ""}
-        for r in rows
-        if r["creative_id"]
-    ]
+    out = []
+    for r in rows:
+        if not r["creative_id"]:
+            continue
+        name = r["creative_name"] or ""
+        if token and token_in_name(name, token):
+            match = "name"
+        elif client_name and same_client(r["client_name"], client_name):
+            match = "client"
+        else:
+            continue
+        out.append({"creative_id": r["creative_id"], "creative_name": name, "match": match})
+    # Token no nome primeiro; empate mantém a ordem da dimensão.
+    out.sort(key=lambda c: 0 if c["match"] == "name" else 1)
+    return out[:limit]
 
 
 def _creative_ids_for_token(token, limit=500):
-    return [c["creative_id"] for c in _dim_creatives_for_token(token, limit)]
+    return [c["creative_id"] for c in _dim_creatives_for_token(token, limit=limit)]
 
 
 def _dim_stats():
@@ -337,12 +395,14 @@ def _job_config(params):
 MAX_DIAG_NAMES = 8
 
 
-def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
+def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200, client_name=None):
     """Compat: só a lista. Ver `list_creatives_payload`."""
-    return list_creatives_payload(short_token=short_token, days=days, limit=limit)["creatives"]
+    return list_creatives_payload(
+        short_token=short_token, days=days, limit=limit, client_name=client_name,
+    )["creatives"]
 
 
-def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
+def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200, client_name=None):
     """
     Criativos com resposta de survey na janela, mais recentes primeiro.
 
@@ -423,9 +483,11 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
     # custava 34 GiB por abertura de modal — a janela de 30 dias é a
     # lembrança disso.
     recent_days = min(days, UNSCOPED_LOOKBACK_DAYS)
-    dim_matched = _dim_creatives_for_token(token) if token else []
+    dim_matched = _dim_creatives_for_token(token, client_name=client_name) if token else []
     ids = [c["creative_id"] for c in dim_matched]
     id_set = set(ids)
+    # creative_id → como a dimensão amarrou a peça à campanha ("name" | "client").
+    dim_match_by_id = {c["creative_id"]: c["match"] for c in dim_matched}
 
     # Cortes de data como TIMESTAMP CONSTANTE (parâmetro), não como
     # TIMESTAMP_SUB(CURRENT_TIMESTAMP(), ...). Não é estilo: é o que decide se
@@ -482,6 +544,8 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
             # Quando o ramo amplo foi deixado de fora e por quê ("bytes_limit").
             "recent_skipped": recent_skipped,
             "campaign_count": sum(1 for c in creatives if c["creative_id"] in id_set),
+            # Cliente usado no vínculo por cliente (None = só por token).
+            "client_name": client_name or None,
             "diagnostics": diagnostics,
         }
 
@@ -507,7 +571,7 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
         includes_recent = False
         recent_skipped = "bytes_limit"
 
-    out = _rows_to_creatives(rows, token, id_set)
+    out = _rows_to_creatives(rows, token, dim_match_by_id)
 
     if not token:
         return _payload(out)
@@ -580,7 +644,7 @@ def _listing_sql(view, branches, order, name_expr, token_expr, questions_expr, w
     """
 
 
-def _rows_to_creatives(rows, token, id_set):
+def _rows_to_creatives(rows, token, dim_match_by_id):
     out = []
     for r in rows:
         name = r["creative_name"] or ""
@@ -598,14 +662,16 @@ def _rows_to_creatives(rows, token, id_set):
             "last_at": r["last_at"].isoformat() if r["last_at"] else None,
             "side": detect_side(name),
             # De onde veio a amarração com a campanha — a UI mostra a
-            # diferença entre "a plataforma disse" e "o nome sugere". None =
-            # peça de outra campanha (ou sem token no nome), que está na
+            # diferença entre "a plataforma disse", "o nome sugere" e "é do
+            # mesmo cliente". None = peça de outra campanha, que está na
             # lista pra ser achada pela busca, não pra ser sugerida.
             "match": (
                 "short_token"
                 if token and row_token and row_token.strip().upper() == token.upper()
                 else "name"
-                if token and (r["creative_id"] in id_set or token_in_name(name, token))
+                if token and (dim_match_by_id.get(r["creative_id"]) == "name" or token_in_name(name, token))
+                else dim_match_by_id.get(r["creative_id"])  # "client" | None
+                if token
                 else None
             ),
         })

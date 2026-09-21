@@ -58,14 +58,15 @@ function explainDiagnostics(diag, { token, days }) {
       Number.isFinite(n) && n > 0
         ? `A plataforma conhece ${n.toLocaleString("pt-BR")} criativos` +
           (synced ? ` (última carga ${synced})` : "") +
-          "; nenhum leva esse token."
-        : "Nenhum criativo conhecido leva esse token.";
+          "; nenhum leva esse token nem é desse cliente."
+        : "Nenhum criativo conhecido leva esse token nem é desse cliente.";
     return {
       reason: diag.reason,
-      title: `Nenhuma peça com ${tokenTxt} no nome.`,
+      title: `Nenhuma peça ${tokenTxt} na plataforma.`,
       detail:
-        `A campanha é reconhecida pela convenção ID-${token || "TOKEN"}_..._CONTROLE / _EXPOSTO. ${estado} ` +
-        "Ou o nome saiu da convenção, ou a peça foi criada depois da última carga, ou ainda não foi criada.",
+        `A campanha é reconhecida pelo token no nome da peça (ID-${token || "TOKEN"}_..._CONTROLE / _EXPOSTO) ` +
+        "ou pelo cliente da campanha. " + estado +
+        " Ou a peça está sob outro cliente, ou foi criada depois da última carga, ou ainda não foi criada.",
       hint:
         "Busque a peça pelo nome na lista abaixo e vincule manualmente — ou renomeie na plataforma " +
         "pra que o vínculo (e o 'Conectar automaticamente') volte a ser automático.",

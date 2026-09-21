@@ -29,7 +29,7 @@ test("lista ampla vazia é problema de coleta, e ainda menciona o diagnóstico d
   assert.match(r.title, /últimos 30 dias/);
   assert.match(r.title, /campanha nenhuma/);
   assert.match(r.detail, /survey_answer/);
-  assert.match(r.detail, /«PPV8JF».*Nenhuma peça com «PPV8JF» no nome/);
+  assert.match(r.detail, /«PPV8JF».*Nenhuma peça «PPV8JF» na plataforma/);
 });
 
 test("lista cheia sem peça da campanha: nome fora da convenção, com estado da dimensão", () => {
@@ -43,6 +43,7 @@ test("lista cheia sem peça da campanha: nome fora da convenção, com estado da
   assert.equal(r.reason, MA_EMPTY_REASONS.NO_DIM_MATCH);
   assert.match(r.title, /«PPV8JF»/);
   assert.match(r.detail, /ID-PPV8JF_/);
+  assert.match(r.detail, /cliente da campanha/);
   assert.match(r.detail, /843 criativos/);
   assert.match(r.detail, /última carga 21\/09 08:45/);   // 11:45Z = 08:45 BRT
   assert.match(r.detail, /2 peças com resposta nos últimos 30 dias, de todas as campanhas/);
