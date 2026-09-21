@@ -336,6 +336,23 @@ def _cache_invalidate_token(short_token):
 _list_inflight_lock = threading.Lock()
 
 
+def _client_name_for_token(token):
+    """Cliente de uma campanha pelo short_token, da lista cacheada de
+    campanhas. None quando não achar ou quando a lista falhar — quem chama
+    trata None como "sem vínculo por cliente", nunca como erro."""
+    tok = (token or "").strip().upper()
+    if not tok:
+        return None
+    try:
+        campaigns, _ = _get_campaigns_list_cached()
+        for c in campaigns or []:
+            if (c.get("short_token") or "").strip().upper() == tok:
+                return (c.get("client_name") or "").strip() or None
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[maxattention] cliente da campanha {tok} indisponível: {e}")
+    return None
+
+
 def _get_campaigns_list_cached(force_refresh=False):
     """Wrapper single-flight em torno de query_campaigns_list().
 
@@ -2941,7 +2958,14 @@ def report_data(request):
             # criativo, `diagnostics` diz se é dimensão vazia, nome fora da
             # convenção ou peça sem resposta — três causas, três responsáveis,
             # e o admin precisa saber qual é sem abrir o BigQuery.
-            payload = maxattention.list_creatives_payload(short_token=token, days=days)
+            # Cliente da campanha: é o segundo vínculo entre campanha e peça
+            # (o primeiro é o token no nome). Nintendo/PS604Q: peças de
+            # survey publicadas, sem token no nome — sem o cliente, a
+            # campanha não tinha lista.
+            client_name = _client_name_for_token(token) if token else None
+            payload = maxattention.list_creatives_payload(
+                short_token=token, days=days, client_name=client_name,
+            )
             _cache_set(_ma_creatives_cache, cache_key, payload)
             return (jsonify(payload), 200, headers)
         except maxattention.NotConfigured as e:

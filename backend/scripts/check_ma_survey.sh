@@ -86,12 +86,16 @@ if [ -n "$TOKEN" ]; then
   echo "✓ Criativos com '$TOK' no nome, na dimensão: ${DIMTOK:-?}"
   if [ "${DIMTOK:-0}" -eq 0 ]; then
     echo
-    echo "✗ NENHUMA PEÇA DESTA CAMPANHA LEVA O TOKEN NO NOME — é por isso que o"
-    echo "  modal lista zero criativos pra $TOK, mesmo com a view respondendo."
+    echo "⚠ NENHUMA PEÇA LEVA O TOKEN '$TOK' NO NOME. O modal ainda acha as peças pelo"
+    echo "  CLIENTE da campanha (client_name da dimensão), mas o vínculo é mais fraco."
     echo "  → Renomeie a peça na plataforma pra 'ID-${TOK}_..._CONTROLE' / '_EXPOSTO'"
     echo "    (a dimensão recarrega ~1×/h; no modal, 'Atualizar lista' fura o cache),"
-    echo "  → ou, no modal, busque a peça pelo nome (a lista mostra todas as campanhas)"
-    echo "    e vincule manualmente. Se ela não estiver nem lá, a peça não foi criada."
+    echo "  → ou, no modal, confira as peças marcadas 'mesmo cliente' e as demais da lista"
+    echo "    (todas as campanhas). Se não estiver em lugar nenhum, a peça não foi criada."
+    echo
+    echo "  Peças por cliente na dimensão (confira se o cliente da campanha bate):"
+    q "SELECT client_name, COUNT(*) AS pecas FROM \`$DIM\` WHERE client_name IS NOT NULL
+       GROUP BY 1 ORDER BY pecas DESC LIMIT 20" | column -t -s,
     echo
     echo "  Peças com resposta nos últimos 30 dias, pra achar a certa a olho:"
     q "SELECT COALESCE(creative_name, CONCAT('(sem nome) ', creative_id)) AS criativo,
@@ -99,7 +103,6 @@ if [ -n "$TOKEN" ]; then
        FROM \`$VIEW\`
        WHERE responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
        GROUP BY 1 ORDER BY respondentes DESC LIMIT 15" | column -t -s,
-    exit 1
   fi
 fi
 

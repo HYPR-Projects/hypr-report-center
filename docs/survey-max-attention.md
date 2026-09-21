@@ -390,16 +390,31 @@ Duas coisas mudaram a partir daí.
 peças com o token no nome entravam, e campanha sem peça assim não tinha
 lista nenhuma. Agora a campanha é ORDEM e MARCA: a listagem traz todas as
 peças com resposta de survey nos últimos 30 dias (todas as campanhas), e as
-desta campanha vêm no topo, com janela longa (180 dias) e um chip com o
-token. Peça nomeada fora da convenção continua alcançável pela busca — o
-vínculo é manual, só perde o clique único do "Conectar automaticamente",
-que segue considerando apenas peças marcadas (opções iguais entre campanhas
-diferentes não são evidência de mesma pesquisa).
+desta campanha vêm no topo, com janela longa (180 dias) e um chip. Peça de
+outra campanha continua alcançável pela busca — o vínculo é manual, só
+perde o clique único do "Conectar automaticamente", que segue considerando
+apenas peças marcadas (opções iguais entre campanhas diferentes não são
+evidência de mesma pesquisa).
+
+**Dois vínculos entre campanha e peça**, do mais forte pro mais fraco:
+
+| `match` | Como | Chip no picker |
+|---|---|---|
+| `short_token` / `name` | token da campanha no nome da peça (`ID-PS604Q_...`) | o token |
+| `client` | `client_name` da dimensão × cliente da campanha no Report Center (comparação frouxa: caixa, acento e pontuação não contam) | `mesmo cliente` |
+
+O segundo existe porque a convenção de nome não é seguida na prática: 74%
+das respostas do lake vêm de peças sem token. Caso Nintendo (PS604Q): oito
+peças `HYPR_NINTENDO_FY27_SURVEY_..._CONTROLE/_EXPOSTO` publicadas e no ar,
+nenhuma com o token — por nome a campanha não tinha lista. Pelo cliente,
+todas entram, e pela chave líder do cluster (barato).
 
 ```
-short_token ──► creatives_dim (peças com o token no NOME) ──► lake, 180 dias  ─┐
-                                                                               ├─► lista, campanha primeiro
-                                              lake, 30 dias, todas as peças ───┘
+short_token ──► cliente da campanha (lista cacheada do Report Center)
+   │                 │
+   └──► creatives_dim: token no NOME  ou  mesmo CLIENTE ──► lake, 180 dias ─┐
+                                                                            ├─► lista, campanha primeiro
+                                           lake, 30 dias, todas as peças ───┘
 ```
 
 **O vazio da campanha vem explicado.** Quando nenhuma peça foi marcada, o
@@ -417,10 +432,17 @@ lista**, que fura o cache de 10 min do backend (`refresh=true`) pra ver a
 peça logo depois de renomear ou publicar.
 
 Custo: o ramo da campanha poda pela chave líder do cluster (`creative_id`)
-e é barato; o ramo amplo não tem como podar por criativo, e é a janela de
-30 dias que o segura (a primeira versão varria 180 dias só por
-`event_type` e custava 34 GiB por abertura de modal). Admin-only, cacheado
-10 min.
+e é barato. O ramo amplo não tem como podar por criativo, e a view faz
+`DISTINCT` sobre todas as colunas — o planejador não poda coluna nem
+cluster, então a ESTIMATIVA (que é sobre o que o teto de bytes age) sai em
+~36 GiB pra 30 dias. Duas defesas: os cortes de data são parâmetros
+`TIMESTAMP` constantes (com `CURRENT_TIMESTAMP()` a estimativa nem podava
+partição), e o teto subiu pra 48 GiB (~R$1 por query fria, admin-only,
+cacheado 10 min). Se o ramo amplo estourar mesmo assim, a listagem degrada
+pra só a campanha e o modal avisa (`recent_skipped`). O lake cresce ~1 GiB
+por dia; quando o teto voltar a incomodar, o conserto é materializar
+`survey_answer` numa tabela pequena (scheduled query), não subir o teto de
+novo.
 
 Pelo terminal, `bash backend/scripts/check_ma_survey.sh PPV8JF` faz a mesma
 separação e para no passo que falhou.

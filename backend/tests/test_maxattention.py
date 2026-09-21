@@ -191,8 +191,8 @@ class _FakeClient:
 
     def query(self, sql, job_config=None):
         self.queries.append(sql)
-        if "creatives_dim" in sql and "REGEXP_CONTAINS" in sql:
-            return _FakeJob(self.dim_rows)
+        if "creatives_dim" in sql and "SELECT creative_id, creative_name, client_name" in sql:
+            return _FakeJob([{"client_name": None, **r} for r in self.dim_rows])
         if "creatives_dim" in sql and "COUNT(*) AS n" in sql:
             return _FakeJob([self.dim_stats])
         return _FakeJob(self.lake_rows)
@@ -441,3 +441,97 @@ def test_sem_peca_da_campanha_e_teto_estourado_devolve_vazio_explicado(ma_env, m
     assert p["recent_skipped"] == "bytes_limit"
     assert p["diagnostics"]["reason"] == "no_dim_match"
     assert p["diagnostics"]["dim_rows"] == 843
+
+
+# ── Vínculo pelo CLIENTE (o caso Nintendo) ──────────────────────────────────
+#
+# Campanha PS604Q, cliente Nintendo. As peças de survey existem e estão no
+# ar — `HYPR_NINTENDO_FY27_SURVEY_..._CONTROLE` — mas sem o token no nome.
+# Por token, a campanha não tinha lista; a busca ampla estourou o teto; o
+# admin viu vazio com peça publicada na plataforma. O cliente da campanha é
+# o vínculo que faltava.
+
+@pytest.mark.parametrize("a,b,expected", [
+    ("NINTENDO", "Nintendo", True),
+    ("L'Oréal", "LOREAL", True),
+    ("Diageo", "Diageo Brasil", True),
+    ("Kenvue", "Nintendo", False),
+    ("VW", "Volkswagen", False),      # curto demais pra containment
+    ("", "Nintendo", False),
+    (None, None, False),
+])
+def test_same_client_e_frouxo_mas_nao_chuta(a, b, expected):
+    assert ma.same_client(a, b) is expected
+
+
+def test_dimensao_casa_por_token_ou_por_cliente_e_ordena_token_primeiro(ma_env, monkeypatch):
+    dim = [
+        {"creative_id": "n1", "creative_name": "HYPR_NINTENDO_FY27_SURVEY_AWARENESS_CORE_CONTROLE", "client_name": "Nintendo"},
+        {"creative_id": "n2", "creative_name": "HYPR_NINTENDO_FY27_SURVEY_AWARENESS_CORE_EXPOSTO", "client_name": "Nintendo"},
+        {"creative_id": "t1", "creative_name": "ID-PS604Q_HYPR_NINTENDO_X", "client_name": None},
+        {"creative_id": "o1", "creative_name": "HYPR_BOTICARIO_GLAMOUR_SURVEY", "client_name": "Boticário"},
+    ]
+
+    class _Dim(_FakeClient):
+        def query(self, sql, job_config=None):
+            if "creatives_dim" in sql and "client_name" in sql:
+                self.queries.append(sql)
+                return _FakeJob(dim)
+            return super().query(sql, job_config)
+
+    _install(monkeypatch, _Dim())
+    got = ma._dim_creatives_for_token("PS604Q", client_name="NINTENDO")
+    assert [(c["creative_id"], c["match"]) for c in got] == [
+        ("t1", "name"), ("n1", "client"), ("n2", "client"),
+    ]
+
+
+def test_sem_token_no_nome_a_campanha_acha_as_pecas_pelo_cliente(ma_env, monkeypatch):
+    now = datetime(2026, 9, 20, 10, 0, tzinfo=timezone.utc)
+    dim = [
+        {"creative_id": "n1", "creative_name": "HYPR_NINTENDO_FY27_SURVEY_AWARENESS_CORE_CONTROLE", "client_name": "Nintendo"},
+        {"creative_id": "n2", "creative_name": "HYPR_NINTENDO_FY27_SURVEY_AWARENESS_CORE_EXPOSTO", "client_name": "Nintendo"},
+    ]
+    lake = [
+        {"creative_id": "n1", "creative_name": dim[0]["creative_name"], "short_token": None,
+         "questions": [], "options": ["Sim", "Não"], "responses": 1023, "first_at": now, "last_at": now},
+        {"creative_id": "n2", "creative_name": dim[1]["creative_name"], "short_token": None,
+         "questions": [], "options": ["Sim", "Não"], "responses": 888, "first_at": now, "last_at": now},
+        {"creative_id": "z9", "creative_name": "Audible_TapToChoose_300x250", "short_token": None,
+         "questions": [], "options": [], "responses": 11500, "first_at": now, "last_at": now},
+    ]
+
+    class _Dim(_FakeClient):
+        def query(self, sql, job_config=None):
+            if "creatives_dim" in sql and "client_name" in sql:
+                return _FakeJob(dim)
+            return super().query(sql, job_config)
+
+    client = _install(monkeypatch, _Dim(lake_rows=lake))
+    p = ma.list_creatives_payload(short_token="PS604Q", client_name="NINTENDO")
+    assert p["diagnostics"] is None
+    assert p["campaign_count"] == 2
+    assert p["client_name"] == "NINTENDO"
+    by_id = {c["creative_id"]: c for c in p["creatives"]}
+    assert by_id["n1"]["match"] == "client" and by_id["n1"]["side"] == "controle"
+    assert by_id["n2"]["match"] == "client" and by_id["n2"]["side"] == "exposto"
+    assert by_id["z9"]["match"] is None
+    # E o lake foi podado pelos ids da dimensão (chave líder do cluster).
+    lake_q = [q for q in client.queries if "ma_survey_responses" in q]
+    assert "creative_id IN UNNEST(@ids)" in lake_q[0]
+
+
+def test_sem_cliente_o_vinculo_e_so_por_token(ma_env, monkeypatch):
+    dim = [{"creative_id": "n1", "creative_name": "HYPR_NINTENDO_FY27_SURVEY", "client_name": "Nintendo"}]
+
+    class _Dim(_FakeClient):
+        def query(self, sql, job_config=None):
+            if "creatives_dim" in sql and "client_name" in sql:
+                self.queries.append(sql)
+                return _FakeJob(dim)
+            return super().query(sql, job_config)
+
+    client = _install(monkeypatch, _Dim())
+    assert ma._dim_creatives_for_token("PS604Q") == []
+    # Sem cliente, o SQL nem pede as linhas com client_name preenchido.
+    assert "client_name IS NOT NULL" not in client.queries[-1]
