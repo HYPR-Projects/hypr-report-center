@@ -841,7 +841,8 @@ export default function PmpDealsPage({
   const onSync = async () => {
     setSyncing(true); setSyncResult(null);
     try {
-      const r = await syncPmpV2({ interval: "last_7_days" });
+      // Sem interval: a janela do report da Xandr é do backend.
+      const r = await syncPmpV2();
       setSyncResult({ ok: true, summary: r });
       await reload();
       setTimeout(() => setSyncResult(null), 7000);

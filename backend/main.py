@@ -62,6 +62,7 @@ import pmp_groups
 import compplan_sheet
 import xandr_curate
 import pubmatic_curate
+import pmp_alerts
 import pmp_sync_runs
 import audience_normalize
 import audience_ai
@@ -204,6 +205,16 @@ _source_landings_cache = {}  # "all" -> (timestamp, list[{source, max_date}])
 # de janela o primeiro sync bom já teria recuperado tudo — o que faltou foi
 # alguém SABER, daí o ledger `pmp_sync_runs`).
 PUBMATIC_LOOKBACK_DAYS = 21
+
+# Janela do sync Xandr (report_interval da API). Era `last_7_days`: o MERGE é
+# idempotente, então a janela é também a capacidade de auto-conserto depois de
+# um cron parado — 7 dias significa que uma quebra que passe de uma semana
+# perde entrega pra sempre, e só um backfill manual traz de volta. A PubMatic
+# já tinha aprendido isso (21 dias, ver acima) enquanto a Xandr seguia em 7; a
+# senha expirada de 18–21/09/2026 comeu 3 desses dias. `last_14_days` é o
+# degrau seguinte do enum da API (não existe "last_21_days" lá) e dobra a
+# margem sem dobrar o custo do report, que é async e roda 1x/dia.
+XANDR_REPORT_INTERVAL = "last_14_days"
 
 
 def _run_pubmatic_sync(actor):
@@ -4559,7 +4570,7 @@ def report_data(request):
             actor = admin.get("email","unknown")
         try:
             body = request.get_json(silent=True) or {}
-            interval = (body.get("report_interval") or "last_7_days").strip()
+            interval = (body.get("report_interval") or XANDR_REPORT_INTERVAL).strip()
             advertiser_id = 5472841  # HYPR — único advertiser do member 13053
             # Toda execução (das DUAS fontes) vira uma row no ledger
             # `pmp_sync_runs`, sucesso ou falha. É o que o painel de frescor lê:
@@ -4567,20 +4578,46 @@ def report_data(request):
             # entrega — proxy que congela em deal encerrado e, pior, fica
             # IDÊNTICO quando o sync falha (ver pmp_sync_runs.py).
             xandr_t0 = datetime.now(timezone.utc)
+            io_res = line_res = deliv_res = None
+            xandr_error = None
             try:
                 io_res     = xandr_curate.sync_insertion_orders(advertiser_id=advertiser_id)
                 line_res   = xandr_curate.sync_line_items(advertiser_id=advertiser_id)
                 deliv_res  = xandr_curate.sync_delivery_by_line(report_interval=interval)
             except Exception as xe:
+                # Best-effort, igual à PubMatic. Antes isto era `raise`: a
+                # exceção subia e levava junto o que NÃO depende da Xandr —
+                # o espelho de checklists do Command (que só roda aqui, e sem
+                # ele a auto-vinculação fica cega), o refresh da enriched e o
+                # push do compplan. O 401 de senha expirada de 18/09/2026
+                # parou os quatro por 3 dias, quando só um tinha motivo.
+                # A resposta continua 502 lá embaixo: non-2xx é o gatilho do
+                # alert policy do GCP e não pode virar 200.
+                xandr_error = xe
+                logger.error("[pmp_sync_v2 xandr] %s", xe)
                 pmp_sync_runs.record(source="xandr", started_at=xandr_t0, status="error",
-                                     window=interval, actor=actor, error=str(xe))
-                raise
-            pmp_sync_runs.record(
-                source="xandr", started_at=xandr_t0, status="ok",
-                rows_processed=(deliv_res or {}).get("rows_processed"),
-                deals_touched=(deliv_res or {}).get("lines_touched"),
-                window=interval, actor=actor,
-            )
+                                     window=interval, actor=actor,
+                                     credential=xandr_curate.credential_label(),
+                                     error=str(xe))
+            else:
+                pmp_sync_runs.record(
+                    source="xandr", started_at=xandr_t0, status="ok",
+                    rows_processed=(deliv_res or {}).get("rows_processed"),
+                    deals_touched=(deliv_res or {}).get("lines_touched"),
+                    window=interval, actor=actor,
+                    # Qual par da chain autenticou. O painel já sabe avisar
+                    # "autenticado pela credencial de fallback" desde agosto;
+                    # pra Xandr o aviso era código morto, porque ela nunca
+                    # reportava credencial nenhuma.
+                    credential=xandr_curate.credential_label(),
+                    # Frescor da FONTE — "o job rodou" e "a base está em dia"
+                    # são afirmações diferentes, e até agora só a PubMatic
+                    # mandava a segunda. Com a Xandr em NULL, o painel não
+                    # tinha como distinguir sync verde de base travada.
+                    api_last_day=(deliv_res or {}).get("api_last_day"),
+                    lag_days=(deliv_res or {}).get("lag_days"),
+                    trailing_zero_days=(deliv_res or {}).get("trailing_zero_days"),
+                )
             # PubMatic (2ª fonte de curadoria) — best-effort: uma falha aqui NÃO
             # pode derrubar o sync da Xandr, que é o caminho crítico. Sem
             # credencial, vira um run 'skipped' no ledger (não um silêncio).
@@ -4597,7 +4634,7 @@ def report_data(request):
             except Exception as ce:
                 logger.warning(f"[pmp_sync_v2 compplan push] {ce}")
                 compplan_res = {"error": str(ce)}
-            return (jsonify({
+            payload = {
                 "actor": actor,
                 "insertion_orders": io_res,
                 "line_items":       line_res,
@@ -4606,7 +4643,17 @@ def report_data(request):
                 "checklists_mirror": mirror_res,
                 "view_refreshed":   True,
                 "compplan_sheet":   compplan_res,
-            }), 200, headers)
+            }
+            if xandr_error is not None:
+                # 502 mesmo com o resto tendo rodado: a Xandr é o caminho
+                # crítico, e o non-2xx é o que faz o alert policy do GCP tocar.
+                # O corpo diz o que sobreviveu, pra não parecer que nada rodou.
+                payload["error"] = str(xandr_error)
+                payload["xandr_failed"] = True
+                payload["credential_issue"] = isinstance(
+                    xandr_error, xandr_curate.XandrAuthError)
+                return (jsonify(payload), 502, headers)
+            return (jsonify(payload), 200, headers)
         except xandr_curate.XandrError as xe:
             return (jsonify({"error": str(xe)}), 502, headers)
         except Exception as e:
@@ -4728,6 +4775,30 @@ def report_data(request):
             return (jsonify(pmp_lines.enriched_status(sample_limit=max(1, min(lim, 200)))), 200, headers)
         except Exception as e:
             logger.exception(f"[ERROR pmp_enriched_status] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    # ── Alerta diário do sync PMP (cron) ─────────────────────────────────────
+    # O ledger `pmp_sync_runs` matou o silêncio no BANCO, mas continuava
+    # dependendo de alguém ABRIR o painel: em 18–21/09/2026 a senha da Xandr
+    # expirou, o cron bateu nos três dias, o painel ficou vermelho os três, e a
+    # descoberta veio de alguém olhando a tela na quarta manhã. Aqui o ledger
+    # passa a procurar a pessoa. Régua e formato em pmp_alerts.py.
+    #
+    # Mesma auth do sheets_alert_stale (X-Cron-Secret): o Scheduler não tem
+    # identidade humana. Admin logado também pode disparar pra testar.
+    if request.method == "POST" and request.args.get("action") == "pmp_alert_sync":
+        _al_provided = request.headers.get("X-Cron-Secret", "")
+        _al_expected = os.environ.get("CRON_SECRET", "")
+        _al_is_cron = bool(_al_expected) and hmac.compare_digest(_al_provided, _al_expected)
+        if not _al_is_cron and not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            return (jsonify({"summary": pmp_alerts.alert_pmp_sync()}), 200, headers)
+        except Exception as e:
+            # 5xx de propósito: alerta que falha calado é o próprio problema
+            # que este endpoint existe pra resolver. O alert policy do GCP
+            # pega o non-2xx.
+            logger.exception(f"[ERROR pmp_alert_sync] {e}")
             return (jsonify({"error": str(e)}), 500, headers)
 
     # Estado do LEDGER + grade do cron + frescor por fonte, num GET. Nasceu

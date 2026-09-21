@@ -1851,10 +1851,14 @@ export async function ungroupPmpLine(line_id, source = "xandr") {
 }
 
 /** Trigger manual do sync v2 (IOs + Lines + delivery + refresh view). */
-export async function syncPmpV2({ interval = "last_7_days" } = {}) {
+// `interval` sem default de propósito: a janela do report da Xandr é decidida
+// no backend (XANDR_REPORT_INTERVAL). Daqui saía "last_7_days" fixo, então o
+// botão "Sincronizar agora" continuaria com a janela curta mesmo depois de ela
+// ter sido alargada lá — e a janela é a capacidade de recuperar dia perdido.
+export async function syncPmpV2({ interval } = {}) {
   const jwt = await getOrIssueAdminJwt();
   const r = await postJson(`${API_URL}?action=pmp_sync_v2`,
-    { report_interval: interval }, adminAuthHeaders(jwt));
+    interval ? { report_interval: interval } : {}, adminAuthHeaders(jwt));
   if (!r.ok) {
     let msg = `HTTP ${r.status}`;
     try { const d = await r.json(); if (d?.error) msg = d.error; } catch {}

@@ -75,6 +75,9 @@ GOOGLE_OAUTH_CLIENT_SECRET=$(extract_env "GOOGLE_OAUTH_CLIENT_SECRET")
 CRON_SECRET=$(extract_env "CRON_SECRET")
 SENDGRID_API_KEY=$(extract_env "SENDGRID_API_KEY")
 SHEETS_ALERT_FROM=$(extract_env "SHEETS_ALERT_FROM")
+# Destinatários do alerta do sync PMP (separados por vírgula). Opcional —
+# sem ele o pmp_alerts cai no SHEETS_ALERT_FROM.
+PMP_ALERT_TO=$(extract_env "PMP_ALERT_TO")
 ACCESS_TRACKING_IP_SALT=$(extract_env "ACCESS_TRACKING_IP_SALT")
 # MA_SURVEY_VIEW — view do BigQuery com as respostas da pesquisa nativa do
 # Max Attention (Tap to Choose). Sem ela, o report segue só com Typeform e
@@ -106,10 +109,53 @@ read_secret_if_missing() {
   fi
   gcloud secrets versions access latest --secret="$var_name" --project=site-hypr 2>/dev/null || echo ""
 }
+
+# ── Credenciais que ROTACIONAM: o Secret Manager ganha da revisão ativa ──────
+#
+# `read_secret_if_missing` faz o contrário — a revisão viva vence e o Secret
+# Manager só entra quando ela não tem o valor. Para o que nunca muda (member
+# id, client id) isso está certo e é barato. Para SENHA está exatamente errado,
+# e de um jeito silencioso: rotacionar a senha no Secret Manager e redeployar
+# devolve a função com a senha VELHA, porque ela continua na revisão ativa. O
+# deploy passa verde, o smoke check de healthz passa, e o sync segue tomando
+# 401 — que é o procedimento que a própria mensagem de erro manda fazer.
+#
+# Encontrado em 21/09/2026 auditando a senha expirada da Xandr (o 401 de
+# 18–21/09). Vale igual para o par da PubMatic, que tem a mesma forma.
+#
+# Precedência aqui: Secret Manager quando tem valor, senão a revisão ativa.
+# Quem não usa Secret Manager para aquela var não perde nada — cai no mesmo
+# valor de antes. O deploy imprime de onde veio, senão a rotação volta a ser
+# uma coisa que a gente torce para ter funcionado.
+read_secret_first() {
+  local var_name="$1"
+  local revision_value="$2"
+  local secret_value
+  secret_value=$(gcloud secrets versions access latest \
+    --secret="$var_name" --project=site-hypr 2>/dev/null || echo "")
+  if [ -n "$secret_value" ]; then
+    if [ -n "$revision_value" ] && [ "$secret_value" != "$revision_value" ]; then
+      echo "  ↻ $var_name: usando o Secret Manager (difere da revisão ativa)" >&2
+    fi
+    echo "$secret_value"
+    return
+  fi
+  echo "$revision_value"
+}
+
 XANDR_CURATE_USER=$(extract_env "XANDR_CURATE_USER")
-XANDR_CURATE_USER=$(read_secret_if_missing "XANDR_CURATE_USER" "$XANDR_CURATE_USER")
+XANDR_CURATE_USER=$(read_secret_first "XANDR_CURATE_USER" "$XANDR_CURATE_USER")
 XANDR_CURATE_PASS=$(extract_env "XANDR_CURATE_PASS")
-XANDR_CURATE_PASS=$(read_secret_if_missing "XANDR_CURATE_PASS" "$XANDR_CURATE_PASS")
+XANDR_CURATE_PASS=$(read_secret_first "XANDR_CURATE_PASS" "$XANDR_CURATE_PASS")
+# Segundo conjunto da chain (xandr_curate.CREDENTIAL_SETS). Opcional: sem ele o
+# conector roda com uma credencial só, como sempre rodou. Precisa ser usuário
+# de API do MESMO member que o sync lê (13053) — usuário de outro member
+# autentica e depois não enxerga o Curator Analytics daqui.
+XANDR_CURATE_USER_ALT=$(extract_env "XANDR_CURATE_USER_ALT")
+XANDR_CURATE_USER_ALT=$(read_secret_first "XANDR_CURATE_USER_ALT" "$XANDR_CURATE_USER_ALT")
+XANDR_CURATE_PASS_ALT=$(extract_env "XANDR_CURATE_PASS_ALT")
+XANDR_CURATE_PASS_ALT=$(read_secret_first "XANDR_CURATE_PASS_ALT" "$XANDR_CURATE_PASS_ALT")
+# member_id não rotaciona — segue com a precedência antiga.
 XANDR_CURATE_MEMBER_ID=$(extract_env "XANDR_CURATE_MEMBER_ID")
 XANDR_CURATE_MEMBER_ID=$(read_secret_if_missing "XANDR_CURATE_MEMBER_ID" "$XANDR_CURATE_MEMBER_ID")
 
@@ -117,17 +163,17 @@ XANDR_CURATE_MEMBER_ID=$(read_secret_if_missing "XANDR_CURATE_MEMBER_ID" "$XANDR
 # do Xandr: captura da revisão ativa OU lê do Secret Manager. Sem elas, o
 # pmp_sync_v2 pula o PubMatic (o Xandr segue normal).
 PUBMATIC_USER=$(extract_env "PUBMATIC_USER")
-PUBMATIC_USER=$(read_secret_if_missing "PUBMATIC_USER" "$PUBMATIC_USER")
+PUBMATIC_USER=$(read_secret_first "PUBMATIC_USER" "$PUBMATIC_USER")
 PUBMATIC_PASS=$(extract_env "PUBMATIC_PASS")
-PUBMATIC_PASS=$(read_secret_if_missing "PUBMATIC_PASS" "$PUBMATIC_PASS")
+PUBMATIC_PASS=$(read_secret_first "PUBMATIC_PASS" "$PUBMATIC_PASS")
 # Segundo conjunto de credenciais (chain de fallback do pubmatic_curate). Existe
 # porque um usuário de API da PubMatic pode perder o acesso do lado deles sem
 # aviso — foi o que travou o sync por 3 dias em ago/26. Com o par ALT no
 # ambiente, o conector troca de credencial sozinho e registra no ledger.
 PUBMATIC_USER_ALT=$(extract_env "PUBMATIC_USER_ALT")
-PUBMATIC_USER_ALT=$(read_secret_if_missing "PUBMATIC_USER_ALT" "$PUBMATIC_USER_ALT")
+PUBMATIC_USER_ALT=$(read_secret_first "PUBMATIC_USER_ALT" "$PUBMATIC_USER_ALT")
 PUBMATIC_PASS_ALT=$(extract_env "PUBMATIC_PASS_ALT")
-PUBMATIC_PASS_ALT=$(read_secret_if_missing "PUBMATIC_PASS_ALT" "$PUBMATIC_PASS_ALT")
+PUBMATIC_PASS_ALT=$(read_secret_first "PUBMATIC_PASS_ALT" "$PUBMATIC_PASS_ALT")
 
 # PMP_SCHEDULER_SECRET — segredo compartilhado entre Cloud Scheduler e a
 # Cloud Function pra autenticar o cron job sem JWT admin. Gerado uma vez,
@@ -231,6 +277,11 @@ if [ -n "$XANDR_CURATE_USER" ] && [ -n "$XANDR_CURATE_PASS" ] && [ -n "$XANDR_CU
 else
   echo "  ⚠ XANDR_CURATE_* ausentes — sync de PMP deals desabilitado"
 fi
+if [ -n "$XANDR_CURATE_USER_ALT" ] && [ -n "$XANDR_CURATE_PASS_ALT" ]; then
+  echo "  ✓ XANDR_CURATE_*_ALT capturados (chain de fallback habilitada)"
+else
+  echo "  · XANDR_CURATE_*_ALT ausentes — chain com uma credencial só"
+fi
 # PubMatic era capturado em SILÊNCIO: o deploy não dizia se a 2ª fonte de
 # curadoria ia subir com credencial ou sem. Justo a fonte cujo incidente de
 # ago/26 foi inteiro sobre "parou e ninguém soube" — e cuja perda de credencial
@@ -294,6 +345,9 @@ fi
 if [ -n "$SHEETS_ALERT_FROM" ]; then
   echo "SHEETS_ALERT_FROM: '${SHEETS_ALERT_FROM}'" >> "$ENV_FILE"
 fi
+if [ -n "$PMP_ALERT_TO" ]; then
+  echo "PMP_ALERT_TO: '${PMP_ALERT_TO}'" >> "$ENV_FILE"
+fi
 if [ -n "$ACCESS_TRACKING_IP_SALT" ]; then
   echo "ACCESS_TRACKING_IP_SALT: '${ACCESS_TRACKING_IP_SALT}'" >> "$ENV_FILE"
 fi
@@ -305,6 +359,12 @@ if [ -n "$XANDR_CURATE_USER" ]; then
 fi
 if [ -n "$XANDR_CURATE_PASS" ]; then
   echo "XANDR_CURATE_PASS: '${XANDR_CURATE_PASS}'" >> "$ENV_FILE"
+fi
+if [ -n "$XANDR_CURATE_USER_ALT" ]; then
+  echo "XANDR_CURATE_USER_ALT: '${XANDR_CURATE_USER_ALT}'" >> "$ENV_FILE"
+fi
+if [ -n "$XANDR_CURATE_PASS_ALT" ]; then
+  echo "XANDR_CURATE_PASS_ALT: '${XANDR_CURATE_PASS_ALT}'" >> "$ENV_FILE"
 fi
 if [ -n "$XANDR_CURATE_MEMBER_ID" ]; then
   echo "XANDR_CURATE_MEMBER_ID: '${XANDR_CURATE_MEMBER_ID}'" >> "$ENV_FILE"
@@ -401,7 +461,12 @@ if [ -n "$PMP_SCHEDULER_SECRET" ] && [ -n "$XANDR_CURATE_USER" ]; then
 
   SCHEDULER_JOB="pmp-xandr-daily-sync"
   SCHEDULER_URI="https://${REGION}-site-hypr.cloudfunctions.net/${FUNCTION_NAME}?action=pmp_sync_v2"
-  SCHEDULER_BODY='{"report_interval":"last_7_days"}'
+  # Body VAZIO de propósito: a janela fica em XANDR_REPORT_INTERVAL (main.py),
+  # perto do comentário que explica por que ela é o que é. Com a janela fixada
+  # aqui, alargá-la no código não mudava nada — o cron continuava mandando os
+  # 7 dias antigos por cima, e a janela é a margem de recuperação depois de um
+  # cron parado (o 401 de senha expirada de 18–21/09/2026 queimou 3 dias dela).
+  SCHEDULER_BODY='{}'
   SCHEDULER_SCHEDULE="0 4 * * *"
   SCHEDULER_TZ="America/Sao_Paulo"
 
@@ -532,6 +597,48 @@ if [ -n "$CRON_SECRET" ]; then
     --description="Auto-freeze diario de campanhas encerradas (maduras, com guardas)" \
     >/dev/null
   echo "  ✓ Job recriado (30 9 * * * America/Sao_Paulo → auto_freeze_sweep)"
+fi
+
+# ── Cloud Scheduler: pmp-sync-alert ──────────────────────────────────────────
+# Alerta por email quando o sync PMP está quebrado ou com a base velha.
+#
+# O ledger `pmp_sync_runs` acabou com o silêncio no BANCO, mas continuou
+# dependendo de alguém ABRIR o painel do /admin/pmp. Em 18–21/09/2026 a senha
+# de API da Xandr expirou: o cron das 04h bateu nos três dias, o ledger
+# registrou os três 401, o painel ficou vermelho os três — e a descoberta veio
+# de alguém olhando a tela na quarta manhã. Três dias de entrega fora do hub e
+# da planilha de faturamento com o alarme certo e mudo.
+#
+# 08h BRT: depois do cron das 04h e antes de a operação começar a usar o
+# número. A régua é a do painel — só o que ele pinta de VERMELHO vira email,
+# senão o alerta toca no estado normal da manhã e vira filtro (ver
+# pmp_alerts.py).
+if [ -n "$CRON_SECRET" ]; then
+  echo ""
+  echo "▸ Garantindo Cloud Scheduler pmp-sync-alert..."
+
+  PA_JOB="pmp-sync-alert"
+  PA_URI="https://${REGION}-site-hypr.cloudfunctions.net/${FUNCTION_NAME}?action=pmp_alert_sync"
+
+  if gcloud scheduler jobs describe "$PA_JOB" \
+        --location="$REGION" --project=site-hypr >/dev/null 2>&1; then
+    gcloud scheduler jobs delete "$PA_JOB" \
+      --location="$REGION" --project=site-hypr --quiet >/dev/null
+  fi
+
+  gcloud scheduler jobs create http "$PA_JOB" \
+    --location="$REGION" \
+    --project=site-hypr \
+    --schedule="0 8 * * *" \
+    --time-zone="America/Sao_Paulo" \
+    --uri="$PA_URI" \
+    --http-method=POST \
+    --headers="Content-Type=application/json,X-Cron-Secret=${CRON_SECRET}" \
+    --message-body='{}' \
+    --attempt-deadline=300s \
+    --description="Alerta diario do ledger pmp_sync_runs (Xandr + PubMatic)" \
+    >/dev/null
+  echo "  ✓ Job recriado (0 8 * * * America/Sao_Paulo → pmp_alert_sync)"
 fi
 
 # ── 5c. Cloud Scheduler: report-hub-cache-warmup ─────────────────────────────
