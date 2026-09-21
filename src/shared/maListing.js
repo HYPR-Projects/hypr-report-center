@@ -126,8 +126,9 @@ export function describeMaEmptyList(payload, { shortToken = "" } = {}) {
     };
   }
 
-  // Backend antigo: lista era só da campanha.
-  return explainDiagnostics(payload?.diagnostics, { token, days });
+  // Lista só da campanha: backend antigo, ou ramo amplo deixado de fora.
+  const base = explainDiagnostics(payload?.diagnostics, { token, days });
+  return { ...base, detail: base.detail + describeRecentSkipped(payload) };
 }
 
 /**
@@ -158,6 +159,23 @@ export function describeMaCampaignNote(payload, { shortToken = "" } = {}) {
     detail:
       `${base.detail} A lista abaixo mostra ${n.toLocaleString("pt-BR")} peça${n === 1 ? "" : "s"} com resposta` +
       (recentDays ? ` nos últimos ${recentDays} dias` : "") +
-      ", de todas as campanhas — confira o nome antes de vincular.",
+      ", de todas as campanhas — confira o nome antes de vincular." +
+      describeRecentSkipped(payload),
   };
+}
+
+/**
+ * Frase extra quando o backend deixou o ramo AMPLO de fora (`recent_skipped`),
+ * pra que "só tem peça da campanha na lista" não pareça bug. Vazia quando
+ * o ramo veio normalmente.
+ */
+export function describeRecentSkipped(payload) {
+  if (payload?.includes_recent !== false || !payload?.recent_skipped) return "";
+  if (payload.recent_skipped === "bytes_limit") {
+    return (
+      " A busca ampla (todas as campanhas) ficou de fora desta vez: a query estourou o teto " +
+      "de custo do BigQuery. A lista tem só as peças desta campanha."
+    );
+  }
+  return " A busca ampla (todas as campanhas) ficou de fora desta vez; a lista tem só as peças desta campanha.";
 }
