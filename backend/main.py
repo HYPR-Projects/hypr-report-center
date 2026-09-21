@@ -62,6 +62,7 @@ import pmp_groups
 import compplan_sheet
 import xandr_curate
 import pubmatic_curate
+import pmp_alerts
 import pmp_sync_runs
 import audience_normalize
 import audience_ai
@@ -4743,6 +4744,30 @@ def report_data(request):
             return (jsonify(pmp_lines.enriched_status(sample_limit=max(1, min(lim, 200)))), 200, headers)
         except Exception as e:
             logger.exception(f"[ERROR pmp_enriched_status] {e}")
+            return (jsonify({"error": str(e)}), 500, headers)
+
+    # ── Alerta diário do sync PMP (cron) ─────────────────────────────────────
+    # O ledger `pmp_sync_runs` matou o silêncio no BANCO, mas continuava
+    # dependendo de alguém ABRIR o painel: em 18–21/09/2026 a senha da Xandr
+    # expirou, o cron bateu nos três dias, o painel ficou vermelho os três, e a
+    # descoberta veio de alguém olhando a tela na quarta manhã. Aqui o ledger
+    # passa a procurar a pessoa. Régua e formato em pmp_alerts.py.
+    #
+    # Mesma auth do sheets_alert_stale (X-Cron-Secret): o Scheduler não tem
+    # identidade humana. Admin logado também pode disparar pra testar.
+    if request.method == "POST" and request.args.get("action") == "pmp_alert_sync":
+        _al_provided = request.headers.get("X-Cron-Secret", "")
+        _al_expected = os.environ.get("CRON_SECRET", "")
+        _al_is_cron = bool(_al_expected) and hmac.compare_digest(_al_provided, _al_expected)
+        if not _al_is_cron and not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            return (jsonify({"summary": pmp_alerts.alert_pmp_sync()}), 200, headers)
+        except Exception as e:
+            # 5xx de propósito: alerta que falha calado é o próprio problema
+            # que este endpoint existe pra resolver. O alert policy do GCP
+            # pega o non-2xx.
+            logger.exception(f"[ERROR pmp_alert_sync] {e}")
             return (jsonify({"error": str(e)}), 500, headers)
 
     # Estado do LEDGER + grade do cron + frescor por fonte, num GET. Nasceu

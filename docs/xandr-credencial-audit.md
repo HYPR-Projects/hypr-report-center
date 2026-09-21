@@ -126,18 +126,48 @@ parsing e o corte D-1 fora de teste.
 | 5 | `today_brt()` no corte D-1 | `xandr_curate.py` |
 | 6 | `read_secret_first` para as credenciais que rotacionam (Xandr + PubMatic): Secret Manager ganha da revisão ativa | `deploy.sh` |
 | 7 | `_bq_client()` preguiçoso via `bq_client.get_client()` | `xandr_curate.py` |
+| 8 | Alerta diário por email do ledger PMP (`pmp-sync-alert`, 08h BRT) | `pmp_alerts.py`, `main.py`, `deploy.sh` |
 
 Cobertura nova: `backend/tests/test_xandr_curate.py` (15 casos) e 4 casos em
 `pmpFreshness.test.js`.
+
+## Alerta ativo (item 8)
+
+O ledger acabou com o silêncio no banco; continuava dependendo de alguém abrir
+o painel. `pmp-sync-alert` roda às **08h BRT** (depois do cron das 04h, antes de
+a operação usar o número) e manda um email enquanto o problema existir.
+
+A régua é a **mesma que o painel usa pra pintar vermelho** — amarelo não vira
+email, senão o alerta toca no estado normal da manhã e em duas semanas vira
+regra de filtro no Gmail, que é o silêncio voltando pela porta dos fundos:
+
+| estado | email? |
+|---|---|
+| último run `error` (diz se é credencial) | sim |
+| último run `skipped` (sem credencial) | sim |
+| nenhuma execução em 26h (cron morto) | sim |
+| run ok, fonte ≥2 dias atrás | sim |
+| run ok, fonte 1 dia atrás | **não** — é a manhã antes de a fonte fechar D-1 |
+| dias que faltam vieram como zero explícito | **não** — a line é que não entregou |
+| `lag_days` NULL (fonte não mede) | **não** — "não sei" não vira alarme |
+
+Destinatários em `PMP_ALERT_TO` (separados por vírgula); sem ela cai no
+`SHEETS_ALERT_FROM`. Sem dedup, igual ao `sheets_alerts`: uma quebra de uma
+semana manda sete emails, que é o comportamento desejado.
 
 ## O que continua em aberto
 
 - **O reset da senha é manual e não tem dono.** Expira a cada 90 dias, então
   isto volta ~dez/2026. O painel agora diz o que fazer; ninguém é avisado sem
   abrir o painel (o rodapé ainda manda "reportar no #data-pipelines").
-- **A Xandr não tem credential chain.** A PubMatic ganhou fallback
-  (`PUBMATIC_USER_ALT`) exatamente depois do 401 de agosto; a Xandr tem uma
-  credencial só, então senha expirada é parada total até o reset.
+- **A Xandr não tem credential chain — e falta o usuário pra ter uma.** A
+  PubMatic ganhou fallback (`PUBMATIC_USER_ALT`) depois do 401 de agosto. A
+  conta da Xandr hoje tem dois usuários associados, mas em **members
+  diferentes** (`14843` Hypr (Gama) e `13053` HYPR VENTURES / CURATOR). O sync
+  lê o Curator Analytics do member 13053, então o usuário do 14843 não serve de
+  fallback. Para ter chain é preciso um **segundo usuário de API no member
+  13053** — pedido pro rep da Xandr, não código. Com ele, a implementação é o
+  mesmo padrão do `pubmatic_curate.CREDENTIAL_SETS`.
 - **O push do compplan roda com Xandr velha.** Durante a queda, o
   `pmp-pubmatic-refresh` continua empurrando a planilha quando a PubMatic
   avança, levando junto os números congelados da Xandr — sem marca de que são
@@ -152,6 +182,8 @@ Cobertura nova: `backend/tests/test_xandr_curate.py` (15 casos) e 4 casos em
   tarde ou de hora em hora — e **não** inventar uma tolerância em
   `SOURCE_CLOSE_HOUR_BRT` sem medida (a régua é explícita: fonte sem medida não
   ganha tolerância).
-- **Não há alerta ativo de sync PMP.** O `sheets_alerts` cobre integrações de
-  report, não o ledger do PMP. O sinal existente é o non-2xx do Cloud Scheduler
-  (alert policy do GCP), que ninguém confirmou estar ligado para este job.
+- **O alert policy do GCP para o `pmp-xandr-daily-sync` nunca foi confirmado.**
+  O `pmp_sync_v2` devolve 502 quando a Xandr falha, mas ninguém verificou se
+  existe policy de non-2xx escutando esse job. Com o `pmp-sync-alert` no ar
+  isso deixa de ser o único sinal, e vira checagem de rotina em vez de
+  dependência.

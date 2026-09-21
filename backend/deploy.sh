@@ -75,6 +75,9 @@ GOOGLE_OAUTH_CLIENT_SECRET=$(extract_env "GOOGLE_OAUTH_CLIENT_SECRET")
 CRON_SECRET=$(extract_env "CRON_SECRET")
 SENDGRID_API_KEY=$(extract_env "SENDGRID_API_KEY")
 SHEETS_ALERT_FROM=$(extract_env "SHEETS_ALERT_FROM")
+# Destinatários do alerta do sync PMP (separados por vírgula). Opcional —
+# sem ele o pmp_alerts cai no SHEETS_ALERT_FROM.
+PMP_ALERT_TO=$(extract_env "PMP_ALERT_TO")
 ACCESS_TRACKING_IP_SALT=$(extract_env "ACCESS_TRACKING_IP_SALT")
 # MA_SURVEY_VIEW — view do BigQuery com as respostas da pesquisa nativa do
 # Max Attention (Tap to Choose). Sem ela, o report segue só com Typeform e
@@ -329,6 +332,9 @@ fi
 if [ -n "$SHEETS_ALERT_FROM" ]; then
   echo "SHEETS_ALERT_FROM: '${SHEETS_ALERT_FROM}'" >> "$ENV_FILE"
 fi
+if [ -n "$PMP_ALERT_TO" ]; then
+  echo "PMP_ALERT_TO: '${PMP_ALERT_TO}'" >> "$ENV_FILE"
+fi
 if [ -n "$ACCESS_TRACKING_IP_SALT" ]; then
   echo "ACCESS_TRACKING_IP_SALT: '${ACCESS_TRACKING_IP_SALT}'" >> "$ENV_FILE"
 fi
@@ -572,6 +578,48 @@ if [ -n "$CRON_SECRET" ]; then
     --description="Auto-freeze diario de campanhas encerradas (maduras, com guardas)" \
     >/dev/null
   echo "  ✓ Job recriado (30 9 * * * America/Sao_Paulo → auto_freeze_sweep)"
+fi
+
+# ── Cloud Scheduler: pmp-sync-alert ──────────────────────────────────────────
+# Alerta por email quando o sync PMP está quebrado ou com a base velha.
+#
+# O ledger `pmp_sync_runs` acabou com o silêncio no BANCO, mas continuou
+# dependendo de alguém ABRIR o painel do /admin/pmp. Em 18–21/09/2026 a senha
+# de API da Xandr expirou: o cron das 04h bateu nos três dias, o ledger
+# registrou os três 401, o painel ficou vermelho os três — e a descoberta veio
+# de alguém olhando a tela na quarta manhã. Três dias de entrega fora do hub e
+# da planilha de faturamento com o alarme certo e mudo.
+#
+# 08h BRT: depois do cron das 04h e antes de a operação começar a usar o
+# número. A régua é a do painel — só o que ele pinta de VERMELHO vira email,
+# senão o alerta toca no estado normal da manhã e vira filtro (ver
+# pmp_alerts.py).
+if [ -n "$CRON_SECRET" ]; then
+  echo ""
+  echo "▸ Garantindo Cloud Scheduler pmp-sync-alert..."
+
+  PA_JOB="pmp-sync-alert"
+  PA_URI="https://${REGION}-site-hypr.cloudfunctions.net/${FUNCTION_NAME}?action=pmp_alert_sync"
+
+  if gcloud scheduler jobs describe "$PA_JOB" \
+        --location="$REGION" --project=site-hypr >/dev/null 2>&1; then
+    gcloud scheduler jobs delete "$PA_JOB" \
+      --location="$REGION" --project=site-hypr --quiet >/dev/null
+  fi
+
+  gcloud scheduler jobs create http "$PA_JOB" \
+    --location="$REGION" \
+    --project=site-hypr \
+    --schedule="0 8 * * *" \
+    --time-zone="America/Sao_Paulo" \
+    --uri="$PA_URI" \
+    --http-method=POST \
+    --headers="Content-Type=application/json,X-Cron-Secret=${CRON_SECRET}" \
+    --message-body='{}' \
+    --attempt-deadline=300s \
+    --description="Alerta diario do ledger pmp_sync_runs (Xandr + PubMatic)" \
+    >/dev/null
+  echo "  ✓ Job recriado (0 8 * * * America/Sao_Paulo → pmp_alert_sync)"
 fi
 
 # ── 5c. Cloud Scheduler: report-hub-cache-warmup ─────────────────────────────
