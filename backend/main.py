@@ -756,6 +756,16 @@ def warmup_caches(force_refresh=True, max_reports=150, deadline_s=480):
         logger.warning(f"[WARN warmup clients] {e}")
         summary["clients_warmed"] = False
 
+    # Ramo amplo da listagem do Max Attention: a query cara (dezenas de GB)
+    # que é igual pra toda campanha. Aquecida aqui, o modal de survey abre
+    # sem esperar por ela. Sem MA_SURVEY_VIEW, não há o que aquecer.
+    try:
+        if maxattention.is_configured():
+            summary["ma_recent_warmed"] = maxattention.warm_recent()
+    except Exception as e:
+        logger.warning(f"[WARN warmup maxattention] {e}")
+        summary["ma_recent_warmed"] = False
+
     try:
         frozen_map = query_frozen_tokens()
     except Exception as e:
@@ -2976,6 +2986,8 @@ def report_data(request):
             client_name = _client_name_for_token(token) if token else None
             payload = maxattention.list_creatives_payload(
                 short_token=token, days=days, client_name=client_name,
+                # refresh=true também fura o cache do ramo amplo (horas).
+                refresh=request.args.get("refresh") == "true",
             )
             _cache_set(_ma_creatives_cache, cache_key, payload)
             return (jsonify(payload), 200, headers)

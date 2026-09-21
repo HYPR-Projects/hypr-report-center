@@ -746,28 +746,39 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
   }, [blocks]);
 
   // ── Bootstrap: carrega config existente + lista de forms em paralelo ─────
+  //
+  // O Max Attention NÃO entra na espera do esqueleto. A listagem dele varre
+  // o lake (dezenas de GB a frio, dezenas de segundos na primeira abertura
+  // depois de um deploy), e o modal ficava inteiro no esqueleto esperando —
+  // com config e Typeform já prontos. Ele carrega em paralelo e cai nos
+  // slots quando chegar; enquanto isso os slots dizem "carregando".
   useEffect(() => {
     let cancelled = false;
+
     (async () => {
-      const [savedRaw, formsResp, maResp] = await Promise.allSettled([
+      try {
+        const resp = await listMaxAttentionCreatives({ shortToken });
+        if (cancelled) return;
+        setMaCreatives(resp?.creatives || []);
+        setMaPayload(resp || null);
+        setMaStatus("ready");
+      } catch (e) {
+        if (cancelled) return;
+        if (e?.notConfigured) setMaStatus("off");
+        else if (e?.staleBackend) setMaStatus("stale");
+        else {
+          setMaStatus("error");
+          setMaError(e?.message || "Falha ao listar criativos do Max Attention");
+        }
+      }
+    })();
+
+    (async () => {
+      const [savedRaw, formsResp] = await Promise.allSettled([
         getSurveyApi({ short_token: shortToken }),
         listTypeformForms(),
-        listMaxAttentionCreatives({ shortToken }),
       ]);
       if (cancelled) return;
-
-      if (maResp.status === "fulfilled") {
-        setMaCreatives(maResp.value?.creatives || []);
-        setMaPayload(maResp.value || null);
-        setMaStatus("ready");
-      } else if (maResp.reason?.notConfigured) {
-        setMaStatus("off");
-      } else if (maResp.reason?.staleBackend) {
-        setMaStatus("stale");
-      } else {
-        setMaStatus("error");
-        setMaError(maResp.reason?.message || "Falha ao listar criativos do Max Attention");
-      }
 
       let formsList = [];
       let listFailed = false;

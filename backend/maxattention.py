@@ -75,6 +75,8 @@ import os
 import re
 import unicodedata
 from collections import Counter
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 from google.cloud import bigquery
@@ -395,6 +397,17 @@ def _job_config(params):
 MAX_DIAG_NAMES = 8
 
 
+# Cache do ramo AMPLO (todas as campanhas, janela curta). É a única parte
+# cara da listagem e é IGUAL pra toda campanha — então roda uma vez e serve
+# todos os modais. TTL longo de propósito: a pergunta que ele responde
+# ("quais peças têm resposta de survey nos últimos 30 dias") muda devagar,
+# e o ramo da campanha (barato) continua fresco pelo cache de 10 min do
+# main.py. Em memória, por instância; o warmup do main.py aquece.
+_RECENT_TTL_S = 3 * 3600
+_RECENT_CACHE = {}           # recent_days -> (monotonic_ts, rows)
+_RECENT_LOCK = threading.Lock()
+
+
 def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200, client_name=None):
     """Compat: só a lista. Ver `list_creatives_payload`."""
     return list_creatives_payload(
@@ -402,7 +415,15 @@ def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200, clie
     )["creatives"]
 
 
-def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200, client_name=None):
+def warm_recent(days=UNSCOPED_LOOKBACK_DAYS):
+    """Aquece o ramo amplo (chamado pelo warmup do main.py). Devolve quantas
+    peças entraram. Erro sobe — o warmup registra e segue."""
+    rows = _recent_rows(days, force=True)
+    return len(rows)
+
+
+def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200,
+                           client_name=None, refresh=False):
     """
     Criativos com resposta de survey na janela, mais recentes primeiro.
 
@@ -503,40 +524,12 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
     since_recent = now - timedelta(days=recent_days)
     since_campaign = now - timedelta(days=days)
 
-    def _branches(include_recent):
-        out = []
-        params = [bigquery.ScalarQueryParameter("since_recent", "TIMESTAMP", since_recent)]
-        if ids:
-            params.append(bigquery.ScalarQueryParameter("since_campaign", "TIMESTAMP", since_campaign))
-            params.append(bigquery.ArrayQueryParameter("ids", "STRING", ids))
-            out.append(f"""
-              SELECT * FROM `{view}`
-              WHERE creative_id IN UNNEST(@ids)
-                AND responded_at >= @since_campaign
-            """)
-            if include_recent:
-                # NOT IN evita contar a peça da campanha duas vezes (ela já
-                # veio do ramo de cima, com a janela longa).
-                out.append(f"""
-                  SELECT * FROM `{view}`
-                  WHERE creative_id NOT IN UNNEST(@ids)
-                    AND responded_at >= @since_recent
-                """)
-            order = "ORDER BY (creative_id IN UNNEST(@ids)) DESC, last_at DESC"
-        else:
-            out.append(f"""
-              SELECT * FROM `{view}`
-              WHERE responded_at >= @since_recent
-            """)
-            order = "ORDER BY last_at DESC"
-        return out, params, order
-
     def _payload(creatives, diagnostics=None, includes_recent=True, recent_skipped=None):
         return {
             "creatives": creatives,
             "scope": "campaign" if token else "all",
             "short_token": token,
-            # Janela do ramo da campanha (peças com o token no nome).
+            # Janela do ramo da campanha (peças com o token no nome / do cliente).
             "days": days if token and ids else recent_days,
             # Janela do ramo amplo (todas as campanhas).
             "recent_days": recent_days,
@@ -549,27 +542,44 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
             "diagnostics": diagnostics,
         }
 
-    def _run(include_recent):
-        branches, params, order = _branches(include_recent)
-        sql = _listing_sql(view, branches, order, name_expr, token_expr, questions_expr, weight, limit)
-        return _client().query(sql, job_config=_job_config(params)).result()
+    # Duas queries, não uma: o ramo da CAMPANHA é barato (poda por
+    # creative_id, chave líder do cluster) e roda sempre; o ramo AMPLO é caro
+    # (dezenas de GB a frio) e é o MESMO pra toda campanha — então é
+    # cacheado aqui, por horas, e compartilhado. Antes era um UNION ALL numa
+    # query só, e cada modal aberto pagava o ramo amplo de novo: dezenas de
+    # segundos de esqueleto na tela.
+    campaign_rows = []
+    if ids:
+        sql = _listing_sql(view, [f"""
+          SELECT * FROM `{view}`
+          WHERE creative_id IN UNNEST(@ids)
+            AND responded_at >= @since_campaign
+        """], "ORDER BY last_at DESC", name_expr, token_expr, questions_expr, weight, limit)
+        params = [
+            bigquery.ScalarQueryParameter("since_campaign", "TIMESTAMP", since_campaign),
+            bigquery.ArrayQueryParameter("ids", "STRING", ids),
+        ]
+        campaign_rows = list(_client().query(sql, job_config=_job_config(params)).result())
 
     includes_recent = True
     recent_skipped = None
     try:
-        rows = _run(include_recent=True)
+        recent_rows = _recent_rows(recent_days, force=refresh)
     except Exception as e:  # noqa: BLE001 — só o teto de bytes é tratado aqui
         if not _is_bytes_limit_error(e):
             raise
-        # O ramo amplo estourou o teto mesmo com corte constante: a lista da
-        # CAMPANHA não pode morrer junto. Degrada pra só ela (ou pra vazio,
-        # quando a campanha não tem peça na dimensão) e avisa no payload — o
-        # admin vê o que há e sabe que a busca ampla não veio. Antes isto era
-        # um 500 no modal inteiro, com o Max Attention indisponível.
+        # O ramo amplo estourou o teto: a lista da CAMPANHA não pode morrer
+        # junto. Segue só com ela e avisa no payload — antes isto era um 500
+        # no modal inteiro, com o Max Attention indisponível.
         logger.warning(f"[maxattention] ramo amplo estourou o teto de bytes; servindo só a campanha: {e}")
-        rows = _run(include_recent=False) if ids else []
+        recent_rows = []
         includes_recent = False
         recent_skipped = "bytes_limit"
+
+    # Campanha primeiro (com a janela longa dela); do amplo, só quem não é da
+    # campanha — a mesma peça não entra duas vezes.
+    rows = list(campaign_rows) + [r for r in recent_rows if r["creative_id"] not in id_set]
+    rows = rows[:limit]
 
     out = _rows_to_creatives(rows, token, dim_match_by_id)
 
@@ -605,6 +615,38 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
 def _now():
     """Separado pra teste."""
     return datetime.now(timezone.utc)
+
+
+def _recent_rows(recent_days, force=False):
+    """Linhas agregadas do ramo AMPLO (todas as peças com resposta na janela
+    curta), do cache quando fresco. `force` fura o cache (refresh=true do
+    admin e warmup). Single-flight por lock: dois modais abrindo juntos numa
+    instância fria não pagam a query duas vezes."""
+    with _RECENT_LOCK:
+        hit = _RECENT_CACHE.get(recent_days)
+        if hit and not force and (time.monotonic() - hit[0]) < _RECENT_TTL_S:
+            return hit[1]
+        view = survey_view()
+        has_token_col, has_responses_col, has_name_col, has_question_col, has_session_col = _view_columns(view)
+        sql = _listing_sql(
+            view,
+            [f"""
+              SELECT * FROM `{view}`
+              WHERE responded_at >= @since_recent
+            """],
+            "ORDER BY last_at DESC",
+            "ANY_VALUE(creative_name)" if has_name_col else "CAST(NULL AS STRING)",
+            "ANY_VALUE(short_token)" if has_token_col else "CAST(NULL AS STRING)",
+            "ARRAY_AGG(DISTINCT question IGNORE NULLS ORDER BY question)" if has_question_col else "CAST([] AS ARRAY<STRING>)",
+            _weight_expr(has_session_col, has_responses_col),
+            1000,
+        )
+        params = [bigquery.ScalarQueryParameter(
+            "since_recent", "TIMESTAMP", _now() - timedelta(days=recent_days),
+        )]
+        rows = list(_client().query(sql, job_config=_job_config(params)).result())
+        _RECENT_CACHE[recent_days] = (time.monotonic(), rows)
+        return rows
 
 
 def _is_bytes_limit_error(e):
