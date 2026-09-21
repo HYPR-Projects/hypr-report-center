@@ -13,7 +13,7 @@ import { toast } from "../../lib/toast";
 import { parseSurveyConfig, serializeSurveyConfig, sumCounts, getSideSource } from "../../shared/surveyConfig";
 import { parseVideoaskFile } from "../../lib/videoaskParser";
 import { levenshtein, canonicalLabel, similarity, SOURCE_TINTS } from "../../shared/surveySources";
-import { describeMaEmptyList, describeMaBrowseAll } from "../../shared/maListing";
+import { describeMaEmptyList, describeMaCampaignNote } from "../../shared/maListing";
 
 /**
  * Modal pra configurar surveys com slots independentes pra Controle e Exposto.
@@ -549,15 +549,14 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
   const [maCreatives, setMaCreatives] = useState([]);
   const [maStatus, setMaStatus] = useState("loading");
   const [maError, setMaError] = useState("");
-  // Payload inteiro da última listagem ({scope, days, diagnostics}). É o que
-  // permite explicar uma lista VAZIA: por campanha, o backend diz se a
-  // dimensão não carregou, se nenhuma peça leva o token no nome ou se as
-  // peças existem sem resposta — e cada caso tem uma saída diferente. Antes
-  // os três viravam "Nenhum criativo encontrado", e o admin abria bug.
+  // Payload inteiro da última listagem ({days, recent_days, campaign_count,
+  // diagnostics}). A lista é AMPLA — como a do Typeform — com as peças da
+  // campanha (token no nome) marcadas com `match`. O payload é o que permite
+  // explicar quando NENHUMA peça foi marcada: o backend diz se a dimensão
+  // não carregou, se nenhuma peça leva o token no nome ou se as peças
+  // existem sem resposta — e cada caso tem uma saída diferente. Antes os
+  // três viravam "Nenhum criativo encontrado", e o admin abria bug.
   const [maPayload, setMaPayload] = useState(null);
-  // "campaign" (só peças com o token no nome) | "all" (busca ampla, 30 dias,
-  // todas as campanhas — pra peça nomeada fora da convenção).
-  const [maScope, setMaScope] = useState("campaign");
   const [maReloading, setMaReloading] = useState(false);
   const [scope, setScope] = useState("workspace");
   // Cache de meta por formId — populado sob demanda quando admin seleciona um form.
@@ -590,21 +589,27 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
     [maCreatives],
   );
 
-  // Recarrega a listagem do Max Attention em outro escopo e/ou furando o
-  // cache do backend. Não mexe em `maStatus` enquanto roda: a lista atual
-  // continua na tela (com os slots já vinculados) e o botão mostra que está
-  // trabalhando — sumir com o picker durante o reload faria o admin achar
-  // que perdeu a seleção.
-  const reloadMa = useCallback(async ({ scope = maScope, refresh = false } = {}) => {
+  // Só as peças DESTA campanha (token no nome). É o que alimenta sugestão e
+  // pareamento automático: na lista ampla há peças de outras campanhas, e
+  // opções iguais ("Sim/Não") não são evidência de que é a mesma pesquisa.
+  // Os pickers continuam vendo a lista inteira — quem busca pelo nome sabe
+  // o que quer.
+  const maCampaignCreatives = useMemo(
+    () => (maCreatives || []).filter((c) => c && c.match),
+    [maCreatives],
+  );
+
+  // Recarrega a listagem do Max Attention furando o cache de 10 min do
+  // backend (pra quem acabou de renomear/publicar a peça). Não mexe em
+  // `maStatus` enquanto roda: a lista atual continua na tela (com os slots
+  // já vinculados) e o botão mostra que está trabalhando — sumir com o
+  // picker durante o reload faria o admin achar que perdeu a seleção.
+  const reloadMa = useCallback(async () => {
     setMaReloading(true);
     try {
-      const resp = await listMaxAttentionCreatives({
-        shortToken: scope === "all" ? "" : shortToken,
-        refresh,
-      });
+      const resp = await listMaxAttentionCreatives({ shortToken, refresh: true });
       setMaCreatives(resp?.creatives || []);
       setMaPayload(resp || null);
-      setMaScope(scope);
       setMaStatus("ready");
       setMaError("");
     } catch (e) {
@@ -617,17 +622,18 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
     } finally {
       setMaReloading(false);
     }
-  }, [maScope, shortToken]);
+  }, [shortToken]);
 
-  // Explicação da lista vazia (null quando há criativo) e aviso de busca
-  // ampla (null no escopo da campanha). Textos em `shared/maListing.js`.
+  // Explicação da lista vazia (null quando há criativo) e aviso de "nenhuma
+  // peça desta campanha" (null quando há, ou sem diagnóstico). Textos em
+  // `shared/maListing.js`.
   const maEmpty = useMemo(
-    () => (maStatus === "ready" ? describeMaEmptyList(maPayload || { creatives: maCreatives, scope: maScope }, { shortToken }) : null),
-    [maStatus, maPayload, maCreatives, maScope, shortToken],
+    () => (maStatus === "ready" ? describeMaEmptyList(maPayload || { creatives: maCreatives, scope: "campaign" }, { shortToken }) : null),
+    [maStatus, maPayload, maCreatives, shortToken],
   );
-  const maBrowseNote = useMemo(
-    () => (maStatus === "ready" && maCreatives.length > 0 ? describeMaBrowseAll(maPayload, { shortToken }) : null),
-    [maStatus, maPayload, maCreatives.length, shortToken],
+  const maCampaignNote = useMemo(
+    () => (maStatus === "ready" ? describeMaCampaignNote(maPayload || { creatives: maCreatives }, { shortToken }) : null),
+    [maStatus, maPayload, maCreatives, shortToken],
   );
   const maEmptyNote = maEmpty ? `${maEmpty.title} ${maEmpty.hint}` : "";
 
@@ -894,11 +900,10 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
   // lado certo tem "uma pergunta declarada" e a etapa 2 sozinha escolheria
   // pelo volume de respostas — o par pelo nome sabe qual é qual.
   const maSuggestions = useMemo(() => {
-    if (maStatus !== "ready" || !maCreatives.length) return [];
-    // Na busca AMPLA a lista tem peças de outras campanhas; opções iguais
-    // ("Sim/Não") não são evidência de que é a mesma pesquisa. Sugestão
-    // automática só no escopo da campanha — no amplo o admin escolhe.
-    if (maScope === "all") return [];
+    // Só peças DESTA campanha entram em sugestão: a lista ampla tem peças de
+    // outras campanhas, e opções iguais ("Sim/Não") não são evidência de que
+    // é a mesma pesquisa. Sem peça marcada, não há sugestão — o admin busca.
+    if (maStatus !== "ready" || !maCampaignCreatives.length) return [];
     const used = new Set(maUsedIds);
     const out = [];
     blocks.forEach((b, idx) => {
@@ -910,7 +915,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
       };
       const open = (side) => !sideHasMa(b[side]) && !picked[side];
       const tryPair = (side, anchor) => {
-        const partner = maPartnerForName(anchor, side, maCreatives, used);
+        const partner = maPartnerForName(anchor, side, maCampaignCreatives, used);
         if (partner) take(side, partner, matchMaQuestion(partner, b.nome), "par pelo nome do criativo");
       };
 
@@ -922,7 +927,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
       for (const side of ["ctrl", "exp"]) {
         if (!open(side)) continue;
         const sug = suggestMaForSide(
-          maCreatives, side, b.nome, used, typeformOptionsOf(b[side]),
+          maCampaignCreatives, side, b.nome, used, typeformOptionsOf(b[side]),
         );
         if (!sug) continue;
         take(side, sug.creative, sug.question, sug.why);
@@ -933,7 +938,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
       }
     });
     return out;
-  }, [blocks, maCreatives, maStatus, maScope, maUsedIds, maById, typeformOptionsOf]);
+  }, [blocks, maCampaignCreatives, maStatus, maUsedIds, maById, typeformOptionsOf]);
 
   // Quantas dessas sugestões viram a base PRINCIPAL do slot (slot sem
   // Typeform) — o resto entra somando. Muda o texto do aviso: "preencher" e
@@ -1290,7 +1295,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
           {" "}
           <button
             type="button"
-            onClick={() => reloadMa({ refresh: true })}
+            onClick={reloadMa}
             disabled={maReloading}
             style={{ background: "none", border: "none", color: text, fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0, textDecoration: "underline" }}
           >
@@ -1314,69 +1319,29 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
           </div>
           <div style={{ color: muted }}>{maEmpty.detail}</div>
           <div style={{ color: muted, marginTop: 4 }}>{maEmpty.hint}</div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
-            {maEmpty.canBrowseAll && (
-              <button
-                type="button"
-                onClick={() => reloadMa({ scope: "all" })}
-                disabled={maReloading}
-                style={{
-                  background: SOURCE_TINTS.maxattention.fg, border: "none", color: "#1a1a1a",
-                  borderRadius: 999, padding: "5px 12px", fontSize: 11, fontWeight: 700,
-                  cursor: maReloading ? "wait" : "pointer", opacity: maReloading ? 0.6 : 1,
-                }}
-              >
-                {maReloading ? "Buscando…" : "Buscar em todos os criativos recentes"}
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => reloadMa({ refresh: true })}
-              disabled={maReloading}
-              style={{
-                background: "none", border: `1px solid ${modalBdr}`, color: text,
-                borderRadius: 999, padding: "5px 12px", fontSize: 11, fontWeight: 600,
-                cursor: maReloading ? "wait" : "pointer", opacity: maReloading ? 0.6 : 1,
-              }}
-              title="Fura o cache de 10 min do backend — pra quando você acabou de renomear ou publicar a peça"
-            >
-              {maReloading ? "Atualizando…" : "Atualizar lista"}
-            </button>
-            {maScope === "all" && (
-              <button
-                type="button"
-                onClick={() => reloadMa({ scope: "campaign" })}
-                disabled={maReloading}
-                style={{ background: "none", border: "none", color: muted, fontSize: 11, fontWeight: 600, cursor: "pointer" }}
-              >
-                voltar pra campanha
-              </button>
-            )}
+          <div style={{ marginTop: 8 }}>
+            <MaRefreshButton onClick={reloadMa} busy={maReloading} theme={{ text, modalBdr }} />
           </div>
         </div>
       )}
 
-      {!loading && maBrowseNote && (
+      {!loading && maCampaignNote && (
         <div
-          data-testid="ma-browse-all-note"
+          data-testid="ma-campaign-note"
           style={{
-            marginBottom: 12, padding: "8px 10px", borderRadius: 8,
+            marginBottom: 12, padding: "10px 12px", borderRadius: 8,
             border: `1px dashed ${SOURCE_TINTS.maxattention.bd}`,
-            background: inputBg, fontSize: 11.5, color: muted, lineHeight: 1.5,
-            display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
+            background: inputBg, fontSize: 11.5, color: text, lineHeight: 1.55,
           }}
         >
-          <span style={{ flex: "1 1 240px" }}>
-            <strong style={{ color: text }}>{maBrowseNote.title}</strong> {maBrowseNote.hint}
-          </span>
-          <button
-            type="button"
-            onClick={() => reloadMa({ scope: "campaign" })}
-            disabled={maReloading}
-            style={{ background: "none", border: `1px solid ${modalBdr}`, color: text, borderRadius: 999, padding: "4px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
-          >
-            {maReloading ? "…" : "só esta campanha"}
-          </button>
+          <div style={{ fontWeight: 700, marginBottom: 2 }}>
+            Max Attention: {maCampaignNote.title}
+          </div>
+          <div style={{ color: muted }}>{maCampaignNote.detail}</div>
+          <div style={{ color: muted, marginTop: 4 }}>{maCampaignNote.hint}</div>
+          <div style={{ marginTop: 8 }}>
+            <MaRefreshButton onClick={reloadMa} busy={maReloading} theme={{ text, modalBdr }} />
+          </div>
         </div>
       )}
 
@@ -1425,7 +1390,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
             if (!me || primaryHasData(me)) return null;
             const other = sideKey === "ctrl" ? block.exp : block.ctrl;
             return maPartnerForName(
-              maAnchorName(other, maById), sideKey, maCreatives, maUsedIds,
+              maAnchorName(other, maById), sideKey, maCampaignCreatives, maUsedIds,
             );
           };
 
@@ -1513,6 +1478,8 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
                 blockNome={block.nome}
                 typeformOptions={typeformOptionsOf(block.ctrl)}
                 maCreatives={maCreatives}
+                maCampaignCreatives={maCampaignCreatives}
+                maCampaignToken={shortToken}
                 maStatus={maStatus}
                 maEmptyNote={maEmptyNote}
                 maUsedIds={maUsedIds}
@@ -1539,6 +1506,8 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
                 blockNome={block.nome}
                 typeformOptions={typeformOptionsOf(block.exp)}
                 maCreatives={maCreatives}
+                maCampaignCreatives={maCampaignCreatives}
+                maCampaignToken={shortToken}
                 maStatus={maStatus}
                 maEmptyNote={maEmptyNote}
                 maUsedIds={maUsedIds}
@@ -2199,6 +2168,7 @@ function MaPicker({
   placeholder,
   emptyNote,          // por que a lista está vazia (quando está) — "Nenhum
                       // criativo encontrado" só vale pra busca sem resultado
+  campaignToken,      // marca as peças desta campanha (`match`) na lista
   theme,
 }) {
   const [open, setOpen] = useState(false);
@@ -2218,11 +2188,13 @@ function MaPicker({
   const wanted = sideKey === "ctrl" ? "controle" : "exposto";
   const tint = SOURCE_TINTS.maxattention;
 
-  // Rank estável: lado certo primeiro, depois nome neutro, depois o oposto.
-  // Dentro de cada faixa preserva a ordem do backend (resposta mais recente
-  // primeiro), que é a que o admin espera ver no topo.
+  // Rank estável: peças DESTA campanha primeiro (a lista é ampla, como a do
+  // Typeform — o resto está lá pra busca, não pra escolher às cegas); dentro
+  // de cada faixa, lado certo, depois nome neutro, depois o oposto. Empate
+  // preserva a ordem do backend (resposta mais recente primeiro).
   const pool = useMemo(() => {
-    const rank = (c) => (c.side === wanted ? 0 : c.side == null ? 1 : 2);
+    const rank = (c) =>
+      (c.match ? 0 : 3) + (c.side === wanted ? 0 : c.side == null ? 1 : 2);
     return (creatives || [])
       .filter(Boolean)
       .map((c, i) => ({ c, i }))
@@ -2413,7 +2385,7 @@ function MaPicker({
                         >
                           {c.creative_name || c.creative_id}
                         </span>
-                        {(c.questions?.length || otherSide) && (
+                        {(c.questions?.length || otherSide || c.match) && (
                           <span
                             style={{
                               display: "block",
@@ -2425,6 +2397,19 @@ function MaPicker({
                               marginTop: 2,
                             }}
                           >
+                            {c.match ? (
+                              <span
+                                style={{
+                                  display: "inline-block", fontSize: 9.5, fontWeight: 700,
+                                  letterSpacing: 0.4, color: tint.fg, background: tint.bg,
+                                  border: `1px solid ${tint.bd}`, borderRadius: 999,
+                                  padding: "0 6px", marginRight: 6, verticalAlign: "middle",
+                                }}
+                                title={c.match === "short_token" ? "Token da campanha declarado pela plataforma" : "Token da campanha no nome da peça"}
+                              >
+                                {campaignToken || "campanha"}
+                              </span>
+                            ) : null}
                             {otherSide ? `nome indica ${groupLabel(c.side)}` : null}
                             {otherSide && c.questions?.length ? " · " : null}
                             {c.questions?.length ? c.questions.join(" · ") : null}
@@ -2477,6 +2462,28 @@ function MaPicker({
   );
 }
 
+// Botão "Atualizar lista": fura o cache de 10 min do backend. Existe porque
+// o gesto típico depois de ler o aviso é ir na plataforma, renomear/publicar
+// a peça e voltar — e sem isso o admin ficaria olhando a lista velha.
+function MaRefreshButton({ onClick, busy, theme }) {
+  const { text, modalBdr } = theme;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      style={{
+        background: "none", border: `1px solid ${modalBdr}`, color: text,
+        borderRadius: 999, padding: "5px 12px", fontSize: 11, fontWeight: 600,
+        cursor: busy ? "wait" : "pointer", opacity: busy ? 0.6 : 1,
+      }}
+      title="Fura o cache de 10 min do backend — pra quando você acabou de renomear ou publicar a peça"
+    >
+      {busy ? "Atualizando…" : "Atualizar lista"}
+    </button>
+  );
+}
+
 // Mensagem curta pro estado do Max Attention quando não dá pra listar nada.
 function maStatusNote(status) {
   if (status === "loading") return "Carregando criativos do Max Attention…";
@@ -2494,6 +2501,7 @@ function MaPrimarySlot({
   blockNome,
   side,
   creatives,
+  campaignToken,
   status,
   emptyNote,
   maUsageMap,
@@ -2536,6 +2544,7 @@ function MaPrimarySlot({
               : "Buscar criativo do Max Attention…"
         }
         emptyNote={emptyNote}
+        campaignToken={campaignToken}
         theme={theme}
       />
 
@@ -2581,7 +2590,9 @@ function SideCard({
   side,
   blockNome,
   typeformOptions,
-  maCreatives,
+  maCreatives,          // lista AMPLA (todas as campanhas) — pros pickers
+  maCampaignCreatives,  // só as desta campanha (token no nome) — pra sugestão
+  maCampaignToken,      // token da campanha — marca as peças dela na lista
   maStatus,
   maEmptyNote,       // explicação da lista vazia (string) — vai pro picker
   maUsedIds,
@@ -2742,6 +2753,7 @@ function SideCard({
           blockNome={blockNome}
           side={side}
           creatives={maCreatives}
+          campaignToken={maCampaignToken}
           status={maStatus}
           emptyNote={maEmptyNote}
           maUsageMap={maUsageMap}
@@ -2816,6 +2828,8 @@ function SideCard({
         typeformOptions={typeformOptions}
         extras={side.extras || []}
         creatives={maCreatives}
+        campaignCreatives={maCampaignCreatives}
+        campaignToken={maCampaignToken}
         status={maStatus}
         usedIds={maUsedIds}
         onAdd={(creative, question) =>
@@ -2899,7 +2913,9 @@ function ExtraSourceSlot({
   blockNome,
   typeformOptions,
   extras,
-  creatives,
+  creatives,           // lista ampla — pro picker
+  campaignCreatives,   // só desta campanha — pra sugestão
+  campaignToken,
   status,
   usedIds,
   onAdd,
@@ -2910,9 +2926,14 @@ function ExtraSourceSlot({
   const { text, muted, modalBdr, inputBg } = theme;
   const [picking, setPicking] = useState(false);
 
+  // Sugestão só entre peças DESTA campanha (ver `maCampaignCreatives`).
+  const ownCreatives = useMemo(
+    () => campaignCreatives || (creatives || []).filter((c) => c?.match),
+    [campaignCreatives, creatives],
+  );
   const candidates = useMemo(
-    () => maCandidatesForSide(creatives, sideKey).filter((c) => !usedIds.has(c.creative_id)),
-    [creatives, sideKey, usedIds],
+    () => maCandidatesForSide(ownCreatives, sideKey).filter((c) => !usedIds.has(c.creative_id)),
+    [ownCreatives, sideKey, usedIds],
   );
   // O picker vê TODOS os criativos livres, não só os do lado — quem busca
   // pelo nome sabe o que quer, e o nome nem sempre declara o lado. A lista
@@ -2922,14 +2943,15 @@ function ExtraSourceSlot({
     [creatives, usedIds],
   );
   const suggestion = useMemo(
-    () => suggestMaForSide(creatives, sideKey, blockNome, usedIds, typeformOptions),
-    [creatives, sideKey, blockNome, usedIds, typeformOptions],
+    () => suggestMaForSide(ownCreatives, sideKey, blockNome, usedIds, typeformOptions),
+    [ownCreatives, sideKey, blockNome, usedIds, typeformOptions],
   );
 
   const tint = SOURCE_TINTS.maxattention;
   const hasExtras = extras.length > 0;
   if (status !== "ready" && !hasExtras) return null;
-  if (!hasExtras && candidates.length === 0) return null;
+  // Sem NADA pra oferecer (nem desta campanha, nem das outras), some.
+  if (!hasExtras && pickable.length === 0) return null;
 
   const byId = new Map((creatives || []).map((c) => [c.creative_id, c]));
 
@@ -3034,6 +3056,7 @@ function ExtraSourceSlot({
           onSelect={(c) => { onAdd(c, matchMaQuestion(c, blockNome)); setPicking(false); }}
           conflictsOf={(id) => maConflictsFor(id, blockIdx, sideKey, maUsageMap)}
           placeholder={`+ Somar base do Max Attention a ${label}…`}
+          campaignToken={campaignToken}
           theme={theme}
         />
       )}

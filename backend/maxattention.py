@@ -395,18 +395,6 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
         else "CAST([] AS ARRAY<STRING>)"
     )
 
-    where = ["responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)"]
-    params = [bigquery.ScalarQueryParameter("days", "INT64", days)]
-
-    def _payload(creatives, diagnostics=None):
-        return {
-            "creatives": creatives,
-            "scope": "campaign" if token else "all",
-            "short_token": token,
-            "days": days,
-            "diagnostics": diagnostics,
-        }
-
     # Filtrar por creative_id é o que torna esta query viável.
     #
     # `creative_events_raw` é clusterizada por (creative_id, event_type). A
@@ -417,36 +405,70 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
     # A campanha é resolvida antes, na `creatives_dim`, que tem centenas de
     # linhas e custa alguns KB. Com os ids em mãos, o filtro cai na chave
     # LÍDER do cluster e o scan encolhe pra fração do que era.
-    dim_matched = []
-    if token:
-        dim_matched = _dim_creatives_for_token(token)
-        if not dim_matched:
-            # Nenhum criativo desta campanha na dimensão: devolver [] é a
-            # resposta certa, e evita varrer o lake pra descobrir o mesmo.
-            # Mas dizemos POR QUÊ — dimensão vazia é uma coisa (cron da
-            # plataforma), nome fora da convenção é outra (quem criou a peça).
-            stats = _dim_stats()
-            reason = "dim_empty" if stats["rows"] == 0 else "no_dim_match"
-            return _payload([], {
-                "reason": reason,
-                "dim_rows": stats["rows"],
-                "dim_synced_at": stats["synced_at"],
-                "dim_matched": 0,
-                "dim_names": [],
-            })
-        where.append("creative_id IN UNNEST(@ids)")
-        params.append(bigquery.ArrayQueryParameter(
-            "ids", "STRING", [c["creative_id"] for c in dim_matched],
-        ))
+    # A lista é SEMPRE ampla — como a do Typeform, que mostra a pasta inteira
+    # e deixa o admin buscar. A campanha entra como ORDEM e MARCA, não como
+    # filtro: peças com o token no nome vêm primeiro (e com janela longa, 180
+    # dias, porque campanha vive semanas); o resto da base entra com janela
+    # curta (30 dias), pra peça nomeada fora da convenção continuar
+    # alcançável pela busca. Antes a campanha era filtro, e campanha sem
+    # peça com o token no nome não tinha lista nenhuma — o admin via
+    # "Nenhum criativo encontrado" e não tinha pra onde ir.
+    #
+    # Custo: o ramo da campanha poda pela chave LÍDER do cluster
+    # (creative_id) e é barato; o ramo amplo não tem como podar por criativo
+    # e é a janela curta que o segura. É admin-only e cacheado 10 min.
+    # `creative_events_raw` é clusterizada por (creative_id, event_type); a
+    # primeira versão desta listagem filtrava 180 dias só por event_type e
+    # custava 34 GiB por abertura de modal — a janela de 30 dias é a
+    # lembrança disso.
+    recent_days = min(days, UNSCOPED_LOOKBACK_DAYS)
+    dim_matched = _dim_creatives_for_token(token) if token else []
+    ids = [c["creative_id"] for c in dim_matched]
+    id_set = set(ids)
+
+    branches = []
+    params = [bigquery.ScalarQueryParameter("recent_days", "INT64", recent_days)]
+    if ids:
+        params.append(bigquery.ScalarQueryParameter("days", "INT64", days))
+        params.append(bigquery.ArrayQueryParameter("ids", "STRING", ids))
+        branches.append(f"""
+          SELECT * FROM `{view}`
+          WHERE creative_id IN UNNEST(@ids)
+            AND responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
+        """)
+        # NOT IN evita contar a peça da campanha duas vezes (ela já veio do
+        # ramo de cima, com a janela longa).
+        branches.append(f"""
+          SELECT * FROM `{view}`
+          WHERE creative_id NOT IN UNNEST(@ids)
+            AND responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @recent_days DAY)
+        """)
+        order = "ORDER BY (creative_id IN UNNEST(@ids)) DESC, last_at DESC"
     else:
-        # Sem campanha não há como podar por criativo. Em vez de varrer a
-        # janela inteira, encolhe o período: é o caminho manual do modal
-        # ("buscar em todos os criativos recentes", quando a campanha não
-        # acha nada pelo nome) e serve pra "o que respondeu recentemente".
-        days = min(days, UNSCOPED_LOOKBACK_DAYS)
-        params[0] = bigquery.ScalarQueryParameter("days", "INT64", days)
+        branches.append(f"""
+          SELECT * FROM `{view}`
+          WHERE responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @recent_days DAY)
+        """)
+        order = "ORDER BY last_at DESC"
+
+    def _payload(creatives, diagnostics=None):
+        return {
+            "creatives": creatives,
+            "scope": "campaign" if token else "all",
+            "short_token": token,
+            # Janela do ramo da campanha (peças com o token no nome).
+            "days": days if token and ids else recent_days,
+            # Janela do ramo amplo (todas as campanhas), sempre presente.
+            "recent_days": recent_days,
+            "includes_recent": True,
+            "campaign_count": sum(1 for c in creatives if c["creative_id"] in id_set),
+            "diagnostics": diagnostics,
+        }
 
     sql = f"""
+        WITH src AS (
+          {' UNION ALL '.join(branches)}
+        )
         SELECT
           creative_id,
           {name_expr}                     AS creative_name,
@@ -467,10 +489,9 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
           {weight}                        AS responses,
           MIN(responded_at)               AS first_at,
           MAX(responded_at)               AS last_at
-        FROM `{view}`
-        WHERE {' AND '.join(where)}
+        FROM src
         GROUP BY creative_id
-        ORDER BY last_at DESC
+        {order}
         LIMIT {limit}
     """
 
@@ -493,28 +514,44 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
             "last_at": r["last_at"].isoformat() if r["last_at"] else None,
             "side": detect_side(name),
             # De onde veio a amarração com a campanha — a UI mostra a
-            # diferença entre "a plataforma disse" e "o nome sugere".
+            # diferença entre "a plataforma disse" e "o nome sugere". None =
+            # peça de outra campanha (ou sem token no nome), que está na
+            # lista pra ser achada pela busca, não pra ser sugerida.
             "match": (
                 "short_token"
                 if token and row_token and row_token.strip().upper() == token.upper()
-                else "name" if token and token_in_name(name, token) else None
+                else "name"
+                if token and (r["creative_id"] in id_set or token_in_name(name, token))
+                else None
             ),
         })
 
-    if token and not out:
-        # A dimensão CONHECE a campanha (peças com o token no nome existem),
-        # mas nenhuma registrou `survey_answer` na janela. Isso não é defeito
-        # da integração nem de nome: é coleta — a peça não rodou, não é de
-        # survey, ou o evento não está chegando no lake.
+    if not token:
+        return _payload(out)
+
+    # Diagnóstico da CAMPANHA, mesmo com a lista ampla cheia: o admin precisa
+    # saber por que nenhuma peça foi marcada como sendo desta campanha —
+    # dimensão vazia é uma coisa (cron da plataforma), nome fora da convenção
+    # é outra (quem criou a peça), peça sem resposta é uma terceira (coleta).
+    if not dim_matched:
+        stats = _dim_stats()
+        reason = "dim_empty" if stats["rows"] == 0 else "no_dim_match"
+        return _payload(out, {
+            "reason": reason,
+            "dim_rows": stats["rows"],
+            "dim_synced_at": stats["synced_at"],
+            "dim_matched": 0,
+            "dim_names": [],
+        })
+    if not any(c["creative_id"] in id_set for c in out):
         names = sorted({c["creative_name"] for c in dim_matched if c["creative_name"]})
-        return _payload([], {
+        return _payload(out, {
             "reason": "no_responses",
             "dim_rows": None,
             "dim_synced_at": None,
             "dim_matched": len(dim_matched),
             "dim_names": names[:MAX_DIAG_NAMES],
         })
-
     return _payload(out)
 
 

@@ -90,7 +90,8 @@ if [ -n "$TOKEN" ]; then
     echo "  modal lista zero criativos pra $TOK, mesmo com a view respondendo."
     echo "  → Renomeie a peça na plataforma pra 'ID-${TOK}_..._CONTROLE' / '_EXPOSTO'"
     echo "    (a dimensão recarrega ~1×/h; no modal, 'Atualizar lista' fura o cache),"
-    echo "  → ou, no modal, use 'Buscar em todos os criativos recentes' e vincule pelo nome."
+    echo "  → ou, no modal, busque a peça pelo nome (a lista mostra todas as campanhas)"
+    echo "    e vincule manualmente. Se ela não estiver nem lá, a peça não foi criada."
     echo
     echo "  Peças com resposta nos últimos 30 dias, pra achar a certa a olho:"
     q "SELECT COALESCE(creative_name, CONCAT('(sem nome) ', creative_id)) AS criativo,

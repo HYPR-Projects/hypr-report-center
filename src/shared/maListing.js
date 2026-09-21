@@ -1,15 +1,18 @@
 // Textos e decisões pro estado da LISTA de criativos do Max Attention no
 // modal de survey — fora do componente pra serem testáveis em Node puro.
 //
-// O problema que isto resolve: a listagem por campanha pode sair vazia por
-// três motivos com três responsáveis diferentes, e o admin via só "Nenhum
-// criativo encontrado" pra todos eles (caso real: PPV8JF, set/2026). O
-// backend passou a devolver `diagnostics` junto com a lista; aqui a razão
-// vira uma frase que diz o que aconteceu e o que fazer, e decide se vale
-// oferecer a busca ampla ("todos os criativos recentes").
+// A lista é AMPLA, como a do Typeform: todas as peças com resposta de survey
+// recente, com as da campanha (token no nome) no topo e marcadas. O que
+// isto resolve é o caso em que NENHUMA peça foi marcada como da campanha:
+// pode ser dimensão que não carregou, nome fora da convenção ou peça sem
+// resposta — três causas com três responsáveis, e o admin via só "Nenhum
+// criativo encontrado" pra todas (caso real: PPV8JF, set/2026). O backend
+// devolve `diagnostics` com a razão; aqui ela vira uma frase que diz o que
+// aconteceu e o que fazer.
 //
 // Contrato de entrada (`listMaxAttentionCreatives`):
-//   { creatives, scope: "campaign"|"all", short_token, days,
+//   { creatives, scope: "campaign"|"all", short_token, days, recent_days,
+//     includes_recent, campaign_count,
 //     diagnostics: null | { reason, dim_rows, dim_synced_at, dim_matched, dim_names } }
 
 export const MA_EMPTY_REASONS = Object.freeze({
@@ -32,38 +35,10 @@ export function formatSyncedAt(iso) {
   }
 }
 
-/**
- * Explica uma lista vazia. Devolve null quando a lista NÃO está vazia.
- *
- *   { title, detail, hint, canBrowseAll, reason }
- *
- * `canBrowseAll` diz se oferecer "buscar em todos os criativos recentes":
- * faz sentido quando a peça pode existir com outro nome (nome fora da
- * convenção, dimensão atrasada) e não faz quando já estamos olhando tudo.
- */
-export function describeMaEmptyList(payload, { shortToken = "" } = {}) {
-  const creatives = payload?.creatives || [];
-  if (creatives.length > 0) return null;
-
-  const scope = payload?.scope || (shortToken ? "campaign" : "all");
-  const days = Number(payload?.days) || null;
-  const janela = days ? `nos últimos ${days} dias` : "na janela de listagem";
-  const token = shortToken || payload?.short_token || "";
-  const diag = payload?.diagnostics || null;
-
-  if (scope === "all") {
-    return {
-      reason: "all_empty",
-      title: `Nenhum criativo do Max Attention registrou resposta de survey ${janela}.`,
-      detail:
-        "Isso não depende da campanha: é a coleta. Ou nenhuma peça de Tap to Choose com " +
-        "etapa de survey está veiculando, ou o evento survey_answer não está chegando ao lake.",
-      hint: "Confira a coleta na plataforma antes de mexer no report.",
-      canBrowseAll: false,
-    };
-  }
-
+// A razão do diagnóstico em frases (título / detalhe / o que fazer).
+function explainDiagnostics(diag, { token, days }) {
   const tokenTxt = token ? `«${token}»` : "desta campanha";
+  const janela = days ? `nos últimos ${days} dias` : "na janela de listagem";
 
   if (diag?.reason === MA_EMPTY_REASONS.DIM_EMPTY) {
     return {
@@ -72,8 +47,7 @@ export function describeMaEmptyList(payload, { shortToken = "" } = {}) {
       detail:
         `Sem ela não há como saber quais peças são ${tokenTxt}. Quem a popula é o cron ` +
         "rollup-creative-events do o2o-platform, cerca de uma vez por hora.",
-      hint: "Tente de novo em alguns minutos — ou busque em todos os criativos recentes e vincule pelo nome.",
-      canBrowseAll: true,
+      hint: "Tente 'Atualizar lista' em alguns minutos — ou busque a peça pelo nome e vincule manualmente.",
     };
   }
 
@@ -88,12 +62,13 @@ export function describeMaEmptyList(payload, { shortToken = "" } = {}) {
         : "Nenhum criativo conhecido leva esse token.";
     return {
       reason: diag.reason,
-      title: `Nenhum criativo com ${tokenTxt} no nome.`,
+      title: `Nenhuma peça com ${tokenTxt} no nome.`,
       detail:
         `A campanha é reconhecida pela convenção ID-${token || "TOKEN"}_..._CONTROLE / _EXPOSTO. ${estado} ` +
-        "Ou o nome saiu da convenção, ou a peça foi criada depois da última carga.",
-      hint: "Busque em todos os criativos recentes e vincule pelo nome — ou renomeie a peça na plataforma pra que o vínculo seja automático.",
-      canBrowseAll: true,
+        "Ou o nome saiu da convenção, ou a peça foi criada depois da última carga, ou ainda não foi criada.",
+      hint:
+        "Busque a peça pelo nome na lista abaixo e vincule manualmente — ou renomeie na plataforma " +
+        "pra que o vínculo (e o 'Conectar automaticamente') volte a ser automático.",
     };
   }
 
@@ -103,41 +78,86 @@ export function describeMaEmptyList(payload, { shortToken = "" } = {}) {
     return {
       reason: diag.reason,
       title:
-        `${n} criativo${n === 1 ? "" : "s"} ${tokenTxt} na plataforma, ` +
-        `mas nenhum registrou resposta de survey ${janela}.`,
+        `${n} peça${n === 1 ? "" : "s"} ${tokenTxt} na plataforma, ` +
+        `mas nenhuma registrou resposta de survey ${janela}.`,
       detail: names.length
         ? `Peças encontradas: ${names.join(" · ")}.`
         : "A plataforma conhece as peças, mas o lake não tem survey_answer delas.",
       hint:
         "Confira se a peça é Tap to Choose com etapa de survey e se está veiculando. " +
-        "Se a resposta está em outra peça, busque em todos os criativos recentes.",
-      canBrowseAll: true,
+        "Sem resposta, não há o que vincular ainda.",
     };
   }
 
-  // Backend antigo (sem diagnostics) ou razão desconhecida: ainda assim não
-  // deixamos o admin sem saída.
   return {
     reason: diag?.reason || "unknown",
-    title: `Nenhum criativo ${tokenTxt} com resposta de survey ${janela}.`,
+    title: `Nenhuma peça ${tokenTxt} com resposta de survey ${janela}.`,
     detail: "O backend não disse o motivo — pode estar numa versão anterior a este diagnóstico.",
-    hint: "Busque em todos os criativos recentes e vincule pelo nome.",
-    canBrowseAll: true,
+    hint: "Busque a peça pelo nome na lista e vincule manualmente.",
   };
 }
 
 /**
- * Aviso pra quando a lista veio da busca AMPLA (sem campanha): o admin está
- * vendo peças de outras campanhas e precisa conferir o nome antes de vincular.
+ * Explica uma lista VAZIA (nenhuma peça, de campanha nenhuma). Devolve null
+ * quando há qualquer criativo na lista.
+ *
+ *   { title, detail, hint, reason }
  */
-export function describeMaBrowseAll(payload, { shortToken = "" } = {}) {
-  if ((payload?.scope || "campaign") !== "all") return null;
+export function describeMaEmptyList(payload, { shortToken = "" } = {}) {
+  const creatives = payload?.creatives || [];
+  if (creatives.length > 0) return null;
+
+  const token = shortToken || payload?.short_token || "";
+  const recentDays = Number(payload?.recent_days) || null;
   const days = Number(payload?.days) || null;
-  const n = (payload?.creatives || []).length;
-  const janela = days ? `dos últimos ${days} dias` : "recentes";
+  const broad = payload?.includes_recent === true || (payload?.scope || (token ? "campaign" : "all")) === "all";
+
+  if (broad) {
+    const janela = recentDays ? `nos últimos ${recentDays} dias` : days ? `nos últimos ${days} dias` : "na janela de listagem";
+    const camp = payload?.diagnostics ? explainDiagnostics(payload.diagnostics, { token, days }) : null;
+    return {
+      reason: "all_empty",
+      title: `Nenhum criativo do Max Attention registrou resposta de survey ${janela}, em campanha nenhuma.`,
+      detail:
+        "Isso não depende da campanha: é a coleta. Ou nenhuma peça de Tap to Choose com " +
+        "etapa de survey está veiculando, ou o evento survey_answer não está chegando ao lake." +
+        (camp ? ` Sobre ${token ? `«${token}»` : "esta campanha"}: ${camp.title}` : ""),
+      hint: "Confira a coleta na plataforma antes de mexer no report.",
+    };
+  }
+
+  // Backend antigo: lista era só da campanha.
+  return explainDiagnostics(payload?.diagnostics, { token, days });
+}
+
+/**
+ * Aviso quando a lista TEM peças, mas nenhuma foi marcada como desta
+ * campanha. Devolve null quando a lista está vazia (é caso do
+ * `describeMaEmptyList`), quando não há diagnóstico, ou quando há peça da
+ * campanha na lista.
+ *
+ *   { title, detail, hint, reason, shown }   shown = quantas peças estão na lista
+ */
+export function describeMaCampaignNote(payload, { shortToken = "" } = {}) {
+  const creatives = payload?.creatives || [];
+  if (creatives.length === 0) return null;
+  const diag = payload?.diagnostics;
+  if (!diag) return null;
+  const campaignCount = Number(payload?.campaign_count);
+  if (Number.isFinite(campaignCount) && campaignCount > 0) return null;
+  if (creatives.some((c) => c?.match)) return null;
+
+  const token = shortToken || payload?.short_token || "";
+  const days = Number(payload?.days) || null;
+  const recentDays = Number(payload?.recent_days) || null;
+  const base = explainDiagnostics(diag, { token, days });
+  const n = creatives.length;
   return {
-    title: `Mostrando ${n.toLocaleString("pt-BR")} criativo${n === 1 ? "" : "s"} com resposta ${janela}` +
-      (shortToken ? `, de todas as campanhas — não só de «${shortToken}».` : "."),
-    hint: "Confira o nome antes de vincular: aqui a campanha não é filtrada.",
+    ...base,
+    shown: n,
+    detail:
+      `${base.detail} A lista abaixo mostra ${n.toLocaleString("pt-BR")} peça${n === 1 ? "" : "s"} com resposta` +
+      (recentDays ? ` nos últimos ${recentDays} dias` : "") +
+      ", de todas as campanhas — confira o nome antes de vincular.",
   };
 }
