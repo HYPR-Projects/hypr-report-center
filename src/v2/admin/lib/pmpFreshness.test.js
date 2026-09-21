@@ -32,6 +32,24 @@ function pubmatic(overrides = {}) {
   };
 }
 
+// Fonte Xandr saudável. Ganhou frescor medido em 21/09/2026 — até então o
+// conector gravava NULL em api_last_day/lag_days e o painel, para ela, só
+// conseguia afirmar que o job tinha rodado.
+function xandr(overrides = {}) {
+  return {
+    key: "xandr",
+    lastRunAt: brt(21, 4).toISOString(),
+    lastOkAt: brt(21, 4).toISOString(),
+    lastRunStatus: "ok",
+    hasFreshness: true,
+    expectsDelivery: true,
+    apiLastDay: "2026-09-20",
+    lagDays: 0,
+    latestDeliveryDay: "2026-09-20",
+    ...overrides,
+  };
+}
+
 test("brHour devolve a hora de Brasília, não UTC", () => {
   assert.equal(brHour(brt(7, 8, 22)), 8);
   assert.equal(brHour(brt(7, 23, 59)), 23);
@@ -180,6 +198,54 @@ test("três sondagens seguidas falhando (última OK há 3h+) → vermelho 'Sync 
   assert.equal(s.tone, "error");
   assert.match(s.summary, /Sync falhando há 0 dias/);
   assert.equal(s.transientError, undefined);
+});
+
+// ─── Erro de CREDENCIAL ≠ erro de infra ──────────────────────────────────────
+// O 401 da Xandr de 18–21/09/2026 ("Your password has expired and must be
+// reset"): 3 dias exibindo "Sync falhando há 3 dias", frase que não diz de quem
+// é a bola nem o que fazer — enquanto a entrega das lines sumia do hub.
+test("senha expirada vira 'credencial recusada' com o procedimento, não 'Sync falhando'", () => {
+  const s = deriveStatus(xandr({
+    lastRunStatus: "error",
+    lastRunAt: brt(21, 4).toISOString(),
+    lastOkAt: brt(18, 4).toISOString(),
+    lastError: "HTTP 401 POST /auth: Your password has expired and must be reset — Resetar a senha…",
+  }), brt(21, 9));
+  assert.equal(s.tone, "error");
+  assert.equal(s.credentialIssue, true);
+  assert.match(s.summary, /Credencial recusada pela fonte há 3 dias/);
+  assert.match(s.summary, /resetar a senha e atualizar o secret/);
+});
+
+test("credencial recusada NÃO é amarelada pela régua de transitório", () => {
+  // Sondagem anterior OK há 30 min é o que amarela um timeout. Senha expirada
+  // não passa sozinha no próximo run: vermelho desde a primeira falha.
+  const s = deriveStatus(pubmatic({
+    lastRunStatus: "error",
+    lastRunAt: brt(10, 11).toISOString(),
+    lastOkAt: brt(10, 10, 31).toISOString(),
+    lastError: "HTTP 401 /developer/token: AUTH_FAILED",
+  }), brt(10, 11, 5));
+  assert.equal(s.tone, "error");
+  assert.equal(s.credentialIssue, true);
+  assert.equal(s.transientError, undefined);
+});
+
+test("timeout e 5xx continuam na régua normal (não viram 'credencial')", () => {
+  for (const err of ["The read operation timed out", "HTTP 503 POST /report: unavailable"]) {
+    const s = deriveStatus(pubmatic({
+      lastRunStatus: "error", lastOkAt: brt(4, 8).toISOString(), lastError: err,
+    }), brt(7, 9));
+    assert.equal(s.credentialIssue, undefined, err);
+    assert.match(s.summary, /Sync falhando/);
+  }
+});
+
+test("o texto do atraso nomeia a fonte certa (era 'PubMatic' cravado na frase)", () => {
+  const s = deriveStatus(xandr({
+    apiLastDay: "2026-09-17", lagDays: 3, latestDeliveryDay: "2026-09-17",
+  }), brt(21, 9));
+  assert.match(s.summary, /a API da Xandr só tem dado até 17\/09 \(3 dias atrás\)/);
 });
 
 test("'skipped' (sem credencial) é vermelho, não silêncio", () => {

@@ -401,7 +401,12 @@ if [ -n "$PMP_SCHEDULER_SECRET" ] && [ -n "$XANDR_CURATE_USER" ]; then
 
   SCHEDULER_JOB="pmp-xandr-daily-sync"
   SCHEDULER_URI="https://${REGION}-site-hypr.cloudfunctions.net/${FUNCTION_NAME}?action=pmp_sync_v2"
-  SCHEDULER_BODY='{"report_interval":"last_7_days"}'
+  # Body VAZIO de propósito: a janela fica em XANDR_REPORT_INTERVAL (main.py),
+  # perto do comentário que explica por que ela é o que é. Com a janela fixada
+  # aqui, alargá-la no código não mudava nada — o cron continuava mandando os
+  # 7 dias antigos por cima, e a janela é a margem de recuperação depois de um
+  # cron parado (o 401 de senha expirada de 18–21/09/2026 queimou 3 dias dela).
+  SCHEDULER_BODY='{}'
   SCHEDULER_SCHEDULE="0 4 * * *"
   SCHEDULER_TZ="America/Sao_Paulo"
 

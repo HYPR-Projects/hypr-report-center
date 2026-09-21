@@ -13,6 +13,7 @@
 //                        das lines como fallback
 //
 // Régua do JOB (hora-local America/Sao_Paulo), aplicada por fonte:
+//   • Erro de CREDENCIAL (401/senha expirada)        → vermelho, com o que fazer
 //   • Último run com status de erro                  → vermelho (mostra o erro)
 //   • Último run 'skipped' (sem credencial)          → vermelho (não rodou)
 //   • Run bem-sucedido com data BR == hoje           → verde (ok)
@@ -55,6 +56,43 @@ export const CLOSED_ZERO_NEUTRAL_DAYS = 3;
 // 3h = três sondagens seguidas falhando antes de virar "Sync falhando".
 export const TRANSIENT_ERROR_MAX_HOURS = 3;
 export const SOURCE_CLOSE_WINDOW_LABEL = { pubmatic: "entre 08h e 10h" };
+
+// Nome da fonte no texto do resumo. Era "PubMatic" cravado na frase, o que
+// funcionava enquanto ela era a única que media frescor; com a Xandr medindo
+// também, a frase precisa dizer de qual API está falando.
+export const SOURCE_API_LABEL = { pubmatic: "PubMatic", xandr: "Xandr" };
+
+export function sourceApiLabel(key) {
+  return SOURCE_API_LABEL[key] || "fonte";
+}
+
+// Assinaturas de falha de CREDENCIAL no erro que o ledger guardou. Casadas em
+// minúsculas; a lista cobre o que Xandr e PubMatic devolvem hoje.
+const CREDENTIAL_ERROR_MARKERS = [
+  "password has expired",
+  "must be reset",
+  "invalid username",
+  "invalid password",
+  "auth_failed",
+  "authentication failed",
+  "account is locked",
+  "no_auth",
+  "401",
+  "403",
+];
+
+// A falha é da nossa credencial (≠ fonte fora do ar / timeout / 5xx)?
+//
+// Existe porque os dois estados liam igual no painel e não se parecem em nada.
+// "Sync falhando há 3 dias" com um timeout no meio é coisa que passa sozinha
+// no próximo run; com a senha expirada ninguém conserta sem trocar o secret, e
+// o painel não dizia isso — em 18–21/09/2026 a Xandr ficou 3 dias exibindo a
+// mesma frase enquanto a entrega das lines sumia do hub e da planilha.
+export function isCredentialError(error) {
+  if (!error) return false;
+  const low = String(error).toLowerCase();
+  return CREDENTIAL_ERROR_MARKERS.some((m) => low.includes(m));
+}
 
 export function brDateString(iso, now) {
   const d = iso ? new Date(iso) : (now || new Date());
@@ -167,6 +205,21 @@ export function deriveStatus(src, now = new Date()) {
   const { lastRunAt, lastRunStatus, lastOkAt } = src;
 
   if (lastRunStatus === "error") {
+    // Credencial vem ANTES da régua de transitório: senha expirada não é
+    // sondagem que estourou, e amarelar "porque a anterior rodou ok há 2h"
+    // seria esconder o único estado deste painel em que a ação é nossa e
+    // imediata. Verde nunca; vermelho desde a primeira falha.
+    if (isCredentialError(src.lastError)) {
+      const behind = lastOkAt ? daysBetweenBr(lastOkAt, now) : null;
+      const since = behind == null
+        ? " — nunca completou"
+        : behind === 0 ? "" : ` há ${behind} ${behind === 1 ? "dia" : "dias"}`;
+      return {
+        tone: "error",
+        summary: `Credencial recusada pela fonte${since} — resetar a senha e atualizar o secret`,
+        credentialIssue: true,
+      };
+    }
     // Uma sondagem horária que falhou com a anterior OK há menos de
     // TRANSIENT_ERROR_MAX_HOURS não é "sync falhando": a base é a mesma de
     // 30 min atrás e a próxima sondagem vem em ≤1h. Em 08–10/09/2026 foram 3
@@ -253,8 +306,8 @@ export function deriveStatus(src, now = new Date()) {
       return {
         tone: many ? "neutral" : "ok",
         summary: many
-          ? `Sync ok · a PubMatic reporta entrega zero há ${lag.days} dias (${list}) — confirmar com o comprador se a line pausou`
-          : `Sync ok · dado em dia: a PubMatic reporta entrega zero em ${list}`,
+          ? `Sync ok · a ${sourceApiLabel(src.key)} reporta entrega zero há ${lag.days} dias (${list}) — confirmar com o comprador se a line pausou`
+          : `Sync ok · dado em dia: a ${sourceApiLabel(src.key)} reporta entrega zero em ${list}`,
         closedZero: true,
         zeroDays,
       };
@@ -263,16 +316,20 @@ export function deriveStatus(src, now = new Date()) {
     // quem é o atraso. "O dado para em X" lia como "a base não atualizou" —
     // e em 03/09 a base estava idêntica à API (auditoria limpa): era a
     // PubMatic que ainda não tinha reportado 01–02/09.
-    const who = lag.measured ? "a API da PubMatic só tem dado até" : "o dado para em";
+    const who = lag.measured
+      ? `a API da ${sourceApiLabel(src.key)} só tem dado até`
+      : "o dado para em";
     const tail = lag.days === DATA_LAG_WARN_DAYS ? "1 dia atrás" : `${lag.days} dias atrás`;
     return {
       tone: lag.days === DATA_LAG_WARN_DAYS ? "warn" : "error",
       summary: `Sync ok, mas ${who} ${d} (${tail})`,
     };
   }
-  // "dado em dia" só quando o atraso foi MEDIDO e deu zero. Sem medida — fonte
-  // que não reporta frescor (Xandr), ou ledger ainda sem as colunas — o painel
-  // afirma só o que sabe: que o job rodou.
+  // "dado em dia" só quando o atraso foi MEDIDO e deu zero. Sem medida — ledger
+  // ainda sem as colunas, ou run antigo gravado antes de a fonte passar a
+  // medir — o painel afirma só o que sabe: que o job rodou. Até 21/09/2026 a
+  // Xandr caía sempre aqui (nunca mandava frescor), então para ela este painel
+  // nunca disse se o dado tinha chegado.
   return lag
     ? { tone: "ok", summary: "Sync rodou hoje · dado em dia" }
     : { tone: "ok", summary: "Sync rodou hoje" };

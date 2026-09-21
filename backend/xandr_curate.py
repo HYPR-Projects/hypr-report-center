@@ -44,6 +44,7 @@ import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 
+import bq_client
 import pmp_deals
 
 
@@ -51,6 +52,25 @@ logger = logging.getLogger(__name__)
 
 
 BASE_URL = "https://api.appnexus.com"
+
+# BRT = UTC-3, fixo (o Brasil abandonou o horário de verão em 2019). Offset
+# literal em vez de ZoneInfo pelo mesmo motivo do pubmatic_curate: `zoneinfo`
+# depende do tzdata do sistema, que container slim não garante.
+BRT = timezone(timedelta(hours=-3))
+
+
+def today_brt() -> date:
+    """Data de hoje em horário de Brasília.
+
+    Era `date.today()` no corte D-1 do parser — que numa Cloud Function é UTC.
+    Entre 21h e 24h BRT o UTC já é amanhã, então o dia CORRENTE brasileiro
+    passava pelo filtro e entrava na base como dia fechado, com número parcial.
+    Mesmo bug que o PubMatic já tinha corrigido (ver `pubmatic_curate.today_brt`);
+    aqui ele sobreviveu porque o cron roda às 04h — mas o botão "Sincronizar
+    agora" e qualquer re-sync noturno caem exatamente na janela.
+    """
+    return datetime.now(BRT).date()
+
 
 # Colunas v1 (deal-level) — legado, mantidas pra retrocompat.
 REPORT_COLUMNS = [
@@ -112,6 +132,45 @@ _TOKEN_TTL_MS = (2 * 60 * 60 - 5 * 60) * 1000
 class XandrError(RuntimeError):
     """Erros específicos da integração Xandr (auth, report, download)."""
     pass
+
+
+class XandrAuthError(XandrError):
+    """Falha de CREDENCIAL no /auth — senha expirada, revogada ou errada.
+
+    Subclasse própria porque o conserto não é o mesmo. Um 5xx da API ou um
+    timeout se resolve sozinho no próximo run; uma senha expirada não se
+    resolve nunca sem alguém trocar o secret, e cada dia parado é entrega que
+    some do hub (e da planilha de faturamento) em silêncio.
+
+    O 401 de 18/09/2026 ("Your password has expired and must be reset") ficou
+    3 dias no painel como "Sync falhando há 3 dias" — verdadeiro e inútil: não
+    dizia que a bola estava com a gente nem o que fazer. A Xandr expira senha
+    de usuário de API a cada 90 dias, então isto volta; o que muda é o painel
+    já dizer qual é o procedimento.
+    """
+    pass
+
+
+# Trechos que a Xandr devolve no /auth quando o problema é a credencial (e não
+# a API). Casados em minúsculas contra o corpo do erro.
+_AUTH_CREDENTIAL_MARKERS = (
+    "password has expired",
+    "must be reset",
+    "invalid username",
+    "invalid password",
+    "no_auth",
+    "authentication failed",
+    "account is locked",
+)
+
+# Procedimento, no próprio erro. Vai pro ledger e daí pro popover do /admin/pmp
+# — o operador que abre o painel às 9h não precisa achar este arquivo.
+# Cabe nos 240 chars que o popover mostra somado ao erro cru da API — texto
+# mais longo que isso é cortado justamente na parte que diz o que fazer.
+AUTH_REMEDIATION = (
+    "Resetar a senha do usuário de API no console da Xandr (expira a cada 90 "
+    "dias), atualizar XANDR_CURATE_PASS no Secret Manager e redeployar."
+)
 
 
 def _env(name: str) -> str:
@@ -188,7 +247,19 @@ def get_token(force_refresh: bool = False) -> str:
 
     user = _env("XANDR_CURATE_USER")
     password = _env("XANDR_CURATE_PASS")
-    payload = _http("POST", "/auth", body={"auth": {"username": user, "password": password}})
+    try:
+        payload = _http("POST", "/auth",
+                        body={"auth": {"username": user, "password": password}})
+    except XandrError as e:
+        # 401/403 no /auth, ou qualquer erro cujo corpo cite a credencial, é
+        # problema NOSSO e não passa sozinho. Re-levanta como XandrAuthError
+        # com o procedimento colado — é o que o painel mostra.
+        msg = str(e)
+        low = msg.lower()
+        if any(m in low for m in _AUTH_CREDENTIAL_MARKERS) or \
+                low.startswith(("http 401 post /auth", "http 403 post /auth")):
+            raise XandrAuthError(f"{msg} — {AUTH_REMEDIATION}") from e
+        raise
     token = (payload.get("response") or {}).get("token")
     if not token:
         raise XandrError(f"Auth bem-sucedido mas sem token na resposta: {payload}")
@@ -399,9 +470,21 @@ def sync(start_date: Optional[date] = None,
 
 from google.cloud import bigquery as _bq  # noqa: E402 — usado só aqui
 
-_bq_client = _bq.Client()
 _PROJECT = os.environ.get("GCP_PROJECT", "site-hypr")
 _DATASET = "prod_assets"
+
+
+def _bq_client():
+    """Client compartilhado do `bq_client.py` (timeout obrigatório + pool
+    dimensionado), resolvido na 1ª chamada e não no import.
+
+    Era `_bq.Client()` cru no topo do módulo — o último do backend a escapar do
+    singleton. Duas consequências: as queries daqui (o MERGE da entrega, entre
+    elas) rodavam SEM job_timeout_ms, que é justamente o pendurado que o
+    bq_client nasceu pra matar; e importar o módulo exigia credencial default,
+    o que mantinha o parsing e o corte D-1 fora de teste.
+    """
+    return bq_client.get_client()
 
 
 # ─── HTTP helpers extras ──────────────────────────────────────────────────────
@@ -659,7 +742,7 @@ def sync_line_items(advertiser_id: int) -> dict:
     # tabela antes de tentar fazer o MERGE. Idempotente (IF NOT EXISTS),
     # roda apenas DDL light no BQ — sem custo significativo.
     try:
-        _bq_client.query(
+        _bq_client().query(
             f"ALTER TABLE `{_PROJECT}.{_DATASET}.pmp_line_items` "
             f"ADD COLUMN IF NOT EXISTS pricing_strategy STRING"
         ).result()
@@ -781,7 +864,6 @@ def parse_csv_line_level(csv_text: str) -> list:
     flutuando, só armazenamos dias FECHADOS (D-1 e anteriores). Usuário
     sempre vê dia completo. Ver decisão em `sync_delivery_by_line`.
     """
-    from datetime import date as _date
     rows = []
     reader = csv.DictReader(io.StringIO(csv_text))
     fields = set(reader.fieldnames or [])
@@ -796,8 +878,10 @@ def parse_csv_line_level(csv_text: str) -> list:
         try: return int(float(v)) if v not in (None,"") else 0
         except: return 0
 
-    # Hoje em BRT — pra filtrar dia corrente (parcial).
-    today_brt = _date.today()
+    # Hoje em BRT — pra filtrar dia corrente (parcial). `today_brt()`, não
+    # `date.today()`: na Cloud Function o relógio é UTC e entre 21h e 24h BRT o
+    # corte deixava passar o dia corrente brasileiro.
+    today = today_brt()
     skipped_today = 0
 
     for r in reader:
@@ -810,7 +894,7 @@ def parse_csv_line_level(csv_text: str) -> list:
         except ValueError:
             continue
         # D-1: ignora o dia corrente (parcial).
-        if day_iso >= today_brt:
+        if day_iso >= today:
             skipped_today += 1
             continue
         try:
@@ -847,6 +931,61 @@ def parse_csv_line_level(csv_text: str) -> list:
     if skipped_today:
         logger.info("[xandr v2] descartadas %d linhas do dia corrente (política D-1)", skipped_today)
     return rows
+
+
+def measure_freshness(rows: list, expected_last_day: Optional[date] = None) -> dict:
+    """Frescor da FONTE a partir das linhas já parseadas.
+
+    Por que existe
+    ──────────────
+    O ledger ganhou `api_last_day`/`lag_days`/`trailing_zero_days` em 24/08/2026
+    porque "o job rodou" nunca foi "a base está fresca" — mas só a PubMatic
+    passou a preencher. A Xandr seguiu gravando NULL, e o painel, que sabe
+    disso, se limita a "Sync rodou hoje": para a Xandr ele nunca teve como
+    dizer se o dado chegou. Uma Xandr rodando verde com a API travada em D-5
+    tem, hoje, exatamente a mesma cara de uma Xandr em dia.
+
+    Diferença pro PubMatic: lá o conector DESCARTA dia zerado antes de medir,
+    então `days_seen` precisa ser coletado no meio do parsing. Aqui o parser
+    mantém o dia zerado, então dá pra medir sobre `rows` — função pura, sem I/O.
+
+      api_last_day        último dia com entrega REAL (imps ou custo > 0)
+      expected_last_day   D-1 em BRT: o dia que a fonte já deveria ter fechado
+      lag_days            expected_last_day − api_last_day. 0 = em dia.
+      trailing_zero_days  dias zerados NO FIM da janela (assinatura do lag de
+                          reporting; zerado no MEIO é line pausada e não conta)
+    """
+    expected = expected_last_day or (today_brt() - timedelta(days=1))
+    days_seen, days_with_data = set(), set()
+    for r in rows:
+        day = r.get("day")
+        if day is None:
+            continue
+        days_seen.add(day)
+        if (r.get("imps") or 0) > 0 or (r.get("curator_total_cost") or 0) > 0:
+            days_with_data.add(day)
+
+    api_last_day = max(days_with_data) if days_with_data else None
+    lag_days = (expected - api_last_day).days if api_last_day else None
+
+    trailing_zero_days = 0
+    probe = expected
+    while probe in days_seen and probe not in days_with_data:
+        trailing_zero_days += 1
+        probe -= timedelta(days=1)
+
+    if lag_days:
+        logger.warning("[xandr v2] fonte atrasada: último dia com dado %s, "
+                       "esperado %s (lag %dd, %d dia(s) zerado(s) no fim da janela)",
+                       api_last_day, expected, lag_days, trailing_zero_days)
+
+    return {
+        "api_last_day":       api_last_day.isoformat() if api_last_day else None,
+        "expected_last_day":  expected.isoformat(),
+        "lag_days":           lag_days,
+        "trailing_zero_days": trailing_zero_days,
+        "days_with_data":     len(days_with_data),
+    }
 
 
 def sync_delivery_by_line(start_date: Optional[date] = None,
@@ -898,10 +1037,15 @@ def sync_delivery_by_line(start_date: Optional[date] = None,
     rows = parse_csv_line_level(csv_text)
     logger.info("[xandr v2] %d linhas parseadas", len(rows))
 
+    # Frescor da FONTE, medido antes do dedupe/upsert (o dedupe soma métricas e
+    # não muda a resposta, mas medir sobre o que a API devolveu é o contrato).
+    freshness = measure_freshness(rows)
+
     if not rows:
         return {"report_id": report_id, "rows_processed": 0,
                 "lines_touched": 0, "duration_sec": round(time.time() - t0, 2),
-                "window": window, "synced_at": datetime.now(timezone.utc).isoformat()}
+                "window": window, "synced_at": datetime.now(timezone.utc).isoformat(),
+                **freshness}
 
     # Dedupe por (line_id, day) — o Xandr pode retornar múltiplas rows
     # quando varia uma dimension extra (ex: billing_currency diferente,
@@ -930,7 +1074,7 @@ def sync_delivery_by_line(start_date: Optional[date] = None,
         SELECT line_id, io_id FROM `{_PROJECT}.{_DATASET}.pmp_line_items`
         WHERE line_id IN UNNEST(@ids)
     """
-    io_map_job = _bq_client.query(io_map_sql, job_config=_bq.QueryJobConfig(
+    io_map_job = _bq_client().query(io_map_sql, job_config=_bq.QueryJobConfig(
         query_parameters=[_bq.ArrayQueryParameter("ids", "INT64", line_id_set)]
     ))
     io_map = {r["line_id"]: r["io_id"] for r in io_map_job.result()}
@@ -969,6 +1113,8 @@ def sync_delivery_by_line(start_date: Optional[date] = None,
         "duration_sec":   round(time.time() - t0, 2),
         "window":         window,
         "synced_at":      datetime.now(timezone.utc).isoformat(),
+        # Vai pro ledger (pmp_sync_runs) e de lá pro painel de frescor.
+        **freshness,
     }
 
 
@@ -1002,7 +1148,7 @@ def _upsert_via_staging(target_table: str, rows: list, key_columns: list,
     staging_ref = _bq.TableReference.from_string(f"{_PROJECT}.{_DATASET}.{staging_name}")
     table = _bq.Table(staging_ref, schema=schema)
     table.expires = datetime.now(timezone.utc) + timedelta(hours=1)
-    _bq_client.create_table(table)
+    _bq_client().create_table(table)
     try:
         # Stringify campos NUMERIC/DATE/TIMESTAMP pra evitar JSON quirks
         rows_json = []
@@ -1030,7 +1176,7 @@ def _upsert_via_staging(target_table: str, rows: list, key_columns: list,
                 else:
                     row_out[f.name] = v
             rows_json.append(row_out)
-        errors = _bq_client.insert_rows_json(table, rows_json)
+        errors = _bq_client().insert_rows_json(table, rows_json)
         if errors:
             raise XandrError(f"staging insert errors em {target_table}: {errors[:3]}")
 
@@ -1053,10 +1199,10 @@ def _upsert_via_staging(target_table: str, rows: list, key_columns: list,
             WHEN MATCHED THEN UPDATE SET {upd_set}
             WHEN NOT MATCHED THEN INSERT ({", ".join(insert_cols)}) VALUES ({", ".join(insert_vals)})
         """
-        _bq_client.query(merge_sql).result()
+        _bq_client().query(merge_sql).result()
     finally:
         try:
-            _bq_client.delete_table(staging_ref, not_found_ok=True)
+            _bq_client().delete_table(staging_ref, not_found_ok=True)
         except Exception as e:
             logger.warning("[xandr v2] falhou deletando staging %s: %s", staging_name, e)
     return {"merged": len(rows)}
