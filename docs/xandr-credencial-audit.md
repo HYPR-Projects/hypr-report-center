@@ -82,7 +82,30 @@ cron continuaria mandando os 7 dias antigos por cima.
 pelo filtro e entrava na base como dia fechado, com número parcial. Inofensivo
 enquanto o único run era às 04h; o botão "Sincronizar agora" cai na janela.
 
-### 6. `bigquery.Client()` cru no import
+### 6. Rotacionar a senha e redeployar **não** trocava a senha
+
+Achado depois, verificando o procedimento que a própria mensagem de erro manda
+seguir. O `deploy.sh` captura os secrets da revisão ativa (`extract_env`) e o
+`read_secret_if_missing` só consulta o Secret Manager **quando a revisão não
+tem o valor**. Para senha isso é exatamente o contrário do que se quer:
+
+1. você atualiza `XANDR_CURATE_PASS` no Secret Manager;
+2. redeploya;
+3. o `extract_env` acha a senha **velha** na revisão viva e ela ganha;
+4. a função sobe com a senha velha. Deploy verde, smoke check de `healthz`
+   verde, sync tomando 401 de novo.
+
+Silencioso e circular: o conserto recomendado no erro não conserta. Vale igual
+para o par da PubMatic, que tem a mesma forma. Agora as credenciais que
+rotacionam usam `read_secret_first` — Secret Manager ganha quando tem valor, a
+revisão ativa é o fallback — e o deploy imprime quando os dois divergem.
+
+**Efeito colateral a conhecer:** se alguém tiver trocado uma credencial direto
+na revisão sem atualizar o Secret Manager, o próximo deploy vai puxar o valor
+do Secret Manager por cima. A linha `↻ VAR: usando o Secret Manager (difere da
+revisão ativa)` aparece no log quando isso acontece.
+
+### 7. `bigquery.Client()` cru no import
 
 `xandr_curate` era o último módulo do backend fora do singleton do
 `bq_client.py`. Duas consequências: as queries daqui (o MERGE da entrega, entre
@@ -101,7 +124,8 @@ parsing e o corte D-1 fora de teste.
 | 3 | Falha da Xandr vira best-effort: registra no ledger e o resto do run continua. A resposta segue **502** — non-2xx é o gatilho do alert policy do GCP | `main.py` |
 | 4 | `XANDR_REPORT_INTERVAL = "last_14_days"`, em um lugar só; scheduler e frontend deixam de fixar a janela | `main.py`, `deploy.sh`, `api.js` |
 | 5 | `today_brt()` no corte D-1 | `xandr_curate.py` |
-| 6 | `_bq_client()` preguiçoso via `bq_client.get_client()` | `xandr_curate.py` |
+| 6 | `read_secret_first` para as credenciais que rotacionam (Xandr + PubMatic): Secret Manager ganha da revisão ativa | `deploy.sh` |
+| 7 | `_bq_client()` preguiçoso via `bq_client.get_client()` | `xandr_curate.py` |
 
 Cobertura nova: `backend/tests/test_xandr_curate.py` (15 casos) e 4 casos em
 `pmpFreshness.test.js`.

@@ -106,10 +106,45 @@ read_secret_if_missing() {
   fi
   gcloud secrets versions access latest --secret="$var_name" --project=site-hypr 2>/dev/null || echo ""
 }
+
+# ── Credenciais que ROTACIONAM: o Secret Manager ganha da revisão ativa ──────
+#
+# `read_secret_if_missing` faz o contrário — a revisão viva vence e o Secret
+# Manager só entra quando ela não tem o valor. Para o que nunca muda (member
+# id, client id) isso está certo e é barato. Para SENHA está exatamente errado,
+# e de um jeito silencioso: rotacionar a senha no Secret Manager e redeployar
+# devolve a função com a senha VELHA, porque ela continua na revisão ativa. O
+# deploy passa verde, o smoke check de healthz passa, e o sync segue tomando
+# 401 — que é o procedimento que a própria mensagem de erro manda fazer.
+#
+# Encontrado em 21/09/2026 auditando a senha expirada da Xandr (o 401 de
+# 18–21/09). Vale igual para o par da PubMatic, que tem a mesma forma.
+#
+# Precedência aqui: Secret Manager quando tem valor, senão a revisão ativa.
+# Quem não usa Secret Manager para aquela var não perde nada — cai no mesmo
+# valor de antes. O deploy imprime de onde veio, senão a rotação volta a ser
+# uma coisa que a gente torce para ter funcionado.
+read_secret_first() {
+  local var_name="$1"
+  local revision_value="$2"
+  local secret_value
+  secret_value=$(gcloud secrets versions access latest \
+    --secret="$var_name" --project=site-hypr 2>/dev/null || echo "")
+  if [ -n "$secret_value" ]; then
+    if [ -n "$revision_value" ] && [ "$secret_value" != "$revision_value" ]; then
+      echo "  ↻ $var_name: usando o Secret Manager (difere da revisão ativa)" >&2
+    fi
+    echo "$secret_value"
+    return
+  fi
+  echo "$revision_value"
+}
+
 XANDR_CURATE_USER=$(extract_env "XANDR_CURATE_USER")
-XANDR_CURATE_USER=$(read_secret_if_missing "XANDR_CURATE_USER" "$XANDR_CURATE_USER")
+XANDR_CURATE_USER=$(read_secret_first "XANDR_CURATE_USER" "$XANDR_CURATE_USER")
 XANDR_CURATE_PASS=$(extract_env "XANDR_CURATE_PASS")
-XANDR_CURATE_PASS=$(read_secret_if_missing "XANDR_CURATE_PASS" "$XANDR_CURATE_PASS")
+XANDR_CURATE_PASS=$(read_secret_first "XANDR_CURATE_PASS" "$XANDR_CURATE_PASS")
+# member_id não rotaciona — segue com a precedência antiga.
 XANDR_CURATE_MEMBER_ID=$(extract_env "XANDR_CURATE_MEMBER_ID")
 XANDR_CURATE_MEMBER_ID=$(read_secret_if_missing "XANDR_CURATE_MEMBER_ID" "$XANDR_CURATE_MEMBER_ID")
 
@@ -117,17 +152,17 @@ XANDR_CURATE_MEMBER_ID=$(read_secret_if_missing "XANDR_CURATE_MEMBER_ID" "$XANDR
 # do Xandr: captura da revisão ativa OU lê do Secret Manager. Sem elas, o
 # pmp_sync_v2 pula o PubMatic (o Xandr segue normal).
 PUBMATIC_USER=$(extract_env "PUBMATIC_USER")
-PUBMATIC_USER=$(read_secret_if_missing "PUBMATIC_USER" "$PUBMATIC_USER")
+PUBMATIC_USER=$(read_secret_first "PUBMATIC_USER" "$PUBMATIC_USER")
 PUBMATIC_PASS=$(extract_env "PUBMATIC_PASS")
-PUBMATIC_PASS=$(read_secret_if_missing "PUBMATIC_PASS" "$PUBMATIC_PASS")
+PUBMATIC_PASS=$(read_secret_first "PUBMATIC_PASS" "$PUBMATIC_PASS")
 # Segundo conjunto de credenciais (chain de fallback do pubmatic_curate). Existe
 # porque um usuário de API da PubMatic pode perder o acesso do lado deles sem
 # aviso — foi o que travou o sync por 3 dias em ago/26. Com o par ALT no
 # ambiente, o conector troca de credencial sozinho e registra no ledger.
 PUBMATIC_USER_ALT=$(extract_env "PUBMATIC_USER_ALT")
-PUBMATIC_USER_ALT=$(read_secret_if_missing "PUBMATIC_USER_ALT" "$PUBMATIC_USER_ALT")
+PUBMATIC_USER_ALT=$(read_secret_first "PUBMATIC_USER_ALT" "$PUBMATIC_USER_ALT")
 PUBMATIC_PASS_ALT=$(extract_env "PUBMATIC_PASS_ALT")
-PUBMATIC_PASS_ALT=$(read_secret_if_missing "PUBMATIC_PASS_ALT" "$PUBMATIC_PASS_ALT")
+PUBMATIC_PASS_ALT=$(read_secret_first "PUBMATIC_PASS_ALT" "$PUBMATIC_PASS_ALT")
 
 # PMP_SCHEDULER_SECRET — segredo compartilhado entre Cloud Scheduler e a
 # Cloud Function pra autenticar o cron job sem JWT admin. Gerado uma vez,
