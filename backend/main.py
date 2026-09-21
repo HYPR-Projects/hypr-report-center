@@ -4572,13 +4572,20 @@ def report_data(request):
                 xandr_error = xe
                 logger.error("[pmp_sync_v2 xandr] %s", xe)
                 pmp_sync_runs.record(source="xandr", started_at=xandr_t0, status="error",
-                                     window=interval, actor=actor, error=str(xe))
+                                     window=interval, actor=actor,
+                                     credential=xandr_curate.credential_label(),
+                                     error=str(xe))
             else:
                 pmp_sync_runs.record(
                     source="xandr", started_at=xandr_t0, status="ok",
                     rows_processed=(deliv_res or {}).get("rows_processed"),
                     deals_touched=(deliv_res or {}).get("lines_touched"),
                     window=interval, actor=actor,
+                    # Qual par da chain autenticou. O painel já sabe avisar
+                    # "autenticado pela credencial de fallback" desde agosto;
+                    # pra Xandr o aviso era código morto, porque ela nunca
+                    # reportava credencial nenhuma.
+                    credential=xandr_curate.credential_label(),
                     # Frescor da FONTE — "o job rodou" e "a base está em dia"
                     # são afirmações diferentes, e até agora só a PubMatic
                     # mandava a segunda. Com a Xandr em NULL, o painel não

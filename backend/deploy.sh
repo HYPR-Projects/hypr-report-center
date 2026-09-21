@@ -147,6 +147,14 @@ XANDR_CURATE_USER=$(extract_env "XANDR_CURATE_USER")
 XANDR_CURATE_USER=$(read_secret_first "XANDR_CURATE_USER" "$XANDR_CURATE_USER")
 XANDR_CURATE_PASS=$(extract_env "XANDR_CURATE_PASS")
 XANDR_CURATE_PASS=$(read_secret_first "XANDR_CURATE_PASS" "$XANDR_CURATE_PASS")
+# Segundo conjunto da chain (xandr_curate.CREDENTIAL_SETS). Opcional: sem ele o
+# conector roda com uma credencial só, como sempre rodou. Precisa ser usuário
+# de API do MESMO member que o sync lê (13053) — usuário de outro member
+# autentica e depois não enxerga o Curator Analytics daqui.
+XANDR_CURATE_USER_ALT=$(extract_env "XANDR_CURATE_USER_ALT")
+XANDR_CURATE_USER_ALT=$(read_secret_first "XANDR_CURATE_USER_ALT" "$XANDR_CURATE_USER_ALT")
+XANDR_CURATE_PASS_ALT=$(extract_env "XANDR_CURATE_PASS_ALT")
+XANDR_CURATE_PASS_ALT=$(read_secret_first "XANDR_CURATE_PASS_ALT" "$XANDR_CURATE_PASS_ALT")
 # member_id não rotaciona — segue com a precedência antiga.
 XANDR_CURATE_MEMBER_ID=$(extract_env "XANDR_CURATE_MEMBER_ID")
 XANDR_CURATE_MEMBER_ID=$(read_secret_if_missing "XANDR_CURATE_MEMBER_ID" "$XANDR_CURATE_MEMBER_ID")
@@ -269,6 +277,11 @@ if [ -n "$XANDR_CURATE_USER" ] && [ -n "$XANDR_CURATE_PASS" ] && [ -n "$XANDR_CU
 else
   echo "  ⚠ XANDR_CURATE_* ausentes — sync de PMP deals desabilitado"
 fi
+if [ -n "$XANDR_CURATE_USER_ALT" ] && [ -n "$XANDR_CURATE_PASS_ALT" ]; then
+  echo "  ✓ XANDR_CURATE_*_ALT capturados (chain de fallback habilitada)"
+else
+  echo "  · XANDR_CURATE_*_ALT ausentes — chain com uma credencial só"
+fi
 # PubMatic era capturado em SILÊNCIO: o deploy não dizia se a 2ª fonte de
 # curadoria ia subir com credencial ou sem. Justo a fonte cujo incidente de
 # ago/26 foi inteiro sobre "parou e ninguém soube" — e cuja perda de credencial
@@ -346,6 +359,12 @@ if [ -n "$XANDR_CURATE_USER" ]; then
 fi
 if [ -n "$XANDR_CURATE_PASS" ]; then
   echo "XANDR_CURATE_PASS: '${XANDR_CURATE_PASS}'" >> "$ENV_FILE"
+fi
+if [ -n "$XANDR_CURATE_USER_ALT" ]; then
+  echo "XANDR_CURATE_USER_ALT: '${XANDR_CURATE_USER_ALT}'" >> "$ENV_FILE"
+fi
+if [ -n "$XANDR_CURATE_PASS_ALT" ]; then
+  echo "XANDR_CURATE_PASS_ALT: '${XANDR_CURATE_PASS_ALT}'" >> "$ENV_FILE"
 fi
 if [ -n "$XANDR_CURATE_MEMBER_ID" ]; then
   echo "XANDR_CURATE_MEMBER_ID: '${XANDR_CURATE_MEMBER_ID}'" >> "$ENV_FILE"

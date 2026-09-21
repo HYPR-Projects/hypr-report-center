@@ -120,10 +120,29 @@ POLL_INTERVAL_SEC = 2
 POLL_MAX_ATTEMPTS = 90    # 90 × 2s = 3min — reports curtos voltam em <5s,
                            # mas janelas maiores podem precisar de mais.
 
+# ── Credenciais (chain) ──────────────────────────────────────────────────────
+# Ordem de tentativa. O 2º conjunto não é redundância decorativa: em 18/09/2026
+# a senha do usuário de API expirou (a Xandr força reset a cada 90 dias) e o
+# sync ficou 3 dias parado, com a entrega das lines fora do hub e da planilha
+# de faturamento. Com a chain, uma credencial vencida custa um WARNING no
+# ledger em vez de dias de base congelada. Mesma forma do pubmatic_curate.
+#
+# ATENÇÃO ao montar o par ALT: ele precisa ser um usuário de API do MESMO
+# member que o sync lê (13053, HYPR VENTURES / CURATOR). Usuário de outro
+# member autentica normal e depois não enxerga o Curator Analytics daqui —
+# seria uma chain que só troca um erro por outro.
+CREDENTIAL_SETS = [
+    ("primary", "XANDR_CURATE_USER",     "XANDR_CURATE_PASS"),
+    ("alt",     "XANDR_CURATE_USER_ALT", "XANDR_CURATE_PASS_ALT"),
+]
+
 # Cache de token em memória (process-local, sobrevive entre invocations
 # da mesma instância da Cloud Function).
 _cached_token: Optional[str] = None
 _cached_token_exp_ms: float = 0.0
+# Rótulo do conjunto que autenticou por último — vai pro ledger
+# (`pmp_sync_runs.credential`) pra o operador ver quando o fallback assumiu.
+_cached_cred_label: Optional[str] = None
 # Janela de segurança — renova 5min antes do limite oficial de 2h pra
 # evitar ser pego com token expirado no meio de uma chamada.
 _TOKEN_TTL_MS = (2 * 60 * 60 - 5 * 60) * 1000
@@ -234,19 +253,34 @@ def _http_get_bytes(path: str, token: str, timeout: int = 120) -> bytes:
         raise XandrError(f"Falha de rede GET {path}: {e}")
 
 
-def get_token(force_refresh: bool = False) -> str:
-    """Retorna um token Xandr válido. Re-autentica se cache expirou.
+def available_credentials() -> list:
+    """Conjuntos de credenciais efetivamente no ambiente, na ordem da chain."""
+    out = []
+    for label, user_env, pass_env in CREDENTIAL_SETS:
+        user, pwd = os.environ.get(user_env), os.environ.get(pass_env)
+        if user and pwd:
+            out.append((label, user, pwd))
+    return out
 
-    Token cacheado em memória do process (sobrevive entre requests da
-    mesma instância da Cloud Function). Cold start re-autentica.
+
+def is_configured() -> bool:
+    """True se ao menos um conjunto de credenciais está no ambiente."""
+    return bool(available_credentials())
+
+
+def credential_label() -> Optional[str]:
+    """Qual conjunto autenticou por último (None se ainda não autenticou).
+
+    Vai pro ledger (`pmp_sync_runs.credential`). O painel já sabe renderizar
+    "autenticado pela credencial de fallback" desde agosto — para a Xandr esse
+    aviso era código morto, porque ela nunca reportava credencial nenhuma.
     """
-    global _cached_token, _cached_token_exp_ms
-    now_ms = time.time() * 1000
-    if not force_refresh and _cached_token and now_ms < _cached_token_exp_ms:
-        return _cached_token
+    return _cached_cred_label
 
-    user = _env("XANDR_CURATE_USER")
-    password = _env("XANDR_CURATE_PASS")
+
+def _request_token(user: str, password: str) -> str:
+    """Uma tentativa de emissão de token. Levanta XandrAuthError quando o
+    problema é a credencial (senha expirada, revogada, errada)."""
     try:
         payload = _http("POST", "/auth",
                         body={"auth": {"username": user, "password": password}})
@@ -263,10 +297,119 @@ def get_token(force_refresh: bool = False) -> str:
     token = (payload.get("response") or {}).get("token")
     if not token:
         raise XandrError(f"Auth bem-sucedido mas sem token na resposta: {payload}")
-    _cached_token = token
-    _cached_token_exp_ms = now_ms + _TOKEN_TTL_MS
-    logger.info("[xandr] novo token emitido (TTL %dmin)", _TOKEN_TTL_MS // 60_000)
     return token
+
+
+def get_token(force_refresh: bool = False, skip_labels: tuple = ()) -> str:
+    """Retorna um token válido, percorrendo a chain de credenciais.
+
+    Cache em memória do processo (sobrevive entre requests da mesma instância
+    da Cloud Function). Cold start re-autentica. Lembrar do limite de 10
+    auths/5min: o cache é o que impede um burst de syncs de estourar.
+
+    Se a primeira credencial falhar na AUTENTICAÇÃO, tenta a próxima e loga
+    qual assumiu; se todas falharem, levanta com o erro de CADA uma — senão o
+    operador lê só o último e conclui que existe uma credencial só.
+
+    `skip_labels` exclui pares já recusados DEPOIS de autenticar (token aceito,
+    chamada recusada). Passar skip_labels implica refresh: o cache guarda
+    justamente o token do par que acabou de ser recusado.
+    """
+    global _cached_token, _cached_token_exp_ms, _cached_cred_label
+    now_ms = time.time() * 1000
+    if not force_refresh and not skip_labels and _cached_token \
+            and now_ms < _cached_token_exp_ms:
+        return _cached_token
+
+    creds = [c for c in available_credentials() if c[0] not in skip_labels]
+    if not creds:
+        if skip_labels:
+            raise XandrAuthError(
+                "Nenhuma credencial Xandr restante na chain — recusadas: "
+                + ", ".join(skip_labels) + f". {AUTH_REMEDIATION}")
+        raise XandrError(
+            "Nenhuma credencial Xandr no ambiente (XANDR_CURATE_USER/PASS ou "
+            "XANDR_CURATE_USER_ALT/PASS_ALT). Configure no Secret Manager e "
+            "re-deploye a Cloud Function (ver deploy.sh).")
+
+    failures, exceptions = [], []
+    for label, user, pwd in creds:
+        try:
+            token = _request_token(user, pwd)
+        except XandrError as e:
+            failures.append(f"{label}({user}): {e}")
+            exceptions.append(e)
+            logger.warning("[xandr] credencial '%s' falhou na auth: %s", label, e)
+            continue
+        _cached_token = token
+        _cached_token_exp_ms = now_ms + _TOKEN_TTL_MS
+        _cached_cred_label = label
+        if failures:
+            logger.warning("[xandr] autenticado com a credencial de fallback "
+                           "'%s' — a(s) anterior(es) precisam de conserto no seat",
+                           label)
+        logger.info("[xandr] novo token emitido via '%s' (TTL %dmin)",
+                    label, _TOKEN_TTL_MS // 60_000)
+        return token
+
+    # Uma credencial só configurada: levanta o erro ORIGINAL, sem embrulho.
+    # "Todas as credenciais falharam → primary(u): ..." não acrescenta nada
+    # quando só existe uma, e o prefixo come os 240 chars que o popover mostra
+    # — justo na parte que diz o que fazer.
+    if len(exceptions) == 1:
+        raise exceptions[0]
+
+    # Mais de uma: o erro lista CADA uma, senão o operador lê só a última e
+    # conclui que existe uma credencial só (e reseta a senha errada). A classe
+    # vem do TIPO já levantado pelo `_request_token`, não de casar string de
+    # novo — é isso que decide a cor e o texto do painel, e se o email diário
+    # sai como "resetar a senha" ou como "sync falhando".
+    detail = " | ".join(failures)
+    if any(isinstance(e, XandrAuthError) for e in exceptions):
+        raise XandrAuthError(f"Todas as credenciais Xandr falharam → {detail}")
+    raise XandrError(f"Todas as credenciais Xandr falharam → {detail}")
+
+
+# ── Recusa de token DEPOIS da auth ───────────────────────────────────────────
+# Um 401/403 numa chamada já autenticada quer dizer uma de duas coisas, e as
+# duas eram fatais aqui: o token de 2h venceu no meio de um run longo (o report
+# é async e o poll espera até 3min), ou a credencial perdeu acesso do lado da
+# Xandr. O conector não tentava nada — o run inteiro morria e só voltava no
+# cron do dia seguinte. A PubMatic já tinha ganhado esse fallback em setembro.
+def _is_auth_rejection(err) -> bool:
+    low = str(err).lower()
+    return (low.startswith(("http 401", "http 403"))
+            or "noauth" in low.replace("_", "")
+            or " 401 " in low or " 403 " in low)
+
+
+def _authed(call, what: str = "chamada"):
+    """Roda `call(token)` renovando o token — e, se preciso, trocando de
+    credencial — quando a Xandr recusa o que está em cache.
+
+    Três passos, do mais provável pro mais grave:
+      1. token do cache;
+      2. token novo da MESMA credencial (o caso comum: expirou no meio do run);
+      3. próxima credencial da chain (a atual perdeu acesso no seat).
+    """
+    try:
+        return call(get_token())
+    except XandrError as e:
+        if not _is_auth_rejection(e):
+            raise
+        logger.warning("[xandr] token recusado em %s (%s); renovando", what, e)
+
+    try:
+        return call(get_token(force_refresh=True))
+    except XandrError as e:
+        if not _is_auth_rejection(e):
+            raise
+        recusada = credential_label()
+        logger.warning("[xandr] credencial '%s' recusada em %s mesmo com token "
+                       "novo; tentando a próxima da chain", recusada, what)
+
+    return call(get_token(force_refresh=True,
+                          skip_labels=(recusada,) if recusada else ()))
 
 
 def _build_report_body(start_date: Optional[date] = None,
@@ -303,9 +446,9 @@ def request_report(start_date: Optional[date] = None,
                    end_date: Optional[date]   = None,
                    report_interval: str = "last_7_days") -> str:
     """POSTa o request e devolve o report_id."""
-    token = get_token()
     body = _build_report_body(start_date, end_date, report_interval)
-    payload = _http("POST", "/report", token=token, body=body)
+    payload = _authed(lambda t: _http("POST", "/report", token=t, body=body),
+                      "POST /report")
     report_id = (payload.get("response") or {}).get("report_id")
     if not report_id:
         raise XandrError(f"POST /report sem report_id: {payload}")
@@ -316,10 +459,13 @@ def wait_for_report(report_id: str,
                     interval_sec: float = POLL_INTERVAL_SEC,
                     max_attempts: int   = POLL_MAX_ATTEMPTS) -> None:
     """Bloqueia até o report ficar ready. Levanta XandrError em erro/timeout."""
-    token = get_token()
     for attempt in range(max_attempts):
         time.sleep(interval_sec)
-        payload = _http("GET", f"/report?id={report_id}", token=token)
+        # `_authed` por iteração de propósito: o poll pode passar dos 3min e o
+        # token vale 2h, mas um run que já vinha de outra chamada longa pode
+        # atravessar o vencimento exatamente aqui.
+        payload = _authed(lambda t: _http("GET", f"/report?id={report_id}", token=t),
+                          "GET /report")
         status = (payload.get("response") or {}).get("execution_status")
         if status == "ready":
             return
@@ -332,8 +478,8 @@ def wait_for_report(report_id: str,
 
 def download_report(report_id: str) -> str:
     """Baixa o CSV pronto. Retorna o conteúdo como string utf-8."""
-    token = get_token()
-    raw = _http_get_bytes(f"/report-download?id={report_id}", token=token)
+    raw = _authed(lambda t: _http_get_bytes(f"/report-download?id={report_id}", token=t),
+                  "GET /report-download")
     return raw.decode("utf-8", errors="replace")
 
 
@@ -489,8 +635,17 @@ def _bq_client():
 
 # ─── HTTP helpers extras ──────────────────────────────────────────────────────
 def _http_put(path: str, body: dict, timeout: int = 30) -> dict:
-    """PUT com auth + JSON, retorna response.response como dict."""
-    token = get_token()
+    """PUT com auth + JSON, retorna response.response como dict.
+
+    Passa pelo `_authed` como o resto: é a escrita do `code` na Line (fluxo de
+    auto-vinculação com o Command), disparada por clique de admin — o token em
+    cache pode estar vencido há horas.
+    """
+    return _authed(lambda t: _http_put_with_token(path, body, t, timeout),
+                   f"PUT {path}")
+
+
+def _http_put_with_token(path: str, body: dict, token: str, timeout: int) -> dict:
     url = BASE_URL + path
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="PUT")
@@ -518,7 +673,7 @@ def _paginated_get(path_prefix: str, list_key: str, page_size: int = 100):
     while True:
         sep = "&" if "?" in path_prefix else "?"
         url = f"{path_prefix}{sep}start_element={start}&num_elements={page_size}"
-        payload = _http("GET", url, token=get_token())
+        payload = _authed(lambda t: _http("GET", url, token=t), f"GET {path_prefix}")
         resp = payload.get("response") or {}
         items = resp.get(list_key) or []
         if not items:
@@ -1026,8 +1181,8 @@ def sync_delivery_by_line(start_date: Optional[date] = None,
         body["report"]["end_date"]   = end_date.strftime("%Y-%m-%d %H:%M:%S")
         body["report"].pop("report_interval", None)
 
-    token = get_token()
-    payload = _http("POST", "/report", token=token, body=body)
+    payload = _authed(lambda t: _http("POST", "/report", token=t, body=body),
+                      "POST /report (v2)")
     report_id = (payload.get("response") or {}).get("report_id")
     if not report_id:
         raise XandrError(f"POST /report sem report_id: {payload}")

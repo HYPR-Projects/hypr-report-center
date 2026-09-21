@@ -127,6 +127,7 @@ parsing e o corte D-1 fora de teste.
 | 6 | `read_secret_first` para as credenciais que rotacionam (Xandr + PubMatic): Secret Manager ganha da revisão ativa | `deploy.sh` |
 | 7 | `_bq_client()` preguiçoso via `bq_client.get_client()` | `xandr_curate.py` |
 | 8 | Alerta diário por email do ledger PMP (`pmp-sync-alert`, 08h BRT) | `pmp_alerts.py`, `main.py`, `deploy.sh` |
+| 9 | Credential chain da Xandr + retry de token recusado, e `credential` no ledger | `xandr_curate.py`, `main.py`, `deploy.sh` |
 
 Cobertura nova: `backend/tests/test_xandr_curate.py` (15 casos) e 4 casos em
 `pmpFreshness.test.js`.
@@ -155,19 +156,44 @@ Destinatários em `PMP_ALERT_TO` (separados por vírgula); sem ela cai no
 `SHEETS_ALERT_FROM`. Sem dedup, igual ao `sheets_alerts`: uma quebra de uma
 semana manda sete emails, que é o comportamento desejado.
 
+## Chain de credenciais e token recusado (item 9)
+
+Mesma forma do `pubmatic_curate.CREDENTIAL_SETS`. Duas coisas diferentes, que
+eram as duas fatais:
+
+**Falha na AUTENTICAÇÃO** → tenta o próximo par da chain, loga qual assumiu e
+grava o rótulo em `pmp_sync_runs.credential`. O painel já sabia renderizar
+*"autenticado pela credencial de fallback — a primária precisa ser reativada no
+seat"* desde agosto; pra Xandr esse aviso era código morto, porque ela nunca
+reportava credencial nenhuma. Quando todas falham, o erro lista **cada uma** —
+com uma credencial só, levanta o erro original sem embrulho, senão o prefixo
+come os 240 chars do popover justo na parte acionável.
+
+**Recusa DEPOIS da autenticação** (401/403 numa chamada com token válido) →
+`_authed` tenta três passos, do mais provável pro mais grave: token do cache,
+token novo da mesma credencial (o caso comum — o token vale 2h e o report é
+async, com poll de até 3min), e só então o próximo par da chain. Antes não
+havia nenhum: o run inteiro morria e só voltava no cron do dia seguinte.
+
+5xx e timeout **não** entram nesse caminho — sobem na primeira. Re-autenticar
+num 503 só queimaria o limite de 10 auths/5min da Xandr, que é o motivo de o
+token ser cacheado.
+
 ## O que continua em aberto
 
 - **O reset da senha é manual e não tem dono.** Expira a cada 90 dias, então
   isto volta ~dez/2026. O painel agora diz o que fazer; ninguém é avisado sem
   abrir o painel (o rodapé ainda manda "reportar no #data-pipelines").
-- **A Xandr não tem credential chain — e falta o usuário pra ter uma.** A
-  PubMatic ganhou fallback (`PUBMATIC_USER_ALT`) depois do 401 de agosto. A
-  conta da Xandr hoje tem dois usuários associados, mas em **members
-  diferentes** (`14843` Hypr (Gama) e `13053` HYPR VENTURES / CURATOR). O sync
-  lê o Curator Analytics do member 13053, então o usuário do 14843 não serve de
-  fallback. Para ter chain é preciso um **segundo usuário de API no member
-  13053** — pedido pro rep da Xandr, não código. Com ele, a implementação é o
-  mesmo padrão do `pubmatic_curate.CREDENTIAL_SETS`.
+- **A chain da Xandr está no código, mas falta o usuário pra ligá-la.** O
+  conector já percorre `XANDR_CURATE_USER/PASS` → `XANDR_CURATE_USER_ALT/
+  PASS_ALT` (item 9) e degrada pra credencial única quando o par ALT não
+  existe, que é o estado de hoje. O que falta é humano: a conta tem dois
+  usuários associados, mas em **members diferentes** (`14843` Hypr (Gama) e
+  `13053` HYPR VENTURES / CURATOR). O sync lê o Curator Analytics do member
+  13053, então o usuário do 14843 autentica e depois não enxerga nada daqui —
+  seria uma chain que troca um erro por outro. É preciso um **segundo usuário
+  de API no member 13053**, pedido pro rep da Xandr. Com ele em mãos: criar os
+  dois secrets e redeployar, sem mexer em código.
 - **O push do compplan roda com Xandr velha.** Durante a queda, o
   `pmp-pubmatic-refresh` continua empurrando a planilha quando a PubMatic
   avança, levando junto os números congelados da Xandr — sem marca de que são

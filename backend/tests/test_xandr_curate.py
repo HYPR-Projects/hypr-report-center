@@ -224,3 +224,135 @@ def test_falha_de_infra_nao_vira_erro_de_credencial(xc, monkeypatch, erro):
     with pytest.raises(xc.XandrError) as e:
         xc.get_token(force_refresh=True)
     assert not isinstance(e.value, xc.XandrAuthError)
+
+
+# ─── Chain de credenciais ────────────────────────────────────────────────────
+# O par ALT existe porque senha expirada é parada total com credencial única —
+# foi o que custou os 3 dias de 18–21/09/2026. Mesma forma do pubmatic_curate.
+@pytest.fixture
+def chain(xc, monkeypatch):
+    """Zera o cache de token e devolve um gravador das tentativas de auth."""
+    monkeypatch.setattr(xc, "_cached_token", None, raising=False)
+    monkeypatch.setattr(xc, "_cached_token_exp_ms", 0.0, raising=False)
+    monkeypatch.setattr(xc, "_cached_cred_label", None, raising=False)
+    for v in ("XANDR_CURATE_USER", "XANDR_CURATE_PASS",
+              "XANDR_CURATE_USER_ALT", "XANDR_CURATE_PASS_ALT"):
+        monkeypatch.delenv(v, raising=False)
+    return {"tentativas": []}
+
+
+def _auth_stub(xc, monkeypatch, chain, recusar=()):
+    """Stub do /auth: devolve token pra quem não está em `recusar`."""
+    def _http(method, path, token=None, body=None, timeout=60):
+        user = (body or {}).get("auth", {}).get("username")
+        chain["tentativas"].append(user)
+        if user in recusar:
+            raise xc.XandrError(
+                f"HTTP 401 POST /auth: Your password has expired and must be reset")
+        return {"response": {"token": f"tok-{user}"}}
+    monkeypatch.setattr(xc, "_http", _http)
+
+
+def test_sem_par_alt_funciona_como_sempre(xc, monkeypatch, chain):
+    monkeypatch.setenv("XANDR_CURATE_USER", "primario")
+    monkeypatch.setenv("XANDR_CURATE_PASS", "p")
+    _auth_stub(xc, monkeypatch, chain)
+    assert xc.get_token(force_refresh=True) == "tok-primario"
+    assert xc.credential_label() == "primary"
+
+
+def test_primaria_expirada_cai_no_alt(xc, monkeypatch, chain):
+    """O caso de 18/09: com o par ALT no ambiente, a senha vencida vira um
+    WARNING no ledger em vez de 3 dias de base congelada."""
+    monkeypatch.setenv("XANDR_CURATE_USER", "primario")
+    monkeypatch.setenv("XANDR_CURATE_PASS", "velha")
+    monkeypatch.setenv("XANDR_CURATE_USER_ALT", "reserva")
+    monkeypatch.setenv("XANDR_CURATE_PASS_ALT", "p")
+    _auth_stub(xc, monkeypatch, chain, recusar=("primario",))
+
+    assert xc.get_token(force_refresh=True) == "tok-reserva"
+    # A ordem importa: a primária é sempre tentada antes.
+    assert chain["tentativas"] == ["primario", "reserva"]
+    # O ledger precisa saber QUAL assumiu — o painel já avisa "credencial de
+    # fallback" e isso era código morto pra Xandr.
+    assert xc.credential_label() == "alt"
+
+
+def test_todas_expiradas_levanta_erro_de_credencial_com_as_duas(xc, monkeypatch, chain):
+    monkeypatch.setenv("XANDR_CURATE_USER", "primario")
+    monkeypatch.setenv("XANDR_CURATE_PASS", "velha")
+    monkeypatch.setenv("XANDR_CURATE_USER_ALT", "reserva")
+    monkeypatch.setenv("XANDR_CURATE_PASS_ALT", "velha")
+    _auth_stub(xc, monkeypatch, chain, recusar=("primario", "reserva"))
+
+    with pytest.raises(xc.XandrAuthError) as e:
+        xc.get_token(force_refresh=True)
+    # As DUAS no erro: só a última faria o operador concluir que existe uma
+    # credencial só e resetar a senha errada.
+    assert "primario" in str(e.value) and "reserva" in str(e.value)
+
+
+def test_ambiente_sem_credencial_nenhuma(xc, monkeypatch, chain):
+    _auth_stub(xc, monkeypatch, chain)
+    assert xc.is_configured() is False
+    with pytest.raises(xc.XandrError) as e:
+        xc.get_token(force_refresh=True)
+    assert "XANDR_CURATE_USER" in str(e.value)
+
+
+# ─── Recusa DEPOIS da auth (token vencido no meio do run) ────────────────────
+def test_token_vencido_no_meio_do_run_renova_e_segue(xc, monkeypatch, chain):
+    """O report é async e o poll espera até 3min; um run longo podia atravessar
+    o vencimento do token e morrer inteiro, voltando só no cron do dia seguinte."""
+    monkeypatch.setenv("XANDR_CURATE_USER", "primario")
+    monkeypatch.setenv("XANDR_CURATE_PASS", "p")
+    _auth_stub(xc, monkeypatch, chain)
+    xc.get_token(force_refresh=True)
+
+    chamadas = []
+
+    def call(token):
+        chamadas.append(token)
+        if len(chamadas) == 1:
+            raise xc.XandrError("HTTP 401 GET /report?id=9: NOAUTH")
+        return {"ok": True}
+
+    assert xc._authed(call, "GET /report") == {"ok": True}
+    assert len(chamadas) == 2
+    # Mesma credencial — token vencido não é credencial revogada.
+    assert xc.credential_label() == "primary"
+
+
+def test_credencial_recusada_mesmo_com_token_novo_troca_de_par(xc, monkeypatch, chain):
+    """Autentica mas não pode ler: a credencial perdeu acesso no seat."""
+    monkeypatch.setenv("XANDR_CURATE_USER", "primario")
+    monkeypatch.setenv("XANDR_CURATE_PASS", "p")
+    monkeypatch.setenv("XANDR_CURATE_USER_ALT", "reserva")
+    monkeypatch.setenv("XANDR_CURATE_PASS_ALT", "p")
+    _auth_stub(xc, monkeypatch, chain)
+
+    def call(token):
+        if token != "tok-reserva":
+            raise xc.XandrError("HTTP 403 POST /report: forbidden")
+        return {"ok": True}
+
+    assert xc._authed(call, "POST /report") == {"ok": True}
+    assert xc.credential_label() == "alt"
+
+
+def test_erro_que_nao_e_de_auth_sobe_na_primeira(xc, monkeypatch, chain):
+    """5xx e timeout não podem gastar tentativa de credencial — re-autenticar
+    num 503 só queima o limite de 10 auths/5min da Xandr."""
+    monkeypatch.setenv("XANDR_CURATE_USER", "primario")
+    monkeypatch.setenv("XANDR_CURATE_PASS", "p")
+    _auth_stub(xc, monkeypatch, chain)
+
+    chamadas = []
+
+    def call(token):
+        chamadas.append(token)
+        raise xc.XandrError("HTTP 503 POST /report: service unavailable")
+
+    with pytest.raises(xc.XandrError):
+        xc._authed(call, "POST /report")
+    assert len(chamadas) == 1
