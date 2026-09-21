@@ -73,19 +73,60 @@ if [ "${COMTOKEN:-0}" -eq 0 ]; then
   echo "  Não é erro: o admin escolhe o criativo na lista em vez de um clique."
 fi
 
+# ── 3b. Esta campanha existe na dimensão? ───────────────────────────────────
+# É EXATAMENTE o caminho que o modal percorre: resolve a campanha na dimensão
+# pelo token no nome e só então consulta o lake. Zero aqui = dropdown vazio,
+# mesmo com a view cheia de resposta. Foi o caso PPV8JF (set/2026): a
+# integração estava de pé e o modal não mostrava nada, porque nenhuma peça
+# levava o token no nome.
+if [ -n "$TOKEN" ]; then
+  TOK=$(echo "$TOKEN" | tr -cd '[:alnum:]' | tr '[:lower:]' '[:upper:]')
+  TOKRE="(^|[^A-Z0-9])${TOK}([^A-Z0-9]|\$)"
+  DIMTOK=$(q "SELECT COUNT(*) FROM \`$DIM\` WHERE REGEXP_CONTAINS(UPPER(COALESCE(creative_name,'')), r'$TOKRE')")
+  echo "✓ Criativos com '$TOK' no nome, na dimensão: ${DIMTOK:-?}"
+  if [ "${DIMTOK:-0}" -eq 0 ]; then
+    echo
+    echo "✗ NENHUMA PEÇA DESTA CAMPANHA LEVA O TOKEN NO NOME — é por isso que o"
+    echo "  modal lista zero criativos pra $TOK, mesmo com a view respondendo."
+    echo "  → Renomeie a peça na plataforma pra 'ID-${TOK}_..._CONTROLE' / '_EXPOSTO'"
+    echo "    (a dimensão recarrega ~1×/h; no modal, 'Atualizar lista' fura o cache),"
+    echo "  → ou, no modal, busque a peça pelo nome (a lista mostra todas as campanhas)"
+    echo "    e vincule manualmente. Se ela não estiver nem lá, a peça não foi criada."
+    echo
+    echo "  Peças com resposta nos últimos 30 dias, pra achar a certa a olho:"
+    q "SELECT COALESCE(creative_name, CONCAT('(sem nome) ', creative_id)) AS criativo,
+              COUNT(DISTINCT session_id) AS respondentes
+       FROM \`$VIEW\`
+       WHERE responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+       GROUP BY 1 ORDER BY respondentes DESC LIMIT 15" | column -t -s,
+    exit 1
+  fi
+fi
+
 # ── 4. Foto do que o report vai mostrar ─────────────────────────────────────
 echo
 if [ -n "$TOKEN" ]; then
   echo "▸ Campanha $TOKEN — o que o report vai somar:"
   echo "  (respondentes = sessões distintas, que é o que o report conta;"
   echo "   eventos conta toque, e infla quem recarrega a peça)"
+  # Mesmo critério do backend: token como palavra inteira em QUALQUER posição
+  # do nome (não só o prefixo 'ID-TOKEN_' que alimenta a coluna short_token).
   q "SELECT creative_name, option,
             COUNT(DISTINCT session_id) AS respondentes,
             COUNT(*) AS eventos
      FROM \`$VIEW\`
      WHERE responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
-       AND short_token = '$(echo "$TOKEN" | tr -cd '[:alnum:]')'
+       AND REGEXP_CONTAINS(UPPER(COALESCE(creative_name,'')), r'$TOKRE')
      GROUP BY 1, 2 ORDER BY respondentes DESC" | column -t -s,
+  ROWS_TOKEN=$(q "SELECT COUNT(*) FROM \`$VIEW\`
+     WHERE responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+       AND REGEXP_CONTAINS(UPPER(COALESCE(creative_name,'')), r'$TOKRE')")
+  if [ "${ROWS_TOKEN:-0}" -eq 0 ]; then
+    echo
+    echo "⚠ As peças de $TOK existem na dimensão, mas NENHUMA registrou survey_answer"
+    echo "  nos últimos 30 dias. Não é integração nem nome: é coleta — confira se a"
+    echo "  peça é Tap to Choose com etapa de survey e se está veiculando."
+  fi
   echo
   echo "  Esperado: nomes terminando em _CONTROLE e _EXPOSTO, com as mesmas opções"
   echo "  dos dois lados. Opção que só aparece de um lado vira aviso no report,"

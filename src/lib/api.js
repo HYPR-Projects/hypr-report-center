@@ -1250,18 +1250,32 @@ export async function fetchTypeformViaProxy(formUrl, range = null) {
  * pela coluna quando a view amarra, senão pela convenção de nome
  * ("ID-FXR5US_..."), e cada item diz em `match` qual dos dois foi.
  *
- * Devolve { creatives: [{creative_id, creative_name, questions, responses,
- * first_at, last_at, side, match}] }.
+ * Devolve o payload inteiro:
+ *   { creatives: [{creative_id, creative_name, questions, options, responses,
+ *                  first_at, last_at, side, match}],
+ *     scope: "campaign" | "all", short_token, days,
+ *     diagnostics: null | { reason, dim_rows, dim_synced_at, dim_matched, dim_names } }
+ *
+ * `diagnostics` só vem quando a lista de uma CAMPANHA sai vazia, e diz
+ * por quê (dimensão vazia / nome fora da convenção / peça sem resposta).
+ * `src/shared/maListing.js` traduz isso pro admin. Backend anterior a esta
+ * versão devolve só `{creatives}` — o caller trata a ausência dos campos.
+ *
+ * Sem `shortToken` a busca é AMPLA (todas as campanhas, janela curta de 30
+ * dias no backend): é o caminho manual pra quando a peça não leva o token
+ * no nome. `refresh` fura o cache de 10 min do backend — pra quando o admin
+ * acabou de renomear/publicar a peça e quer ver agora.
  *
  * Quando MA_SURVEY_VIEW não está configurada no backend, a resposta vem
  * 501 com `configured: false` — o caller mostra "não configurado" em vez
  * de "erro", que são coisas diferentes pro admin.
  */
-export async function listMaxAttentionCreatives({ shortToken = "", days } = {}) {
+export async function listMaxAttentionCreatives({ shortToken = "", days, refresh = false } = {}) {
   const jwt = await getOrIssueAdminJwt();
   const params = new URLSearchParams({ action: "maxattention_list_creatives" });
   if (shortToken) params.set("short_token", shortToken);
   if (days) params.set("days", String(days));
+  if (refresh) params.set("refresh", "true");
   const r = await fetch(`${API_URL}?${params.toString()}`, { headers: adminAuthHeaders(jwt) });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) {

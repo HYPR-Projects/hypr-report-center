@@ -157,3 +157,194 @@ def test_bypass_de_cache_do_ma_results_e_admin_only():
         "bypass de cache sem checagem de admin: um endpoint aberto passaria a "
         "aceitar query no BigQuery por pageview"
     )
+
+
+# ── Lista vazia precisa dizer POR QUÊ ───────────────────────────────────────
+#
+# O caso real (campanha PPV8JF, set/2026): o modal abria, o backend respondia
+# 200 com `[]`, e o admin via "Nenhum criativo encontrado" — sem saber se a
+# dimensão não tinha carregado, se a peça fora nomeada fora da convenção ou
+# se ninguém tinha respondido. Três causas, três responsáveis, um único
+# sintoma. Estes testes fixam o contrato do diagnóstico que separa os três.
+
+from datetime import datetime, timezone
+
+
+class _FakeJob:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def result(self):
+        return list(self._rows)
+
+
+class _FakeClient:
+    """Despacha pelo SQL: dimensão (match por token), estatística da
+    dimensão, e o lake (a view). Grava o que foi consultado pra o teste
+    afirmar que o lake NÃO foi varrido quando não devia."""
+
+    def __init__(self, dim_rows=(), dim_stats=None, lake_rows=()):
+        self.dim_rows = list(dim_rows)
+        self.dim_stats = dim_stats or {"n": 0, "synced_at": None}
+        self.lake_rows = list(lake_rows)
+        self.queries = []
+
+    def query(self, sql, job_config=None):
+        self.queries.append(sql)
+        if "creatives_dim" in sql and "REGEXP_CONTAINS" in sql:
+            return _FakeJob(self.dim_rows)
+        if "creatives_dim" in sql and "COUNT(*) AS n" in sql:
+            return _FakeJob([self.dim_stats])
+        return _FakeJob(self.lake_rows)
+
+
+@pytest.fixture
+def ma_env(monkeypatch):
+    monkeypatch.setenv("MA_SURVEY_VIEW", "site-hypr.prod_analytics.ma_survey_responses")
+    # (short_token, responses, creative_name, question, session_id)
+    monkeypatch.setattr(ma, "_view_columns", lambda view: (True, False, True, True, True))
+
+
+def _install(monkeypatch, client):
+    monkeypatch.setattr(ma, "_client", lambda: client)
+    return client
+
+
+def test_dimensao_vazia_e_diagnosticada_e_a_lista_ampla_continua(ma_env, monkeypatch):
+    client = _install(monkeypatch, _FakeClient(dim_rows=[], dim_stats={"n": 0, "synced_at": None}))
+    p = ma.list_creatives_payload(short_token="PPV8JF")
+    assert p["creatives"] == []
+    assert p["scope"] == "campaign"
+    assert p["includes_recent"] is True
+    assert p["recent_days"] == ma.UNSCOPED_LOOKBACK_DAYS
+    assert p["diagnostics"]["reason"] == "dim_empty"
+    assert p["diagnostics"]["dim_rows"] == 0
+    # Sem peça da campanha na dimensão, o lake ainda é consultado — pelo ramo
+    # AMPLO (janela curta), sem o filtro de ids que não existe.
+    lake = [q for q in client.queries if "ma_survey_responses" in q]
+    assert len(lake) == 1
+    assert "UNNEST(@ids)" not in lake[0]
+    assert "@recent_days" in lake[0]
+
+
+def test_nome_fora_da_convencao_e_diagnosticado_com_estado_da_dimensao(ma_env, monkeypatch):
+    synced = datetime(2026, 9, 21, 12, 30, tzinfo=timezone.utc)
+    _install(monkeypatch, _FakeClient(dim_rows=[], dim_stats={"n": 412, "synced_at": synced}))
+    p = ma.list_creatives_payload(short_token="PPV8JF")
+    d = p["diagnostics"]
+    assert d["reason"] == "no_dim_match"
+    assert d["dim_rows"] == 412
+    assert d["dim_synced_at"] == synced.isoformat()
+    assert d["dim_matched"] == 0
+
+
+def test_peca_existe_mas_nao_respondeu_lista_os_nomes(ma_env, monkeypatch):
+    dim = [
+        {"creative_id": "c1", "creative_name": "ID-PPV8JF_HYPR_DIAGEO_SELO_SURVEY_CONTROLE"},
+        {"creative_id": "c2", "creative_name": "ID-PPV8JF_HYPR_DIAGEO_SELO_SURVEY_EXPOSTO"},
+    ]
+    now = datetime(2026, 9, 20, 10, 0, tzinfo=timezone.utc)
+    outra = {
+        "creative_id": "z9", "creative_name": "HYPR_NINTENDO_FY27_SURVEY_AWARENESS_CONTROLE",
+        "short_token": None, "questions": [], "options": ["Sim", "Não"],
+        "responses": 1023, "first_at": now, "last_at": now,
+    }
+    client = _install(monkeypatch, _FakeClient(dim_rows=dim, lake_rows=[outra]))
+    p = ma.list_creatives_payload(short_token="PPV8JF")
+    d = p["diagnostics"]
+    assert d["reason"] == "no_responses"
+    assert d["dim_matched"] == 2
+    assert d["dim_names"] == sorted(c["creative_name"] for c in dim)
+    # A lista ampla vem MESMO ASSIM — a peça de outra campanha está lá pra
+    # ser achada pela busca, só não marcada como desta campanha.
+    assert [c["creative_id"] for c in p["creatives"]] == ["z9"]
+    assert p["creatives"][0]["match"] is None
+    assert p["campaign_count"] == 0
+    # O lake foi consultado uma vez, com os dois ramos: campanha (podado
+    # pelos ids, janela longa) e amplo (NOT IN, janela curta).
+    lake = [q for q in client.queries if "ma_survey_responses" in q]
+    assert len(lake) == 1
+    assert "creative_id IN UNNEST(@ids)" in lake[0]
+    assert "creative_id NOT IN UNNEST(@ids)" in lake[0]
+    assert "UNION ALL" in lake[0]
+
+
+def test_peca_da_campanha_vem_marcada_e_sem_diagnostico(ma_env, monkeypatch):
+    now = datetime(2026, 9, 20, 10, 0, tzinfo=timezone.utc)
+    dim = [{"creative_id": "c1", "creative_name": "ID-PPV8JF_HYPR_DIAGEO_SELO_SURVEY_CONTROLE"}]
+    lake = [
+        {
+            "creative_id": "c1",
+            "creative_name": "ID-PPV8JF_HYPR_DIAGEO_SELO_SURVEY_CONTROLE",
+            "short_token": "PPV8JF",
+            "questions": [],
+            "options": ["Sim", "Não"],
+            "responses": 265,
+            "first_at": now,
+            "last_at": now,
+        },
+        {
+            "creative_id": "z9",
+            "creative_name": "HYPR_NINTENDO_FY27_SURVEY_AWARENESS_CONTROLE",
+            "short_token": None,
+            "questions": [],
+            "options": ["Sim", "Não"],
+            "responses": 1023,
+            "first_at": now,
+            "last_at": now,
+        },
+    ]
+    _install(monkeypatch, _FakeClient(dim_rows=dim, lake_rows=lake))
+    p = ma.list_creatives_payload(short_token="PPV8JF")
+    assert p["diagnostics"] is None
+    assert p["campaign_count"] == 1
+    assert len(p["creatives"]) == 2
+    c1, z9 = p["creatives"]
+    assert c1["match"] == "short_token" and c1["side"] == "controle" and c1["responses"] == 265
+    assert z9["match"] is None
+    # Compat: o wrapper antigo continua devolvendo só a lista.
+    assert ma.list_creatives(short_token="PPV8JF") == p["creatives"]
+
+
+def test_peca_da_campanha_sem_token_na_view_casa_pelo_id_da_dimensao(ma_env, monkeypatch):
+    # A view deriva short_token só do prefixo "ID-TOKEN_"; a dimensão casa o
+    # token em qualquer posição. Quem veio pelo id da dimensão é da campanha.
+    now = datetime(2026, 9, 20, 10, 0, tzinfo=timezone.utc)
+    dim = [{"creative_id": "c1", "creative_name": "HYPR_DIAGEO_PPV8JF_SELO_SURVEY_EXPOSTO"}]
+    lake = [{
+        "creative_id": "c1", "creative_name": "HYPR_DIAGEO_PPV8JF_SELO_SURVEY_EXPOSTO",
+        "short_token": None, "questions": [], "options": [], "responses": 3,
+        "first_at": now, "last_at": now,
+    }]
+    _install(monkeypatch, _FakeClient(dim_rows=dim, lake_rows=lake))
+    p = ma.list_creatives_payload(short_token="PPV8JF")
+    assert p["creatives"][0]["match"] == "name"
+    assert p["campaign_count"] == 1
+
+
+def test_sem_campanha_encolhe_a_janela_e_marca_o_escopo(ma_env, monkeypatch):
+    client = _install(monkeypatch, _FakeClient(lake_rows=[]))
+    p = ma.list_creatives_payload(short_token="", days=180)
+    assert p["scope"] == "all"
+    assert p["days"] == ma.UNSCOPED_LOOKBACK_DAYS
+    assert p["recent_days"] == ma.UNSCOPED_LOOKBACK_DAYS
+    # Sem campanha não há diagnóstico de dimensão: a pergunta é outra.
+    assert p["diagnostics"] is None
+    # E a dimensão nem é consultada — não há token pra casar.
+    assert not any("creatives_dim" in q for q in client.queries)
+    lake = [q for q in client.queries if "ma_survey_responses" in q]
+    assert len(lake) == 1 and "UNNEST(@ids)" not in lake[0]
+
+
+def test_dim_stats_degrada_sem_synced_at(ma_env, monkeypatch):
+    class _Flaky(_FakeClient):
+        def query(self, sql, job_config=None):
+            self.queries.append(sql)
+            if "MAX(synced_at)" in sql:
+                raise RuntimeError("Unrecognized name: synced_at")
+            if "COUNT(*) AS n" in sql:
+                return _FakeJob([{"n": 7}])
+            return _FakeJob([])
+
+    _install(monkeypatch, _Flaky())
+    assert ma._dim_stats() == {"rows": 7, "synced_at": None}

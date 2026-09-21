@@ -114,8 +114,10 @@ ID-FXR5US_HYPR_LOREAL_..._SURVEY_AWARENESS_CONTROLE
    ^^^^^^ short_token da campanha            ^^^^^^^^ controle | exposto
 ```
 
-Campanha vem do token e lado vem do sufixo. Mas o nome **não diz qual
-pergunta** o criativo coletou — e no Tap to Choose de pergunta única o evento
+Campanha vem do token e lado vem do sufixo. **Sem o token no nome, a peça
+aparece na lista (que é ampla, como a do Typeform), mas sem marca de
+campanha e sem sugestão automática** — o vínculo é manual. Mas o nome
+**não diz qual pergunta** o criativo coletou — e no Tap to Choose de pergunta única o evento
 nem carrega título. Numa campanha com Ad Recall e Preferência, os dois
 criativos de controle são igualmente "FXR5US, controle", e a primeira versão
 sugeria o mesmo para os dois slots.
@@ -373,6 +375,56 @@ de uma Cloud Function que quem estava diagnosticando não conseguia abrir.
 endpoint é aberto (o report roda no navegador do cliente), então detalhe de
 erro interno não sai de lá. O log continua tendo tudo nos dois casos.
 
+## Quando o modal não acha a peça da campanha
+
+Este foi o incidente de set/2026 (campanha PPV8JF): a integração estava de
+pé — view respondendo, backend deployado, Typeform funcionando — e o picker
+do Max Attention mostrava só "Nenhum criativo encontrado". Não era erro de
+rede nem de configuração: o backend respondia **200 com lista vazia**, e a
+UI tratava isso como resposta normal, sem dizer por quê. Na verdade a peça
+de survey daquela campanha não existia na plataforma.
+
+Duas coisas mudaram a partir daí.
+
+**A lista é ampla, como a do Typeform.** Antes a campanha era FILTRO: só
+peças com o token no nome entravam, e campanha sem peça assim não tinha
+lista nenhuma. Agora a campanha é ORDEM e MARCA: a listagem traz todas as
+peças com resposta de survey nos últimos 30 dias (todas as campanhas), e as
+desta campanha vêm no topo, com janela longa (180 dias) e um chip com o
+token. Peça nomeada fora da convenção continua alcançável pela busca — o
+vínculo é manual, só perde o clique único do "Conectar automaticamente",
+que segue considerando apenas peças marcadas (opções iguais entre campanhas
+diferentes não são evidência de mesma pesquisa).
+
+```
+short_token ──► creatives_dim (peças com o token no NOME) ──► lake, 180 dias  ─┐
+                                                                               ├─► lista, campanha primeiro
+                                              lake, 30 dias, todas as peças ───┘
+```
+
+**O vazio da campanha vem explicado.** Quando nenhuma peça foi marcada, o
+backend devolve `diagnostics` e o modal traduz:
+
+| `reason` | O que significa | Quem resolve |
+|---|---|---|
+| `dim_empty` | `creatives_dim` está vazia — o cron `rollup-creative-events` da plataforma não carregou | plataforma (o2o-platform) |
+| `no_dim_match` | a dimensão carregou, mas **nenhuma peça leva o token no nome** (`ID-PPV8JF_...`), a peça é mais nova que a última carga, ou ainda não foi criada | quem criou a peça (renomear) — ou vincular pelo nome |
+| `no_responses` | as peças da campanha existem, mas nenhuma registrou `survey_answer` na janela (180 dias) | coleta em mídia: a peça é de survey? está veiculando? |
+
+O aviso no topo do modal traz o motivo, os nomes das peças (quando há), o
+estado da dimensão (quantas peças, última carga) e o botão **Atualizar
+lista**, que fura o cache de 10 min do backend (`refresh=true`) pra ver a
+peça logo depois de renomear ou publicar.
+
+Custo: o ramo da campanha poda pela chave líder do cluster (`creative_id`)
+e é barato; o ramo amplo não tem como podar por criativo, e é a janela de
+30 dias que o segura (a primeira versão varria 180 dias só por
+`event_type` e custava 34 GiB por abertura de modal). Admin-only, cacheado
+10 min.
+
+Pelo terminal, `bash backend/scripts/check_ma_survey.sh PPV8JF` faz a mesma
+separação e para no passo que falhou.
+
 ## Quando um número parecer errado
 
 1. **Pergunta sem respostas do Max Attention** → o rótulo do evento
@@ -426,4 +478,6 @@ tela do cliente e o número que a HYPR audita têm que sair da mesma conta.
 | `src/shared/surveyConfig.js` | schema do `survey_data` (v1 → v4) |
 | `src/shared/surveyCombine.js` | busca por fonte + agregação entre meses |
 | `src/components/modals/SurveyModal.jsx` | setup e pareamento automático |
+| `src/shared/maListing.js` | o que dizer quando nenhuma peça da campanha está na lista (ou quando a lista está vazia) |
+| `backend/scripts/check_ma_survey.sh` | diagnóstico em um comando, inclusive "a campanha existe na dimensão?" |
 | `o2o-platform` → `docs/REPORT_CENTER_SURVEY_BRIDGE.md` | o lado produtor |
