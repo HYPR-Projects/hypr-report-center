@@ -2937,8 +2937,11 @@ def report_data(request):
         if cached is not None:
             return (jsonify(cached), 200, headers)
         try:
-            creatives = maxattention.list_creatives(short_token=token, days=days)
-            payload = {"creatives": creatives}
+            # Payload inteiro, não só a lista: quando a campanha não tem
+            # criativo, `diagnostics` diz se é dimensão vazia, nome fora da
+            # convenção ou peça sem resposta — três causas, três responsáveis,
+            # e o admin precisa saber qual é sem abrir o BigQuery.
+            payload = maxattention.list_creatives_payload(short_token=token, days=days)
             _cache_set(_ma_creatives_cache, cache_key, payload)
             return (jsonify(payload), 200, headers)
         except maxattention.NotConfigured as e:

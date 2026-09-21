@@ -13,6 +13,7 @@ import { toast } from "../../lib/toast";
 import { parseSurveyConfig, serializeSurveyConfig, sumCounts, getSideSource } from "../../shared/surveyConfig";
 import { parseVideoaskFile } from "../../lib/videoaskParser";
 import { levenshtein, canonicalLabel, similarity, SOURCE_TINTS } from "../../shared/surveySources";
+import { describeMaEmptyList, describeMaBrowseAll } from "../../shared/maListing";
 
 /**
  * Modal pra configurar surveys com slots independentes pra Controle e Exposto.
@@ -548,6 +549,16 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
   const [maCreatives, setMaCreatives] = useState([]);
   const [maStatus, setMaStatus] = useState("loading");
   const [maError, setMaError] = useState("");
+  // Payload inteiro da última listagem ({scope, days, diagnostics}). É o que
+  // permite explicar uma lista VAZIA: por campanha, o backend diz se a
+  // dimensão não carregou, se nenhuma peça leva o token no nome ou se as
+  // peças existem sem resposta — e cada caso tem uma saída diferente. Antes
+  // os três viravam "Nenhum criativo encontrado", e o admin abria bug.
+  const [maPayload, setMaPayload] = useState(null);
+  // "campaign" (só peças com o token no nome) | "all" (busca ampla, 30 dias,
+  // todas as campanhas — pra peça nomeada fora da convenção).
+  const [maScope, setMaScope] = useState("campaign");
+  const [maReloading, setMaReloading] = useState(false);
   const [scope, setScope] = useState("workspace");
   // Cache de meta por formId — populado sob demanda quando admin seleciona um form.
   // valor: { type: "matrix"|"choice"|"other", rows: [str], loading?: bool, error?: str }
@@ -578,6 +589,47 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
     () => new Map((maCreatives || []).map((c) => [c.creative_id, c])),
     [maCreatives],
   );
+
+  // Recarrega a listagem do Max Attention em outro escopo e/ou furando o
+  // cache do backend. Não mexe em `maStatus` enquanto roda: a lista atual
+  // continua na tela (com os slots já vinculados) e o botão mostra que está
+  // trabalhando — sumir com o picker durante o reload faria o admin achar
+  // que perdeu a seleção.
+  const reloadMa = useCallback(async ({ scope = maScope, refresh = false } = {}) => {
+    setMaReloading(true);
+    try {
+      const resp = await listMaxAttentionCreatives({
+        shortToken: scope === "all" ? "" : shortToken,
+        refresh,
+      });
+      setMaCreatives(resp?.creatives || []);
+      setMaPayload(resp || null);
+      setMaScope(scope);
+      setMaStatus("ready");
+      setMaError("");
+    } catch (e) {
+      if (e?.notConfigured) setMaStatus("off");
+      else if (e?.staleBackend) setMaStatus("stale");
+      else {
+        setMaStatus("error");
+        setMaError(e?.message || "Falha ao listar criativos do Max Attention");
+      }
+    } finally {
+      setMaReloading(false);
+    }
+  }, [maScope, shortToken]);
+
+  // Explicação da lista vazia (null quando há criativo) e aviso de busca
+  // ampla (null no escopo da campanha). Textos em `shared/maListing.js`.
+  const maEmpty = useMemo(
+    () => (maStatus === "ready" ? describeMaEmptyList(maPayload || { creatives: maCreatives, scope: maScope }, { shortToken }) : null),
+    [maStatus, maPayload, maCreatives, maScope, shortToken],
+  );
+  const maBrowseNote = useMemo(
+    () => (maStatus === "ready" && maCreatives.length > 0 ? describeMaBrowseAll(maPayload, { shortToken }) : null),
+    [maStatus, maPayload, maCreatives.length, shortToken],
+  );
+  const maEmptyNote = maEmpty ? `${maEmpty.title} ${maEmpty.hint}` : "";
 
   // ── Lazy-fetch da meta (rows) por formId selecionado em modo list ─────────
   const metaByIdRef = useRef(metaById);
@@ -700,6 +752,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
 
       if (maResp.status === "fulfilled") {
         setMaCreatives(maResp.value?.creatives || []);
+        setMaPayload(maResp.value || null);
         setMaStatus("ready");
       } else if (maResp.reason?.notConfigured) {
         setMaStatus("off");
@@ -842,6 +895,10 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
   // pelo volume de respostas — o par pelo nome sabe qual é qual.
   const maSuggestions = useMemo(() => {
     if (maStatus !== "ready" || !maCreatives.length) return [];
+    // Na busca AMPLA a lista tem peças de outras campanhas; opções iguais
+    // ("Sim/Não") não são evidência de que é a mesma pesquisa. Sugestão
+    // automática só no escopo da campanha — no amplo o admin escolhe.
+    if (maScope === "all") return [];
     const used = new Set(maUsedIds);
     const out = [];
     blocks.forEach((b, idx) => {
@@ -876,7 +933,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
       }
     });
     return out;
-  }, [blocks, maCreatives, maStatus, maUsedIds, maById, typeformOptionsOf]);
+  }, [blocks, maCreatives, maStatus, maScope, maUsedIds, maById, typeformOptionsOf]);
 
   // Quantas dessas sugestões viram a base PRINCIPAL do slot (slot sem
   // Typeform) — o resto entra somando. Muda o texto do aviso: "preencher" e
@@ -1230,6 +1287,96 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
         }}>
           Não consegui listar os criativos do Max Attention ({maError}). O Typeform
           segue funcionando normalmente.
+          {" "}
+          <button
+            type="button"
+            onClick={() => reloadMa({ refresh: true })}
+            disabled={maReloading}
+            style={{ background: "none", border: "none", color: text, fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0, textDecoration: "underline" }}
+          >
+            {maReloading ? "tentando…" : "tentar de novo"}
+          </button>
+        </div>
+      )}
+
+      {!loading && maEmpty && (
+        <div
+          data-testid="ma-empty-note"
+          style={{
+            marginBottom: 12, padding: "10px 12px", borderRadius: 8,
+            border: `1px solid ${SOURCE_TINTS.maxattention.bd}`,
+            background: SOURCE_TINTS.maxattention.bg,
+            fontSize: 11.5, color: text, lineHeight: 1.55,
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 2 }}>
+            Max Attention: {maEmpty.title}
+          </div>
+          <div style={{ color: muted }}>{maEmpty.detail}</div>
+          <div style={{ color: muted, marginTop: 4 }}>{maEmpty.hint}</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+            {maEmpty.canBrowseAll && (
+              <button
+                type="button"
+                onClick={() => reloadMa({ scope: "all" })}
+                disabled={maReloading}
+                style={{
+                  background: SOURCE_TINTS.maxattention.fg, border: "none", color: "#1a1a1a",
+                  borderRadius: 999, padding: "5px 12px", fontSize: 11, fontWeight: 700,
+                  cursor: maReloading ? "wait" : "pointer", opacity: maReloading ? 0.6 : 1,
+                }}
+              >
+                {maReloading ? "Buscando…" : "Buscar em todos os criativos recentes"}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => reloadMa({ refresh: true })}
+              disabled={maReloading}
+              style={{
+                background: "none", border: `1px solid ${modalBdr}`, color: text,
+                borderRadius: 999, padding: "5px 12px", fontSize: 11, fontWeight: 600,
+                cursor: maReloading ? "wait" : "pointer", opacity: maReloading ? 0.6 : 1,
+              }}
+              title="Fura o cache de 10 min do backend — pra quando você acabou de renomear ou publicar a peça"
+            >
+              {maReloading ? "Atualizando…" : "Atualizar lista"}
+            </button>
+            {maScope === "all" && (
+              <button
+                type="button"
+                onClick={() => reloadMa({ scope: "campaign" })}
+                disabled={maReloading}
+                style={{ background: "none", border: "none", color: muted, fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+              >
+                voltar pra campanha
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {!loading && maBrowseNote && (
+        <div
+          data-testid="ma-browse-all-note"
+          style={{
+            marginBottom: 12, padding: "8px 10px", borderRadius: 8,
+            border: `1px dashed ${SOURCE_TINTS.maxattention.bd}`,
+            background: inputBg, fontSize: 11.5, color: muted, lineHeight: 1.5,
+            display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
+          }}
+        >
+          <span style={{ flex: "1 1 240px" }}>
+            <strong style={{ color: text }}>{maBrowseNote.title}</strong> {maBrowseNote.hint}
+          </span>
+          <button
+            type="button"
+            onClick={() => reloadMa({ scope: "campaign" })}
+            disabled={maReloading}
+            style={{ background: "none", border: `1px solid ${modalBdr}`, color: text, borderRadius: 999, padding: "4px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+          >
+            {maReloading ? "…" : "só esta campanha"}
+          </button>
         </div>
       )}
 
@@ -1367,6 +1514,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
                 typeformOptions={typeformOptionsOf(block.ctrl)}
                 maCreatives={maCreatives}
                 maStatus={maStatus}
+                maEmptyNote={maEmptyNote}
                 maUsedIds={maUsedIds}
                 maUsageMap={maUsageMap}
                 forms={forms}
@@ -1392,6 +1540,7 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
                 typeformOptions={typeformOptionsOf(block.exp)}
                 maCreatives={maCreatives}
                 maStatus={maStatus}
+                maEmptyNote={maEmptyNote}
                 maUsedIds={maUsedIds}
                 maUsageMap={maUsageMap}
                 forms={forms}
@@ -2048,6 +2197,8 @@ function MaPicker({
   onSelect,
   conflictsOf,        // (creative_id) => [{blockIdx, slotGroup}]
   placeholder,
+  emptyNote,          // por que a lista está vazia (quando está) — "Nenhum
+                      // criativo encontrado" só vale pra busca sem resultado
   theme,
 }) {
   const [open, setOpen] = useState(false);
@@ -2210,8 +2361,12 @@ function MaPicker({
           />
           <div style={{ maxHeight: 240, overflowY: "auto" }}>
             {filtered.length === 0 ? (
-              <div style={{ padding: "12px 14px", color: muted, fontSize: 12 }}>
-                Nenhum criativo encontrado.
+              <div style={{ padding: "12px 14px", color: muted, fontSize: 12, lineHeight: 1.5 }}>
+                {pool.length === 0 && emptyNote
+                  ? emptyNote
+                  : pool.length === 0
+                    ? "Nenhum criativo nesta lista."
+                    : `Nenhum criativo encontrado pra "${search.trim()}".`}
               </div>
             ) : (
               <>
@@ -2340,6 +2495,7 @@ function MaPrimarySlot({
   side,
   creatives,
   status,
+  emptyNote,
   maUsageMap,
   blockIdx,
   onChange,
@@ -2373,8 +2529,13 @@ function MaPrimarySlot({
         }
         conflictsOf={(id) => maConflictsFor(id, blockIdx, sideKey, maUsageMap)}
         placeholder={
-          status === "ready" ? "Buscar criativo do Max Attention…" : "Nenhum criativo disponível"
+          status !== "ready"
+            ? "Nenhum criativo disponível"
+            : (creatives || []).length === 0
+              ? "Nenhum criativo nesta lista — veja o aviso no topo do modal"
+              : "Buscar criativo do Max Attention…"
         }
+        emptyNote={emptyNote}
         theme={theme}
       />
 
@@ -2422,6 +2583,7 @@ function SideCard({
   typeformOptions,
   maCreatives,
   maStatus,
+  maEmptyNote,       // explicação da lista vazia (string) — vai pro picker
   maUsedIds,
   maUsageMap,
   forms,
@@ -2581,6 +2743,7 @@ function SideCard({
           side={side}
           creatives={maCreatives}
           status={maStatus}
+          emptyNote={maEmptyNote}
           maUsageMap={maUsageMap}
           blockIdx={blockIdx}
           onChange={onChange}

@@ -234,7 +234,7 @@ def _weight_expr(has_session_col, has_responses_col):
     return "COUNT(*)"
 
 
-def _creative_ids_for_token(token, limit=500):
+def _dim_creatives_for_token(token, limit=500):
     """Criativos de uma campanha, resolvidos na DIMENSÃO (não no lake).
 
     Alguns KB contra dezenas de GB: a dimensão tem uma linha por criativo,
@@ -242,11 +242,13 @@ def _creative_ids_for_token(token, limit=500):
     cluster pro filtro seguinte.
 
     Casa pela convenção de nome ("ID-FXR5US_..."), que é a mesma regra que a
-    view usa pra derivar `short_token`.
+    view usa pra derivar `short_token`. Devolve `[{creative_id, creative_name}]`
+    — o nome volta junto porque, quando a listagem sai vazia, é ele que diz
+    ao admin QUAIS peças a campanha tem e por que nenhuma entrou.
     """
     dim = creatives_dim_table()
     sql = f"""
-        SELECT creative_id
+        SELECT creative_id, creative_name
         FROM `{dim}`
         WHERE REGEXP_CONTAINS(UPPER(COALESCE(creative_name, '')), @token_re)
         LIMIT {int(limit)}
@@ -258,7 +260,48 @@ def _creative_ids_for_token(token, limit=500):
         )
     ]
     rows = _client().query(sql, job_config=_job_config(params)).result()
-    return [r["creative_id"] for r in rows if r["creative_id"]]
+    return [
+        {"creative_id": r["creative_id"], "creative_name": r["creative_name"] or ""}
+        for r in rows
+        if r["creative_id"]
+    ]
+
+
+def _creative_ids_for_token(token, limit=500):
+    return [c["creative_id"] for c in _dim_creatives_for_token(token, limit)]
+
+
+def _dim_stats():
+    """Quantos criativos a dimensão tem e quando foi a última carga.
+
+    Só é consultado quando a listagem de uma campanha sai VAZIA — é o que
+    separa "a dimensão nunca carregou" (problema do cron da plataforma) de
+    "carregou, mas nenhum criativo desta campanha segue a convenção de nome"
+    (problema de nomenclatura). Sem essa distinção, o admin vê uma lista
+    vazia e não tem como saber pra quem ligar.
+
+    Tolerante a dimensão sem `synced_at` (override por MA_CREATIVES_DIM):
+    devolve o que conseguir, nunca derruba a listagem por causa disso.
+    """
+    dim = creatives_dim_table()
+    try:
+        rows = list(_client().query(
+            f"SELECT COUNT(*) AS n, MAX(synced_at) AS synced_at FROM `{dim}`",
+            job_config=_job_config([]),
+        ).result())
+        r = rows[0]
+        synced = r["synced_at"]
+        return {"rows": int(r["n"] or 0), "synced_at": synced.isoformat() if synced else None}
+    except Exception as e:  # noqa: BLE001 — diagnóstico não pode virar erro
+        logger.warning(f"[maxattention] _dim_stats falhou (synced_at?): {e}")
+        try:
+            rows = list(_client().query(
+                f"SELECT COUNT(*) AS n FROM `{dim}`", job_config=_job_config([]),
+            ).result())
+            return {"rows": int(rows[0]["n"] or 0), "synced_at": None}
+        except Exception as e2:  # noqa: BLE001
+            logger.warning(f"[maxattention] _dim_stats falhou de novo: {e2}")
+            return {"rows": None, "synced_at": None}
 
 
 def _client():
@@ -288,7 +331,17 @@ def _job_config(params):
     )
 
 
+# Teto de nomes de criativo devolvidos no diagnóstico de lista vazia. Serve
+# pro admin reconhecer a campanha ("ah, é a peça X"), não pra listar tudo.
+MAX_DIAG_NAMES = 8
+
+
 def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
+    """Compat: só a lista. Ver `list_creatives_payload`."""
+    return list_creatives_payload(short_token=short_token, days=days, limit=limit)["creatives"]
+
+
+def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
     """
     Criativos com resposta de survey na janela, mais recentes primeiro.
 
@@ -296,8 +349,30 @@ def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
     coluna quando a view a preenche, senão pela convenção de nome. Sem
     ele, devolve a janela inteira (o admin busca no dropdown).
 
-    Devolve [{creative_id, creative_name, short_token, questions,
-              responses, first_at, last_at, side, match}].
+    Devolve um payload, não só a lista:
+
+        {
+          "creatives": [{creative_id, creative_name, short_token, questions,
+                         options, responses, first_at, last_at, side, match}],
+          "scope": "campaign" | "all",
+          "short_token": "FXR5US" | "",
+          "days": <janela efetivamente usada>,
+          "diagnostics": None | {
+              "reason": "dim_empty" | "no_dim_match" | "no_responses",
+              "dim_rows": int | None,
+              "dim_synced_at": iso | None,
+              "dim_matched": int,
+              "dim_names": [str],
+          },
+        }
+
+    `diagnostics` só vem preenchido quando a lista de uma CAMPANHA sai vazia.
+    Lista vazia era a resposta certa e continua sendo — mas "[]" sozinho não
+    diz se a dimensão nunca carregou, se nenhuma peça leva o token no nome ou
+    se as peças existem e ninguém respondeu. São três causas com três
+    responsáveis diferentes (cron da plataforma / quem nomeou o criativo /
+    a coleta em mídia), e o admin olhando um dropdown vazio não tem como
+    distinguir. Foi exatamente esse buraco que virou "a integração quebrou".
     """
     view = survey_view()
     days = max(1, min(int(days or DEFAULT_LOOKBACK_DAYS), 730))
@@ -323,6 +398,15 @@ def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
     where = ["responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)"]
     params = [bigquery.ScalarQueryParameter("days", "INT64", days)]
 
+    def _payload(creatives, diagnostics=None):
+        return {
+            "creatives": creatives,
+            "scope": "campaign" if token else "all",
+            "short_token": token,
+            "days": days,
+            "diagnostics": diagnostics,
+        }
+
     # Filtrar por creative_id é o que torna esta query viável.
     #
     # `creative_events_raw` é clusterizada por (creative_id, event_type). A
@@ -333,18 +417,32 @@ def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
     # A campanha é resolvida antes, na `creatives_dim`, que tem centenas de
     # linhas e custa alguns KB. Com os ids em mãos, o filtro cai na chave
     # LÍDER do cluster e o scan encolhe pra fração do que era.
+    dim_matched = []
     if token:
-        ids = _creative_ids_for_token(token)
-        if not ids:
-            # Nenhum criativo desta campanha: devolver [] é a resposta certa,
-            # e evita varrer o lake pra descobrir o mesmo.
-            return []
+        dim_matched = _dim_creatives_for_token(token)
+        if not dim_matched:
+            # Nenhum criativo desta campanha na dimensão: devolver [] é a
+            # resposta certa, e evita varrer o lake pra descobrir o mesmo.
+            # Mas dizemos POR QUÊ — dimensão vazia é uma coisa (cron da
+            # plataforma), nome fora da convenção é outra (quem criou a peça).
+            stats = _dim_stats()
+            reason = "dim_empty" if stats["rows"] == 0 else "no_dim_match"
+            return _payload([], {
+                "reason": reason,
+                "dim_rows": stats["rows"],
+                "dim_synced_at": stats["synced_at"],
+                "dim_matched": 0,
+                "dim_names": [],
+            })
         where.append("creative_id IN UNNEST(@ids)")
-        params.append(bigquery.ArrayQueryParameter("ids", "STRING", ids))
+        params.append(bigquery.ArrayQueryParameter(
+            "ids", "STRING", [c["creative_id"] for c in dim_matched],
+        ))
     else:
         # Sem campanha não há como podar por criativo. Em vez de varrer a
-        # janela inteira, encolhe o período: é caminho manual (o modal sempre
-        # manda o token) e serve pra "o que respondeu recentemente".
+        # janela inteira, encolhe o período: é o caminho manual do modal
+        # ("buscar em todos os criativos recentes", quando a campanha não
+        # acha nada pelo nome) e serve pra "o que respondeu recentemente".
         days = min(days, UNSCOPED_LOOKBACK_DAYS)
         params[0] = bigquery.ScalarQueryParameter("days", "INT64", days)
 
@@ -402,7 +500,22 @@ def list_creatives(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=200):
                 else "name" if token and token_in_name(name, token) else None
             ),
         })
-    return out
+
+    if token and not out:
+        # A dimensão CONHECE a campanha (peças com o token no nome existem),
+        # mas nenhuma registrou `survey_answer` na janela. Isso não é defeito
+        # da integração nem de nome: é coleta — a peça não rodou, não é de
+        # survey, ou o evento não está chegando no lake.
+        names = sorted({c["creative_name"] for c in dim_matched if c["creative_name"]})
+        return _payload([], {
+            "reason": "no_responses",
+            "dim_rows": None,
+            "dim_synced_at": None,
+            "dim_matched": len(dim_matched),
+            "dim_names": names[:MAX_DIAG_NAMES],
+        })
+
+    return _payload(out)
 
 
 def _view_columns(view):

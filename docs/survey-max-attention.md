@@ -114,7 +114,9 @@ ID-FXR5US_HYPR_LOREAL_..._SURVEY_AWARENESS_CONTROLE
    ^^^^^^ short_token da campanha            ^^^^^^^^ controle | exposto
 ```
 
-Campanha vem do token e lado vem do sufixo. Mas o nome **não diz qual
+Campanha vem do token e lado vem do sufixo. **Sem o token no nome, a peça
+não entra na lista da campanha** — só aparece pela busca ampla ("todos os
+criativos recentes"), e o vínculo é manual. Mas o nome **não diz qual
 pergunta** o criativo coletou — e no Tap to Choose de pergunta única o evento
 nem carrega título. Numa campanha com Ad Recall e Preferência, os dois
 criativos de controle são igualmente "FXR5US, controle", e a primeira versão
@@ -373,6 +375,50 @@ de uma Cloud Function que quem estava diagnosticando não conseguia abrir.
 endpoint é aberto (o report roda no navegador do cliente), então detalhe de
 erro interno não sai de lá. O log continua tendo tudo nos dois casos.
 
+## Quando o modal lista ZERO criativos
+
+Este foi o incidente de set/2026 (campanha PPV8JF): a integração estava de
+pé — view respondendo, backend deployado, Typeform funcionando — e o picker
+do Max Attention mostrava só "Nenhum criativo encontrado". Não era erro de
+rede nem de configuração: o backend respondia **200 com lista vazia**, e a
+UI tratava isso como resposta normal, sem dizer por quê.
+
+A listagem por campanha percorre dois passos, e o vazio pode nascer em
+qualquer um deles:
+
+```
+short_token ──► creatives_dim (peça com o token no NOME?) ──► lake (survey_answer na janela?)
+                   │                                              │
+                   └─ nenhuma peça ─► lista vazia                 └─ nenhuma resposta ─► lista vazia
+```
+
+Hoje o backend devolve `diagnostics` junto com a lista, e o modal traduz:
+
+| `reason` | O que significa | Quem resolve |
+|---|---|---|
+| `dim_empty` | `creatives_dim` está vazia — o cron `rollup-creative-events` da plataforma não carregou | plataforma (o2o-platform) |
+| `no_dim_match` | a dimensão carregou, mas **nenhuma peça leva o token no nome** (`ID-PPV8JF_...`), ou a peça é mais nova que a última carga | quem criou a peça (renomear) — ou vincular pelo nome |
+| `no_responses` | as peças da campanha existem, mas nenhuma registrou `survey_answer` na janela (180 dias) | coleta em mídia: a peça é de survey? está veiculando? |
+
+O aviso no topo do modal traz o motivo, os nomes das peças (quando há) e
+duas saídas:
+
+- **Buscar em todos os criativos recentes** — lista as peças com resposta
+  nos últimos 30 dias, de todas as campanhas, pra vincular pelo nome quando
+  a convenção não foi seguida. É o caminho manual que a documentação sempre
+  prometeu ("aí o admin escolhe o criativo na lista") e que, na prática,
+  não existia: o modal só listava a campanha, e campanha sem token no nome
+  não tinha lista nenhuma.
+- **Atualizar lista** — fura o cache de 10 min do backend (`refresh=true`),
+  pra ver a peça logo depois de renomear ou publicar.
+
+A convenção de nome continua sendo o vínculo forte e o único que sugere
+automaticamente. Vincular pelo nome funciona igual no report; só perde o
+clique único do "Conectar automaticamente".
+
+Pelo terminal, `bash backend/scripts/check_ma_survey.sh PPV8JF` faz a mesma
+separação e para no passo que falhou.
+
 ## Quando um número parecer errado
 
 1. **Pergunta sem respostas do Max Attention** → o rótulo do evento
@@ -426,4 +472,6 @@ tela do cliente e o número que a HYPR audita têm que sair da mesma conta.
 | `src/shared/surveyConfig.js` | schema do `survey_data` (v1 → v4) |
 | `src/shared/surveyCombine.js` | busca por fonte + agregação entre meses |
 | `src/components/modals/SurveyModal.jsx` | setup e pareamento automático |
+| `src/shared/maListing.js` | o que dizer quando a lista de criativos sai vazia (e quando oferecer a busca ampla) |
+| `backend/scripts/check_ma_survey.sh` | diagnóstico em um comando, inclusive "a campanha existe na dimensão?" |
 | `o2o-platform` → `docs/REPORT_CENTER_SURVEY_BRIDGE.md` | o lado produtor |
