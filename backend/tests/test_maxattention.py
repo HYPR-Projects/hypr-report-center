@@ -30,6 +30,7 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("MA_SURVEY_VIEW", raising=False)
     monkeypatch.delenv("MA_CREATIVES_DIM", raising=False)
     ma._COLUMNS_CACHE.clear()
+    ma._RECENT_CACHE.clear()
 
 
 def test_sem_env_a_falha_diz_o_que_configurar():
@@ -183,10 +184,14 @@ class _FakeClient:
     dimensão, e o lake (a view). Grava o que foi consultado pra o teste
     afirmar que o lake NÃO foi varrido quando não devia."""
 
-    def __init__(self, dim_rows=(), dim_stats=None, lake_rows=()):
+    def __init__(self, dim_rows=(), dim_stats=None, lake_rows=(), campaign_rows=None):
         self.dim_rows = list(dim_rows)
         self.dim_stats = dim_stats or {"n": 0, "synced_at": None}
+        # `lake_rows` alimenta o ramo AMPLO; `campaign_rows` o da campanha.
+        # Sem `campaign_rows`, o ramo da campanha devolve as linhas de
+        # `lake_rows` cujo creative_id está nos ids pedidos.
         self.lake_rows = list(lake_rows)
+        self.campaign_rows = campaign_rows
         self.queries = []
 
     def query(self, sql, job_config=None):
@@ -195,6 +200,15 @@ class _FakeClient:
             return _FakeJob([{"client_name": None, **r} for r in self.dim_rows])
         if "creatives_dim" in sql and "COUNT(*) AS n" in sql:
             return _FakeJob([self.dim_stats])
+        if "creative_id IN UNNEST(@ids)" in sql:
+            if self.campaign_rows is not None:
+                return _FakeJob(self.campaign_rows)
+            ids = set()
+            if job_config is not None:
+                for p in job_config.query_parameters:
+                    if p.name == "ids":
+                        ids = set(p.values)
+            return _FakeJob([r for r in self.lake_rows if r["creative_id"] in ids])
         return _FakeJob(self.lake_rows)
 
 
@@ -222,7 +236,7 @@ def test_dimensao_vazia_e_diagnosticada_e_a_lista_ampla_continua(ma_env, monkeyp
     # Sem peça da campanha na dimensão, o lake ainda é consultado — pelo ramo
     # AMPLO (janela curta), sem o filtro de ids que não existe.
     lake = [q for q in client.queries if "ma_survey_responses" in q]
-    assert len(lake) == 1
+    assert len(lake) == 1                      # só o ramo amplo — campanha não tem ids
     assert "UNNEST(@ids)" not in lake[0]
     assert "@since_recent" in lake[0]
     # Corte de data como parâmetro TIMESTAMP constante, nunca CURRENT_TIMESTAMP:
@@ -263,13 +277,12 @@ def test_peca_existe_mas_nao_respondeu_lista_os_nomes(ma_env, monkeypatch):
     assert [c["creative_id"] for c in p["creatives"]] == ["z9"]
     assert p["creatives"][0]["match"] is None
     assert p["campaign_count"] == 0
-    # O lake foi consultado uma vez, com os dois ramos: campanha (podado
-    # pelos ids, janela longa) e amplo (NOT IN, janela curta).
+    # Dois ramos, duas queries: campanha (podada pelos ids, janela longa) e
+    # amplo (janela curta, cacheado e compartilhado entre campanhas).
     lake = [q for q in client.queries if "ma_survey_responses" in q]
-    assert len(lake) == 1
-    assert "creative_id IN UNNEST(@ids)" in lake[0]
-    assert "creative_id NOT IN UNNEST(@ids)" in lake[0]
-    assert "UNION ALL" in lake[0]
+    assert len(lake) == 2
+    assert "creative_id IN UNNEST(@ids)" in lake[0] and "@since_campaign" in lake[0]
+    assert "UNNEST(@ids)" not in lake[1] and "@since_recent" in lake[1]
 
 
 def test_peca_da_campanha_vem_marcada_e_sem_diagnostico(ma_env, monkeypatch):
@@ -363,8 +376,8 @@ def test_cortes_de_data_sao_parametros_timestamp_constantes(ma_env, monkeypatch)
     class _Capture(_FakeClient):
         def query(self, sql, job_config=None):
             if "ma_survey_responses" in sql:
-                captured["params"] = {p.name: p for p in job_config.query_parameters}
-                captured["sql"] = sql
+                captured.setdefault("params", {}).update({p.name: p for p in job_config.query_parameters})
+                captured["sql"] = captured.get("sql", "") + sql
             return super().query(sql, job_config)
 
     fixed_now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
@@ -391,7 +404,7 @@ def test_ramo_amplo_estourando_o_teto_degrada_pra_so_campanha(ma_env, monkeypatc
 
     class _Capped(_FakeClient):
         def query(self, sql, job_config=None):
-            if "ma_survey_responses" in sql and "NOT IN UNNEST(@ids)" in sql:
+            if "ma_survey_responses" in sql and "@since_recent" in sql:
                 self.queries.append(sql)
                 raise RuntimeError(
                     "500 Query exceeded limit for bytes billed: 34359738368. "
@@ -408,7 +421,7 @@ def test_ramo_amplo_estourando_o_teto_degrada_pra_so_campanha(ma_env, monkeypatc
     assert p["diagnostics"] is None
     lake = [q for q in client.queries if "ma_survey_responses" in q]
     assert len(lake) == 2
-    assert "NOT IN UNNEST(@ids)" in lake[0] and "NOT IN UNNEST(@ids)" not in lake[1]
+    assert "@since_campaign" in lake[0] and "@since_recent" in lake[1]
 
 
 def test_outro_erro_do_bigquery_nao_e_engolido(ma_env, monkeypatch):
@@ -535,3 +548,35 @@ def test_sem_cliente_o_vinculo_e_so_por_token(ma_env, monkeypatch):
     assert ma._dim_creatives_for_token("PS604Q") == []
     # Sem cliente, o SQL nem pede as linhas com client_name preenchido.
     assert "client_name IS NOT NULL" not in client.queries[-1]
+
+
+def test_ramo_amplo_e_cacheado_e_compartilhado_entre_campanhas(ma_env, monkeypatch):
+    # É a parte cara (dezenas de GB) e é igual pra toda campanha: roda uma
+    # vez e serve todos os modais. O ramo da campanha roda sempre (barato).
+    now = datetime(2026, 9, 20, 10, 0, tzinfo=timezone.utc)
+    dim_a = [{"creative_id": "a1", "creative_name": "ID-AAAAAA_X_CONTROLE"}]
+    lake = [{
+        "creative_id": "a1", "creative_name": "ID-AAAAAA_X_CONTROLE", "short_token": "AAAAAA",
+        "questions": [], "options": [], "responses": 5, "first_at": now, "last_at": now,
+    }, {
+        "creative_id": "z9", "creative_name": "OUTRA", "short_token": None,
+        "questions": [], "options": [], "responses": 7, "first_at": now, "last_at": now,
+    }]
+    client = _install(monkeypatch, _FakeClient(dim_rows=dim_a, lake_rows=lake))
+
+    p1 = ma.list_creatives_payload(short_token="AAAAAA")
+    p2 = ma.list_creatives_payload(short_token="AAAAAA")
+    recent = [q for q in client.queries if "ma_survey_responses" in q and "@since_recent" in q]
+    campaign = [q for q in client.queries if "ma_survey_responses" in q and "@since_campaign" in q]
+    assert len(recent) == 1        # cacheado
+    assert len(campaign) == 2      # sempre fresco
+    assert [c["creative_id"] for c in p1["creatives"]] == ["a1", "z9"]
+    assert p1["creatives"] == p2["creatives"]
+
+    # refresh=True fura o cache do ramo amplo.
+    ma.list_creatives_payload(short_token="AAAAAA", refresh=True)
+    recent = [q for q in client.queries if "ma_survey_responses" in q and "@since_recent" in q]
+    assert len(recent) == 2
+
+    # warm_recent aquece e devolve a contagem.
+    assert ma.warm_recent() == 2
