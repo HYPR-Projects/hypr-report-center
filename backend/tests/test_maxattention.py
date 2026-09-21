@@ -167,7 +167,7 @@ def test_bypass_de_cache_do_ma_results_e_admin_only():
 # se ninguém tinha respondido. Três causas, três responsáveis, um único
 # sintoma. Estes testes fixam o contrato do diagnóstico que separa os três.
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 class _FakeJob:
@@ -224,7 +224,10 @@ def test_dimensao_vazia_e_diagnosticada_e_a_lista_ampla_continua(ma_env, monkeyp
     lake = [q for q in client.queries if "ma_survey_responses" in q]
     assert len(lake) == 1
     assert "UNNEST(@ids)" not in lake[0]
-    assert "@recent_days" in lake[0]
+    assert "@since_recent" in lake[0]
+    # Corte de data como parâmetro TIMESTAMP constante, nunca CURRENT_TIMESTAMP:
+    # é o que deixa a estimativa podar partição e passar no teto de bytes.
+    assert "CURRENT_TIMESTAMP" not in lake[0]
 
 
 def test_nome_fora_da_convencao_e_diagnosticado_com_estado_da_dimensao(ma_env, monkeypatch):
@@ -348,3 +351,93 @@ def test_dim_stats_degrada_sem_synced_at(ma_env, monkeypatch):
 
     _install(monkeypatch, _Flaky())
     assert ma._dim_stats() == {"rows": 7, "synced_at": None}
+
+
+def test_cortes_de_data_sao_parametros_timestamp_constantes(ma_env, monkeypatch):
+    # O teto de bytes é aplicado sobre a ESTIMATIVA, e a estimativa não poda
+    # partição com CURRENT_TIMESTAMP(). Em produção o ramo amplo foi estimado
+    # como a tabela inteira (36,5 GiB > 32) e o modal morreu com
+    # bytesBilledLimitExceeded. Os cortes têm que chegar como TIMESTAMP.
+    captured = {}
+
+    class _Capture(_FakeClient):
+        def query(self, sql, job_config=None):
+            if "ma_survey_responses" in sql:
+                captured["params"] = {p.name: p for p in job_config.query_parameters}
+                captured["sql"] = sql
+            return super().query(sql, job_config)
+
+    fixed_now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(ma, "_now", lambda: fixed_now)
+    dim = [{"creative_id": "c1", "creative_name": "ID-PPV8JF_X_CONTROLE"}]
+    _install(monkeypatch, _Capture(dim_rows=dim, lake_rows=[]))
+    ma.list_creatives_payload(short_token="PPV8JF", days=180)
+
+    assert "CURRENT_TIMESTAMP" not in captured["sql"]
+    p = captured["params"]
+    assert p["since_recent"].type_ == "TIMESTAMP"
+    assert p["since_campaign"].type_ == "TIMESTAMP"
+    assert p["since_recent"].value == fixed_now - timedelta(days=ma.UNSCOPED_LOOKBACK_DAYS)
+    assert p["since_campaign"].value == fixed_now - timedelta(days=180)
+
+
+def test_ramo_amplo_estourando_o_teto_degrada_pra_so_campanha(ma_env, monkeypatch):
+    now = datetime(2026, 9, 20, 10, 0, tzinfo=timezone.utc)
+    dim = [{"creative_id": "c1", "creative_name": "ID-PPV8JF_X_CONTROLE"}]
+    lake = [{
+        "creative_id": "c1", "creative_name": "ID-PPV8JF_X_CONTROLE", "short_token": "PPV8JF",
+        "questions": [], "options": ["Sim"], "responses": 10, "first_at": now, "last_at": now,
+    }]
+
+    class _Capped(_FakeClient):
+        def query(self, sql, job_config=None):
+            if "ma_survey_responses" in sql and "NOT IN UNNEST(@ids)" in sql:
+                self.queries.append(sql)
+                raise RuntimeError(
+                    "500 Query exceeded limit for bytes billed: 34359738368. "
+                    "39253442560 or higher required.; reason: bytesBilledLimitExceeded"
+                )
+            return super().query(sql, job_config)
+
+    client = _install(monkeypatch, _Capped(dim_rows=dim, lake_rows=lake))
+    p = ma.list_creatives_payload(short_token="PPV8JF")
+    # A campanha veio; o ramo amplo não, e o payload diz isso.
+    assert [c["creative_id"] for c in p["creatives"]] == ["c1"]
+    assert p["includes_recent"] is False
+    assert p["recent_skipped"] == "bytes_limit"
+    assert p["diagnostics"] is None
+    lake = [q for q in client.queries if "ma_survey_responses" in q]
+    assert len(lake) == 2
+    assert "NOT IN UNNEST(@ids)" in lake[0] and "NOT IN UNNEST(@ids)" not in lake[1]
+
+
+def test_outro_erro_do_bigquery_nao_e_engolido(ma_env, monkeypatch):
+    class _Broken(_FakeClient):
+        def query(self, sql, job_config=None):
+            if "ma_survey_responses" in sql:
+                raise RuntimeError("Access Denied: prod_analytics")
+            return super().query(sql, job_config)
+
+    _install(monkeypatch, _Broken(dim_rows=[{"creative_id": "c1", "creative_name": "ID-PPV8JF_X"}]))
+    with pytest.raises(RuntimeError, match="Access Denied"):
+        ma.list_creatives_payload(short_token="PPV8JF")
+
+
+def test_sem_peca_da_campanha_e_teto_estourado_devolve_vazio_explicado(ma_env, monkeypatch):
+    # O caso PPV8JF depois do primeiro deploy: zero peças na dimensão, o
+    # único ramo era o amplo, e ele estourou o teto → 500 no modal. Agora:
+    # lista vazia, diagnóstico da campanha e o aviso de que o amplo não veio.
+    class _Capped(_FakeClient):
+        def query(self, sql, job_config=None):
+            if "ma_survey_responses" in sql:
+                self.queries.append(sql)
+                raise RuntimeError("reason: bytesBilledLimitExceeded, message: Query exceeded limit for bytes billed")
+            return super().query(sql, job_config)
+
+    _install(monkeypatch, _Capped(dim_rows=[], dim_stats={"n": 843, "synced_at": None}))
+    p = ma.list_creatives_payload(short_token="PPV8JF")
+    assert p["creatives"] == []
+    assert p["includes_recent"] is False
+    assert p["recent_skipped"] == "bytes_limit"
+    assert p["diagnostics"]["reason"] == "no_dim_match"
+    assert p["diagnostics"]["dim_rows"] == 843

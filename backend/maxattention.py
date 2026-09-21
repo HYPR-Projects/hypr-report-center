@@ -75,6 +75,7 @@ import os
 import re
 import unicodedata
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 
 from google.cloud import bigquery
 
@@ -426,46 +427,129 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
     ids = [c["creative_id"] for c in dim_matched]
     id_set = set(ids)
 
-    branches = []
-    params = [bigquery.ScalarQueryParameter("recent_days", "INT64", recent_days)]
-    if ids:
-        params.append(bigquery.ScalarQueryParameter("days", "INT64", days))
-        params.append(bigquery.ArrayQueryParameter("ids", "STRING", ids))
-        branches.append(f"""
-          SELECT * FROM `{view}`
-          WHERE creative_id IN UNNEST(@ids)
-            AND responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
-        """)
-        # NOT IN evita contar a peça da campanha duas vezes (ela já veio do
-        # ramo de cima, com a janela longa).
-        branches.append(f"""
-          SELECT * FROM `{view}`
-          WHERE creative_id NOT IN UNNEST(@ids)
-            AND responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @recent_days DAY)
-        """)
-        order = "ORDER BY (creative_id IN UNNEST(@ids)) DESC, last_at DESC"
-    else:
-        branches.append(f"""
-          SELECT * FROM `{view}`
-          WHERE responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @recent_days DAY)
-        """)
-        order = "ORDER BY last_at DESC"
+    # Cortes de data como TIMESTAMP CONSTANTE (parâmetro), não como
+    # TIMESTAMP_SUB(CURRENT_TIMESTAMP(), ...). Não é estilo: é o que decide se
+    # a query roda. O teto de bytes (`MAX_BYTES_BILLED`) é aplicado sobre a
+    # ESTIMATIVA, e a estimativa só poda partição com predicado que o
+    # planejador consegue avaliar antes de executar — CURRENT_TIMESTAMP() não
+    # é um deles. Com ele, o ramo amplo (sem creative_id pra podar cluster)
+    # foi estimado como a tabela inteira: 36,5 GiB contra o teto de 32, e o
+    # modal morreu com `bytesBilledLimitExceeded` no primeiro uso em
+    # produção. O ramo da campanha sobrevivia só porque o filtro por id
+    # encolhe a estimativa pelo cluster.
+    now = _now()
+    since_recent = now - timedelta(days=recent_days)
+    since_campaign = now - timedelta(days=days)
 
-    def _payload(creatives, diagnostics=None):
+    def _branches(include_recent):
+        out = []
+        params = [bigquery.ScalarQueryParameter("since_recent", "TIMESTAMP", since_recent)]
+        if ids:
+            params.append(bigquery.ScalarQueryParameter("since_campaign", "TIMESTAMP", since_campaign))
+            params.append(bigquery.ArrayQueryParameter("ids", "STRING", ids))
+            out.append(f"""
+              SELECT * FROM `{view}`
+              WHERE creative_id IN UNNEST(@ids)
+                AND responded_at >= @since_campaign
+            """)
+            if include_recent:
+                # NOT IN evita contar a peça da campanha duas vezes (ela já
+                # veio do ramo de cima, com a janela longa).
+                out.append(f"""
+                  SELECT * FROM `{view}`
+                  WHERE creative_id NOT IN UNNEST(@ids)
+                    AND responded_at >= @since_recent
+                """)
+            order = "ORDER BY (creative_id IN UNNEST(@ids)) DESC, last_at DESC"
+        else:
+            out.append(f"""
+              SELECT * FROM `{view}`
+              WHERE responded_at >= @since_recent
+            """)
+            order = "ORDER BY last_at DESC"
+        return out, params, order
+
+    def _payload(creatives, diagnostics=None, includes_recent=True, recent_skipped=None):
         return {
             "creatives": creatives,
             "scope": "campaign" if token else "all",
             "short_token": token,
             # Janela do ramo da campanha (peças com o token no nome).
             "days": days if token and ids else recent_days,
-            # Janela do ramo amplo (todas as campanhas), sempre presente.
+            # Janela do ramo amplo (todas as campanhas).
             "recent_days": recent_days,
-            "includes_recent": True,
+            "includes_recent": includes_recent,
+            # Quando o ramo amplo foi deixado de fora e por quê ("bytes_limit").
+            "recent_skipped": recent_skipped,
             "campaign_count": sum(1 for c in creatives if c["creative_id"] in id_set),
             "diagnostics": diagnostics,
         }
 
-    sql = f"""
+    def _run(include_recent):
+        branches, params, order = _branches(include_recent)
+        sql = _listing_sql(view, branches, order, name_expr, token_expr, questions_expr, weight, limit)
+        return _client().query(sql, job_config=_job_config(params)).result()
+
+    includes_recent = True
+    recent_skipped = None
+    try:
+        rows = _run(include_recent=True)
+    except Exception as e:  # noqa: BLE001 — só o teto de bytes é tratado aqui
+        if not _is_bytes_limit_error(e):
+            raise
+        # O ramo amplo estourou o teto mesmo com corte constante: a lista da
+        # CAMPANHA não pode morrer junto. Degrada pra só ela (ou pra vazio,
+        # quando a campanha não tem peça na dimensão) e avisa no payload — o
+        # admin vê o que há e sabe que a busca ampla não veio. Antes isto era
+        # um 500 no modal inteiro, com o Max Attention indisponível.
+        logger.warning(f"[maxattention] ramo amplo estourou o teto de bytes; servindo só a campanha: {e}")
+        rows = _run(include_recent=False) if ids else []
+        includes_recent = False
+        recent_skipped = "bytes_limit"
+
+    out = _rows_to_creatives(rows, token, id_set)
+
+    if not token:
+        return _payload(out)
+
+    # Diagnóstico da CAMPANHA, mesmo com a lista ampla cheia: o admin precisa
+    # saber por que nenhuma peça foi marcada como sendo desta campanha —
+    # dimensão vazia é uma coisa (cron da plataforma), nome fora da convenção
+    # é outra (quem criou a peça), peça sem resposta é uma terceira (coleta).
+    diagnostics = None
+    if not dim_matched:
+        stats = _dim_stats()
+        diagnostics = {
+            "reason": "dim_empty" if stats["rows"] == 0 else "no_dim_match",
+            "dim_rows": stats["rows"],
+            "dim_synced_at": stats["synced_at"],
+            "dim_matched": 0,
+            "dim_names": [],
+        }
+    elif not any(c["creative_id"] in id_set for c in out):
+        names = sorted({c["creative_name"] for c in dim_matched if c["creative_name"]})
+        diagnostics = {
+            "reason": "no_responses",
+            "dim_rows": None,
+            "dim_synced_at": None,
+            "dim_matched": len(dim_matched),
+            "dim_names": names[:MAX_DIAG_NAMES],
+        }
+    return _payload(out, diagnostics, includes_recent=includes_recent, recent_skipped=recent_skipped)
+
+
+def _now():
+    """Separado pra teste."""
+    return datetime.now(timezone.utc)
+
+
+def _is_bytes_limit_error(e):
+    msg = str(e)
+    return "bytesBilledLimitExceeded" in msg or "exceeded limit for bytes billed" in msg
+
+
+def _listing_sql(view, branches, order, name_expr, token_expr, questions_expr, weight, limit):
+    return f"""
         WITH src AS (
           {' UNION ALL '.join(branches)}
         )
@@ -495,8 +579,8 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
         LIMIT {limit}
     """
 
-    rows = _client().query(sql, job_config=_job_config(params)).result()
 
+def _rows_to_creatives(rows, token, id_set):
     out = []
     for r in rows:
         name = r["creative_name"] or ""
@@ -525,9 +609,7 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
                 else None
             ),
         })
-
-    if not token:
-        return _payload(out)
+    return out
 
     # Diagnóstico da CAMPANHA, mesmo com a lista ampla cheia: o admin precisa
     # saber por que nenhuma peça foi marcada como sendo desta campanha —

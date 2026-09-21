@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   describeMaEmptyList,
   describeMaCampaignNote,
+  describeRecentSkipped,
   formatSyncedAt,
   MA_EMPTY_REASONS,
 } from "./maListing.js";
@@ -111,4 +112,23 @@ test("formatSyncedAt converte pra Brasília e tolera lixo", () => {
   assert.equal(formatSyncedAt("2026-09-21T03:05:00Z"), "21/09 00:05");
   assert.equal(formatSyncedAt(""), "");
   assert.equal(formatSyncedAt("não é data"), "");
+});
+
+test("ramo amplo deixado de fora por custo vira frase, não silêncio", () => {
+  assert.equal(describeRecentSkipped(broad()), "");
+  assert.equal(describeRecentSkipped(broad({ includes_recent: false, recent_skipped: null })), "");
+  const t = describeRecentSkipped(broad({ includes_recent: false, recent_skipped: "bytes_limit" }));
+  assert.match(t, /teto de custo do BigQuery/);
+  assert.match(t, /só as peças desta campanha/);
+});
+
+test("vazio com ramo amplo de fora explica a campanha E avisa que o amplo não veio", () => {
+  const r = describeMaEmptyList(
+    broad({ includes_recent: false, recent_skipped: "bytes_limit", diagnostics: { reason: "no_dim_match", dim_rows: 843 } }),
+    { shortToken: "PPV8JF" },
+  );
+  assert.equal(r.reason, "no_dim_match");
+  assert.match(r.title, /«PPV8JF»/);
+  assert.match(r.detail, /843 criativos/);
+  assert.match(r.detail, /teto de custo do BigQuery/);
 });
