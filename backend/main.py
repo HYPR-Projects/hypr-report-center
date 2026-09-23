@@ -4107,6 +4107,55 @@ def report_data(request):
             logger.error(f"[ERROR out_of_country] {e}")
             return (jsonify({"error": "Erro ao buscar entrega fora do Brasil"}), 500, headers)
 
+    # GET ?action=get_country_override&short_token=X — países que o admin
+    # liberou pra campanha entregar fora do BR (além do que o nome já diz).
+    if request.method == "GET" and request.args.get("action") == "get_country_override":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        short_token = (request.args.get("short_token") or "").strip().upper()
+        if not short_token:
+            return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+        try:
+            override = out_of_country.get_country_override(bq, short_token)
+            return (jsonify({"override": override}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR get_country_override] {e}")
+            return (jsonify({"error": "Erro ao buscar países liberados"}), 500, headers)
+
+    # POST ?action=save_country_override  body: {short_token, countries: ["CL", ...]}
+    # Lista vazia remove o override. Derruba o cache do box inteiro: a taxa
+    # do mês e o ranking mudam com a liberação.
+    if request.method == "POST" and request.args.get("action") == "save_country_override":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        body = request.get_json(silent=True) or {}
+        short_token = (body.get("short_token") or "").strip().upper()
+        if not short_token:
+            return (jsonify({"error": "short_token é obrigatório"}), 400, headers)
+        try:
+            saved = out_of_country.save_country_override(
+                bq, short_token, body.get("countries") or [], updated_by=admin.get("email"),
+            )
+        except ValueError as e:
+            return (jsonify({"error": str(e)}), 400, headers)
+        except Exception as e:
+            logger.error(f"[ERROR save_country_override] {e}")
+            return (jsonify({"error": "Erro ao salvar países liberados"}), 500, headers)
+        with _cache_lock:
+            _out_of_country_cache.clear()
+        audit_log.safe_write_event(
+            short_token=short_token,
+            event_type="countries_override",
+            actor_email=admin.get("email"),
+            message=(
+                f"liberou entrega fora do BR em {', '.join(saved)}" if saved
+                else "removeu os países liberados fora do BR"
+            ),
+            payload={"countries": saved},
+        )
+        return (jsonify({"ok": True, "countries": saved}), 200, headers)
+
     # ── Endpoints: PMP Deals (admin) ──────────────────────────────────────────
     # Análise das entregas dos deals de pagamento HYPR — substitui o fluxo
     # manual de baixar o report do Xandr Curate e alimentar a planilha

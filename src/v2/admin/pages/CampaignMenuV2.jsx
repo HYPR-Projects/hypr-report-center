@@ -832,13 +832,18 @@ export default function CampaignMenuV2({
   // Guardado junto do mês que pediu: trocar o filtro esconde o box do mês
   // anterior na hora, sem setState síncrono no efeito.
   const [outOfCountryState, setOutOfCountryState] = useState({ month: undefined, payload: null });
+  // Bump quando o admin libera/remove país no drawer: o backend já derrubou
+  // o cache do box, aqui só refaz o fetch. O payload anterior fica na tela
+  // até o novo chegar (mesmo mês), sem piscar.
+  const [outOfCountryVersion, setOutOfCountryVersion] = useState(0);
+  const handleCountriesSaved = useCallback(() => setOutOfCountryVersion((v) => v + 1), []);
   useEffect(() => {
     let cancelled = false;
     getOutOfCountry(activeMonth)
       .then((payload) => { if (!cancelled) setOutOfCountryState({ month: activeMonth, payload }); })
       .catch((e) => { console.warn("[out_of_country]", e?.message || e); });
     return () => { cancelled = true; };
-  }, [activeMonth]);
+  }, [activeMonth, outOfCountryVersion]);
   const outOfCountry = outOfCountryState.month === activeMonth ? outOfCountryState.payload : null;
 
   // Bulk-prefetch de detail pra todas as campanhas in_flight assim que a
@@ -1515,6 +1520,7 @@ export default function CampaignMenuV2({
           handleCloseDrawer();
         }}
         onAbsChange={handleAbsSaved}
+        onCountriesChange={handleCountriesSaved}
         onClosureChange={handleClosureSaved}
         onCheckupsSaved={handleCheckupsSaved}
         onPauseChange={handlePauseSaved}

@@ -533,7 +533,7 @@ function OutOfCountryCard({ data, compact, onOpenReport }) {
             {campaigns_with_unexpected > campaigns.length
               ? `Top ${campaigns.length} de ${campaigns_with_unexpected} campanhas com entrega fora. `
               : ""}
-            Só DV360. País escrito por extenso no nome da line (ex.: _CHILE_) conta como previsto e fica fora da taxa.
+            Só DV360. País no nome da line ou da campanha (ex.: CHILE, CH) conta como previsto e fica fora da taxa. Pra liberar outro país, use "Entrega fora do Brasil" no drawer da campanha.
           </div>
         </Popover.Content>
       </Popover.Portal>
