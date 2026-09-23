@@ -407,6 +407,25 @@ export function getResolvedShortToken(urlToken) {
   }
 }
 
+// Deadline das duas chamadas de credencial (mint e renovação). Sem ele, um
+// backend pendurado segurava `getOrIssueAdminJwt` pra sempre — e como TODA
+// leitura admin espera a credencial ANTES de disparar o próprio fetch (que
+// tem timeout), o timeout de lá nunca começava a contar: menu, drawer e PMP
+// ficavam no skeleton até o F5. Com o deadline, o fetch aborta, o `catch`
+// devolve `status: 0` (ambíguo, "não deu pra perguntar") e o fluxo segue
+// pelo fallback da credencial atual ainda válida.
+const _AUTH_TIMEOUT_MS = 20_000;
+
+function _authTimeoutSignal() {
+  // Guard pra WebView antigo sem AbortSignal.timeout: volta ao comportamento
+  // anterior (sem deadline) em vez de quebrar.
+  try {
+    return AbortSignal.timeout(_AUTH_TIMEOUT_MS);
+  } catch {
+    return undefined;
+  }
+}
+
 // ─── Trade Google id_token → custom admin JWT (5min TTL) ─────────────────────
 /**
  * Troca o id_token do Google pelo admin JWT do backend.
@@ -433,6 +452,7 @@ export async function issueAdminJwt(googleIdToken) {
         "Authorization": `Bearer ${googleIdToken}`,
         "Content-Type": "application/json",
       },
+         signal: _authTimeoutSignal(),
     });
   } catch {
     // Rede fora, CORS, backend inalcançável — não houve veredito.
@@ -489,6 +509,7 @@ export async function refreshAdminJwt(currentJwt) {
         "Authorization": `Bearer ${currentJwt}`,
         "Content-Type": "application/json",
       },
+         signal: _authTimeoutSignal(),
     });
   } catch {
     // Rede fora, CORS, backend inalcançável — não houve veredito.

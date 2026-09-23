@@ -102,6 +102,11 @@ function adminSessionLost(context, usedJwt = null) {
  */
 const READ_TIMEOUT_HEAVY_MS = 60_000;  // lista de campanhas / clientes
 const READ_TIMEOUT_LIGHT_MS = 30_000;  // lookups pequenos
+// Leituras que podem varrer muito dado a frio (série de 5 anos do PMP, base
+// inteira do Max Attention, portal que monta a lista + shares). O teto é
+// folgado de propósito: aqui o objetivo é só não deixar a tela pendurada pra
+// sempre quando a conexão morre calada — não cortar consulta lenta legítima.
+const READ_TIMEOUT_SLOW_MS  = 120_000;
 
 function timeoutSignal(ms) {
   // AbortSignal.timeout é Baseline desde 2022; o guard cobre WebView antigo,
@@ -159,18 +164,24 @@ function legacyAkSuffix() {
  * dos call sites existentes (saveLogo/saveLoom/etc continuam chamando
  * com a mesma assinatura).
  */
-async function postJson(url, body, extraHeaders = {}) {
+async function postJson(url, body, extraHeaders = {}, { timeoutMs } = {}) {
   const init = {
     method: "POST",
     headers: { ...jsonHeaders, ...extraHeaders },
     body: JSON.stringify(body),
   };
+  // Deadline opt-in, só pra LEITURAS feitas via POST (batches). Escrita fica
+  // sem deadline de propósito: abortar um save que o backend ainda vai
+  // concluir mostraria erro de algo que deu certo. Cada fetch ganha um signal
+  // próprio — o retry pós-401 não herda o relógio já gasto da 1ª tentativa.
+  const withDeadline = (req) =>
+    timeoutMs ? { ...req, signal: timeoutSignal(timeoutMs) } : req;
   const hasAuthHeader = !!(extraHeaders && extraHeaders.Authorization);
   // Sem JWT (prop null/expirado → adminAuthHeaders devolveu {}), mas a página
   // foi aberta pelo link admin legado: encaminha `?ak=hypr2026` pra própria
   // call de escrita. Se há JWT, o Bearer é a credencial e o `ak` é dispensável.
   const effectiveUrl = hasAuthHeader ? url : url + legacyAkSuffix();
-  const res = await fetch(effectiveUrl, init);
+  const res = await fetch(effectiveUrl, withDeadline(init));
 
   if (res.status !== 401 && res.status !== 403) {
     // Sliding window: cada call admin bem-sucedida estende a janela de
@@ -201,7 +212,7 @@ async function postJson(url, body, extraHeaders = {}) {
       ...extraHeaders,
       Authorization: `Bearer ${newJwt}`,
     };
-    const retryRes = await fetch(url, { ...init, headers: retryHeaders });
+    const retryRes = await fetch(url, withDeadline({ ...init, headers: retryHeaders }));
     if (retryRes.status !== 401 && retryRes.status !== 403) {
       if (retryRes.ok) touchSession();
       return retryRes;
@@ -564,7 +575,7 @@ export async function lookupShare(share_id) {
     if (!jwt) return null;
     const r = await fetch(
       `${API_URL}?action=lookup_share&share_id=${encodeURIComponent(share_id)}`,
-      { headers: { ...adminAuthHeaders(jwt) } },
+      { headers: { ...adminAuthHeaders(jwt) }, signal: timeoutSignal(READ_TIMEOUT_LIGHT_MS) },
     );
     if (!r.ok) return null;
     const d = await r.json();
@@ -738,6 +749,7 @@ export async function setClientPublish({ slug, short_token, published }) {
 export async function getClientPortalData(share_id) {
   const r = await fetch(
     `${API_URL}?action=client_portal_data&share_id=${encodeURIComponent(share_id)}`,
+    { signal: timeoutSignal(READ_TIMEOUT_SLOW_MS) },
   );
   if (r.status === 404) throw new Error("portal_not_found");
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -1236,7 +1248,9 @@ export async function fetchTypeformViaProxy(formUrl, range = null) {
   const params = new URLSearchParams({ action: "typeform_proxy", form_url: formUrl });
   if (range?.from) params.set("date_from", range.from);
   if (range?.to)   params.set("date_to",   range.to);
-  const r = await fetch(`${API_URL}?${params.toString()}`);
+  const r = await fetch(`${API_URL}?${params.toString()}`, {
+    signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
+  });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
   return data;
@@ -1309,7 +1323,9 @@ export async function fetchMaxAttentionResults(creativeId, { question = "", rang
   if (question) params.set("question", question);
   if (range?.from) params.set("date_from", range.from);
   if (range?.to)   params.set("date_to",   range.to);
-  const r = await fetch(`${API_URL}?${params.toString()}`);
+  const r = await fetch(`${API_URL}?${params.toString()}`, {
+    signal: timeoutSignal(READ_TIMEOUT_SLOW_MS),
+  });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
   return data;
@@ -1435,6 +1451,7 @@ export async function getCampaignNotesBatch(tokens) {
     `${API_URL}?action=campaign_notes_batch`,
     { tokens },
     adminAuthHeaders(jwt),
+    { timeoutMs: READ_TIMEOUT_HEAVY_MS },
   );
   const res = await throwIfNotOk(r);
   const d = await res.json().catch(() => ({}));
@@ -1638,6 +1655,7 @@ export async function getAccessSummariesBatch(tokens) {
     `${API_URL}?action=access_summary_batch`,
     { tokens },
     adminAuthHeaders(jwt),
+    { timeoutMs: READ_TIMEOUT_HEAVY_MS },
   );
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const data = await r.json();
@@ -1672,7 +1690,10 @@ export async function listPmpLines({ includeArchived = false, onlyActive = true 
   const qs = new URLSearchParams({ action: "pmp_lines_list" });
   if (includeArchived) qs.set("include_archived", "1");
   qs.set("only_active", onlyActive ? "1" : "0");
-  const r = await fetch(`${API_URL}?${qs}`, { headers: { ...adminAuthHeaders(jwt) } });
+  const r = await fetch(`${API_URL}?${qs}`, {
+    headers: { ...adminAuthHeaders(jwt) },
+    signal: timeoutSignal(READ_TIMEOUT_SLOW_MS),
+  });
   if (r.status === 401 || r.status === 403) {
     throw adminSessionLost("listPmpLines", jwt);
   }
@@ -1696,7 +1717,10 @@ export async function listPmpLines({ includeArchived = false, onlyActive = true 
 export async function pmpLineWindowMetrics({ dateFrom, dateTo }) {
   const jwt = await getOrIssueAdminJwt();
   const qs = new URLSearchParams({ action: "pmp_lines_window", date_from: dateFrom, date_to: dateTo });
-  const r = await fetch(`${API_URL}?${qs}`, { headers: { ...adminAuthHeaders(jwt) } });
+  const r = await fetch(`${API_URL}?${qs}`, {
+    headers: { ...adminAuthHeaders(jwt) },
+    signal: timeoutSignal(READ_TIMEOUT_SLOW_MS),
+  });
   if (r.status === 401 || r.status === 403) {
     throw adminSessionLost("pmpLineWindowMetrics", jwt);
   }
@@ -1714,7 +1738,10 @@ export async function pmpLineWindowMetrics({ dateFrom, dateTo }) {
 export async function pmpLinesTimeseries({ dateFrom, dateTo }) {
   const jwt = await getOrIssueAdminJwt();
   const qs = new URLSearchParams({ action: "pmp_lines_timeseries", date_from: dateFrom, date_to: dateTo });
-  const r = await fetch(`${API_URL}?${qs}`, { headers: { ...adminAuthHeaders(jwt) } });
+  const r = await fetch(`${API_URL}?${qs}`, {
+    headers: { ...adminAuthHeaders(jwt) },
+    signal: timeoutSignal(READ_TIMEOUT_SLOW_MS),
+  });
   if (r.status === 401 || r.status === 403) {
     throw adminSessionLost("pmpLinesTimeseries", jwt);
   }
@@ -1731,7 +1758,7 @@ export async function getPmpLine(lineId, source) {
   const qs = new URLSearchParams({ action: "pmp_line_get", line_id: String(lineId) });
   if (source) qs.set("source", source);
   const r = await fetch(`${API_URL}?${qs}`,
-    { headers: { ...adminAuthHeaders(jwt) } });
+    { headers: { ...adminAuthHeaders(jwt) }, signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS) });
   if (r.status === 404) return null;
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
@@ -1957,7 +1984,7 @@ export async function getDataFreshness() {
   const jwt = await getOrIssueAdminJwt();
   const r = await fetch(
     `${API_URL}?action=data_freshness`,
-    { headers: adminAuthHeaders(jwt) },
+    { headers: adminAuthHeaders(jwt), signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS) },
   );
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const data = await r.json();
@@ -2053,7 +2080,7 @@ export async function getDspHealth() {
   const jwt = await getOrIssueAdminJwt();
   const r = await fetch(
     `${API_URL}?action=dsp_health`,
-    { headers: adminAuthHeaders(jwt) },
+    { headers: adminAuthHeaders(jwt), signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS) },
   );
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();

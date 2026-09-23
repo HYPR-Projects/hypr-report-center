@@ -357,6 +357,13 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
       loadedTokenRef.current = token;
       // Limpa erros de uma tentativa anterior (improvável, mas defensivo).
       setError(null);
+      // Zera o "carregando" de uma troca de view anterior que foi cancelada
+      // no meio: A → B (B demora, dim liga em 250ms) → volta pra A antes de B
+      // responder. O cleanup cancela B e o `.finally` dele não reseta nada
+      // (early return por `cancelled`); sem estas duas linhas o conteúdo de A
+      // ficava em opacity-40 + pointer-events-none até o F5.
+      setRefreshing(false);
+      setSwitchingView(false);
       return;
     }
 
