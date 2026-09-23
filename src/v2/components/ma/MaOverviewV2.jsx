@@ -18,8 +18,8 @@ import {
 } from "../../../shared/maMetrics";
 import { cn } from "../../../ui/cn";
 import { KpiCardV2 } from "../KpiCardV2";
-import { MaCard, PuzzleIcon } from "./maUi";
-import { keyMetricText, pct } from "./maFormat";
+import { CsvButton, MaCard, PuzzleIcon } from "./maUi";
+import { downloadCsv, keyMetricText, pct } from "./maFormat";
 import { MaStackedDailyChartV2 } from "./MaStackedDailyChartV2";
 import { MaThumbV2 } from "./MaThumbV2";
 
@@ -35,7 +35,7 @@ function Note({ children }) {
   return <span className="text-[11px] text-fg-subtle leading-snug">{children}</span>;
 }
 
-export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece }) {
+export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campaignName = "campanha" }) {
   const list = pieces.map((p) => ({ p, m: medias.get(p.creative_id), km: keyMetric(p) }));
   const total = sumMedia(list.map((x) => x.m));
   const best = list.length > 1
@@ -44,6 +44,19 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece }) {
   const { rows: stackRows, formats } = engagedByDayAndFormat(pieces);
   const groups = groupByFormat(pieces);
   const exact = list.every((x) => x.m.exactPeople);
+
+  // CSV do comparativo: números crus (Excel/Sheets), taxas com 2 casas.
+  const rate = (v) => (v == null ? "" : Number(v).toFixed(2));
+  const csv = () =>
+    downloadCsv(
+      `${campaignName} - max attention - comparativo`.replace(/[\\/:*?"<>|]+/g, " "),
+      ["Formato", "Peça", "Tamanho", "Impressões", "Imp. medidas pela peça", "Viewability (%)", "Sessões", "Sessões engajadas", "Engajamento (%)", "Cliques em CTA", "CTR da peça (%)", "Destaque do formato", "Valor do destaque"],
+      list.map(({ p, m, km }) =>
+        isWaiting(p)
+          ? [formatLabel(p.format), p.name, p.size || "", "", "", "", "", "", "", "", "", km?.label || "", ""]
+          : [formatLabel(p.format), p.name, p.size || "", m.impressions, m.measured, rate(m.viewability), m.sessions, m.engaged, rate(m.engagement), m.ctaClicks, rate(m.ctr), km?.label || "", km?.value == null ? "" : km.kind === "count" ? km.value : rate(km.value)],
+      ),
+    );
 
   return (
     <div className="space-y-6">
@@ -90,6 +103,7 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece }) {
       <MaCard
         title="Comparativo das peças"
         subtitle={list.length > 1 ? "Mesmas métricas para todos os formatos · ★ maior engajamento" : "Métricas comparáveis da peça"}
+        actions={<CsvButton onClick={csv} />}
       >
         <div className="overflow-x-auto -mx-4 md:-mx-5">
           <table className="w-full text-xs min-w-[860px]">

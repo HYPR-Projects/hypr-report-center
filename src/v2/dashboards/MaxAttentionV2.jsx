@@ -307,7 +307,13 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
           ]}
         />
       )}
-      <MaOverviewV2 pieces={pieces} medias={medias} formatColors={formatColors} onOpenPiece={openPiece} />
+      <MaOverviewV2
+        pieces={pieces}
+        medias={medias}
+        formatColors={formatColors}
+        onOpenPiece={openPiece}
+        campaignName={data?.campaign?.campaign_name || "campanha"}
+      />
       {modal}
     </div>
   );
