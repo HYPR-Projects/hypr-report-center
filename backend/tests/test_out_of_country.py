@@ -31,9 +31,41 @@ import out_of_country as ooc
     ("ID-ABC123_RESTAURANTE_CHILENO_PERUANOS", set()),
     ("", set()),
     (None, set()),
+    # "CH" é como a operação escreve Chile (Elux: "AON CH ELUX").
+    ("AON CH ELUX", {"CL"}),
+    ("AON CH Mademsa", {"CL"}),
+    ("ID-M4PWHT_HYPR_ELECTROLUX_AON_CH_DISPLAY", {"CL"}),
+    # ...mas só como palavra solta: CHURRASCO, CHANNEL, TECH não liberam.
+    ("ID-ABC123_CHURRASCO_CHANNEL_TECH_DISPLAY", set()),
 ])
 def test_expected_countries(line, expected):
     assert ooc.expected_countries(line) == expected
+
+
+def test_sql_reads_every_name_source_and_override():
+    sql = ooc.build_sql()
+    # Texto do match: line (unified e regiões), campanha na DSP e no checklist.
+    for piece in ("m.line_names", "g.geo_line_name", "m.dsp_campaign_names", "c.checklist_campaign"):
+        assert piece in sql
+    assert "campaign_country_overrides" in sql
+    assert "country IN UNNEST(allowed)" in sql
+    # Override vem antes da regra por nome e nunca libera BR/UNKNOWN.
+    assert sql.index("IN ('BR', 'UNKNOWN') THEN country") < sql.index("IN UNNEST(allowed)")
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (["cl", "PE", " co "], ["CL", "CO", "PE"]),
+    (["CL", "CL", "BR"], ["CL"]),           # BR nunca é "liberado": é o padrão
+    ([], []),
+])
+def test_normalize_countries(raw, expected):
+    assert ooc.normalize_countries(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["CL", ["CHL"], ["C1"], [None], [f"A{chr(65 + i)}" for i in range(26)] + ["BB", "BC", "BD", "BE", "BF"]])
+def test_normalize_countries_rejects(raw):
+    with pytest.raises(ValueError):
+        ooc.normalize_countries(raw)
 
 
 def test_sql_mirrors_aliases():
@@ -241,9 +273,13 @@ class _FakeJob:
 class _FakeBQ:
     def __init__(self, geo_rows, meta_rows):
         self.calls = []
+        self.ddl = []
         self._queue = [geo_rows, meta_rows]
 
     def query(self, sql, job_config=None, location=None):
+        if "CREATE TABLE IF NOT EXISTS" in sql:
+            self.ddl.append(sql)
+            return _FakeJob([])
         self.calls.append((sql, job_config, location))
         return _FakeJob(self._queue.pop(0))
 
@@ -253,6 +289,7 @@ def test_query_window_includes_lookback_and_caps_bytes():
            _r(date(2026, 9, 2), "AAA111", "BR", "BR", 90)]
     meta = [{"short_token": "AAA111", "client_name": "C", "campaign_name": "K"}]
     fake = _FakeBQ(geo, meta)
+    ooc._overrides_ready = False
     now = datetime(2026, 9, 3, 10, 0, tzinfo=ooc.SP_TZ)
     p = ooc.query_out_of_country(fake, None, now=now)
 
@@ -265,3 +302,40 @@ def test_query_window_includes_lookback_and_caps_bytes():
     assert loc == "US"
     assert p["rate"] == 10.0
     assert p["campaigns"] == []  # 100 impressões < RANKING_MIN_IMPS
+    # A tabela de override existe antes da query principal (que a referencia).
+    assert len(fake.ddl) == 1 and "campaign_country_overrides" in fake.ddl[0]
+
+
+def test_box_survives_when_override_table_cannot_be_created():
+    class _NoDDL(_FakeBQ):
+        def query(self, sql, job_config=None, location=None):
+            if "CREATE TABLE IF NOT EXISTS" in sql:
+                raise PermissionError("403 bigquery.tables.create")
+            return super().query(sql, job_config, location)
+
+    geo = [_r(date(2026, 9, 2), "AAA111", "BR", "BR", 90), _r(date(2026, 9, 2), "AAA111", "US", "UNEXPECTED", 10)]
+    fake = _NoDDL(geo, [])
+    ooc._overrides_ready = False
+    p = ooc.query_out_of_country(fake, None, now=datetime(2026, 9, 3, 10, 0, tzinfo=ooc.SP_TZ))
+    assert p["rate"] == 10.0
+    sql = fake.calls[0][0]
+    assert "campaign_country_overrides" not in sql and "LIMIT 0" in sql
+
+
+def test_sql_without_overrides_still_parses():
+    sqlglot = pytest.importorskip("sqlglot")
+    for flag in (True, False):
+        sqlglot.parse_one(ooc.build_sql(flag), read="bigquery")
+
+
+def test_save_override_empty_list_deletes_and_list_merges():
+    fake = _FakeBQ([], [])
+    fake._queue = [[], []]
+    ooc._overrides_ready = True
+    assert ooc.save_country_override(fake, "M4PWHT", ["cl", "BR"], updated_by="a@hypr.mobi") == ["CL"]
+    merge_sql, cfg, _ = fake.calls[0]
+    assert merge_sql.lstrip().startswith("MERGE")
+    params = {q.name: getattr(q, "values", getattr(q, "value", None)) for q in cfg.query_parameters}
+    assert params["countries"] == ["CL"]
+    assert ooc.save_country_override(fake, "M4PWHT", []) == []
+    assert fake.calls[1][0].startswith("DELETE")

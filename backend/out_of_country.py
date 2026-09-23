@@ -22,24 +22,35 @@ no BQ; quando tiverem, entram como mais um UNION na CTE `geo`.
 
 A regra de negócio: país previsto no nome da line
 -------------------------------------------------
-Tudo deveria entregar no Brasil, EXCETO line que tem o país no nome — a
-Elux roda Chile, Peru e Colômbia com lines tipo `..._CHILE_...`. Então cada
-impressão cai num de quatro baldes:
+Tudo deveria entregar no Brasil, EXCETO campanha que é de outro país — a
+Elux roda Chile, Peru e Colômbia. Um país fora do BR é "previsto" pra uma
+line quando:
+
+  1. aparece no nome da line, no nome da campanha/IO da DSP ou no nome da
+     campanha no checklist (a Elux Chile se chama "AON CH ELUX": o CH está
+     só no nome da campanha, não na line); ou
+  2. o admin liberou o país na campanha, no drawer
+     (`campaign_country_overrides`) — pra quando o nome não diz.
+
+Então cada impressão cai num de quatro baldes:
 
   BR          entregou no Brasil
-  EXPECTED    fora do BR, num país que aparece no nome da line
-  UNEXPECTED  fora do BR, num país que NÃO aparece no nome da line
+  EXPECTED    fora do BR, num país previsto (regra acima)
+  UNEXPECTED  fora do BR, num país que NÃO é previsto
   UNKNOWN     o DV360 não resolveu o país
 
 A taxa do box é UNEXPECTED / total. EXPECTED e UNKNOWN aparecem separados
 no hover — nem somam no numerador, nem somem do denominador.
 
-Só nome de país por extenso (PT/ES/EN) conta; sigla ISO não. "PE" é
-Pernambuco, "CO" e "AR" aparecem em nome de line por outros motivos, e um
-falso "previsto" esconde exatamente a entrega que o box existe pra mostrar.
-Ressalva conhecida: "PERU" também é a ave — line de Natal com PERU no nome
-libera entrega no Peru naquela line. Raro e de impacto pequeno; se virar
-problema, a exceção entra em `COUNTRY_ALIASES`.
+Conta nome de país por extenso (PT/ES/EN) e as abreviações que a operação
+usa de fato ("CH" = Chile, visto na AON CH ELUX). Sigla ISO em geral NÃO:
+"PE" é Pernambuco, "CO" é Centro-Oeste, "AR" aparece por outros motivos, e
+um falso "previsto" esconde exatamente a entrega que o box existe pra
+mostrar. "CH" é o ISO da Suíça, mas a regra só libera CL com ele — a HYPR
+não roda na Suíça, então o pior caso é não acusar entrega no Chile de uma
+campanha com "CH" solto no nome. Ressalva: "PERU" também é a ave — campanha
+de Natal com PERU no nome libera entrega no Peru. Raro e pequeno; o drawer
+não tem como "desliberar", então se virar problema a exceção entra aqui.
 
 O alerta
 --------
@@ -56,7 +67,9 @@ Os dois cortes (pontos E razão) são de propósito: só pontos dispara em taxa
 alta estável que oscila; só razão dispara em 0,1% → 0,3%.
 """
 
+import logging
 import re
+import threading
 import unicodedata
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -64,10 +77,12 @@ from zoneinfo import ZoneInfo
 from google.cloud import bigquery
 
 SP_TZ = ZoneInfo("America/Sao_Paulo")
+logger = logging.getLogger(__name__)
 
 REGIONS_TABLE = "`site-hypr.prod_assets.dv360_daily_regions_performance_metrics`"
 UNIFIED_TABLE = "`site-hypr.prod_assets.unified_daily_performance_metrics`"
 CHECKLIST_TABLE = "`site-hypr.prod_assets.checklist_info`"
+OVERRIDES_TABLE = "`site-hypr.prod_assets.campaign_country_overrides`"
 
 # Teto de bytes por query. A tabela de regiões tem ~127 GB; com poda por
 # `date` o recorte de um mês fica em poucos GB. Se a tabela não estiver
@@ -111,7 +126,7 @@ COUNTRY_ALIASES = {
     "AR": ["ARGENTINA"],
     "BO": ["BOLIVIA"],
     "CA": ["CANADA"],
-    "CL": ["CHILE"],
+    "CL": ["CHILE", "CH"],
     "CO": ["COLOMBIA"],
     "CR": ["COSTA RICA"],
     "DO": ["REPUBLICA DOMINICANA", "DOMINICAN REPUBLIC"],
@@ -170,8 +185,14 @@ def _expected_sql(country_col, text_col):
     return "(" + "\n          OR ".join(clauses) + ")"
 
 
-def build_sql():
-    expected = _expected_sql("country", "line_text")
+def build_sql(with_overrides=True):
+    """`with_overrides=False` é o degrau de segurança: sem a tabela de override
+    (não deu pra criar), o box segue com a regra por nome em vez de sumir."""
+    expected = _expected_sql("country", "name_text")
+    overrides_cte = (
+        f"SELECT short_token, countries FROM {OVERRIDES_TABLE}" if with_overrides
+        else "SELECT CAST(NULL AS STRING) AS short_token, CAST(NULL AS ARRAY<STRING>) AS countries LIMIT 0"
+    )
     return f"""
     WITH line_map AS (
       -- line_item_id → short_token. Sem filtro de source: ids de DSPs
@@ -179,12 +200,23 @@ def build_sql():
       SELECT
         CAST(line_item_id AS STRING) AS line_item_id,
         ANY_VALUE(short_token) AS short_token,
-        STRING_AGG(DISTINCT line_name, ' || ' LIMIT 5) AS line_names
+        STRING_AGG(DISTINCT line_name, ' || ' LIMIT 5) AS line_names,
+        -- Nome da campanha/IO na DSP: a Elux Chile tem o país só aqui.
+        STRING_AGG(DISTINCT campaign_name, ' || ' LIMIT 3) AS dsp_campaign_names
       FROM {UNIFIED_TABLE}
       WHERE date BETWEEN @d_from AND @d_to
         AND line_item_id IS NOT NULL
         AND short_token IS NOT NULL
       GROUP BY 1
+    ),
+    checklist_names AS (
+      SELECT short_token, ANY_VALUE(campaign_name) AS checklist_campaign
+      FROM {CHECKLIST_TABLE}
+      WHERE short_token IS NOT NULL
+      GROUP BY 1
+    ),
+    overrides AS (
+      {overrides_cte}
     ),
     geo AS (
       SELECT
@@ -208,11 +240,19 @@ def build_sql():
           ELSE g.cc
         END AS country,
         REGEXP_REPLACE(
-          NORMALIZE(UPPER(CONCAT(IFNULL(m.line_names, ''), ' || ', IFNULL(g.geo_line_name, ''))), NFD),
+          NORMALIZE(UPPER(CONCAT(
+            IFNULL(m.line_names, ''), ' || ',
+            IFNULL(g.geo_line_name, ''), ' || ',
+            IFNULL(m.dsp_campaign_names, ''), ' || ',
+            IFNULL(c.checklist_campaign, '')
+          )), NFD),
           r'\\p{{M}}', ''
-        ) AS line_text
+        ) AS name_text,
+        IFNULL(o.countries, []) AS allowed
       FROM geo g
       LEFT JOIN line_map m USING (line_item_id)
+      LEFT JOIN checklist_names c ON c.short_token = m.short_token
+      LEFT JOIN overrides o ON o.short_token = m.short_token
     )
     SELECT
       date,
@@ -220,6 +260,7 @@ def build_sql():
       country,
       CASE
         WHEN country IN ('BR', 'UNKNOWN') THEN country
+        WHEN country IN UNNEST(allowed) THEN 'EXPECTED'
         WHEN {expected} THEN 'EXPECTED'
         ELSE 'UNEXPECTED'
       END AS bucket,
@@ -227,6 +268,100 @@ def build_sql():
     FROM classified
     GROUP BY 1, 2, 3, 4
     """
+
+
+# ── Override manual: países liberados por campanha ──────────────────────────
+# Tabela criada sob demanda (CREATE IF NOT EXISTS) antes da primeira leitura
+# da instância: a query principal a referencia, e tabela ausente derrubaria o
+# box inteiro. Um registro por short_token; lista vazia = sem override (a
+# linha é apagada).
+
+_overrides_ready = False
+_overrides_lock = threading.Lock()
+
+
+def ensure_overrides_table(bq):
+    global _overrides_ready
+    if _overrides_ready:
+        return
+    with _overrides_lock:
+        if _overrides_ready:
+            return
+        bq.query(f"""
+            CREATE TABLE IF NOT EXISTS {OVERRIDES_TABLE} (
+              short_token STRING NOT NULL,
+              countries   ARRAY<STRING>,
+              updated_at  TIMESTAMP,
+              updated_by  STRING
+            )
+        """, location="US").result()
+        _overrides_ready = True
+
+
+def normalize_countries(raw):
+    """Lista de ISO-2 limpa: maiúscula, sem BR, sem repetição, ordenada."""
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("countries deve ser uma lista")
+    out = set()
+    for c in raw:
+        code = str(c or "").strip().upper()
+        if not re.fullmatch(r"[A-Z]{2}", code):
+            raise ValueError(f"país inválido: {c!r} (use código ISO de 2 letras)")
+        if code != "BR":
+            out.add(code)
+    if len(out) > 30:
+        raise ValueError("no máximo 30 países")
+    return sorted(out)
+
+
+def get_country_override(bq, short_token):
+    ensure_overrides_table(bq)
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("token", "STRING", short_token),
+    ])
+    rows = list(bq.query(f"""
+        SELECT countries, updated_by, updated_at
+        FROM {OVERRIDES_TABLE}
+        WHERE short_token = @token
+        LIMIT 1
+    """, job_config=cfg, location="US").result())
+    if not rows:
+        return None
+    r = rows[0]
+    return {
+        "countries": list(r["countries"] or []),
+        "updated_by": r["updated_by"],
+        "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+    }
+
+
+def save_country_override(bq, short_token, countries, updated_by=None):
+    """UPSERT (ou DELETE, com lista vazia). Devolve a lista gravada."""
+    countries = normalize_countries(countries)
+    ensure_overrides_table(bq)
+    if not countries:
+        cfg = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("token", "STRING", short_token),
+        ])
+        bq.query(f"DELETE FROM {OVERRIDES_TABLE} WHERE short_token = @token",
+                 job_config=cfg, location="US").result()
+        return []
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("token", "STRING", short_token),
+        bigquery.ArrayQueryParameter("countries", "STRING", countries),
+        bigquery.ScalarQueryParameter("updated_by", "STRING", updated_by),
+    ])
+    bq.query(f"""
+        MERGE {OVERRIDES_TABLE} T
+        USING (SELECT @token AS short_token) S
+        ON T.short_token = S.short_token
+        WHEN MATCHED THEN
+          UPDATE SET countries = @countries, updated_at = CURRENT_TIMESTAMP(), updated_by = @updated_by
+        WHEN NOT MATCHED THEN
+          INSERT (short_token, countries, updated_at, updated_by)
+          VALUES (@token, @countries, CURRENT_TIMESTAMP(), @updated_by)
+    """, job_config=cfg, location="US").result()
+    return countries
 
 
 def month_window(month_key, today):
@@ -478,7 +613,13 @@ def query_out_of_country(bq, month_key=None, now=None):
         bigquery.ScalarQueryParameter("d_from", "DATE", d_from),
         bigquery.ScalarQueryParameter("d_to", "DATE", d_to),
     ])
-    rows = [dict(r) for r in bq.query(build_sql(), job_config=cfg, location="US").result()]
+    try:
+        ensure_overrides_table(bq)
+        with_overrides = True
+    except Exception as e:  # noqa: BLE001 — permissão/DDL não pode derrubar o box
+        logger.warning(f"[out_of_country] tabela de override indisponível, seguindo só com a regra por nome: {e}")
+        with_overrides = False
+    rows = [dict(r) for r in bq.query(build_sql(with_overrides), job_config=cfg, location="US").result()]
 
     tokens = {r["short_token"] for r in rows if r.get("short_token")}
     meta = _campaign_meta(bq, tokens)

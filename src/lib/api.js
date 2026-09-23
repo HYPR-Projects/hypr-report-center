@@ -928,6 +928,37 @@ export async function saveAbsOverride({ short_token, has_abs }) {
   );
 }
 
+// ── Países liberados fora do BR (admin) ─────────────────────────────────────
+
+/**
+ * Países (ISO-2) que o admin liberou pra campanha entregar fora do Brasil sem
+ * contar no box "Fora do BR". Retorna { countries, updated_by, updated_at } ou
+ * null quando não há override (vale só o que o nome da line/campanha diz).
+ */
+export async function getCountryOverride({ short_token }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=get_country_override&short_token=${encodeURIComponent(short_token)}`,
+    { headers: adminAuthHeaders(jwt), signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS) },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json().catch(() => ({}));
+  return d?.override ?? null;
+}
+
+/** Grava a lista inteira (lista vazia remove o override). Devolve a lista salva. */
+export async function saveCountryOverride({ short_token, countries }) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(
+    `${API_URL}?action=save_country_override`,
+    { short_token, countries },
+    adminAuthHeaders(jwt),
+  );
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  return Array.isArray(d?.countries) ? d.countries : countries;
+}
+
 // ── Agência do cliente (admin) ───────────────────────────────────────────────
 
 /**

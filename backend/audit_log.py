@@ -108,6 +108,7 @@ ALLOWED_EVENT_TYPES = frozenset({
     "campaign_paused", "campaign_resumed",
     "campaign_early_ended", "campaign_early_end_reverted",
     "abs_toggled",
+    "countries_override",
     "rmnd_uploaded", "pdooh_uploaded",
     "alcance_frequencia_saved",
     "comment_saved",

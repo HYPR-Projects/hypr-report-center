@@ -20,6 +20,7 @@ import { Button } from "../../../ui/Button";
 import { cn } from "../../../ui/cn";
 import { Avatar } from "../../../ui/Avatar";
 import { AbsToggle } from "./AbsToggle";
+import { AllowedCountriesField } from "./AllowedCountriesField";
 import { AgencyField } from "./AgencyField";
 import { CoreProductsOverride } from "./CoreProductsOverride";
 import { TokenChip } from "./TokenChip";
@@ -213,6 +214,7 @@ export function CampaignDrawer({
   onAnalytics,         // chamado quando admin clica em "Analytics de acessos"
   onNegotiation,       // chamado quando admin clica em "Negociado" — recebe (campaign, negotiation)
   onAbsChange,         // chamado após admin salvar override de ABS — pai refaz lista
+  onCountriesChange,   // chamado após admin liberar/remover país fora do BR — pai recarrega o box "Fora do BR"
   onClosureChange,     // chamado após admin marcar campanha como encerrada — pai refaz lista
   onCheckupsSaved,     // chamado após salvar check-ups semanais — (short_token, count) — pai atualiza o chip do card otimisticamente
   onPauseChange,       // chamado após admin pausar/retomar campanha — pai atualiza otimisticamente
@@ -735,6 +737,16 @@ export function CampaignDrawer({
               shortToken={short_token}
               autoDetected={autoDetected}
               onChange={onAbsChange}
+            />
+          </div>
+
+          {/* Países liberados fora do BR — a entrega neles não conta no box
+              "Fora do BR" das big metrics. Pra quando o nome da line/campanha
+              não diz o país (a regra automática lê o nome). */}
+          <div className="drawer-section-rise drawer-stagger-2 mb-5">
+            <AllowedCountriesField
+              shortToken={short_token}
+              onChange={onCountriesChange}
             />
           </div>
 
