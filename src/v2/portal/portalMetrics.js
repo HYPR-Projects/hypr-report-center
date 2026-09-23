@@ -33,8 +33,8 @@
 // nunca mostrar número errado.
 
 import { startOfMonth, endOfMonth, subMonths } from "date-fns";
-import { parseYmd, ymd } from "../../shared/dateFilter";
-import { formatMonthLabel } from "../admin/lib/format";
+import { parseYmd, ymd } from "../../shared/dateFilter.js";
+import { formatMonthLabel } from "../admin/lib/format.js";
 
 export const num = (v) => Number(v) || 0;
 
@@ -42,6 +42,43 @@ export const num = (v) => Number(v) || 0;
 // PI contratado (display + vídeo). Campo seguro: é o que o cliente comprou,
 // não o custo real da HYPR.
 export const investedOf = (c) => num(c.d_client_budget) + num(c.v_client_budget);
+
+// ── Investimento até hoje (to date) ─────────────────────────────────────────
+// Base do CPM/CPCV/CPC efetivos. Dividir o PI CHEIO pela entrega PARCIAL de
+// uma campanha no ar infla o custo unitário: Selo (Diageo), R$ 200 mil, 8 de 27
+// dias no ar → CPM "efetivo" ~3× o negociado de R$ 14,40. O certo é o que foi
+// consumido até hoje ÷ o que foi entregue até hoje.
+//
+// Fonte: `d/v_invested_to_date` do backend = faturável consumido por mídia
+// (entrega × CPM/CPCV negociado, over travado no budget pró-rata; budget cheio
+// depois do fim). É o mesmo "Custo Efetivo · Total" do report individual, então
+// o CPM do portal bate com o do report. Encerrada com over → PI cheio; com under
+// → só o valor do que rodou.
+//
+// Fallback (backend sem o campo): PI × fração de dias decorridos do voo — mesma
+// régua do display em effective_cost_front. Pra campanha encerrada é o PI cheio,
+// ou seja, o comportamento antigo.
+
+/** Fração do voo já decorrida (0–1), em dias de calendário. */
+export function elapsedRatio(c, today = new Date()) {
+  const s = parseYmd(c?.start_date);
+  const e = parseYmd(c?.end_date);
+  if (!s || !e) return 1;
+  const t = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  if (t > e) return 1;
+  const DAY = 86400000;
+  const total = Math.round((e - s) / DAY) + 1;
+  const elapsed = Math.max(0, Math.round((t - s) / DAY));
+  return total > 0 ? Math.min(1, elapsed / total) : 1;
+}
+
+/** Investimento consumido até hoje numa mídia ("d" | "v"). */
+export function investedToDateOf(c, media, today = new Date()) {
+  const field = media === "v" ? c?.v_invested_to_date : c?.d_invested_to_date;
+  if (field != null && Number.isFinite(Number(field))) return num(field);
+  const pi = num(media === "v" ? c?.v_client_budget : c?.d_client_budget);
+  return pi * elapsedRatio(c, today);
+}
 
 // ── Features ────────────────────────────────────────────────────────────────
 
@@ -128,9 +165,11 @@ export function mediaMode(fmts, splitAvailable = true) {
  *  o agregado precisa deles pro CPM de display e o CPCV de vídeo mesmo quando
  *  o recorte é combinado. `null` em impressão por mídia = backend antigo (não
  *  sabemos), distinto de 0 (sabemos que não houve). */
-export function sliceCampaign(c, mode = "ALL") {
+export function sliceCampaign(c, mode = "ALL", today = new Date()) {
   const dInvested = num(c.d_client_budget);
   const vInvested = num(c.v_client_budget);
+  const dToDate = investedToDateOf(c, "d", today);
+  const vToDate = investedToDateOf(c, "v", today);
   const dImp = c.display_impressions != null ? num(c.display_impressions) : null;
   const vImp = c.video_impressions != null ? num(c.video_impressions) : null;
   const dClicks = c.display_clicks != null ? num(c.display_clicks) : null;
@@ -139,10 +178,12 @@ export function sliceCampaign(c, mode = "ALL") {
   if (mode === "DISPLAY") {
     return {
       invested: dInvested,
+      investedToDate: dToDate,
       impressions: dImp ?? 0,
       clicks: dClicks ?? 0,
       completions: 0,
       dInvested, dImp, vInvested: 0, vImp: 0,
+      dToDate, vToDate: 0,
       vtrSample: null,
       pacing: c.display_pacing ?? null,
       hasVideo: false,
@@ -151,10 +192,12 @@ export function sliceCampaign(c, mode = "ALL") {
   if (mode === "VIDEO") {
     return {
       invested: vInvested,
+      investedToDate: vToDate,
       impressions: vImp ?? 0,
       clicks: vClicks ?? 0,
       completions: num(c.completions),
       dInvested: 0, dImp: 0, vInvested, vImp,
+      dToDate: 0, vToDate,
       vtrSample: c.vtr != null ? Number(c.vtr) : null,
       pacing: c.video_pacing ?? null,
       hasVideo: true,
@@ -162,12 +205,14 @@ export function sliceCampaign(c, mode = "ALL") {
   }
   return {
     invested: dInvested + vInvested,
+    investedToDate: dToDate + vToDate,
     // Combinado usa o total autoritativo do payload (não dImp+vImp), que
     // continua correto mesmo sem o split.
     impressions: num(c.viewable_impressions),
     clicks: num(c.clicks),
     completions: num(c.completions),
     dInvested, dImp, vInvested, vImp,
+    dToDate, vToDate,
     vtrSample: c.vtr != null ? Number(c.vtr) : null,
     pacing: c.pacing ?? null,
     hasVideo: (c.media || []).includes("VIDEO"),
@@ -177,20 +222,31 @@ export function sliceCampaign(c, mode = "ALL") {
 /** Agrega as fatias e deriva as razões. Toda razão é Σnum/Σdenom. */
 export function aggregateSlices(rows) {
   const t = {
-    invested: 0, impressions: 0, clicks: 0, completions: 0,
-    dInvested: 0, dImp: 0, vInvested: 0, vImp: 0,
+    invested: 0, investedToDate: 0, impressions: 0, clicks: 0, completions: 0,
+    dInvested: 0, dImp: 0, vInvested: 0, vImp: 0, dToDate: 0, vToDate: 0,
   };
   let dImpKnown = false, vImpKnown = false;
+  // Numeradores PAREADOS com o denominador: só entram as campanhas cuja entrega
+  // daquela mídia é conhecida. Sem isso, o investido (ou as views) de uma
+  // campanha sem split/sem entrega ainda somava no numerador sem somar
+  // impressões no denominador — CPM/VTR estourando.
+  let dToDateCpm = 0, vToDateCpcv = 0, vCompVtr = 0, toDateCpc = 0;
   const vtrSamples = [];
   for (const r of rows) {
     t.invested += r.invested;
     t.impressions += r.impressions;
     t.clicks += r.clicks;
     t.completions += r.completions;
+    t.investedToDate += r.investedToDate;
     t.dInvested += r.dInvested;
     t.vInvested += r.vInvested;
+    t.dToDate += r.dToDate;
+    t.vToDate += r.vToDate;
     if (r.dImp != null) { t.dImp += r.dImp; dImpKnown = true; }
-    if (r.vImp != null) { t.vImp += r.vImp; vImpKnown = true; }
+    if (r.vImp != null) { t.vImp += r.vImp; vImpKnown = true; vCompVtr += r.completions; }
+    if (r.dImp > 0) dToDateCpm += r.dToDate;
+    if (r.completions > 0) vToDateCpcv += r.vToDate;
+    if (r.clicks > 0) toDateCpc += r.investedToDate;
     if (r.vtrSample != null) vtrSamples.push(r.vtrSample);
   }
   const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
@@ -201,16 +257,21 @@ export function aggregateSlices(rows) {
     // VTR = Σviews 100% / Σimpressões visíveis de vídeo. Sem o split (backend
     // antigo) cai na média das campanhas — aproximação, mas melhor que "—".
     vtr: vImpKnown && t.vImp > 0
-      ? (t.completions / t.vImp) * 100
+      ? (vCompVtr / t.vImp) * 100
       : mean(vtrSamples),
-    // CPC total = investimento do recorte ÷ cliques do recorte.
-    cpc: t.clicks > 0 ? t.invested / t.clicks : null,
-    // CPM efetivo de display = PI de display ÷ impressões visíveis de display.
-    // "Efetivo" porque usa a entrega REAL (não a contratada): quando a campanha
-    // sobreentrega, o CPM efetivo cai abaixo do CPM negociado.
-    cpmDisplay: dImpKnown && t.dImp > 0 ? (t.dInvested / t.dImp) * 1000 : null,
-    // CPCV efetivo de vídeo = PI de vídeo ÷ views 100% entregues.
-    cpcvVideo: t.completions > 0 && t.vInvested > 0 ? t.vInvested / t.completions : null,
+    // Há campanha no ar no recorte? (consumido < contratado). A UI usa pra
+    // explicitar "até hoje" no investimento e nos custos unitários.
+    inFlight: t.invested - t.investedToDate > 0.5,
+    // Custos unitários sempre sobre o investimento ATÉ HOJE (ver
+    // investedToDateOf) — nunca o PI cheio de uma campanha que ainda entrega.
+    // CPC = investimento até hoje ÷ cliques do recorte.
+    cpc: t.clicks > 0 && toDateCpc > 0 ? toDateCpc / t.clicks : null,
+    // CPM efetivo de display = investido em display até hoje ÷ impressões
+    // visíveis de display × 1.000. Quando a campanha sobreentrega, cai abaixo
+    // do CPM negociado.
+    cpmDisplay: dImpKnown && t.dImp > 0 && dToDateCpm > 0 ? (dToDateCpm / t.dImp) * 1000 : null,
+    // CPCV efetivo de vídeo = investido em vídeo até hoje ÷ views 100%.
+    cpcvVideo: t.completions > 0 && vToDateCpcv > 0 ? vToDateCpcv / t.completions : null,
   };
 }
 
@@ -221,10 +282,11 @@ export function summarize(campaigns, mode = "ALL") {
 
 // ── Eficiência (custo unitário efetivo) ─────────────────────────────────────
 //
-// "Efetivo" = investimento CONTRATADO ÷ entrega REAL. Quando a campanha
-// sobreentrega, o custo unitário cai abaixo do negociado — é exatamente essa a
-// leitura que interessa ao cliente. Client-safe: usa só o PI (o que ele
-// comprou) e a entrega, nunca o custo real da HYPR.
+// "Efetivo" = investimento consumido ATÉ HOJE ÷ entrega REAL até hoje. Quando a
+// campanha sobreentrega, o custo unitário cai abaixo do negociado — é
+// exatamente essa a leitura que interessa ao cliente. Client-safe: usa só o
+// faturável do cliente (o mesmo do report) e a entrega, nunca o custo real da
+// HYPR.
 //
 // CPCV com 3 casas (valores tipicamente < R$ 0,50), igual ao report (VideoV2).
 export const formatCpcv = (v) =>
@@ -233,30 +295,33 @@ export const formatCpcv = (v) =>
 /** Os 3 tiles de eficiência, na mesma ordem e com a mesma explicação nas duas
  *  abas. `value` já vem formatado; `raw` fica pro caller decidir estados. */
 export function efficiencyTiles(summary, formatMoney) {
+  // Com campanha no ar no recorte, o rótulo deixa explícito que o número é
+  // parcial (to date) — senão o cliente compara com o CPM de tabela fechado.
+  const toDate = summary.inFlight ? " · até hoje" : "";
   return [
     {
       key: "cpc",
       label: "CPC",
-      sub: "custo por clique",
+      sub: `custo por clique${toDate}`,
       raw: summary.cpc,
       value: summary.cpc == null ? "—" : formatMoney(summary.cpc),
-      hint: "Investimento do recorte ÷ cliques entregues",
+      hint: "Investimento até hoje ÷ cliques entregues",
     },
     {
       key: "cpm",
       label: "CPM efetivo",
-      sub: "display",
+      sub: `display${toDate}`,
       raw: summary.cpmDisplay,
       value: summary.cpmDisplay == null ? "—" : formatMoney(summary.cpmDisplay),
-      hint: "Investimento de display ÷ impressões visíveis de display × 1.000",
+      hint: "Investimento de display até hoje ÷ impressões visíveis de display × 1.000",
     },
     {
       key: "cpcv",
       label: "CPCV efetivo",
-      sub: "vídeo",
+      sub: `vídeo${toDate}`,
       raw: summary.cpcvVideo,
       value: formatCpcv(summary.cpcvVideo),
-      hint: "Investimento de vídeo ÷ views 100% entregues",
+      hint: "Investimento de vídeo até hoje ÷ views 100% entregues",
     },
   ];
 }
