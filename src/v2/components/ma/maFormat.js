@@ -4,6 +4,7 @@
 // (fora dos .jsx para o Fast Refresh continuar funcionando).
 
 import { fmt } from "../../../shared/format";
+import { downloadCsvText } from "../../../shared/download";
 
 export const pct = (v, d = 2) => (v == null ? "—" : `${fmt(v, d)}%`);
 
@@ -18,13 +19,7 @@ export function keyMetricText(km) {
 export function downloadCsv(filename, headers, rows) {
   const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const csv = [headers, ...rows].map((r) => r.map(esc).join(",")).join("\n");
-  const bom = String.fromCharCode(0xfeff);
-  const blob = new Blob([bom + csv], { type: "text/csv;charset=utf-8" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  downloadCsvText(csv, String(filename || "max attention").replace(/\.csv$/i, ""));
 }
 
 /** "3,8 s" a partir de milissegundos; null → "—". */

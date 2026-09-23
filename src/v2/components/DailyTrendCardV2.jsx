@@ -29,8 +29,8 @@ const TREND_METRICS = {
   ctr: {
     label: "CTR",
     kind: "line",
+    percent: true,
     formatValue: (v) => `${fmt(v, 2)}%`,
-    formatTick: (v) => `${fmt(v, 2)}%`,
   },
   video_view_100: {
     label: "Views 100%",
@@ -41,8 +41,8 @@ const TREND_METRICS = {
   vtr: {
     label: "VTR",
     kind: "line",
+    percent: true,
     formatValue: (v) => `${fmt(v, 1)}%`,
-    formatTick: (v) => `${fmt(v, 0)}%`,
   },
   cost: {
     label: "Custo efetivo",
@@ -92,6 +92,7 @@ export function DailyTrendCardV2({ series, downloadable = false, filename }) {
         kind={metric.kind}
         formatValue={metric.formatValue}
         formatTick={metric.formatTick}
+        percent={!!metric.percent}
         height={220}
       />
     </Card>

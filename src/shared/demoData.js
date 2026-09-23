@@ -429,10 +429,12 @@ function buildDailyAndDetail({ totals, dates, today }) {
           const completions          = Math.max(0, Math.round(t.completions          * overall));
           const videoStarts          = Math.max(0, Math.round(t.video_starts         * overall));
 
-          // Funil de video: 25/50/75/100 com retenção decrescente realista.
-          const v25 = isVideo ? Math.round(completions * 1.45) : 0;
-          const v50 = isVideo ? Math.round(completions * 1.25) : 0;
-          const v75 = isVideo ? Math.round(completions * 1.10) : 0;
+          // Funil de video: início ≥ 25% ≥ 50% ≥ 75% ≥ 100%. As views
+          // iniciadas são completions / 0,92 (≈ 1,087×), então os quartis
+          // ficam entre elas e as completas.
+          const v25 = isVideo ? Math.round(completions * 1.07) : 0;
+          const v50 = isVideo ? Math.round(completions * 1.045) : 0;
+          const v75 = isVideo ? Math.round(completions * 1.02) : 0;
 
           const denomTotal = isVideo ? t.completions : t.viewable_impressions;
           const denomCre   = isVideo ? completions   : viewable;

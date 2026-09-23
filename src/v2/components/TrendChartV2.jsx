@@ -69,6 +69,9 @@ export function TrendChartV2({
   showXAxis = true,
   yWidth = 56,
   ariaLabel,
+  // Taxa em %: o eixo escolhe as casas decimais pelo intervalo visível (com
+  // CTR entre 0,60% e 0,62%, duas casas repetiriam "0,61%" em todo tick).
+  percent = false,
 }) {
   const hypr = useThemeColors();
   const neutral = useChartNeutral();
@@ -80,16 +83,28 @@ export function TrendChartV2({
   // Barras sempre partem do zero. Linha de taxa pode não partir: com CTR
   // entre 0,45% e 0,50%, um eixo de 0 a 0,6% achata a variação numa reta.
   // A folga em volta do intervalo evita exagerar oscilação pequena.
+  // O intervalo mínimo (30% da média) evita transformar ruído de 0,005 p.p.
+  // numa montanha-russa quando a taxa é quase constante.
   let yDomain = [0, "auto"];
+  let tickDecimals = null;
   if (kind === "line") {
     const vals = data.map((d) => d?.[dataKey]).filter((v) => Number.isFinite(v));
     if (vals.length) {
       const lo = Math.min(...vals);
       const hi = Math.max(...vals);
-      const pad = hi > lo ? (hi - lo) * 0.8 : Math.abs(hi) * 0.2 || 1;
-      yDomain = [Math.max(0, lo - pad), hi + pad];
+      const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+      const span = Math.max(hi - lo, Math.abs(mean) * 0.3, 1e-6);
+      const mid = (hi + lo) / 2;
+      const d0 = Math.max(0, mid - span * 0.8);
+      const d1 = mid + span * 0.8;
+      yDomain = [d0, d1];
+      const step = (d1 - d0) / 4;
+      tickDecimals = step >= 5 ? 0 : step >= 0.5 ? 1 : step >= 0.05 ? 2 : 3;
     }
   }
+  const tickFormatter = percent
+    ? (v) => `${fmt(v, tickDecimals ?? 1)}%`
+    : formatTick;
   const surface = hypr.surface2 || hypr.canvas;
   const Chart = kind === "line" ? LineChart : BarChart;
 
@@ -122,7 +137,7 @@ export function TrendChartV2({
           />
           <YAxis
             width={yWidth}
-            tickFormatter={formatTick}
+            tickFormatter={tickFormatter}
             tick={{ fill: neutral.label, fontSize: 10 }}
             tickLine={false}
             axisLine={false}

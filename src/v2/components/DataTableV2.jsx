@@ -36,6 +36,7 @@
 //   Renderizar 10k+ linhas no DOM degrada scroll. Mostra primeiras 200
 //   e oferece CSV pra ver tudo. Mesma regra do Legacy.
 
+import { downloadCsvText } from "../../shared/download";
 import { useMemo, useState } from "react";
 import { fmt } from "../../shared/format";
 import { extractAudience } from "../../shared/aggregations";
@@ -149,15 +150,7 @@ export function DataTableV2({ detail, campaignName }) {
       COLUMNS.map((c) => `"${(r[c.key] ?? "").toString().replace(/"/g, '""')}"`).join(","),
     );
     const csv = [header, ...rows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${campaignName || "campanha"}_detail.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadCsvText(csv, `${campaignName || "campanha"}_detail`);
   };
 
   return (

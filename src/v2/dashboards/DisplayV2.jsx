@@ -1,23 +1,16 @@
 // src/v2/dashboards/DisplayV2.jsx
 //
-// Dashboard Display V2 — REDESIGN PR-14
-//
-// Reescrita pra alinhar com o padrão visual da OverviewV2 (PR-13):
-// hero ComparisonCard no topo, KPI grids contratual+performance,
-// Pacing com marker "esperado hoje", tabela "Por Formato" com share
-// visual, charts diários e detalhamento em collapsible fechado.
+// Aba Display — Report 2.0.
 //
 // LAYOUT, NA ORDEM (top → bottom)
-//   1. Toolbar interna       — SegmentedControlV2 (O2O/OOH) + AudienceFilterV2
-//   2. Hero ComparisonCard   — CPM Negociado vs Efetivo + economia
-//   3. KPI grid contratual   — Budget · Imp Contratadas · Bonus · CPM Neg
-//   4. KPI grid performance  — Imp · Visíveis · CPM Ef · Rentab · Cliques · CTR · CPC
-//   5. PacingBar             — com marker "esperado hoje" (escondido sob filtro)
-//   6. Charts diários        — Entrega × CTR
-//   7. FormatBreakdownTable  — distribuição por creative_size com share visual
-//   8. Chart Audiência       — DualChart byAudience (mantido como gráfico)
-//   9. DailyAggregateTable   — agregada por dia (mediaFilter="DISPLAY")
-//  10. Detalhamento por linha — collapsible FECHADO
+//   1. Título "Display" com a frente (O2O / OOH / Groundflow) ao lado
+//   2. Negociado × Efetivo (CPM, com a economia sempre visível) e a faixa
+//      de contrato no rodapé: budget, imp. contratadas, bônus, CPM negociado
+//   3. 6 KPIs: impressões, imp. visíveis, viewability, cliques, CTR, CPC
+//   4. Pacing da frente com o investido (custo efetivo × budget); com filtro
+//      de período, o custo efetivo do período no lugar
+//   5. Tendência diária: imp. visíveis e CTR alinhados, cada um na sua escala
+//   6. Explorador de entrega: Audiência · Tamanho · Linha criativa · Line · Dia
 //
 // FILTRO DE PERÍODO É GLOBAL (shell ClientDashboardV2).
 // FILTRO DE TACTIC: deriva no frontend pra alinhar com o que totals já
@@ -40,19 +33,16 @@ import {
   groupByCreativeName,
   groupByAudience,
 } from "../../shared/aggregations";
+import { groupByLine } from "../../shared/explorer";
 import { useAudienceOverrides } from "../hooks/useAudienceOverrides";
 import { useLabelOverrides } from "../hooks/useLabelOverrides";
-import { fmt, fmtP, fmtP2, fmtR } from "../../shared/format";
-
-import { Button } from "../../ui/Button";
+import { fmt, fmtP2, fmtR } from "../../shared/format";
 
 import { useReportTrackingContext } from "../contexts/ReportTrackingContext";
-import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
+import { Card } from "../../ui/Card";
+import { AlignedTrendCardV2 } from "../components/AlignedTrendCardV2";
 import { ComparisonCardV2 } from "../components/ComparisonCardV2";
-import { DailyAggregateTableV2 } from "../components/DailyAggregateTableV2";
-import { DualChartV2 } from "../components/DualChartV2";
-import { ChartCardV2 } from "../components/ChartCardV2";
-import { FormatBreakdownTableV2 } from "../components/FormatBreakdownTableV2";
+import { DeliveryExplorerV2 } from "../components/DeliveryExplorerV2";
 import { KpiCardV2 } from "../components/KpiCardV2";
 import { PacingBarV2 } from "../components/PacingBarV2";
 import { SegmentedControlV2 } from "../components/SegmentedControlV2";
@@ -260,38 +250,32 @@ export default function DisplayV2({
     cpmEfProjected !== null &&
     !(kpis.cpmEf != null && kpis.cpmEf < cpmEfProjected);
   // cpmEf "renderizado" — em campanhas com bonus, sobrescreve com a
-  // projeção. Rentabilidade segue a mesma fonte pra consistência visual
-  // (Efetivo aqui vira X% melhor que Tabela = a Rentabilidade fica
-  // positiva conforme o bonus rola).
+  // projeção. A economia (célula do ComparisonCard) sai da mesma fonte:
+  // (tabela − efetivo projetado) / tabela, igual à antiga Rentabilidade.
   const cpmEfDisplay = useProjection ? cpmEfProjected : kpis.cpmEf;
-  const rentabDisplay = useProjection && kpis.cpmNeg > 0
-    ? ((kpis.cpmNeg - cpmEfProjected) / kpis.cpmNeg) * 100
-    : kpis.rentab;
 
   return (
     <div className="space-y-6">
-      {/* ─── 1. Toolbar interna ──────────────────────────────────────── */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-        {/* Segmented O2O/OOH só renderiza se há mais de uma tactic com
-            contrato ou entrega. Quando só uma frente existe, o toggle é
-            ruído visual — escondemos e o conteúdo abaixo já reflete a
-            tactic única via effectiveTactic. */}
+      {/* ─── 1. Título com a frente ──────────────────────────────────── */}
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 className="text-lg font-bold text-fg leading-tight">Display</h2>
+        {/* Seletor de frente só com 2+ frentes (contrato ou entrega). Com
+            uma só, fica o selo da frente — o conteúdo já é dela. */}
         {availableTactics.length > 1 ? (
           <SegmentedControlV2
-            label="Tática Display"
+            label="Frente Display"
             options={availableTactics}
             value={effectiveTactic}
             onChange={(t) => {
               trackCta("tactic_change_display");
               setTactic(t);
-              // Os filtros de audience/line/creative-line foram movidos pro
-              // GlobalDataFilterBarV2 do dashboard pai (compartilhados com
-              // Overview/Video). Não resetamos eles aqui — alternar O2O/OOH
-              // deve preservar a seleção do usuário.
+              // Filtros globais (audiência/line/...) não resetam na troca.
             }}
           />
         ) : (
-          <div />
+          <span className="inline-flex items-center rounded-full border border-border px-2.5 py-0.5 text-[11px] font-semibold text-fg-muted">
+            {availableTactics[0]?.label || effectiveTactic}
+          </span>
         )}
       </div>
 
@@ -317,7 +301,6 @@ export default function DisplayV2({
           bonusImps={bonusImps}
           cpmNegBonus={cpmNegBonus}
           cpmEfDisplay={cpmEfDisplay}
-          rentabDisplay={rentabDisplay}
           useProjection={useProjection}
           notStarted={kpis.notStarted}
           isAdmin={isAdmin}
@@ -348,7 +331,6 @@ function DisplayContent({
   bonusImps,
   cpmNegBonus,
   cpmEfDisplay,
-  rentabDisplay,
   useProjection,
   notStarted,
   isAdmin = false,
@@ -357,11 +339,80 @@ function DisplayContent({
   clOv,
 }) {
   const campName = camp.campaign_name || "campanha";
+  const isFiltered = aggregates.isFiltered;
+  const viewability = kpis.impr > 0 ? (kpis.vi / kpis.impr) * 100 : null;
+  const byLine = groupByLine(detailFiltered, "clicks", "viewable_impressions", "ctr");
+  const contract = [
+    { label: "Budget", value: fmtR(kpis.budget), hint: "Budget alocado à frente selecionada." },
+    { label: "Imp. contratadas", value: fmt(contractedImps) },
+    bonusImps > 0 ? { label: "Bônus", value: `${fmt(bonusImps)} imp.`, hint: "Bônus negociado além do contratado." } : null,
+    { label: "CPM negociado", value: fmtR(kpis.cpmNeg) },
+  ].filter(Boolean);
+
+  const dims = [
+    {
+      key: "audience",
+      label: "Audiência",
+      rows: byAudience,
+      groupKey: "audience",
+      itemNoun: "audiência",
+      extraRows: detailAll,
+      getDetailGroupKey: (r) => applyAudienceOverride(extractAudience(r.line_name), aud?.overrideMap),
+      rename: aud ? {
+        busy: aud.busyAudience,
+        isOverridden: (row) => aud.isOverridden?.(row._rawLabels),
+        rename: (row, name, scope) => aud.renameAudience(row._rawLabels, name, row.audience, scope),
+        reset: (row) => aud.resetAudience(row._rawLabels, row.audience),
+      } : null,
+    },
+    {
+      key: "size",
+      label: "Tamanho",
+      rows: bySize,
+      groupKey: "size",
+      itemNoun: "tamanho",
+      extraRows: detailFiltered,
+      getDetailGroupKey: (r) => applyLabelOverride(r.creative_size || "N/A", fmtOv?.overrideMap),
+      rename: fmtOv ? {
+        busy: fmtOv.busyLabel,
+        isOverridden: (row) => fmtOv.isOverridden?.(row._rawLabels),
+        rename: (row, name, scope) => fmtOv.renameLabel(row._rawLabels, name, row.size, scope),
+        reset: (row) => fmtOv.resetLabel(row._rawLabels, row.size),
+      } : null,
+    },
+    {
+      key: "creative",
+      label: "Linha criativa",
+      rows: byCreative,
+      groupKey: "creative_name",
+      itemNoun: "linha criativa",
+      itemNounPlural: "linhas criativas",
+      extraRows: detailFiltered,
+      getDetailGroupKey: (r) => applyLabelOverride(getCreativeLineKey(r), clOv?.overrideMap),
+      rename: clOv ? {
+        busy: clOv.busyLabel,
+        isOverridden: (row) => clOv.isOverridden?.(row._rawLabels),
+        rename: (row, name, scope) => clOv.renameLabel(row._rawLabels, name, row.creative_name, scope),
+        reset: (row) => clOv.resetLabel(row._rawLabels, row.creative_name),
+      } : null,
+    },
+    {
+      key: "line",
+      label: "Line",
+      rows: byLine,
+      groupKey: "line_name",
+      itemNoun: "line",
+      extraRows: detailFiltered,
+      getDetailGroupKey: (r) => r.line_name || "N/A",
+      rename: null,
+    },
+    { key: "day", label: "Dia" },
+  ];
+
   return (
     <>
-      {/* Disclaimer "Entrega não iniciada" — pra contratos vendidos sem
-          delivery ainda. Mantém os contratuais visíveis pro CS lembrar
-          de destravar com o cliente. Pacing 0% reforça visualmente. */}
+      {/* Disclaimer "Entrega não iniciada" — contratos vendidos sem
+          delivery ainda. Os valores negociados seguem visíveis. */}
       {notStarted && (
         <div className="rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 flex items-start gap-3">
           <span className="size-2 rounded-full bg-warning mt-1.5 shrink-0" aria-hidden />
@@ -374,7 +425,7 @@ function DisplayContent({
         </div>
       )}
 
-      {/* ─── 2. Hero ComparisonCard ──────────────────────────────────── */}
+      {/* ─── 2. Negociado × Efetivo + contrato ───────────────────────── */}
       <ComparisonCardV2
         title={`CPM Display · ${tactic}`}
         negociado={kpis.cpmNeg}
@@ -382,91 +433,26 @@ function DisplayContent({
         negociadoComBonus={cpmNegBonus}
         efetivoIsProjection={useProjection}
         formatValue={(v) => fmtR(v)}
+        unit="CPM"
+        contract={contract}
       />
 
-      {/* ─── 3. KPI grid contratual ──────────────────────────────────── */}
-      <section>
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle mb-3">
-          Contratual
-        </h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <KpiCardV2
-            outlined
-            label="Budget Contratado"
-            value={fmtR(kpis.budget)}
-            hint="Budget alocado à tática selecionada (O2O ou OOH)."
-          />
-          <KpiCardV2
-            outlined
-            label="Imp. Contratadas"
-            value={fmt(contractedImps)}
-            hint="Volume de impressões contratadas para a tática."
-          />
-          <KpiCardV2
-            outlined
-            label="Imp. Bonus"
-            value={fmt(bonusImps)}
-            hint="Bonus negociado adicional ao contratado."
-          />
-          <KpiCardV2
-            outlined
-            label="CPM Negociado"
-            value={fmtR(kpis.cpmNeg)}
-            hint="CPM acordado em contrato — base do cálculo de rentabilidade."
-          />
-        </div>
-      </section>
+      {/* ─── 3. KPIs ─────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+        <KpiCardV2 label="Impressões" value={fmt(kpis.impr)} hint="Impressões medidas no período." />
+        <KpiCardV2 label="Imp. visíveis" value={fmt(kpis.vi)} hint="Impressões visíveis (viewable) no período." />
+        <KpiCardV2
+          label="Viewability"
+          value={viewability == null ? "—" : `${fmt(viewability, 1)}%`}
+          hint="Imp. visíveis ÷ impressões medidas. Mostra a qualidade do inventário comprado."
+        />
+        <KpiCardV2 label="Cliques" value={fmt(kpis.clks)} />
+        <KpiCardV2 label="CTR" value={fmtP2(kpis.ctr)} accent hint="Cliques ÷ imp. visíveis." />
+        <KpiCardV2 label="CPC" value={fmtR(kpis.cpc)} hint="Custo efetivo ÷ cliques." />
+      </div>
 
-
-      {/* ─── 4. KPI grid performance ─────────────────────────────────── */}
-      <section>
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle mb-3">
-          Performance
-        </h2>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-          <KpiCardV2 label="Impressões" value={fmt(kpis.impr)} />
-          <KpiCardV2
-            label="Imp. Visíveis"
-            value={fmt(kpis.vi)}
-            hint="Soma de viewable impressions filtradas pelo período/audiência."
-          />
-          <KpiCardV2
-            label={useProjection ? "CPM Efetivo *" : "CPM Efetivo"}
-            value={fmtR(cpmEfDisplay)}
-            accent
-            hint={useProjection
-              ? "Projeção mantendo o ritmo atual de entrega até o fim da campanha. Considera o bonus contratado: se o pacing levar a entrega total além das impressões contratadas, o custo capa no budget e o CPM cai. Converge para o Negociado Ajustado em 100% de pacing."
-              : "Custo entregue / Imp. Visíveis × 1000 — capado no negociado."}
-          />
-          <KpiCardV2
-            label="Rentabilidade"
-            value={fmtP(rentabDisplay)}
-            accent
-            hint={useProjection
-              ? "(CPM Tabela HYPR − CPM Efetivo projetado) / CPM Tabela HYPR. Positivo = projeção indica entrega abaixo do CPM contratual graças ao bonus."
-              : "(CPM Negociado − CPM Efetivo) / CPM Negociado. Positivo = a HYPR entregou mais que o contratado."}
-          />
-          <KpiCardV2 label="Cliques" value={fmt(kpis.clks)} />
-          <KpiCardV2
-            label="CTR"
-            value={fmtP2(kpis.ctr)}
-            hint="Cliques / Imp. Visíveis."
-          />
-          <KpiCardV2
-            label="CPC"
-            value={fmtR(kpis.cpc)}
-            hint="Custo Efetivo / Cliques."
-          />
-          <KpiCardV2
-            label="Custo Efetivo Total"
-            value={fmtR(kpis.cost)}
-            hint="Valor investido até o momento na tática selecionada — base do pacing."
-          />
-        </div>
-      </section>
-
-      {/* ─── 5. Pacing ───────────────────────────────────────────────── */}
-      {!aggregates.isFiltered && (
+      {/* ─── 4. Pacing (ou custo do período) ─────────────────────────── */}
+      {!isFiltered ? (
         <PacingBarV2
           label={`Pacing Display ${tactic}`}
           pacing={kpis.pac}
@@ -475,147 +461,44 @@ function DisplayContent({
           contracted={contractedImps}
           bonus={bonusImps}
           delivered={kpis.viAll}
+          showCost
         />
+      ) : (
+        <Card className="px-5 py-4 flex flex-wrap items-baseline justify-between gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-fg-muted">Custo efetivo no período</span>
+          <span className="text-lg font-bold text-fg tabular-nums">{fmtR(kpis.cost)}</span>
+          <span className="w-full text-[11px] text-fg-subtle">O pacing fica oculto com filtro de período: ele mede a campanha inteira.</span>
+        </Card>
       )}
 
-      {/* ─── 6. Chart diário (full-width) ────────────────────────────── */}
+      {/* ─── 5. Tendência diária ─────────────────────────────────────── */}
       {daily.length > 0 && (
-        <section>
-          <ChartCardV2
-            title="Entrega × CTR Diário"
-            downloadable={isAdmin}
-            filename={`${campName} - Display ${tactic} - Entrega x CTR Diario`}
-          >
-            <DualChartV2
-              data={daily}
-              xKey="date"
-              y1Key="viewable_impressions"
-              y2Key="ctr"
-              label1="Imp. Visíveis"
-              label2="CTR %"
-            />
-          </ChartCardV2>
-        </section>
-      )}
-
-      {/* ─── 7. Tabela "Por Formato" (creative_size) ─────────────────── */}
-      {bySize.length > 0 && (
-        <FormatBreakdownTableV2
-          rows={bySize}
-          groupKey="size"
-          groupLabel="Tamanho"
-          denomKey="viewable_impressions"
-          denomLabel="Imp. Visíveis"
-          numeratorKey="clicks"
-          numeratorLabel="Cliques"
+        <AlignedTrendCardV2
+          data={daily}
+          volumeKey="viewable_impressions"
+          volumeLabel="Imp. visíveis"
           rateKey="ctr"
           rateLabel="CTR"
-          rateFormatter={fmtP2}
-          extraRows={detailFiltered}
-          getDetailGroupKey={(r) => applyLabelOverride(r.creative_size || "N/A", fmtOv?.overrideMap)}
-          mediaType="DISPLAY"
           downloadable={isAdmin}
-          filename={`${campName} - Display ${tactic} - Por Tamanho`}
-          editable={isAdmin}
-          busyAudience={fmtOv?.busyLabel}
-          isRowOverridden={(row) => fmtOv?.isOverridden?.(row._rawLabels)}
-          onRenameGroup={(row, name, scope) => fmtOv?.renameLabel(row._rawLabels, name, row.size, scope)}
-          onResetGroup={(row) => fmtOv?.resetLabel(row._rawLabels, row.size)}
+          filename={`${campName} - Display ${tactic} - Tendencia diaria`}
         />
       )}
 
-      {/* ─── 7b. Tabela "Por Linha Criativa" (creative_name menos o size) ─ */}
-      {byCreative.length > 0 && (
-        <FormatBreakdownTableV2
-          rows={byCreative}
-          groupKey="creative_name"
-          groupLabel="Linha Criativa"
-          itemNoun="linha criativa"
-          itemNounPlural="linhas criativas"
-          denomKey="viewable_impressions"
-          denomLabel="Imp. Visíveis"
-          numeratorKey="clicks"
-          numeratorLabel="Cliques"
-          rateKey="ctr"
-          rateLabel="CTR"
-          rateFormatter={fmtP2}
-          extraRows={detailFiltered}
-          getDetailGroupKey={(r) => applyLabelOverride(getCreativeLineKey(r), clOv?.overrideMap)}
-          mediaType="DISPLAY"
-          downloadable={isAdmin}
-          filename={`${campName} - Display ${tactic} - Por Linha Criativa`}
-          editable={isAdmin}
-          busyAudience={clOv?.busyLabel}
-          isRowOverridden={(row) => clOv?.isOverridden?.(row._rawLabels)}
-          onRenameGroup={(row, name, scope) => clOv?.renameLabel(row._rawLabels, name, row.creative_name, scope)}
-          onResetGroup={(row) => clOv?.resetLabel(row._rawLabels, row.creative_name)}
-        />
-      )}
-
-      {/* ─── 8. Chart de Audiência (mantido como gráfico) ────────────── */}
-      {byAudience.length > 0 && (
-        <section>
-          <ChartCardV2
-            title="Entrega × CTR por Audiência"
-            downloadable={isAdmin}
-            filename={`${campName} - Display ${tactic} - Entrega x CTR por Audiencia`}
-          >
-            <DualChartV2
-              data={byAudience}
-              xKey="audience"
-              y1Key="viewable_impressions"
-              y2Key="ctr"
-              label1="Imp. Visíveis"
-              label2="CTR %"
-            />
-          </ChartCardV2>
-        </section>
-      )}
-
-      {/* ─── 8b. Tabela "Por Audiência" ──────────────────────────────────
-          Mesmo estilo da tabela "Por Formato": share visual, métricas
-          alinhadas, ordenação por share. Espelha a visão do gráfico
-          acima — sempre mostra TODAS as audiências (detailAll), igual
-          ao DualChart, ignorando o filtro de audience selecionada.
-          extractAudience() resolve a chave de cada detail row pra
-          casar com r.audience das rows agrupadas.
-      */}
-      {byAudience.length > 0 && (
-        <FormatBreakdownTableV2
-          rows={byAudience}
-          groupKey="audience"
-          groupLabel="Audiência"
-          itemNoun="audiência"
-          denomKey="viewable_impressions"
-          denomLabel="Imp. Visíveis"
-          numeratorKey="clicks"
-          numeratorLabel="Cliques"
-          rateKey="ctr"
-          rateLabel="CTR"
-          rateFormatter={fmtP2}
-          extraRows={detailAll}
-          getDetailGroupKey={(r) => applyAudienceOverride(extractAudience(r.line_name), aud?.overrideMap)}
-          mediaType="DISPLAY"
-          downloadable={isAdmin}
-          filename={`${campName} - Display ${tactic} - Por Audiencia`}
-          editable={isAdmin}
-          busyAudience={aud?.busyAudience}
-          isRowOverridden={(row) => aud?.isOverridden?.(row._rawLabels)}
-          onRenameGroup={(row, name, scope) => aud?.renameAudience(row._rawLabels, name, row.audience, scope)}
-          onResetGroup={(row) => aud?.resetAudience(row._rawLabels, row.audience)}
-        />
-      )}
-
-      {/* ─── 9. Tabela "Por Dia" agregada ────────────────────────────── */}
+      {/* ─── 6. Explorador de entrega ────────────────────────────────── */}
       {detailFiltered.length > 0 && (
-        <CollapsibleSectionV2 title="Entrega Agregada por Dia" defaultOpen>
-          <DailyAggregateTableV2
-            daily={detailFiltered}
-            campaignName={`${camp.campaign_name || "campanha"}_display_${tactic}`}
-            lockedMedia="DISPLAY"
-            downloadable={isAdmin}
-          />
-        </CollapsibleSectionV2>
+        <DeliveryExplorerV2
+          dims={dims}
+          mediaType="DISPLAY"
+          numeratorKey="clicks"
+          numeratorLabel="Cliques"
+          rateKey="ctr"
+          rateLabel="CTR"
+          rateFormatter={fmtP2}
+          dailyDetail={detailFiltered}
+          campaignName={campName}
+          tactic={tactic}
+          isAdmin={isAdmin}
+        />
       )}
     </>
   );

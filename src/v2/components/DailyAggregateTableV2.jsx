@@ -39,6 +39,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { fmt, fmtR } from "../../shared/format";
+import { downloadCsvText } from "../../shared/download";
 import { cn } from "../../ui/cn";
 import { Button } from "../../ui/Button";
 import { Card } from "../../ui/Card";
@@ -121,6 +122,8 @@ export function DailyAggregateTableV2({
   // Modo compacto: mostra só os N dias mais recentes e oferece expandir.
   // O total do rodapé continua somando todos os dias do período.
   initialRows = null,
+  // Sem Card: embutida no Explorador de entrega (dimensão Dia).
+  bare = false,
 }) {
   const cardRef = useRef(null);
   const [expanded, setExpanded] = useState(false);
@@ -175,12 +178,7 @@ export function DailyAggregateTableV2({
     const csv = [headers, ...rows, ...totalLine]
       .map((row) => row.map((v) => `"${v ?? ""}"`).join(","))
       .join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${campaignName}_${media.toLowerCase()}_agregado_dia.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    downloadCsvText(csv, `${campaignName}_${media.toLowerCase()}_agregado_dia`);
   };
 
   const empty = !aggregated.length;
@@ -189,8 +187,9 @@ export function DailyAggregateTableV2({
   const visibleRows = collapsed ? aggregated.slice(0, initialRows) : aggregated;
   const daysLabel = `${aggregated.length} ${aggregated.length === 1 ? "dia" : "dias"}`;
 
+  const Wrapper = bare ? "div" : Card;
   return (
-    <Card ref={cardRef} className={cn("overflow-hidden", className)}>
+    <Wrapper ref={cardRef} className={cn(!bare && "overflow-hidden", className)}>
       {/* Header: meta-info + toggle + CSV + PNG */}
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b border-border">
         {title ? (
@@ -315,7 +314,7 @@ export function DailyAggregateTableV2({
           </button>
         </div>
       )}
-    </Card>
+    </Wrapper>
   );
 }
 

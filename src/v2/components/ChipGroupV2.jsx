@@ -17,7 +17,13 @@ export function ChipGroupV2({ label, options, value, onChange, className, size =
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
     e.preventDefault();
     const dir = e.key === "ArrowLeft" ? -1 : 1;
-    const next = (idx + dir + options.length) % options.length;
+    // Pula opções desligadas (ex.: dimensão com um valor só).
+    let next = idx;
+    for (let step = 0; step < options.length; step++) {
+      next = (next + dir + options.length) % options.length;
+      if (!options[next].disabled) break;
+    }
+    if (next === idx || options[next].disabled) return;
     onChange(options[next].value);
     refs.current[next]?.focus();
   };
