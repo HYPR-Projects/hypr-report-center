@@ -38,11 +38,6 @@ import { formatMonthLabel } from "../admin/lib/format";
 
 export const num = (v) => Number(v) || 0;
 
-// ── Investimento ────────────────────────────────────────────────────────────
-// PI contratado (display + vídeo). Campo seguro: é o que o cliente comprou,
-// não o custo real da HYPR.
-export const investedOf = (c) => num(c.d_client_budget) + num(c.v_client_budget);
-
 // ── Features ────────────────────────────────────────────────────────────────
 
 // Rótulos das 3 features canônicas (campo `features`, derivado dos assets já

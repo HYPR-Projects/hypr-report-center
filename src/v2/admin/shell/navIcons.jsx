@@ -117,15 +117,6 @@ export function ChevronDownIcon({ size = 13, className }) {
   );
 }
 
-export function ChevronLeftIcon({ size = 15, className }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-         strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <path d="m14 8-4 4 4 4" />
-    </svg>
-  );
-}
-
 // O toggle do rail precisa comunicar "isso esconde/mostra o painel
 // lateral" sem depender do hover pra explicar (o title só chega depois).
 // Uma seta solta não carrega esse significado sozinha — é o mesmo glifo
@@ -168,15 +159,6 @@ export function CloseIcon({ size = 15 }) {
   );
 }
 
-export function PlusIcon({ size = 13 }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-         strokeWidth="2.4" strokeLinecap="round">
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  );
-}
-
 export function DownloadIcon({ size = 14 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -211,15 +193,6 @@ export function DensityIcon({ size = 14, dense = false }) {
       {dense
         ? <path d="M4 6h16M4 12h16M4 18h16" />
         : <path d="M4 7h16M4 17h16" />}
-    </svg>
-  );
-}
-
-export function BackIcon({ size = 13 }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-         strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-      <path d="m15 18-6-6 6-6" />
     </svg>
   );
 }

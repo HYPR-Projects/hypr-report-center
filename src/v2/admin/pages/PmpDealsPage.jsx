@@ -66,11 +66,11 @@ import {
 import { filterChipClass } from "../components/filterChipStyle";
 import { KpiBoard } from "../components/KpiBoard";
 import {
-  PMP_STATUSES, statusPillClass,
+  PMP_STATUSES,
   LIVE_STATUSES, HISTORY_STATUSES, effectiveDeliveryMeta,
   bidTypeLabel,
   formatBRL, formatBRLCompact, formatInt, formatIntCompact, formatRatioPct,
-  comparePmpLines, compareSortValues, formatLastDelivery,
+  comparePmpLines, compareSortValues,
   pctEntrega, groupPctEntrega,
   pctEntregaRev, groupPctEntregaRev,
   resolveGroupPi, lineKey,

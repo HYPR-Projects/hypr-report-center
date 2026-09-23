@@ -94,17 +94,6 @@ export function getCachedSummary(shortToken) {
 }
 
 /**
- * True se há entry em cache mas passou do TTL. Caller (hook) usa pra
- * disparar refetch em background sem trocar o número visível.
- */
-export function isStaleSummary(shortToken) {
-  if (!shortToken) return false;
-  const entry = cache.get(shortToken);
-  if (!entry) return false;
-  return Date.now() - entry.fetchedAt > TTL_MS;
-}
-
-/**
  * Loading = NÃO temos nenhum dado em cache + há request em voo. Se já
  * temos dado (mesmo stale), retornamos false: o badge mostra o número,
  * não o skeleton. Refetch em background atualiza quando chegar.

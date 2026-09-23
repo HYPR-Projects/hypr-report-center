@@ -11,18 +11,18 @@ import { memo, useState, useMemo } from "react";
 import { cn } from "../../../ui/cn";
 import {
   effectiveDeliveryMeta, LIVE_STATUSES,
-  statusPillClass, healthPillClass, healthLabel,
+  statusPillClass,
   pctDeliveryClass, pctBarColor,
   formatBRL, formatBRLCompact, formatInt, formatIntCompact,
   formatRatioPct, formatLastDelivery, emailInitial,
   pctEntrega, groupPctEntrega,
-  pctEntregaRev, groupPctEntregaRev,
+  pctEntregaRev,
   faltaEntregarRev, groupFaltaEntregarRev,
   resolveGroupPi,
   effectiveStatus, formatLineStartPeriod,
   isNewLine, METRIC,
 } from "../lib/pmpFormat";
-import { lineTokens, extraTokenCount, lineChecklists, commandPiTotal } from "../lib/pmpTokens";
+import { extraTokenCount, lineChecklists, commandPiTotal } from "../lib/pmpTokens";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
 
 
@@ -346,32 +346,6 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false, w
             </div>
           )}
         </div>
-      ))}
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// AlertsBar — chips clicáveis com atalhos pra worklist
-// ═══════════════════════════════════════════════════════════════════════════
-export function PmpAlertsBar({ alerts, onClickAlert }) {
-  if (!alerts || alerts.length === 0) return null;
-  return (
-    <div className="flex flex-wrap gap-2">
-      {alerts.map((a, i) => (
-        <button key={i} onClick={() => onClickAlert?.(a.bucket)}
-                className={cn(
-                  "inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-[12px] border transition-colors cursor-pointer",
-                  a.kind === "danger" ? "border-danger/30 bg-danger/10 text-danger hover:bg-danger/15"
-                  : a.kind === "warn" ? "border-warning/30 bg-warning/10 text-warning hover:bg-warning/15"
-                  : "border-signature/30 bg-signature/10 text-signature hover:bg-signature/15",
-                )}>
-          <span className="text-[10px] leading-none">●</span>
-          <span>{a.text}</span>
-          {a.bucket && (
-            <span className="text-[10px] opacity-70 ml-1">→ ver</span>
-          )}
-        </button>
       ))}
     </div>
   );
@@ -1440,118 +1414,6 @@ function PmpMobileStat({ label, children }) {
   );
 }
 
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PmpWorklistBuckets — 4 buckets de ações imediatas
-// ═══════════════════════════════════════════════════════════════════════════
-export function PmpWorklistView({ lines, onLineClick, onLinkClick, focusBucket }) {
-  const buckets = useMemo(() => {
-    const stopped = [], noPi = [];
-    // Worklist olha a BASE INTEIRA — não filtra por live partition. Assim
-    // pega lines com state=active no Xandr mesmo que já estejam classificadas
-    // como "ended" (≥7d sem delivery) no nosso modelo.
-    //
-    // "Pararam de entregar" (stopped) = state=active no Xandr MAS sem delivery
-    // há 8-30 dias. Ou seja: lines ativadas/rodando há pouco que pararam de
-    // entregar sem terem sido finalizadas no Xandr. É o sinal de "algo tá
-    // errado, ainda tá ligado lá mas não tá entregando".
-    for (const l of lines) {
-      if (l.delivery_status === "stopped") stopped.push(l);
-      if (LIVE_STATUSES.has(l.delivery_status) && l.pi_brl == null) noPi.push(l);
-    }
-    return [
-      { key: "stopped", title: "Pararam de entregar", desc: "Lines com state=active no Xandr mas sem delivery há mais de 7 dias", lines: stopped, color: "rose" },
-      { key: "no_pi",   title: "Sem PI vinculado",    desc: "Lines no ar mas sem ligação com o Hypr Command",                     lines: noPi,    color: "amber" },
-    ];
-  }, [lines]);
-
-  const totalUrgent = buckets.reduce((s, b) => s + b.lines.length, 0);
-
-  if (totalUrgent === 0) {
-    return (
-      <div className="rounded-xl border border-success/30 bg-success/5 px-6 py-12 text-center">
-        <div className="text-success text-3xl mb-2">✓</div>
-        <div className="text-fg font-medium">Nenhuma ação urgente no momento</div>
-        <div className="text-fg-muted text-sm mt-1">Todas as lines ativas estão entregando dentro do esperado.</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      {buckets.map(b => (
-        <WorklistBucket key={b.key} bucket={b} onLineClick={onLineClick} onLinkClick={onLinkClick} focused={focusBucket === b.key} />
-      ))}
-    </div>
-  );
-}
-
-function WorklistBucket({ bucket, onLineClick, onLinkClick, focused }) {
-  const colorClasses = bucket.color === "rose"
-    ? { border: "border-danger/30", bg: "bg-danger/5", text: "text-danger", chip: "bg-danger/15 text-danger border-danger/30" }
-    : { border: "border-warning/30", bg: "bg-warning/5", text: "text-warning", chip: "bg-warning/15 text-warning border-warning/30" };
-
-  return (
-    <div className={cn(
-      "rounded-xl border bg-canvas-elevated overflow-hidden transition-shadow",
-      colorClasses.border,
-      focused && "ring-2 ring-signature/40",
-    )}>
-      <div className={cn("px-5 py-3.5 border-b", colorClasses.border, colorClasses.bg)}>
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h3 className={cn("text-sm font-semibold", colorClasses.text)}>{bucket.title}</h3>
-            <p className="text-[11px] text-fg-muted mt-0.5">{bucket.desc}</p>
-          </div>
-          <span className={cn("inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold border tabular-nums", colorClasses.chip)}>
-            {bucket.lines.length}
-          </span>
-        </div>
-      </div>
-      {bucket.lines.length === 0 ? (
-        <div className="px-5 py-6 text-center text-xs text-fg-subtle italic">Tudo limpo aqui</div>
-      ) : (
-        <div className="divide-y divide-border/30">
-          {bucket.lines.slice(0, 8).map(l => (
-            <button key={l.line_id} onClick={() => onLineClick?.(l)}
-                    className="w-full text-left px-5 py-3 hover:bg-surface/50 transition-colors flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-sm text-fg font-medium truncate">
-                  {l.customer || "—"} <span className="text-fg-subtle mx-1">·</span> {l.campaign_name || "—"}
-                </div>
-                <div className="text-[10px] text-fg-subtle mt-0.5">
-                  Line {l.line_id} {lineTokens(l).length ? `· ${lineTokens(l).join(" + ")}` : ""}
-                </div>
-              </div>
-              <div className="text-right shrink-0">
-                {bucket.key === "stopped" && (
-                  <div className="text-xs text-danger">{formatLastDelivery(l.hours_since_last_delivery) || "sem delivery"}</div>
-                )}
-                {bucket.key === "no_pi" && (
-                  effectiveStatus(l) === "Cancelado" ? (
-                    <span className="text-xs text-fg-subtle/60">—</span>
-                  ) : onLinkClick ? (
-                    <button onClick={(e) => { e.stopPropagation(); onLinkClick(l); }}
-                            className="text-xs text-warning hover:text-warning underline-offset-2 hover:underline">
-                      🔗 vincular
-                    </button>
-                  ) : (
-                    <span className="text-xs text-warning/60">sem PI</span>
-                  )
-                )}
-              </div>
-            </button>
-          ))}
-          {bucket.lines.length > 8 && (
-            <div className="px-5 py-2 text-[11px] text-fg-subtle text-center">
-              + {bucket.lines.length - 8} {bucket.lines.length - 8 === 1 ? "outra" : "outras"}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 
 // ═══════════════════════════════════════════════════════════════════════════

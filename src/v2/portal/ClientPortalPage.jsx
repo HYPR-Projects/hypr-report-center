@@ -18,7 +18,7 @@
 // Esta versão consome PORTAL_MOCK; a fiação com o backend
 // (?action=client_portal_data) troca só a fonte de `data`.
 
-import { useMemo, useState, useEffect, useCallback, useRef } from "react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 import "../v2.css";
 import "../../ui/typography";
 

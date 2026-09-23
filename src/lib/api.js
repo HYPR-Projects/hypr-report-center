@@ -1801,16 +1801,6 @@ async function throwLinkError(r) {
   throw err;
 }
 
-/** Vincula line ↔ short_token (1 token, caminho legado): troca o PRINCIPAL,
- *  preservando os extras. PUT no Xandr + update local + refresh enriched. */
-export async function linkPmpCommand({ line_id, source = "xandr", short_token, force = false }) {
-  const jwt = await getOrIssueAdminJwt();
-  const r = await postJson(`${API_URL}?action=pmp_link_command`,
-    { line_id, source: source || "xandr", short_token, force }, adminAuthHeaders(jwt));
-  if (!r.ok) await throwLinkError(r);
-  return r.json();
-}
-
 /** Define a LISTA COMPLETA de short_tokens do Command vinculados à line.
  *  `short_tokens[0]` é o principal (vai pro `code` da line no Xandr quando
  *  muda); o resto fica em `extra_short_tokens`. PI da line = soma dos
