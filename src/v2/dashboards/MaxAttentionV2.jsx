@@ -229,7 +229,7 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
           body={
             notConfigured
               ? isAdmin
-                ? "A integração do report com a Platform não está configurada no backend: defina MA_SERVICE_KEY na Cloud Function (mesmo valor de REPORT_CENTER_SERVICE_KEY na Platform). Os vínculos já estão salvos."
+                ? "A integração do report com a Platform não está configurada no backend: crie o secret MA_SERVICE_KEY no Secret Manager (mesmo valor de REPORT_CENTER_SERVICE_KEY na Platform) e rode o deploy do backend. Os vínculos já estão salvos."
                 : "As métricas das peças aparecem aqui em breve."
               : isAdmin
                 ? `${error?.message || "Falha na Platform"}. Tente de novo em alguns minutos.`

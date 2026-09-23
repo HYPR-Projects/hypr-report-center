@@ -124,9 +124,10 @@ def platform_url() -> str:
 
 def not_configured_message() -> str:
     return (
-        "Integração com o Max Attention não configurada: defina MA_SERVICE_KEY "
-        "na Cloud Function com o mesmo valor de REPORT_CENTER_SERVICE_KEY do "
-        "o2o-platform (e, se preciso, MA_PLATFORM_URL)."
+        "Integração com o Max Attention não configurada: crie o secret "
+        "MA_SERVICE_KEY no Secret Manager com o mesmo valor de "
+        "REPORT_CENTER_SERVICE_KEY do o2o-platform e rode o deploy do backend "
+        "(backend/deploy.sh leva o valor para a Cloud Function)."
     )
 
 
