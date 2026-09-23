@@ -917,6 +917,68 @@ export const PMP_ROW_GRID =
 export const PMP_ROW_GRID_NOPI =
   "grid grid-cols-[12px_minmax(220px,1fr)_76px_68px_98px_100px_100px_68px_90px] gap-x-3";
 
+// Wrapper que vira <button> quando onColumnClick é fornecido. Mantém o
+// mesmo alinhamento (text-right pra colunas numéricas) e injeta seta na
+// coluna ativa.
+//
+// CUIDADO: <button> não herda font-size/font-weight/text-transform do pai
+// (user-agent stylesheet sobrescreve), então o `lbl-section` do container
+// some quando o filho é <button>. Por isso aplico a mesma utility
+// EXPLICITAMENTE no botão também.
+// `sub` = segunda linha minúscula do rótulo, e é o padrão de TODA a faixa
+// numérica: "RECEITA/bruta", "MARGEM/hypr", "MARGEM/%", "% ENTREGA/margem"
+// e "% ENTREGA/receita". Duas linhas custam ~12px de altura no cabeçalho e
+// devolvem ~40px de largura por coluna — que é o que faltava pra tabela
+// caber num 14" sem scroll lateral. De quebra o termo primário repetido
+// ("MARGEM", "% ENTREGA") agrupa visualmente as colunas irmãs, que antes
+// só se distinguiam por rótulos longos e desalinhados entre si.
+//
+// `items-start` no container + `items-start` no botão mantêm a PRIMEIRA
+// linha de todos os rótulos na mesma altura; o qualificador desce. Sem
+// isso o <button> centralizava verticalmente na altura esticada da row e
+// os rótulos de uma linha ficavam fora do prumo dos de duas.
+function PmpSortTh({ field, align = "right", accent = false, sub = null, children, sortBy, sortDir, interactive, onColumnClick }) {
+  const active = field && sortBy === field;
+  const arrow = active ? (sortDir === "asc" ? "↑" : "↓") : null;
+  const cls = cn(
+    "select-none",
+    align === "right" ? "text-right" : "text-left",
+    accent && "text-success/80",
+  );
+  const label = sub ? (
+    <span className={cn("flex flex-col leading-tight", align === "right" ? "items-end" : "items-start")}>
+      <span>{children}</span>
+      <span className="text-[9px] normal-case tracking-wide font-medium text-fg-subtle/80">{sub}</span>
+    </span>
+  ) : children;
+  if (!field || !interactive) {
+    return <div className={cls}>{label}</div>;
+  }
+  const tip = active
+    ? (sortDir === "desc"
+        ? "Clique pra inverter (asc); 3º clique limpa"
+        : "Clique pra limpar a ordenação")
+    : "Clique pra ordenar do maior pro menor";
+  return (
+    <button
+      type="button"
+      onClick={() => onColumnClick(field)}
+      title={tip}
+      className={cn(
+        cls,
+        // Tipografia replicada pra não cair no default do <button>.
+        "lbl-section",
+        "inline-flex items-start gap-1 w-full cursor-pointer hover:text-fg transition-colors",
+        align === "right" && "justify-end",
+        active && "text-fg",
+      )}
+    >
+      <span>{label}</span>
+      {arrow && <span className="text-fg-muted text-[9px]">{arrow}</span>}
+    </button>
+  );
+}
+
 // Piso do wrapper com `overflow-x-auto`. TEM que incluir o `px-5` (40px) do
 // row além da soma de trilhas e gaps — sem isso o grid recebe menos espaço
 // do que precisa e a última trilha vaza silenciosamente, sem gerar scroll
@@ -928,82 +990,25 @@ export function PmpLineRowHeader({ hidePi = false, sortBy = null, sortDir = "des
   const grid = hidePi ? PMP_ROW_GRID_NOPI : PMP_ROW_GRID;
   const interactive = !!onColumnClick;
 
-  // Wrapper que vira <button> quando onColumnClick é fornecido. Mantém o
-  // mesmo alinhamento (text-right pra colunas numéricas) e injeta seta na
-  // coluna ativa.
-  //
-  // CUIDADO: <button> não herda font-size/font-weight/text-transform do pai
-  // (user-agent stylesheet sobrescreve), então o `lbl-section` do container
-  // some quando o filho é <button>. Por isso aplico a mesma utility
-  // EXPLICITAMENTE no botão também.
-  // `sub` = segunda linha minúscula do rótulo, e é o padrão de TODA a faixa
-  // numérica: "RECEITA/bruta", "MARGEM/hypr", "MARGEM/%", "% ENTREGA/margem"
-  // e "% ENTREGA/receita". Duas linhas custam ~12px de altura no cabeçalho e
-  // devolvem ~40px de largura por coluna — que é o que faltava pra tabela
-  // caber num 14" sem scroll lateral. De quebra o termo primário repetido
-  // ("MARGEM", "% ENTREGA") agrupa visualmente as colunas irmãs, que antes
-  // só se distinguiam por rótulos longos e desalinhados entre si.
-  //
-  // `items-start` no container + `items-start` no botão mantêm a PRIMEIRA
-  // linha de todos os rótulos na mesma altura; o qualificador desce. Sem
-  // isso o <button> centralizava verticalmente na altura esticada da row e
-  // os rótulos de uma linha ficavam fora do prumo dos de duas.
-  const Th = ({ field, align = "right", accent = false, sub = null, children }) => {
-    const active = field && sortBy === field;
-    const arrow = active ? (sortDir === "asc" ? "↑" : "↓") : null;
-    const cls = cn(
-      "select-none",
-      align === "right" ? "text-right" : "text-left",
-      accent && "text-success/80",
-    );
-    const label = sub ? (
-      <span className={cn("flex flex-col leading-tight", align === "right" ? "items-end" : "items-start")}>
-        <span>{children}</span>
-        <span className="text-[9px] normal-case tracking-wide font-medium text-fg-subtle/80">{sub}</span>
-      </span>
-    ) : children;
-    if (!field || !interactive) {
-      return <div className={cls}>{label}</div>;
-    }
-    const tip = active
-      ? (sortDir === "desc"
-          ? "Clique pra inverter (asc); 3º clique limpa"
-          : "Clique pra limpar a ordenação")
-      : "Clique pra ordenar do maior pro menor";
-    return (
-      <button
-        type="button"
-        onClick={() => onColumnClick(field)}
-        title={tip}
-        className={cn(
-          cls,
-          // Tipografia replicada pra não cair no default do <button>.
-          "lbl-section",
-          "inline-flex items-start gap-1 w-full cursor-pointer hover:text-fg transition-colors",
-          align === "right" && "justify-end",
-          active && "text-fg",
-        )}
-      >
-        <span>{label}</span>
-        {arrow && <span className="text-fg-muted text-[9px]">{arrow}</span>}
-      </button>
-    );
-  };
+  // `PmpSortTh` mora no módulo (não dentro deste render): definido aqui dentro
+  // ele virava um componente NOVO a cada render — os 12 botões de ordenação
+  // desmontavam e remontavam a cada clique/tecla, e o foco do teclado sumia.
+  const thCtx = { sortBy, sortDir, interactive, onColumnClick };
 
   return (
     <div className={cn(grid, "lbl-section hidden md:grid items-start px-5 py-3 dense:py-2 bg-surface/60 border-b border-border/60")}>
       <div />
-      <Th field="customer" align="left">Cliente / Campanha</Th>
-      <Th>Status</Th>
-      <Th field="start_date">Início</Th>
-      {!hidePi && <Th field="pi_brl">PI</Th>}
-      <Th field="curator_total_cost">Custo</Th>
-      <Th field="curator_revenue"      sub="bruta">Receita</Th>
-      <Th field="curator_margin"       sub="hypr">Margem</Th>
-      <Th field="effective_margin_pct" sub="%">Margem</Th>
-      {!hidePi && <Th field="pct_a_receber"     sub="margem">% Entrega</Th>}
-      {!hidePi && <Th field="pct_a_receber_rev" sub="receita">% Entrega</Th>}
-      <Th field="hours_since_last_delivery">Entrega</Th>
+      <PmpSortTh {...thCtx} field="customer" align="left">Cliente / Campanha</PmpSortTh>
+      <PmpSortTh {...thCtx}>Status</PmpSortTh>
+      <PmpSortTh {...thCtx} field="start_date">Início</PmpSortTh>
+      {!hidePi && <PmpSortTh {...thCtx} field="pi_brl">PI</PmpSortTh>}
+      <PmpSortTh {...thCtx} field="curator_total_cost">Custo</PmpSortTh>
+      <PmpSortTh {...thCtx} field="curator_revenue"      sub="bruta">Receita</PmpSortTh>
+      <PmpSortTh {...thCtx} field="curator_margin"       sub="hypr">Margem</PmpSortTh>
+      <PmpSortTh {...thCtx} field="effective_margin_pct" sub="%">Margem</PmpSortTh>
+      {!hidePi && <PmpSortTh {...thCtx} field="pct_a_receber"     sub="margem">% Entrega</PmpSortTh>}
+      {!hidePi && <PmpSortTh {...thCtx} field="pct_a_receber_rev" sub="receita">% Entrega</PmpSortTh>}
+      <PmpSortTh {...thCtx} field="hours_since_last_delivery">Entrega</PmpSortTh>
     </div>
   );
 }

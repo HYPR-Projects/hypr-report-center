@@ -56,6 +56,8 @@ import { KpiCardV2 } from "../components/KpiCardV2";
 import { PacingBarV2 } from "../components/PacingBarV2";
 import { SegmentedControlV2 } from "../components/SegmentedControlV2";
 
+const EMPTY_TOTALS = {};
+
 const TACTIC_OPTIONS = [
   { value: "O2O", label: "O2O" },
   { value: "OOH", label: "OOH" },
@@ -120,7 +122,10 @@ export default function VideoV2({
   });
 
   // Tactics disponíveis: ver comentário equivalente em DisplayV2.
-  const t0Video = (data.totals || [])[0] || {};
+  // Objeto vazio de módulo (não `{}` literal): report sem totals criava um
+  // objeto novo por render e invalidava o useMemo da `view` abaixo, que
+  // refazia todos os groupBy a cada render.
+  const t0Video = (data.totals || [])[0] || EMPTY_TOTALS;
   const hasDelivery = (tac) => aggregates.totals.some(
     (r) => r.media_type === "VIDEO" && r.tactic_type === tac,
   );

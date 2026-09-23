@@ -626,9 +626,16 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     () => (data ? computeAggregates(data, mainRange, "ALL", creativeFilters) : null),
     [data, mainRange, creativeFilters],
   );
+  // Com o core em "ALL" (caso comum) o resultado é idêntico ao `aggregates`
+  // acima — reaproveita em vez de varrer o detail inteiro de novo (3 regex
+  // por linha) a cada troca de período/filtro de criativo.
   const aggregatesOverview = useMemo(
-    () => (data ? computeAggregates(data, mainRange, effectiveMainCore, creativeFilters) : null),
-    [data, mainRange, effectiveMainCore, creativeFilters],
+    () => {
+      if (!data) return null;
+      if (effectiveMainCore === "ALL") return aggregates;
+      return computeAggregates(data, mainRange, effectiveMainCore, creativeFilters);
+    },
+    [data, aggregates, mainRange, effectiveMainCore, creativeFilters],
   );
 
   // shareState: "idle" | "copying" | "copied" | "error" — controla o ícone

@@ -19,7 +19,7 @@
 // O breadcrumb "← Reports de Campanhas", que era um botão solto acima do
 // H1, virou o rastro da barra de contexto — onde sobrevive ao scroll.
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { Suspense, useState, useEffect, useMemo, useCallback } from "react";
 // Mesmo motivo do CampaignMenuV2: precisa do v2.css explícito porque
 // é uma rota raiz acessada direto via /admin/client/:slug.
 import "../../v2.css";
@@ -31,10 +31,10 @@ import { normalizeSlug } from "../lib/aggregation";
 import { createOwnerMatcher } from "../lib/ownerFilter";
 
 import LoomModal from "../../../components/modals/LoomModal";
-import SurveyModal from "../../../components/modals/SurveyModal";
+import { SurveyModal, MergeModal } from "../lib/lazyModals";
+import { preloadWhenIdle } from "../../../shared/lazyWithPreload";
 import LogoModal from "../../../components/modals/LogoModal";
 import OwnerModal from "../../../components/modals/OwnerModal";
-import MergeModal from "../../../components/modals/MergeModal";
 import { NegotiationModal } from "../../components/NegotiationModal";
 
 import { Button } from "../../../ui/Button";
@@ -113,6 +113,9 @@ export default function ClientDetailPage({
   const [copied, setCopied]                 = useState(null);
   const [loomModal, setLoomModal]           = useState(null);
   const [surveyModal, setSurveyModal]       = useState(null);
+  // Survey/Merge são lazy (ver lib/lazyModals): baixa em idle pra que o
+  // clique em "Survey" ou "Agrupar" não espere download.
+  useEffect(() => preloadWhenIdle(SurveyModal, MergeModal), []);
   const [logoModal, setLogoModal]           = useState(null);
   const [ownerModal, setOwnerModal]         = useState(null);
   const [mergeModal, setMergeModal]         = useState(null);
@@ -723,12 +726,14 @@ export default function ClientDetailPage({
         />
       )}
       {surveyModal && (
-        <SurveyModal
-          shortToken={surveyModal}
-          onClose={() => setSurveyModal(null)}
-          onSaved={() => setSurveyModal(null)}
-          theme={legacyModalTheme(isDark)}
-        />
+        <Suspense fallback={null}>
+          <SurveyModal
+            shortToken={surveyModal}
+            onClose={() => setSurveyModal(null)}
+            onSaved={() => setSurveyModal(null)}
+            theme={legacyModalTheme(isDark)}
+          />
+        </Suspense>
       )}
       {logoModal && (
         <LogoModal
@@ -748,12 +753,14 @@ export default function ClientDetailPage({
         />
       )}
       {mergeModal && (
-        <MergeModal
-          campaign={mergeModal}
-          onSaved={handleMergeSaved}
-          onClose={() => setMergeModal(null)}
-          theme={legacyModalTheme(isDark)}
-        />
+        <Suspense fallback={null}>
+          <MergeModal
+            campaign={mergeModal}
+            onSaved={handleMergeSaved}
+            onClose={() => setMergeModal(null)}
+            theme={legacyModalTheme(isDark)}
+          />
+        </Suspense>
       )}
       <NegotiationModal
         open={!!negotiationModal}

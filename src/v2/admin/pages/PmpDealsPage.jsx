@@ -28,7 +28,7 @@
 // Mutations preservadas: drawer de edição, popup de auto-vinculação,
 // modal de agrupamento, export, Compplan Sheet.
 
-import { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue, lazy, Suspense } from "react";
 import { fmt } from "../../../shared/format";
 import * as Popover from "@radix-ui/react-popover";
 import { DayPicker } from "react-day-picker";
@@ -278,6 +278,10 @@ export default function PmpDealsPage({
 
   // Filtros transversais
   const [search, setSearch]   = useState("");
+  // A busca filtra 5 recortes de `lines` + rebuild de campanhas/KPIs. Com o
+  // valor adiado, o input responde na hora e a refiltragem roda com prioridade
+  // baixa — digitar rápido não trava a digitação.
+  const deferredSearch = useDeferredValue(search);
   // Filtros de catálogo (cliente, bid, status) persistem entre sessões no
   // mesmo browser/usuário — UX: usuário operacional volta pro mesmo recorte
   // sem reaplicar. Search e período/trimestre NÃO persistem por serem
@@ -441,11 +445,11 @@ export default function PmpDealsPage({
   // closure aqui, e cada view decidia por conta própria se aplicava. Foi assim
   // que o Analytics ficou sem filtro nenhum por um bom tempo.
   const filterCriteria = useMemo(
-    () => ({ search, customers: customer, statuses: status, bidType, source: sourceFilter, statusOf: effectiveStatus }),
-    [search, customer, status, bidType, sourceFilter],
+    () => ({ search: deferredSearch, customers: customer, statuses: status, bidType, source: sourceFilter, statusOf: effectiveStatus }),
+    [deferredSearch, customer, status, bidType, sourceFilter],
   );
   const applyFilters = (arr) => filterPmpLines(arr, filterCriteria);
-  const liveFiltered      = useMemo(() => applyFilters(partitions.live),    [partitions.live, search, customer, bidType, status, sourceFilter]);
+  const liveFiltered      = useMemo(() => applyFilters(partitions.live),    [partitions.live, deferredSearch, customer, bidType, status, sourceFilter]);
   // Histórico passa a ser LIFETIME: mostra TODOS os deals (ativos + encerrados
   // + arquivados), com filtros aplicados. Vira a aba "tudo".
   // Filtros de período/trimestre só aplicam na aba Histórico, e fazem intersecção.
@@ -526,7 +530,7 @@ export default function PmpDealsPage({
       }
       return true;
     });
-  }, [lines, search, customer, bidType, status, sourceFilter, histPeriod, quarterRanges, monthRanges]);
+  }, [lines, deferredSearch, customer, bidType, status, sourceFilter, histPeriod, quarterRanges, monthRanges]);
 
   // Histórico com métricas janeladas quando há janela ativa e dado carregado.
   // Exige mapa não-vazio: se o endpoint ainda não existir no backend (ou
@@ -538,7 +542,7 @@ export default function PmpDealsPage({
     [allLinesFiltered, windowed, windowMetrics],
   );
 
-  const allFiltered = useMemo(() => applyFilters([...partitions.live, ...partitions.other]), [partitions, search, customer, bidType, status, sourceFilter]);
+  const allFiltered = useMemo(() => applyFilters([...partitions.live, ...partitions.other]), [partitions, deferredSearch, customer, bidType, status, sourceFilter]);
 
   // Dataset da aba Por cliente: lifetime SEM arquivadas (testes/seeds só no
   // Histórico) e SEM o filtro de período do Histórico (que sobrevive no
@@ -547,7 +551,7 @@ export default function PmpDealsPage({
   // que está exposto abaixo.
   const clientLines = useMemo(
     () => applyFilters(lines.filter(l => !l.is_archived)),
-    [lines, search, customer, bidType, status, sourceFilter],
+    [lines, deferredSearch, customer, bidType, status, sourceFilter],
   );
 
   // Dataset da aba Analytics: LIFETIME (todas as lines, como sempre foi) mas
