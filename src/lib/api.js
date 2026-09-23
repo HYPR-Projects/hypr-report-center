@@ -2072,3 +2072,20 @@ export async function getDspHealth() {
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
+
+/**
+ * Entrega fora do Brasil (só DV360 por enquanto) no mês — box das big
+ * metrics do menu. `month` = "YYYY-MM" ou null (mês corrente). Devolve taxa,
+ * ranking de campanhas e `alert`/`alert_reasons` do salto dia a dia.
+ */
+export async function getOutOfCountry(month = null) {
+  if (!hasAdminCredential()) throw new Error("sem sessão admin");
+  const jwt = await getOrIssueAdminJwt();
+  const qs = month ? `&month=${encodeURIComponent(month)}` : "";
+  const r = await fetch(
+    `${API_URL}?action=out_of_country${qs}`,
+    { headers: adminAuthHeaders(jwt), signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS) },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}

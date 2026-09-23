@@ -67,6 +67,7 @@ import pmp_sync_runs
 import audience_normalize
 import audience_ai
 import maxattention
+import out_of_country
 import bq_client
 
 logger = logging.getLogger(__name__)
@@ -271,6 +272,11 @@ def _run_pubmatic_sync(actor):
 _DSP_HEALTH_CACHE_TTL = 300
 _dsp_health_cache = {}      # "all" -> (timestamp, payload)
 _dsp_breakdown_cache = {}   # short_token -> (timestamp, payload)
+# Entrega fora do BR (box das big metrics). A tabela de regiões do DV360
+# atualiza 1×/dia de madrugada; 30 min segura o custo (a query varre o mês
+# da tabela de regiões) sem deixar o box velho depois que o dado aterrissa.
+_OUT_OF_COUNTRY_CACHE_TTL = 1800
+_out_of_country_cache = {}  # "YYYY-MM" | "current" -> (timestamp, payload)
 _cache_lock      = threading.Lock()
 
 
@@ -4080,6 +4086,26 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR dsp_health] {e}")
             return (jsonify({"error": "Erro ao buscar saúde das DSPs"}), 500, headers)
+
+    # GET ?action=out_of_country[&month=YYYY-MM] — admin-only. Taxa de
+    # entrega fora do Brasil (DV360) do mês, ranking de campanhas e o alerta
+    # de salto dia a dia. Ver backend/out_of_country.py.
+    if request.method == "GET" and request.args.get("action") == "out_of_country":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        month_key = (request.args.get("month") or "").strip() or None
+        try:
+            cache_key = month_key or "current"
+            payload = _cache_get(_out_of_country_cache, cache_key, _OUT_OF_COUNTRY_CACHE_TTL)
+            if payload is None:
+                payload = out_of_country.query_out_of_country(bq, month_key)
+                _cache_set(_out_of_country_cache, cache_key, payload)
+            return (jsonify(payload), 200, headers)
+        except ValueError as e:
+            return (jsonify({"error": str(e)}), 400, headers)
+        except Exception as e:
+            logger.error(f"[ERROR out_of_country] {e}")
+            return (jsonify({"error": "Erro ao buscar entrega fora do Brasil"}), 500, headers)
 
     # ── Endpoints: PMP Deals (admin) ──────────────────────────────────────────
     # Análise das entregas dos deals de pagamento HYPR — substitui o fluxo
