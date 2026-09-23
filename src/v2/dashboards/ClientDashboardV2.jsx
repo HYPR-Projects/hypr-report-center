@@ -56,6 +56,9 @@ import {
 } from "../../ui/Tabs";
 
 import { TopBarV2 } from "../components/TopBarV2";
+import { CommentsDrawerV2 } from "../components/CommentsDrawerV2";
+import { useReportComments } from "../hooks/useReportComments";
+import { buildCommentThreads, threadForTab } from "../../shared/commentThreads";
 import { CampaignHeaderV2 } from "../components/CampaignHeaderV2";
 import { GlobalDataFilterBarV2 } from "../components/GlobalDataFilterBarV2";
 import { useReportTracking } from "../hooks/useReportTracking";
@@ -716,6 +719,21 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   // tempo de o usuário ver o feedback sem virar permanente.
   const [shareState, setShareState] = useState("idle");
 
+  // Comentários do report: um painel só (botão no topo) com as conversas
+  // Geral, RMND, PDOOH e Brand Lift. O hook fica antes dos early returns.
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  const reportComments = useReportComments({
+    token,
+    open: commentsOpen,
+    viewer: isAdmin ? "HYPR" : "Cliente",
+    // Report mesclado: conversas de Brand Lift gravadas por mês (membro).
+    surveyTokens: data?.survey?.merged ? (data.survey.items || []).map((it) => it.short_token) : [],
+  });
+  const handleCommentsOpenChange = (next) => {
+    setCommentsOpen(next);
+    reportComments.markSeen();
+  };
+
   const handleShare = async () => {
     if (typeof navigator === "undefined" || !navigator.clipboard) {
       setShareState("error");
@@ -851,6 +869,24 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
           updatedAtTitle={freshness.title}
           onShare={handleShare}
           shareState={shareState}
+          onOpenComments={() => handleCommentsOpenChange(true)}
+          commentsUnread={reportComments.unread}
+        />
+
+        <CommentsDrawerV2
+          open={commentsOpen}
+          onOpenChange={handleCommentsOpenChange}
+          threads={buildCommentThreads({
+            visible: { RMND: showRmnd, PDOOH: showPdooh, SURVEY: showSurvey },
+            comments: reportComments.comments,
+          })}
+          initialThread={threadForTab(effectiveTab)}
+          comments={reportComments.comments}
+          loaded={reportComments.loaded}
+          isAdmin={isAdmin}
+          onSend={({ thread, text }) =>
+            reportComments.send({ thread, author: isAdmin ? "HYPR" : "Cliente", text, adminJwt })
+          }
         />
 
         <div className="page-shell py-6 md:py-8 space-y-6">

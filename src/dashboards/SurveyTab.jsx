@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { C } from "../shared/theme";
 import Spinner from "../components/Spinner";
-import TabChat from "../components/TabChat";
 import SurveyChart from "./SurveyChart";
 import DateRangeFilter from "../components/DateRangeFilter";
 import { ymd } from "../shared/dateFilter";
@@ -40,7 +39,7 @@ const POLL_INTERVAL_MS = 60000;
 // brutas via combineSurveyQuestions e renderiza um único conjunto de
 // perguntas. Sem `combinedItems`, comportamento normal (1 token via
 // `surveyJson`).
-const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
+const SurveyTab=({surveyJson,isAdmin,theme,combinedItems})=>{
   const [questions,setQuestions]=useState(null);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState(null);
@@ -464,7 +463,7 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
           border:`1px dashed ${C.blue}55`,
           borderRadius:10,
         }}>
-          <div style={{display:"flex",alignItems:"center",gap:8,flex:"0 0 auto",flexWrap:"wrap"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,flex:"1 1 260px",minWidth:0,flexWrap:"wrap"}}>
             <span style={{
               fontSize:10,
               fontWeight:700,
@@ -516,14 +515,14 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
       )}
       <div style={{display:"flex",gap:24,flexWrap:"wrap",marginBottom:24,padding:"12px 16px",background:bgCard,borderRadius:10,border:`1px solid ${bdr}`}}>
         <div style={{display:"flex",gap:8,alignItems:"flex-start"}}>
-          <div style={{width:12,height:12,borderRadius:2,background:"#E5EBF2",flexShrink:0,marginTop:2}}/>
+          <div style={{width:12,height:12,borderRadius:2,background:"var(--color-fg-subtle)",flexShrink:0,marginTop:2}}/>
           <div>
             <div style={{fontSize:12,fontWeight:700,color:txt}}>Grupo Controle</div>
             <div style={{fontSize:12,color:mt,marginTop:2}}>Usuários que não foram expostos à campanha via HYPR</div>
           </div>
         </div>
         <div style={{display:"flex",gap:8,alignItems:"flex-start"}}>
-          <div style={{width:12,height:12,borderRadius:2,background:C.blue,flexShrink:0,marginTop:2}}/>
+          <div style={{width:12,height:12,borderRadius:2,background:"var(--color-chart-s1)",flexShrink:0,marginTop:2}}/>
           <div>
             <div style={{fontSize:12,fontWeight:700,color:txt}}>Grupo Exposto</div>
             <div style={{fontSize:12,color:mt,marginTop:2}}>Usuários que foram expostos à campanha via HYPR</div>
@@ -574,7 +573,6 @@ const SurveyTab=({surveyJson,token,isAdmin,adminJwt,theme,combinedItems})=>{
           }
         </div>
       ))}
-      <TabChat token={token} tabName="SURVEY" author={isAdmin?"HYPR":"Cliente"} adminJwt={adminJwt} theme={theme}/>
     </div>
   );
 };

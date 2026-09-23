@@ -1391,7 +1391,8 @@ export async function getNegotiation(short_token) {
 
 /**
  * Busca comentários de uma campanha. Falha silenciosa retorna [].
- * `options.signal` permite cancelamento via AbortController (usado pelo TabChat).
+ * `options.signal` permite cancelamento via AbortController (usado pelo
+ * useReportComments, que alimenta o painel de comentários do topo).
  */
 export async function getComments(token, options = {}) {
   if (isDemoToken(token)) return [];

@@ -48,7 +48,7 @@ const TREND_METRICS = {
     label: "Custo efetivo",
     kind: "bar",
     formatValue: (v) => fmtR(v),
-    formatTick: (v) => `R$ ${fmtCompactTick(v)}`,
+    formatTick: (v) => `R$\u00A0${fmtCompactTick(v)}`,
   },
 };
 
