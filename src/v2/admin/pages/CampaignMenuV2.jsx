@@ -36,7 +36,7 @@ import { Suspense, useState, useEffect, useMemo, useCallback, useRef, useSyncExt
 // rota raiz, então precisa importar explicitamente aqui.
 import "../../v2.css";
 
-import { listCampaigns, listTeamMembers, listClients, getShareId, getCachedShareId } from "../../../lib/api";
+import { listCampaigns, listTeamMembers, listClients, getShareId, getCachedShareId, getOutOfCountry } from "../../../lib/api";
 import { readCache, writeCache } from "../../../lib/persistedCache";
 import {
   getOwnerFilter, setOwnerFilter as persistOwnerFilter,
@@ -825,6 +825,22 @@ export default function CampaignMenuV2({
     [campaigns, activeMonth]
   );
 
+  // Entrega fora do BR (DV360) — box próprio na strip. Vem de endpoint
+  // separado (tabela de regiões do DV360), então carrega depois dos outros
+  // KPIs e, se falhar, o box simplesmente não aparece: não derruba a strip.
+  // Segue o mês do filtro; sem filtro, mês corrente.
+  // Guardado junto do mês que pediu: trocar o filtro esconde o box do mês
+  // anterior na hora, sem setState síncrono no efeito.
+  const [outOfCountryState, setOutOfCountryState] = useState({ month: undefined, payload: null });
+  useEffect(() => {
+    let cancelled = false;
+    getOutOfCountry(activeMonth)
+      .then((payload) => { if (!cancelled) setOutOfCountryState({ month: activeMonth, payload }); })
+      .catch((e) => { console.warn("[out_of_country]", e?.message || e); });
+    return () => { cancelled = true; };
+  }, [activeMonth]);
+  const outOfCountry = outOfCountryState.month === activeMonth ? outOfCountryState.payload : null;
+
   // Bulk-prefetch de detail pra todas as campanhas in_flight assim que a
   // lista carrega. Sem isso, a regra A6 (frente desbalanceada) só dispara
   // quando o user passa o mouse em cada card — admin pode não chegar perto
@@ -1345,7 +1361,7 @@ export default function CampaignMenuV2({
             />
           }
         >
-          <MetricStrip summary={metricsSummary} />
+          <MetricStrip summary={metricsSummary} outOfCountry={outOfCountry} onOpenReport={onOpenReport} />
         </KpiBoard>
       )}
 

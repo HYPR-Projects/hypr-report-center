@@ -134,7 +134,7 @@ const TONE_CLASS = {
   fg:        "text-fg",
 };
 
-function MetricCard({ label, value, tone = "fg", aside, footer }) {
+function MetricCard({ label, value, tone = "fg", aside, footer, compact = false, className }) {
   // Padding e tipografia mobile-first: cards em 2 colunas a 375px ficam
   // ~165px de largura — `text-2xl` (24px) ainda cabe pra valores curtos.
   //
@@ -150,13 +150,20 @@ function MetricCard({ label, value, tone = "fg", aside, footer }) {
     // Célula, não card: o board já é a moldura. O fundo é `canvas-elevated`
     // (o mesmo do board) e o que separa as células é o `gap-px` da grade
     // deixando o `bg-border` do container aparecer como filete.
-    <div className="bg-canvas-elevated px-3.5 py-3 flex flex-col justify-between gap-1.5 min-w-0">
+    // `compact`: com nove células (box "Fora do BR" presente) a linha única
+    // dá ~150px por célula — o Tech Cost com projeção não cabe em text-2xl.
+    <div className={cn(
+      "bg-canvas-elevated py-3 flex flex-col justify-between gap-1.5 min-w-0",
+      compact ? "px-3" : "px-3.5",
+      className,
+    )}>
       <span className="lbl-section whitespace-nowrap">
         {label}
       </span>
-      <div className="flex items-baseline gap-2 min-w-0">
+      <div className={cn("flex items-baseline min-w-0", compact ? "gap-1.5" : "gap-2")}>
         <span className={cn(
-          "text-xl sm:text-2xl font-bold tracking-tight tabular-nums leading-none whitespace-nowrap",
+          "font-bold tracking-tight tabular-nums leading-none whitespace-nowrap",
+          compact ? "text-xl" : "text-xl sm:text-2xl",
           TONE_CLASS[tone] || TONE_CLASS.fg
         )}>
           {value}
@@ -232,7 +239,231 @@ function MetricDelta({ current, previous, goodDirection = "up" }) {
   );
 }
 
-export function MetricStrip({ summary, className }) {
+// ─────────────────────────────────────────────────────────────────────────────
+// Fora do BR — entrega do DV360 em país que a line não prevê.
+//
+// Dado: action=out_of_country (backend/out_of_country.py). "Previsto" é o
+// país escrito por extenso no nome da line (Elux _CHILE_/_PERU_/_COLOMBIA_):
+// esse volume aparece no hover mas não entra na taxa.
+//
+// O vermelho da CÉLULA é reservado pro alerta (salto dia a dia, global ou de
+// campanha). A cor do NÚMERO segue a régua de nível, pra um mês alto e
+// estável não parecer incidente todo dia.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function toneOutOfCountry(value) {
+  if (value == null) return "muted";
+  if (value <= 1) return "success";
+  if (value <= 3) return "warning";
+  return "danger";
+}
+
+const _IMPS_COMPACT = new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 });
+function formatImps(value) {
+  if (value == null || !Number.isFinite(Number(value))) return "—";
+  return _IMPS_COMPACT.format(Number(value));
+}
+
+let _regionNames = null;
+function countryName(code) {
+  try {
+    _regionNames = _regionNames || new Intl.DisplayNames(["pt-BR"], { type: "region" });
+    return _regionNames.of(code) || code;
+  } catch {
+    return code;
+  }
+}
+
+function formatDayMonth(iso) {
+  if (!iso) return "";
+  const [, m, d] = iso.split("-");
+  return `${d}/${m}`;
+}
+
+function alertReasonText(r) {
+  const pct = (v) => formatPctTwo(v);
+  if (r.kind === "global_jump") {
+    return `Taxa do dia ${formatDayMonth(r.date)} saltou de ${pct(r.previous_rate)} para ${pct(r.rate)}`;
+  }
+  if (r.kind === "global_baseline") {
+    return `Taxa do dia ${formatDayMonth(r.date)} (${pct(r.rate)}) bem acima da média de ${r.baseline_days} dias (${pct(r.baseline_rate)})`;
+  }
+  if (r.kind === "campaign_jump") {
+    const who = [r.client_name, r.campaign_name].filter(Boolean).join(" · ") || r.short_token;
+    return `${who}: ${pct(r.previous_rate)} → ${pct(r.rate)} fora do BR em ${formatDayMonth(r.date)} (${formatImps(r.unexpected_impressions)} imps)`;
+  }
+  return null;
+}
+
+// Classes de span quando a strip tem nove células: fecha a última linha da
+// grade de 2 colunas (9 = 4×2 + 1) e da de 5 (9 = 5 + 4), sem buraco cinza.
+const OOC_SPAN_NINE = "col-span-2 @min-[520px]:col-span-1 @min-[840px]:col-span-2 @min-[1340px]:col-span-1";
+
+function OutOfCountryCard({ data, compact, onOpenReport }) {
+  const {
+    rate, alert, alert_reasons = [], campaigns = [],
+    impressions, unexpected_impressions, expected_impressions, expected_rate,
+    unknown_impressions, unknown_rate, expected_countries = [], top_countries = [],
+    reference_date, day_rate, campaigns_with_unexpected,
+  } = data;
+
+  const footer = alert ? (
+    <span className="inline-flex items-center gap-1 font-semibold text-danger whitespace-nowrap">
+      <span aria-hidden="true" className="size-1.5 rounded-full bg-danger shadow-glow-danger animate-pulse" />
+      fora do normal
+    </span>
+  ) : reference_date ? (
+    <span className="whitespace-nowrap">
+      {formatDayMonth(reference_date)}: <span className="tabular-nums">{formatPctTwo(day_rate)}</span> · DV360
+    </span>
+  ) : (
+    <span className="whitespace-nowrap">DV360</span>
+  );
+
+  return (
+    <Tooltip delayDuration={150}>
+      <TooltipTrigger asChild>
+        {/* Fundo opaco no wrapper: o danger-soft da célula é translúcido e,
+            sem isso, o bg-border da grade (os filetes) vazaria por baixo. */}
+        <div className={cn("cursor-help bg-canvas-elevated", compact && OOC_SPAN_NINE)} tabIndex={0} aria-label="Entrega fora do Brasil — passe o mouse para ver as campanhas">
+          <MetricCard
+            compact={compact}
+            label="Fora do BR"
+            value={<AnimatedValue value={rate} format={formatPctTwo} />}
+            tone={alert ? "danger" : toneOutOfCountry(rate)}
+            footer={footer}
+            className={cn("h-full", alert && "bg-danger-soft shadow-[inset_0_0_0_1px_var(--color-danger)]")}
+          />
+        </div>
+      </TooltipTrigger>
+      <TooltipContent
+        side="bottom"
+        align="end"
+        sideOffset={8}
+        collisionPadding={12}
+        className="max-w-none w-[min(560px,calc(100vw-24px))] p-0 max-h-[70vh] overflow-y-auto"
+      >
+        <div className="px-3.5 pt-3 pb-2 flex items-baseline justify-between gap-3 border-b border-border/60">
+          <span className="lbl-section">Entrega fora do Brasil · DV360</span>
+          {reference_date && (
+            <span className="text-[11px] text-fg-subtle whitespace-nowrap">dado até {formatDayMonth(reference_date)}</span>
+          )}
+        </div>
+
+        {alert && alert_reasons.length > 0 && (
+          <div className="mx-3.5 mt-2.5 rounded-md border border-danger/40 bg-danger-soft px-3 py-2">
+            <div className="text-[11px] font-bold text-danger mb-1">Fora do normal</div>
+            <ul className="flex flex-col gap-0.5 text-[11px] text-fg">
+              {alert_reasons.map((r, i) => {
+                const text = alertReasonText(r);
+                return text ? <li key={i}>{text}</li> : null;
+              })}
+            </ul>
+          </div>
+        )}
+
+        <div className="px-3.5 py-2.5 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+          <span className="text-fg-subtle">Fora sem previsão na line</span>
+          <span className="text-right tabular-nums">
+            <span className={cn("font-bold", TONE_CLASS[toneOutOfCountry(rate)])}>{formatPctTwo(rate)}</span>
+            <span className="text-fg-subtle"> · {formatImps(unexpected_impressions)} imps</span>
+          </span>
+          {top_countries.length > 0 && (
+            <>
+              <span className="text-fg-subtle">Principais países</span>
+              <span className="text-right truncate" title={top_countries.map((c) => countryName(c.country)).join(", ")}>
+                {top_countries.slice(0, 4).map((c) => `${c.country} ${formatImps(c.impressions)}`).join(" · ")}
+              </span>
+            </>
+          )}
+          <span className="text-fg-subtle">Previsto na line</span>
+          <span className="text-right tabular-nums">
+            {formatPctTwo(expected_rate)}
+            {expected_countries.length > 0 && (
+              <span className="text-fg-subtle"> · {expected_countries.map((c) => c.country).join(", ")}</span>
+            )}
+            <span className="text-fg-subtle"> · {formatImps(expected_impressions)}</span>
+          </span>
+          <span className="text-fg-subtle">País não identificado</span>
+          <span className="text-right tabular-nums">
+            {formatPctTwo(unknown_rate)}<span className="text-fg-subtle"> · {formatImps(unknown_impressions)}</span>
+          </span>
+          <span className="text-fg-subtle">Total DV360 no mês</span>
+          <span className="text-right tabular-nums font-semibold">{formatImps(impressions)} imps</span>
+        </div>
+
+        <div className="border-t border-border/60">
+          {campaigns.length === 0 ? (
+            <div className="px-3.5 py-3 text-[11px] text-fg-subtle">
+              Nenhuma campanha com entrega fora do Brasil sem previsão na line.
+            </div>
+          ) : (
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="text-fg-subtle">
+                  <th className="text-left font-semibold px-3.5 py-1.5">Campanha</th>
+                  <th className="text-right font-semibold px-2 py-1.5">Fora</th>
+                  <th className="text-right font-semibold px-2 py-1.5">Imps fora</th>
+                  <th className="text-left font-semibold pl-2 pr-3.5 py-1.5">Países</th>
+                </tr>
+              </thead>
+              <tbody>
+                {campaigns.map((c) => {
+                  const clickable = !!onOpenReport;
+                  const name = [c.client_name, c.campaign_name].filter(Boolean).join(" · ") || c.short_token;
+                  return (
+                    <tr
+                      key={c.short_token}
+                      onClick={clickable ? () => onOpenReport(c.short_token) : undefined}
+                      className={cn(
+                        "border-t border-border/40",
+                        clickable && "cursor-pointer hover:bg-surface",
+                        c.alert && "bg-danger-soft",
+                      )}
+                    >
+                      <td className="px-3.5 py-1.5 max-w-[220px]">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          {c.alert && <span aria-label="alerta" className="size-1.5 shrink-0 rounded-full bg-danger" />}
+                          <span className="truncate font-medium text-fg" title={name}>{name}</span>
+                        </div>
+                        <div className="text-[10px] text-fg-subtle tabular-nums">
+                          {c.short_token}
+                          {c.expected_countries?.length > 0 && ` · previsto ${c.expected_countries.join(", ")}`}
+                        </div>
+                      </td>
+                      <td className={cn("px-2 py-1.5 text-right tabular-nums font-bold", TONE_CLASS[toneOutOfCountry(c.rate)])}>
+                        {formatPctTwo(c.rate)}
+                        {c.day_rate != null && (
+                          <div className="text-[10px] font-normal text-fg-subtle">dia {formatPctTwo(c.day_rate)}</div>
+                        )}
+                      </td>
+                      <td className="px-2 py-1.5 text-right tabular-nums">{formatImps(c.unexpected_impressions)}</td>
+                      <td
+                        className="pl-2 pr-3.5 py-1.5 text-fg-muted whitespace-nowrap"
+                        title={(c.top_countries || []).map((t) => countryName(t.country)).join(", ")}
+                      >
+                        {(c.top_countries || []).map((t) => t.country).join(", ") || "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="px-3.5 py-2 border-t border-border/60 text-[10px] text-fg-subtle leading-snug">
+          {campaigns_with_unexpected > campaigns.length
+            ? `Top ${campaigns.length} de ${campaigns_with_unexpected} campanhas com entrega fora. `
+            : ""}
+          Só DV360. País escrito por extenso no nome da line (ex.: _CHILE_) conta como previsto e fica fora da taxa.
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+export function MetricStrip({ summary, outOfCountry, onOpenReport, className }) {
   if (!summary) return null;
 
   const {
@@ -264,8 +495,12 @@ export function MetricStrip({ summary, className }) {
   const hasSplit = ecpm_display != null || ecpm_video != null;
   // Tech cost só aparece se backend tiver enviado d_client_budget/v_client_budget.
   const hasTechCost = tech_cost != null;
-  // Grid: 5 (sem split) + eCPM card(s) + opcionalmente Tech Cost.
-  const totalCols = 5 + (hasSplit ? 2 : 1) + (hasTechCost ? 1 : 0);
+  // Box de entrega fora do BR: vem de endpoint próprio (tabela de regiões do
+  // DV360) e só entra quando o payload chegou.
+  const hasOutOfCountry = outOfCountry != null && outOfCountry.impressions > 0;
+  // Grid: 5 (sem split) + eCPM card(s) + opcionalmente Tech Cost e Fora do BR.
+  const totalCols = 5 + (hasSplit ? 2 : 1) + (hasTechCost ? 1 : 0) + (hasOutOfCountry ? 1 : 0);
+  const compact = totalCols >= 9;
 
   return (
     <div
@@ -274,6 +509,10 @@ export function MetricStrip({ summary, className }) {
         // de ~135px pra caber rótulo em versalete + valor + delta sem quebrar.
         // `gap-px` sobre `bg-border` desenha os filetes entre as células.
         "grid grid-cols-2 @min-[520px]:grid-cols-3 gap-px bg-border",
+        // Nove células só cabem numa linha a partir de ~1340px (rodapé "vs mês
+        // anterior" + projeção do Tech Cost). Abaixo disso, 5 colunas: a
+        // segunda linha fecha com o Fora do BR ocupando duas (ver OutOfCountryCard).
+        totalCols === 9 && "@min-[840px]:grid-cols-5 @min-[1340px]:grid-cols-9",
         totalCols === 8 && "@min-[1120px]:grid-cols-8",
         totalCols === 7 && "@min-[980px]:grid-cols-7",
         totalCols === 6 && "@min-[840px]:grid-cols-6",
@@ -283,6 +522,7 @@ export function MetricStrip({ summary, className }) {
       aria-label="Performance do cohort do mês"
     >
       <MetricCard
+        compact={compact}
         label="Ativas"
         value={<AnimatedValue value={active_count} format={(n) => n == null ? "—" : Math.round(n)} />}
         footer={
@@ -292,22 +532,26 @@ export function MetricStrip({ summary, className }) {
         }
       />
       <MetricCard
+        compact={compact}
         label="Pacing DSP"
         value={<AnimatedValue value={dsp_pacing} format={formatPct} />}
         tone={tonePacing(dsp_pacing)}
       />
       <MetricCard
+        compact={compact}
         label="Pacing VID"
         value={<AnimatedValue value={vid_pacing} format={formatPct} />}
         tone={tonePacing(vid_pacing)}
       />
       <MetricCard
+        compact={compact}
         label="CTR"
         value={<AnimatedValue value={ctr} format={formatPctTwo} />}
         tone={toneCtr(ctr)}
         footer={<MetricDelta current={ctr} previous={ctr_prev} goodDirection="up" />}
       />
       <MetricCard
+        compact={compact}
         label="VTR"
         value={<AnimatedValue value={vtr} format={formatPctTwo} />}
         tone={toneVtr(vtr)}
@@ -316,11 +560,13 @@ export function MetricStrip({ summary, className }) {
       {hasSplit ? (
         <>
           <MetricCard
+            compact={compact}
             label="eCPM Display"
             value={<AnimatedValue value={ecpm_display} format={formatBRL} />}
             footer={<MetricDelta current={ecpm_display} previous={ecpm_display_prev} goodDirection="down" />}
           />
           <MetricCard
+            compact={compact}
             label="eCPM Video"
             value={<AnimatedValue value={ecpm_video} format={formatBRL} />}
             footer={<MetricDelta current={ecpm_video} previous={ecpm_video_prev} goodDirection="down" />}
@@ -328,6 +574,7 @@ export function MetricStrip({ summary, className }) {
         </>
       ) : (
         <MetricCard
+          compact={compact}
           label="eCPM"
           value={<AnimatedValue value={ecpm} format={formatBRL} />}
           footer={<MetricDelta current={ecpm} previous={ecpm_prev} goodDirection="down" />}
@@ -340,6 +587,7 @@ export function MetricStrip({ summary, className }) {
                 card. tabindex=0 deixa o tooltip acessível por teclado. */}
             <div className="cursor-help" tabIndex={0}>
               <MetricCard
+                compact={compact}
                 label="Tech Cost"
                 value={<AnimatedValue value={tech_cost} format={formatPctTwo} />}
                 tone={toneTechCost(tech_cost)}
@@ -382,6 +630,9 @@ export function MetricStrip({ summary, className }) {
             </div>
           </TooltipContent>
         </Tooltip>
+      )}
+      {hasOutOfCountry && (
+        <OutOfCountryCard data={outOfCountry} compact={compact} onOpenReport={onOpenReport} />
       )}
     </div>
   );
