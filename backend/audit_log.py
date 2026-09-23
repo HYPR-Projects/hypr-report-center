@@ -115,6 +115,7 @@ ALLOWED_EVENT_TYPES = frozenset({
     "alias_saved",
     "audience_override_saved", "audience_override_deleted",
     "label_override_saved", "label_override_deleted",
+    "ma_links_saved",
 })
 
 

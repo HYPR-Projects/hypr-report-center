@@ -254,6 +254,7 @@ const DEFAULT_MESSAGES = {
   countries_override:          "alterou países liberados fora do BR",
   rmnd_uploaded:               "subiu CSV do Amazon Ads",
   pdooh_uploaded:              "subiu relatório PDOOH",
+  ma_links_saved:              "vinculou peças Max Attention",
 };
 
 function defaultMessage(eventType) {
@@ -1197,6 +1198,7 @@ const CHANGELOG_TONE = {
   pacing_note:     "default",
   rmnd_uploaded:   "default",
   pdooh_uploaded:  "default",
+  ma_links_saved:  "signature",
 };
 
 const CHANGELOG_ICONS = {
