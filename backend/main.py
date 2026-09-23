@@ -1093,6 +1093,21 @@ def _maybe_gzip(body_str, request, headers):
     return gzip.compress(body_bytes, compresslevel=6)
 
 
+def _gzip_json(payload, request, headers, status=200):
+    """`jsonify` + gzip. Mesma serialização do `jsonify` (datas, Decimal etc.
+    saem idênticos — o corpo É o do jsonify), só o transporte muda.
+
+    Usado nos payloads grandes que saíam crus: o report (`?token=`, com o
+    `detail` diário inteiro) e os do portal. As listas já comprimiam via
+    `_etag_response`; estes ficaram de fora. Cliente sem `Accept-Encoding:
+    gzip` recebe o corpo sem compressão, como antes.
+    """
+    resp = jsonify(payload)
+    out_headers = {**headers, "Content-Type": resp.headers.get("Content-Type", "application/json")}
+    body = _maybe_gzip(resp.get_data(), request, out_headers)
+    return (body, status, out_headers)
+
+
 def _etag_response(payload, request, extra_headers=None):
     """Resposta JSON com suporte a ETag/304.
 
@@ -1578,7 +1593,7 @@ def report_data(request):
             # limpa o cache (ver save_client_portal / set_client_publish).
             cached = _cache_get(_portal_cache, share_id, _PORTAL_CACHE_TTL)
             if cached is not None:
-                return (jsonify(cached), 200, resp_headers)
+                return _gzip_json(cached, request, resp_headers)
 
             config = client_portal.get_config_by_share_id(share_id)
             if not config or not config.get("active"):
@@ -1606,7 +1621,7 @@ def report_data(request):
             payload = client_portal.build_portal_payload(
                 config, campaigns, published, share_map, logos_map, elements_map)
             _cache_set(_portal_cache, share_id, payload)
-            return (jsonify(payload), 200, resp_headers)
+            return _gzip_json(payload, request, resp_headers)
         except Exception as e:
             logger.error(f"[ERROR client_portal_data] {e}")
             return (jsonify({"error": "Erro ao carregar portal"}), 500, headers)
@@ -1621,7 +1636,7 @@ def report_data(request):
         resp_headers = {**headers, "Cache-Control": "public, max-age=300"}
         cached = _cache_get(_brand_lift_cache, share_id, _BRAND_LIFT_CACHE_TTL)
         if cached is not None:
-            return (jsonify(cached), 200, resp_headers)
+            return _gzip_json(cached, request, resp_headers)
         try:
             result = compute_portal_brand_lift(share_id)
             if result is None:
@@ -1630,7 +1645,7 @@ def report_data(request):
             logger.error(f"[ERROR client_portal_brand_lift] {e}")
             return (jsonify({"error": "Erro ao calcular brand lift"}), 500, headers)
         _cache_set(_brand_lift_cache, share_id, result)
-        return (jsonify(result), 200, resp_headers)
+        return _gzip_json(result, request, resp_headers)
 
     # Quebra por audiência (Portal · Analytics). LAZY/pesado (1 detail por
     # campanha) → cache 1h próprio, igual ao brand lift. O front chama ao abrir
@@ -1642,7 +1657,7 @@ def report_data(request):
         resp_headers = {**headers, "Cache-Control": "public, max-age=300"}
         cached = _cache_get(_audiences_cache, share_id, _AUDIENCES_CACHE_TTL)
         if cached is not None:
-            return (jsonify(cached), 200, resp_headers)
+            return _gzip_json(cached, request, resp_headers)
         try:
             result = compute_portal_audiences(share_id)
             if result is None:
@@ -1651,7 +1666,7 @@ def report_data(request):
             logger.error(f"[ERROR client_portal_audiences] {e}")
             return (jsonify({"error": "Erro ao calcular audiências"}), 500, headers)
         _cache_set(_audiences_cache, share_id, result)
-        return (jsonify(result), 200, resp_headers)
+        return _gzip_json(result, request, resp_headers)
 
     # ── Endpoint: trocar OAuth code por refresh_token e criar sheet ─────────
     # Frontend abre popup OAuth via Google Identity Services, captura o
@@ -5152,11 +5167,7 @@ def report_data(request):
                 "Cache-Control": "private, max-age=60",
                 "Server-Timing": f"merged;dur={total_ms};desc=\"{'hit' if hit else 'miss'}\"",
             }
-            return (
-                jsonify({**data, "_cache": "hit" if hit else "miss"}),
-                200,
-                resp_headers,
-            )
+            return _gzip_json({**data, "_cache": "hit" if hit else "miss"}, request, resp_headers)
 
         # Caminho single-token. Resolve target_token na seguinte prioridade:
         #   1. ?view=<token> que bate com algum membro do grupo OU o próprio
@@ -5165,6 +5176,11 @@ def report_data(request):
         #      recente) via _get_merge_meta_only.
         #   3. Fallback: short_token base (caso não-merged).
         target_token = short_token
+        # Memo por request: o grupo e o merge_meta eram buscados de novo lá
+        # embaixo (anexar merge_meta), repetindo `get_merge_group` (query no
+        # BigQuery, sem cache) 2–3x no mesmo request.
+        group = None
+        meta_only = None
         if view_param and not view_is_aggregated and merge_info:
             members_set = {short_token.upper()}
             try:
@@ -5197,7 +5213,12 @@ def report_data(request):
         # default (sem ?view=, target = active_token).
         if merge_info:
             try:
-                meta = _get_merge_meta_only(merge_info["merge_id"])
+                # Com refresh=true o report do alvo acabou de ser refeito —
+                # recalcula o meta pra ele refletir o dado novo, como antes.
+                reuse = meta_only is not None and not force_refresh
+                meta = meta_only if reuse else _get_merge_meta_only(
+                    merge_info["merge_id"], group=group,
+                )
                 if meta:
                     data = {**data, "merge_meta": meta}
             except Exception as e:
@@ -5222,11 +5243,7 @@ def report_data(request):
             "Cache-Control": "private, max-age=60",
             "Server-Timing": f"report;dur={total_ms};desc=\"{'hit' if hit else 'miss'}\"",
         }
-        return (
-            jsonify({**data, "_cache": "hit" if hit else "miss"}),
-            200,
-            resp_headers,
-        )
+        return _gzip_json({**data, "_cache": "hit" if hit else "miss"}, request, resp_headers)
     except Exception as e:
         logger.error(f"[ERROR] {e}")
         return (jsonify({"error": "Erro interno ao buscar dados"}), 500, headers)
@@ -6000,7 +6017,7 @@ def compose_merged_report(group, force_refresh=False):
     }
 
 
-def _get_merge_meta_only(merge_id):
+def _get_merge_meta_only(merge_id, group=None):
     """Constrói APENAS o merge_meta sem rodar a composição completa.
 
     Usado quando o caller pediu ?view=<token> num token que pertence a um
@@ -6012,8 +6029,12 @@ def _get_merge_meta_only(merge_id):
     Reaproveita _get_report_cached por membro (cache warm na maioria dos
     casos — o usuário acabou de vir da visão agregada). Não precisa rodar
     _compose_totals nem outras agregações pesadas.
+
+    `group` opcional: quem já buscou o grupo no mesmo request passa ele aqui
+    e evita repetir a query de `get_merge_group` no BigQuery.
     """
-    group = merges.get_merge_group(merge_id)
+    if group is None:
+        group = merges.get_merge_group(merge_id)
     if not group:
         return None
     members = group.get("members") or []
@@ -10461,7 +10482,7 @@ def query_campaigns_list():
                         video_view_100_complete * (viewable_impressions / impressions),
                         0)) AS v_yesterday_completions
             FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
-            WHERE date = DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY)
+            WHERE date = DATE_SUB(@today_sp, INTERVAL 1 DAY)
               AND media_type IN ('DISPLAY', 'VIDEO')
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
@@ -10489,8 +10510,8 @@ def query_campaigns_list():
                         video_view_100_complete * (viewable_impressions / impressions),
                         0)) AS v_last7d_completions
             FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
-            WHERE date BETWEEN DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 7 DAY)
-                           AND DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY)
+            WHERE date BETWEEN DATE_SUB(@today_sp, INTERVAL 7 DAY)
+                           AND DATE_SUB(@today_sp, INTERVAL 1 DAY)
               AND media_type IN ('DISPLAY', 'VIDEO')
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
@@ -10513,17 +10534,17 @@ def query_campaigns_list():
         ecpm_recent AS (
             SELECT
                 short_token,
-                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY) AND media_type='DISPLAY', total_cost,  0)) AS d_cost_d1,
-                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY) AND media_type='DISPLAY', impressions, 0)) AS d_impr_d1,
-                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 2 DAY) AND media_type='DISPLAY', total_cost,  0)) AS d_cost_d2,
-                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 2 DAY) AND media_type='DISPLAY', impressions, 0)) AS d_impr_d2,
-                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY) AND media_type='VIDEO',   total_cost,  0)) AS v_cost_d1,
-                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY) AND media_type='VIDEO',   impressions, 0)) AS v_impr_d1,
-                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 2 DAY) AND media_type='VIDEO',   total_cost,  0)) AS v_cost_d2,
-                SUM(IF(date=DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 2 DAY) AND media_type='VIDEO',   impressions, 0)) AS v_impr_d2
+                SUM(IF(date=DATE_SUB(@today_sp, INTERVAL 1 DAY) AND media_type='DISPLAY', total_cost,  0)) AS d_cost_d1,
+                SUM(IF(date=DATE_SUB(@today_sp, INTERVAL 1 DAY) AND media_type='DISPLAY', impressions, 0)) AS d_impr_d1,
+                SUM(IF(date=DATE_SUB(@today_sp, INTERVAL 2 DAY) AND media_type='DISPLAY', total_cost,  0)) AS d_cost_d2,
+                SUM(IF(date=DATE_SUB(@today_sp, INTERVAL 2 DAY) AND media_type='DISPLAY', impressions, 0)) AS d_impr_d2,
+                SUM(IF(date=DATE_SUB(@today_sp, INTERVAL 1 DAY) AND media_type='VIDEO',   total_cost,  0)) AS v_cost_d1,
+                SUM(IF(date=DATE_SUB(@today_sp, INTERVAL 1 DAY) AND media_type='VIDEO',   impressions, 0)) AS v_impr_d1,
+                SUM(IF(date=DATE_SUB(@today_sp, INTERVAL 2 DAY) AND media_type='VIDEO',   total_cost,  0)) AS v_cost_d2,
+                SUM(IF(date=DATE_SUB(@today_sp, INTERVAL 2 DAY) AND media_type='VIDEO',   impressions, 0)) AS v_impr_d2
             FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
-            WHERE date BETWEEN DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 2 DAY)
-                           AND DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY)
+            WHERE date BETWEEN DATE_SUB(@today_sp, INTERVAL 2 DAY)
+                           AND DATE_SUB(@today_sp, INTERVAL 1 DAY)
               AND media_type IN ('DISPLAY', 'VIDEO')
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
@@ -10730,7 +10751,22 @@ def query_campaigns_list():
     #
     # Antes: query (≈4-6s) → owners (≈0.5-2s) → shares (≈1-2s) = 6-10s serial
     # Depois: max(query, owners, shares) ≈ query ≈ 4-6s
-    fut_query    = _query_pool.submit(lambda: list(bq.query(sql).result()))
+    # "Hoje" em Brasília vai como parâmetro em vez de CURRENT_DATE(...) no SQL.
+    # Mesmo valor (a data SP no instante do disparo), mas CURRENT_DATE torna a
+    # query não-determinística e o BigQuery NUNCA serve resultado do próprio
+    # cache pra ela. Com o parâmetro, a mesma query no mesmo dia — rebuild da
+    # lista depois de um save admin, instância nova subindo, warmup — pode
+    # voltar do cache do BQ em vez de refazer os full scans (15-65s a frio).
+    # O BQ ainda recusa o cache quando alguma tabela mudou ou tem streaming
+    # buffer; nesse caso roda normal, como antes.
+    # BRT = UTC-3 fixo (sem horário de verão desde 2019), offset literal em
+    # vez de zoneinfo — mesmo racional do BRT em pubmatic_curate.py: container
+    # slim não garante tzdata. Bate com CURRENT_DATE("America/Sao_Paulo").
+    today_sp = datetime.now(timezone(timedelta(hours=-3))).date()
+    list_job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("today_sp", "DATE", today_sp)]
+    )
+    fut_query    = _query_pool.submit(lambda: list(bq.query(sql, job_config=list_job_config).result()))
     fut_owners   = _query_pool.submit(_safe_get_owners_lookup)
     fut_overrides= _query_pool.submit(_safe_get_overrides)
     fut_aliases  = _query_pool.submit(_safe_get_aliases)
