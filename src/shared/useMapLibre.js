@@ -9,7 +9,12 @@ export const useMapLibre = () => {
   const [lib, setLib] = useState(() => window.maplibregl || null);
 
   useEffect(() => {
-    if (window.maplibregl) { setLib(window.maplibregl); return; }
+    // Já carregado por outro mount: o estado inicial normalmente já o tem;
+    // o microtask cobre a corrida entre o 1º render e o efeito.
+    if (window.maplibregl) {
+      Promise.resolve().then(() => setLib((cur) => cur || window.maplibregl));
+      return undefined;
+    }
 
     if (!document.querySelector(`link[href="${CSS_URL}"]`)) {
       const link = document.createElement("link");
@@ -31,4 +36,33 @@ export const useMapLibre = () => {
   }, []);
 
   return lib;
+};
+
+/**
+ * Igual ao useMapLibre, mas diz quando desistir: script bloqueado (rede
+ * corporativa, CDN fora) ou lento demais. Quem usa mostra um fallback
+ * estático em vez de "Carregando mapa..." para sempre.
+ */
+// Falha lembrada no módulo: a partir da 1ª, os próximos mapas da sessão
+// vão direto pro fallback em vez de esperar o timeout de novo.
+let loadFailed = false;
+
+export const useMapLibreStatus = (timeoutMs = 6000) => {
+  const lib = useMapLibre();
+  const [failed, setFailed] = useState(loadFailed);
+
+  useEffect(() => {
+    if (lib || loadFailed) return undefined;
+    const fail = () => { loadFailed = true; setFailed(true); };
+    const script = document.querySelector(`script[src="${JS_URL}"]`);
+    const onError = () => fail();
+    script?.addEventListener("error", onError);
+    const t = setTimeout(() => { if (!window.maplibregl) fail(); }, timeoutMs);
+    return () => {
+      clearTimeout(t);
+      script?.removeEventListener("error", onError);
+    };
+  }, [lib, timeoutMs]);
+
+  return { lib, failed: !lib && failed };
 };

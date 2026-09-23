@@ -75,6 +75,10 @@ LINKS_TTL = 60
 SEARCH_TTL = 60
 
 HTTP_TIMEOUT_S = 25
+# A Platform monta cada peça com ~7 consultas ao Postgres (pool de 1) mais os
+# jobs do BigQuery; com 20 peças a resposta leva de 15 a 25 s. O cache de 10
+# min por período absorve as leituras seguintes.
+PIECES_HTTP_TIMEOUT_S = 60
 
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9]{4,10}$")
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -397,9 +401,14 @@ def search_creatives(*, q=None, client=None, token=None, names=None, limit=30) -
     """Candidatos da Platform, já pontuados. `names` são os criativos da DSP
     nesta campanha (sinal de "nome parecido")."""
     names = [n for n in (names or []) if isinstance(n, str) and n.strip()][:50]
+    # A Platform recusa (400) cliente com menos de 2 letras/dígitos depois de
+    # normalizado — melhor não mandar do que derrubar a busca inteira.
+    client = (client or "").strip()[:120]
+    if len(re.sub(r"[^0-9A-Za-zÀ-ÿ]", "", client)) < 2:
+        client = ""
     params = {
         "q": (q or "").strip()[:120] or None,
-        "client": (client or "").strip()[:120] or None,
+        "client": client or None,
         "token": token.strip().upper() if valid_token(token or "") else None,
         "names": "|".join(n.replace("|", " ")[:200] for n in names) or None,
         "limit": max(1, min(int(limit or 30), 100)),
@@ -681,7 +690,7 @@ def fetch_pieces(links: list, date_from: str | None = None, date_to: str | None 
             "ids": ",".join(ids),
             "from": date_from,
             "to": date_to,
-        })
+        }, timeout=PIECES_HTTP_TIMEOUT_S)
         cached = {
             "items": {it.get("id"): it for it in (raw or {}).get("items") or [] if isinstance(it, dict)},
             "fetched_at": datetime.now(timezone.utc).isoformat(),

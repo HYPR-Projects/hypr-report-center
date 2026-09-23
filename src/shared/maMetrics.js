@@ -113,6 +113,13 @@ export function dspDeliveryByPiece(links, detail, range = null) {
  */
 export function pieceMedia(piece, dsp = null) {
   const t = piece?.totals || {};
+  // Pessoas exatas vêm do sessionSteps (distintos no período). Os totais da
+  // Platform, no modo rollup, somam distintos diários (teto, não exato) —
+  // ficam só de reserva quando o lake não respondeu.
+  const s = piece?.steps || null;
+  const sessions = s ? num(s.impression) : num(t.uniqueSessions);
+  const engaged = s ? num(s.engaged) : num(t.engagedSessions);
+  const clickSessions = s ? num(s.click) : num(t.clickSessions);
   const measured = num(t.impression);
   const served = num(t.impressionServed);
   let impressions = measured;
@@ -130,12 +137,13 @@ export function pieceMedia(piece, dsp = null) {
     measured,
     viewable: num(t.viewable),
     viewability: ratio(t.viewable, measured),
-    sessions: num(t.uniqueSessions),
-    engaged: num(t.engagedSessions),
-    engagement: ratio(t.engagedSessions, t.uniqueSessions),
+    sessions,
+    engaged,
+    engagement: ratio(engaged, sessions),
     ctaClicks: num(t.ctaClick),
     ctr: ratio(t.ctaClick, measured),
-    clickSessions: num(t.clickSessions),
+    clickSessions,
+    exactPeople: !!s,
   };
 }
 
@@ -161,34 +169,26 @@ export function sumMedia(medias) {
 const step = (key, label, value, extra = {}) => ({ key, label, value: num(value), ...extra });
 
 /**
- * Funil do formato em sessões distintas. Usa `piece.steps` (sessionSteps da
- * Platform); sem ele (lake indisponível), cai para as sessões dos totais
- * (engagedSessions, clickSessions), que também são pessoas.
+ * Funil do formato em sessões distintas, a partir de `piece.steps`
+ * (sessionSteps da Platform, exato). Sem ele — o lake não respondeu — o
+ * funil fica indisponível: os totais da Platform somam distintos diários e
+ * contariam a mesma pessoa mais de uma vez.
  */
 export function buildFunnel(piece) {
   const s = piece?.steps;
-  const t = piece?.totals || {};
-  if (!s) {
-    return {
-      source: "totals",
-      steps: [
-        step("viewable", "Viu a peça", t.viewable, { hint: "≥50% da peça na tela por 1 s" }),
-        step("engaged", "Interagiu", t.engagedSessions),
-        step("click", "Clicou", t.clickSessions),
-      ],
-      subs: [],
-    };
-  }
+  if (!s) return { source: "unavailable", steps: [], subs: [] };
   const viewable = step("viewable", "Viu a peça", s.viewable, { hint: "≥50% da peça na tela por 1 s" });
   const fmt = piece?.format;
   let steps;
   let subs = [];
   if (fmt === "tap-to-map") {
+    // Última etapa = CTA de loja (card do pin, loja mais próxima, CTA global),
+    // como no painel: clique na capa e na arte da peça ficam nas superfícies.
     steps = [
       viewable,
       step("engaged", "Interagiu", s.engaged),
       step("click", "Clicou em pin ou CTA", s.click),
-      step("cta_click", "Clicou em CTA", s.cta_click),
+      step("cta_location", "Clicou em CTA da loja", s.cta_location),
     ];
     subs = [
       step("cta_directions", "Como chegar", s.cta_directions),
@@ -433,11 +433,14 @@ export function videoFunnel(piece) {
 /** Leitura client-safe de cada widget da peça. */
 export function widgetBlocks(piece) {
   const s = piece?.steps || {};
-  const viewable = num(s.viewable) || num(piece?.totals?.viewable);
+  // Exibição de widget é evento por impressão: a base comparável são as
+  // impressões medidas (não as pessoas que viram a peça).
+  const measured = num(piece?.totals?.impression);
   return (piece?.widgets || []).map((w) => {
     const base = { id: w.id, type: w.type, label: widgetLabel(w.type), views: num(w.views) };
     if (DISPLAY_ONLY_WIDGETS.has(w.type)) {
-      return { ...base, kind: "display", ofViewable: ratio(w.views, viewable) };
+      const share = ratio(w.views, measured);
+      return { ...base, kind: "display", ofMeasured: share == null ? null : Math.min(100, share) };
     }
     if (w.type === "close_to") {
       const ct = piece.close_to || {};

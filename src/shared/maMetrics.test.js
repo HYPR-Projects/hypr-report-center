@@ -26,7 +26,7 @@ const mapPiece = {
     engagedSessions: 40, ctaClick: 12, pinClick: 20, clickSessions: 18,
   },
   steps: {
-    viewable: 590, engaged: 40, click: 18, cta_click: 10,
+    impression: 780, viewable: 590, engaged: 39, click: 18, cta_click: 11, cta_location: 10,
     cta_directions: 6, cta_whatsapp: 3, cta_website: 0,
     overlay_dismissed: 25, map_interaction: 22, pin_click: 15, overlay_click: 2,
   },
@@ -62,8 +62,15 @@ test("impressão principal: DSP quando vinculada, senão servida, senão medida"
   // taxas sempre sobre a base medida
   const m = pieceMedia(mapPiece, { impressions: 1200 });
   assert.equal(m.viewability, (600 / 950) * 100);
-  assert.equal(m.engagement, 5);
   assert.equal(m.ctr, (12 / 950) * 100);
+  // pessoas exatas do sessionSteps; sem ele, os totais (teto)
+  assert.equal(m.sessions, 780);
+  assert.equal(m.engagement, 5);
+  assert.equal(m.exactPeople, true);
+  const semSteps = pieceMedia({ ...mapPiece, steps: null });
+  assert.equal(semSteps.sessions, 800);
+  assert.equal(semSteps.engaged, 40);
+  assert.equal(semSteps.exactPeople, false);
 });
 
 test("soma da camada mídia recalcula taxas e sinaliza fontes misturadas", () => {
@@ -72,6 +79,7 @@ test("soma da camada mídia recalcula taxas e sinaliza fontes misturadas", () =>
   const s = sumMedia([a, b]);
   assert.equal(s.impressions, 2200);
   assert.equal(s.engagement, 5);
+  assert.equal(s.sessions, 1560);
   assert.equal(s.impressionsSource, "mixed");
   assert.equal(sumMedia([a]).impressionsSource, "dsp");
 });
@@ -79,19 +87,20 @@ test("soma da camada mídia recalcula taxas e sinaliza fontes misturadas", () =>
 test("funil do Tap to Map em pessoas, aninhado e com CTA por botão como sub-etapa", () => {
   const f = buildFunnel(mapPiece);
   assert.equal(f.source, "steps");
-  assert.deepEqual(f.steps.map((s) => s.value), [590, 40, 18, 10]);
+  assert.deepEqual(f.steps.map((s) => s.value), [590, 39, 18, 10]);
+  assert.equal(f.steps[3].label, "Clicou em CTA da loja");
   assert.deepEqual(f.subs.map((s) => s.label), ["Como chegar", "WhatsApp"]);
   const { rows, biggestDrop } = funnelConversions(f.steps);
-  assert.equal(rows[1].conversion, (40 / 590) * 100);
+  assert.equal(rows[1].conversion, (39 / 590) * 100);
   // maior perda DEPOIS da visualização: engajou → clicou (22) > clicou → CTA (8)
   assert.equal(biggestDrop.from, "Interagiu");
   assert.equal(biggestDrop.to, "Clicou em pin ou CTA");
 });
 
-test("sem sessionSteps o funil cai para as sessões dos totais", () => {
+test("sem sessionSteps o funil fica indisponível (totais contam a mesma pessoa mais de uma vez)", () => {
   const f = buildFunnel({ ...mapPiece, steps: null });
-  assert.equal(f.source, "totals");
-  assert.deepEqual(f.steps.map((s) => s.value), [600, 40, 18]);
+  assert.equal(f.source, "unavailable");
+  assert.deepEqual(f.steps, []);
 });
 
 test("etapa fora de ordem não ganha conversão nem vira a maior perda", () => {
@@ -148,7 +157,7 @@ test("funil de vídeo só aparece quando houve play", () => {
 test("Close To avisa quando metade ou mais das identificações vêm do IP", () => {
   const piece = {
     format: "freeform",
-    totals: { viewable: 1000 },
+    totals: { viewable: 1000, impression: 1800 },
     steps: { viewable: 1000, close_to_view: 900, close_to_locate: 60, close_to_found: 50, close_to_redirect: 12 },
     widgets: [
       { id: "w1", type: "close_to", views: 950, taps: 70, tap_sessions: 60, conversions: 12 },
@@ -171,7 +180,7 @@ test("Close To avisa quando metade ou mais das identificações vêm do IP", () 
   assert.deepEqual(ct.addresses.map((a) => a.name), ["Loja A", "Loja B"]);
   assert.equal(ct.addresses[0].conversion, 20);
   assert.equal(cd.kind, "display");
-  assert.equal(cd.ofViewable, 90);
+  assert.equal(cd.ofMeasured, 50);
 });
 
 test("empilhado por dia e formato preenche zeros e respeita a ordem de formato", () => {

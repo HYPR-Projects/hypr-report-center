@@ -131,7 +131,7 @@ function buildPiece(link, days) {
     daily: [],
   };
 
-  const steps = { viewable: vSess, engaged, impression: R(measured * 0.99) };
+  const steps = { viewable: vSess, engaged, impression: sessions };
   let ctaClick = 0;
   let pinClick = 0;
   let clickSessions = 0;
@@ -142,14 +142,15 @@ function buildPiece(link, days) {
     piece.cta_text = "Ver lojas";
     const click = R(engaged * 0.42);
     const cta = R(click * 0.49);
+    const ctaLocSess = R(cta * 0.93);
     Object.assign(steps, {
       click,
       cta_click: cta,
-      cta_location: R(cta * 0.93),
-      cta_header: R(cta * 0.07),
-      cta_directions: R(cta * 0.66),
-      cta_whatsapp: R(cta * 0.215),
-      cta_website: R(cta * 0.126),
+      cta_location: ctaLocSess,
+      cta_header: R(ctaLocSess * 0.12),
+      cta_directions: R(ctaLocSess * 0.66),
+      cta_whatsapp: R(ctaLocSess * 0.215),
+      cta_website: R(ctaLocSess * 0.126),
       overlay_dismissed: R(engaged * 0.575),
       map_interaction: R(engaged * 0.45),
       pin_click: R(engaged * 0.296),
