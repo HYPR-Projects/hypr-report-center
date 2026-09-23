@@ -36,6 +36,7 @@ import {
   sliceCampaign,
   aggregateSlices,
   efficiencyTiles,
+  formatCpcv,
   buildPortalPresets,
   monthsCovered,
   overlapsPeriod,
@@ -490,7 +491,18 @@ function PortalView({ data, shareId }) {
             )}
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5 sm:gap-4">
-            <BigNumber label="Investimento" value={formatBrlShort(summary.invested)} fullValue={formatBRL(summary.invested)} accent />
+            {/* Investimento = PI contratado. Com campanha no ar, o sub mostra o
+                consumido até hoje — é o numerador do CPM/CPCV efetivo logo
+                abaixo, então o cliente enxerga de onde sai a conta. */}
+            <BigNumber
+              label="Investimento"
+              value={formatBrlShort(summary.invested)}
+              fullValue={summary.inFlight
+                ? `${formatBRL(summary.invested)} contratados · ${formatBRL(summary.investedToDate)} até hoje`
+                : formatBRL(summary.invested)}
+              sub={summary.inFlight ? `${formatBrlShort(summary.investedToDate)} até hoje` : "contratado"}
+              accent
+            />
             <BigNumber label="Impressões" value={formatIntCompact(summary.impressions)} fullValue={`${formatInt(summary.impressions)} impressões visíveis`} sub="visíveis" />
             <BigNumber label="Cliques" value={formatIntCompact(summary.clicks)} fullValue={formatInt(summary.clicks)} />
             <BigNumber label="CTR" value={formatPct(summary.ctr, 2)} sub="médio" />
@@ -722,16 +734,16 @@ function PortalCampaignCard({ campaign: c, accent, client, mode = "ALL" }) {
   // No recorte por formato o card mostra a parcela daquele formato — senão os
   // cards contradiriam os big numbers logo acima (que já estão recortados).
   const s = sliceCampaign(c, mode);
-  const invested = s.invested;
+  // Mesma agregação dos big numbers (CPM/CPCV/VTR sobre o investido até hoje).
+  const m = aggregateSlices([s]);
   const status = getCampaignStatus(c.end_date, c.closed_at, c.paused_at, c.early_end_date);
   const range = getDateRangeParts(c.start_date, c.end_date);
-  const hasVideo = mode === "ALL"
-    ? Array.isArray(c.media) && c.media.includes("VIDEO")
-    : mode === "VIDEO";
+  const shownMedia = mode === "ALL" ? (c.media || []) : [mode];
+  const hasVideo = shownMedia.includes("VIDEO");
+  const hasDisplay = shownMedia.includes("DISPLAY");
   const ctr = mode === "DISPLAY" ? c.display_ctr
     : mode === "VIDEO" ? c.video_ctr
     : c.ctr;
-  const shownMedia = mode === "ALL" ? (c.media || []) : [mode];
   const features = featuresOf(c);
   const reportToken = c.share_id || c.short_token;
   const reportHref = `/report/${reportToken}`;
@@ -783,16 +795,7 @@ function PortalCampaignCard({ campaign: c, accent, client, mode = "ALL" }) {
       <div className="my-5 h-px bg-border" />
 
       {/* Métricas client-safe (sem cor condicional) */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-3.5">
-        <Metric label="Investimento" value={formatBrlCompact(invested)} title={formatBRL(invested)} />
-        <Metric label="Impressões" value={formatIntCompact(s.impressions)} title={formatInt(s.impressions)} />
-        <Metric label="CTR" value={formatPct(ctr, 2)} />
-        <Metric
-          label={hasVideo ? "VTR" : "Cliques"}
-          value={hasVideo ? formatPct(c.vtr, 1) : formatIntCompact(s.clicks)}
-          title={hasVideo ? undefined : formatInt(s.clicks)}
-        />
-      </div>
+      <CardMetrics m={m} ctr={ctr} hasDisplay={hasDisplay} hasVideo={hasVideo} />
 
       {/* Sinais: pacing + core products + features */}
       {(s.pacing != null || (c.tactics || []).length > 0 || features.length > 0) && (
@@ -856,6 +859,9 @@ function MergeGroupCard({ members, accent, client, mode = "ALL" }) {
       pacing: mean(pacings),
       tactics: [...tactics], features: [...features],
       hasVideo: mode === "ALL" ? slices.some((s) => s.hasVideo) : mode === "VIDEO",
+      hasDisplay: mode === "ALL"
+        ? members.some((m) => (m.media || []).includes("DISPLAY"))
+        : mode === "DISPLAY",
       start, end, anyActive,
     };
   }, [members, mode]);
@@ -906,16 +912,7 @@ function MergeGroupCard({ members, accent, client, mode = "ALL" }) {
       {/* divisória sutil identidade → métricas (margens generosas) */}
       <div className="my-5 h-px bg-border" />
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-3.5">
-        <Metric label="Investimento" value={formatBrlCompact(agg.invested)} title={formatBRL(agg.invested)} />
-        <Metric label="Impressões" value={formatIntCompact(agg.impressions)} title={formatInt(agg.impressions)} />
-        <Metric label="CTR" value={formatPct(agg.ctr, 2)} />
-        <Metric
-          label={agg.hasVideo ? "VTR" : "Cliques"}
-          value={agg.hasVideo ? formatPct(agg.vtr, 1) : formatIntCompact(agg.clicks)}
-          title={agg.hasVideo ? undefined : formatInt(agg.clicks)}
-        />
-      </div>
+      <CardMetrics m={agg} ctr={agg.ctr} hasDisplay={agg.hasDisplay} hasVideo={agg.hasVideo} />
 
       {(agg.pacing != null || agg.tactics.length > 0 || agg.features.length > 0) && (
         <div className="mt-4 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
@@ -992,13 +989,70 @@ function AggregatedBadge() {
   );
 }
 
-function Metric({ label, value, valueClass = "text-fg", title }) {
+// Métricas do card em duas faixas: volume (sempre) e eficiência (só o que se
+// aplica às mídias do card — CPM é de display; CPCV, VTR e views, de vídeo).
+// `m` = saída de aggregateSlices, a mesma conta dos big numbers: CPM/CPCV são
+// sobre o investido ATÉ HOJE, então campanha no ar não aparece com CPM inflado.
+function CardMetrics({ m, ctr, hasDisplay, hasVideo }) {
+  const efficiency = [
+    hasDisplay && {
+      key: "cpm", label: "CPM efetivo",
+      value: m.cpmDisplay == null ? "—" : formatBRL(m.cpmDisplay),
+      title: "Investimento de display até hoje ÷ impressões visíveis × 1.000",
+    },
+    hasVideo && {
+      key: "cpcv", label: "CPCV efetivo",
+      value: formatCpcv(m.cpcvVideo),
+      title: "Investimento de vídeo até hoje ÷ views 100%",
+    },
+    hasVideo && { key: "vtr", label: "VTR", value: formatPct(m.vtr, 1) },
+    hasVideo && {
+      key: "views", label: "Views 100%",
+      value: formatIntCompact(m.completions), title: formatInt(m.completions),
+    },
+  ].filter(Boolean);
+
+  return (
+    <>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-3.5">
+        <Metric
+          label="Investimento"
+          value={formatBrlCompact(m.invested)}
+          title={m.inFlight
+            ? `${formatBRL(m.invested)} contratados · ${formatBRL(m.investedToDate)} até hoje`
+            : formatBRL(m.invested)}
+          sub={m.inFlight ? `${formatBrlShort(m.investedToDate)} até hoje` : null}
+        />
+        <Metric label="Impressões" value={formatIntCompact(m.impressions)} title={formatInt(m.impressions)} />
+        <Metric label="Cliques" value={formatIntCompact(m.clicks)} title={formatInt(m.clicks)} />
+        <Metric label="CTR" value={formatPct(ctr, 2)} />
+      </div>
+      {efficiency.length > 0 && (
+        <div className="mt-3.5 rounded-xl bg-surface px-3.5 py-3 grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-3">
+          {efficiency.map((e) => (
+            <Metric key={e.key} label={e.label} value={e.value} title={e.title} size="sm" />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function Metric({ label, value, valueClass = "text-fg", title, sub, size = "md" }) {
   return (
     <div className="min-w-0">
-      <div className="text-[10px] uppercase tracking-wider text-fg-subtle leading-none">{label}</div>
-      <div className={cn("mt-1.5 text-[15px] font-semibold tabular-nums leading-none truncate", valueClass)} title={title}>
+      <div className="text-[10px] uppercase tracking-wider text-fg-subtle leading-none truncate">{label}</div>
+      <div
+        className={cn(
+          "mt-1.5 font-semibold tabular-nums leading-none truncate",
+          size === "sm" ? "text-[13.5px]" : "text-[15px]",
+          valueClass,
+        )}
+        title={title}
+      >
         {value}
       </div>
+      {sub && <div className="mt-1 text-[10.5px] text-fg-subtle tabular-nums leading-none truncate">{sub}</div>}
     </div>
   );
 }
