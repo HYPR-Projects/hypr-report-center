@@ -484,7 +484,12 @@ def _safe_campaign(entry: dict, share_id_map: dict, logos_map: dict = None,
     totais que o cliente enxerga; calcula CTR/VTR agregados; deriva `media`.
 
     Nunca emite: admin_total_cost, admin_ecpm, *_admin_*, monthly_cost_full,
-    client_delivered_value (faturável é leitura interna), pacing por frente.
+    pacing por frente.
+
+    O faturável consumido por mídia (`d/v_client_delivered_value`) sai como
+    `d/v_invested_to_date`: é o MESMO número do "Custo Efetivo · Total" que o
+    report público já mostra ao cliente (effective_cost_front), então não é
+    dado interno — é o investimento consumido até hoje.
     """
     d_vi   = int(entry.get("display_viewable_impressions", 0) or 0)
     v_vi   = int(entry.get("video_viewable_impressions",   0) or 0)
@@ -563,7 +568,25 @@ def _safe_campaign(entry: dict, share_id_map: dict, logos_map: dict = None,
         "video_impressions":   v_vi or None,
         "video_clicks":        v_clk or None,
         "video_ctr":           v_ctr,
+        # ── Investimento consumido até hoje (to date), por mídia ───────────
+        # Entrega valorada ao CPM/CPCV negociado, com over travado no budget
+        # pró-rata (budget cheio depois do fim). Sem isso o CPM/CPCV efetivo
+        # do portal dividia o PI CHEIO pela entrega parcial: numa campanha no
+        # ar há 8 de 27 dias o CPM saía ~3× o negociado. Ausente = backend
+        # sem o campo ou mídia sem PI → o front cai no pró-rata por dias.
+        "d_invested_to_date":  _money_or_none(entry.get("d_client_delivered_value")),
+        "v_invested_to_date":  _money_or_none(entry.get("v_client_delivered_value")),
     }
+
+
+def _money_or_none(v):
+    """Valor monetário do cache → float com 2 casas, ou None (ausente)."""
+    if v is None:
+        return None
+    try:
+        return round(float(v), 2)
+    except (TypeError, ValueError):
+        return None
 
 
 def build_portal_payload(config: dict, campaigns: list, published_tokens: set,

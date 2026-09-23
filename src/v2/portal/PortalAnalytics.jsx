@@ -50,6 +50,7 @@ import {
   sliceCampaign,
   aggregateSlices,
   efficiencyTiles,
+  formatCpcv,
   buildPortalPresets,
   monthsCovered,
   overlapsPeriod,
@@ -387,7 +388,15 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
         <>
           {/* ── KPIs ──────────────────────────────────────────────────────── */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-            <KpiTile label="Investimento" value={compactBrl(kpis.invested)} title={formatBRL(kpis.invested)} accent />
+            <KpiTile
+              label="Investimento"
+              value={compactBrl(kpis.invested)}
+              title={kpis.inFlight
+                ? `${formatBRL(kpis.invested)} contratados · ${formatBRL(kpis.investedToDate)} até hoje`
+                : formatBRL(kpis.invested)}
+              sub={kpis.inFlight ? `${compactBrl(kpis.investedToDate)} até hoje` : "contratado"}
+              accent
+            />
             <KpiTile label="Impressões" value={formatIntCompact(kpis.impressions)} title={`${formatInt(kpis.impressions)} impressões visíveis`} sub="visíveis" />
             <KpiTile label="Cliques" value={formatIntCompact(kpis.clicks)} title={formatInt(kpis.clicks)} />
             <KpiTile label="CTR" value={formatPct(kpis.ctr, 2)} sub="médio" />
@@ -401,7 +410,7 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
             />
           </div>
 
-          {/* Eficiência — custo unitário efetivo (investimento contratado ÷
+          {/* Eficiência — custo unitário efetivo (investimento até hoje ÷
               entrega real). Mesmos 3 tiles da aba Campanhas, mesma fonte de
               cálculo (portalMetrics), reagindo aos filtros desta aba. */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -953,17 +962,28 @@ const TABLE_COLS = [
   { key: "viewable_impressions", label: "Impressões", align: "right" },
   { key: "ctr", label: "CTR", align: "right" },
   { key: "vtr", label: "VTR", align: "right" },
+  { key: "cpm", label: "CPM ef.", align: "right" },
+  { key: "cpcv", label: "CPCV ef.", align: "right" },
 ];
 
 // `rows` = [{c, s}] — campanha + a fatia dela no recorte de mídia atual, pra
 // que a tabela nunca some números fora do recorte que os KPIs mostram.
-function CampaignAnalyticsTable({ rows, accent, mode = "ALL" }) {
+function CampaignAnalyticsTable({ rows: rawRows, accent, mode = "ALL" }) {
   const [sortKey, setSortKey] = useState("invested");
   const [sortDir, setSortDir] = useState("desc");
 
+  // Custo unitário por linha = mesma conta dos KPIs (investido até hoje).
+  const rows = useMemo(
+    () => rawRows.map((r) => ({ ...r, m: aggregateSlices([r.s]) })),
+    [rawRows],
+  );
+
   const sorted = useMemo(() => {
-    const val = ({ c, s }) => {
+    const val = ({ c, s, m }) => {
       if (sortKey === "invested") return s.invested;
+      // "—" (null) sempre no fim da ordenação desc.
+      if (sortKey === "cpm") return m.cpmDisplay ?? -1;
+      if (sortKey === "cpcv") return m.cpcvVideo ?? -1;
       if (sortKey === "campaign_name") return (c.campaign_name || "").toLowerCase();
       if (sortKey === "viewable_impressions") return s.impressions;
       if (sortKey === "ctr") return s.impressions > 0 ? (s.clicks / s.impressions) * 100 : 0;
@@ -1013,7 +1033,7 @@ function CampaignAnalyticsTable({ rows, accent, mode = "ALL" }) {
             </tr>
           </thead>
           <tbody>
-            {sorted.map(({ c, s }, i) => {
+            {sorted.map(({ c, s, m }, i) => {
               const ctr = s.impressions > 0 ? (s.clicks / s.impressions) * 100 : null;
               const media = mode === "ALL" ? (c.media || []) : [mode];
               return (
@@ -1026,6 +1046,8 @@ function CampaignAnalyticsTable({ rows, accent, mode = "ALL" }) {
                   <Td className="text-right text-fg tabular-nums">{formatIntCompact(s.impressions)}</Td>
                   <Td className="text-right tabular-nums" style={{ color: accent }}>{ctr != null ? `${fmt(ctr, 2)}%` : "—"}</Td>
                   <Td className="text-right text-fg tabular-nums">{mode === "DISPLAY" || c.vtr == null ? "—" : `${fmt(Number(c.vtr), 1)}%`}</Td>
+                  <Td className="text-right text-fg tabular-nums whitespace-nowrap">{m.cpmDisplay == null ? "—" : formatBRL(m.cpmDisplay)}</Td>
+                  <Td className="text-right text-fg tabular-nums whitespace-nowrap">{formatCpcv(m.cpcvVideo)}</Td>
                   <Td className="text-left">
                     <div className="flex flex-wrap gap-1">
                       {media.map((m) => <MixChip key={m} label={m === "VIDEO" ? "Vídeo" : "Display"} />)}
