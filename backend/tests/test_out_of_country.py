@@ -131,6 +131,22 @@ def test_ranking_filters_low_volume_and_sorts_by_rate():
     assert p["campaigns_with_unexpected"] == 3
 
 
+def test_data_warnings_flag_silent_failures():
+    d = date(2026, 9, 10)
+    # country_code em formato inesperado → quase tudo UNKNOWN. Sem a guarda,
+    # o box mostraria 0% fora, verde.
+    rows = [_r(d, "AAA111", "UNKNOWN", "UNKNOWN", 900), _r(d, "AAA111", "BR", "BR", 100)]
+    p = ooc.build_payload(rows, MS, ME, True)
+    assert p["rate"] == 0.0
+    assert [w["kind"] for w in p["data_warnings"]] == ["unknown_country"]
+    # Join de line quebrado → volume quase todo sem token.
+    rows = [_r(d, None, "BR", "BR", 900), _r(d, "AAA111", "BR", "BR", 100)]
+    assert [w["kind"] for w in ooc.build_payload(rows, MS, ME, True)["data_warnings"]] == ["untracked_lines"]
+    # Estado normal: nada.
+    rows = [_r(d, None, "BR", "BR", 100), _r(d, "AAA111", "BR", "BR", 900), _r(d, "AAA111", "UNKNOWN", "UNKNOWN", 5)]
+    assert ooc.build_payload(rows, MS, ME, True)["data_warnings"] == []
+
+
 # ── Alerta ─────────────────────────────────────────────────────────────────
 
 def test_no_alert_on_steady_days():

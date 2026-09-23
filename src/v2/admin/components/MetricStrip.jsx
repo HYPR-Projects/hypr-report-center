@@ -20,6 +20,7 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "../../../ui/cn";
 import { formatBRL, formatPct as formatPctBR } from "../lib/format";
+import * as Popover from "@radix-ui/react-popover";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
 
 // BRL compacto sem centavos pro tooltip de breakdown do Tech Cost. Numbers
@@ -246,16 +247,25 @@ function MetricDelta({ current, previous, goodDirection = "up" }) {
 // país escrito por extenso no nome da line (Elux _CHILE_/_PERU_/_COLOMBIA_):
 // esse volume aparece no hover mas não entra na taxa.
 //
-// O vermelho da CÉLULA é reservado pro alerta (salto dia a dia, global ou de
-// campanha). A cor do NÚMERO segue a régua de nível, pra um mês alto e
-// estável não parecer incidente todo dia.
+// Vermelho é reservado pro ALERTA (salto dia a dia, global ou de campanha):
+// célula e número. Fora do alerta o número é verde (≤ 1%) ou amarelo — um
+// mês alto e estável não pode ter a mesma cara de um incidente, senão o
+// vermelho vira paisagem e ninguém olha quando é de verdade.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function toneOutOfCountry(value) {
   if (value == null) return "muted";
-  if (value <= 1) return "success";
-  if (value <= 3) return "warning";
-  return "danger";
+  return value <= 1 ? "success" : "warning";
+}
+
+function dataWarningText(w) {
+  if (w.kind === "unknown_country") {
+    return `${formatPctBR(w.share, 1)} das impressões sem país identificado — a taxa pode estar subestimada.`;
+  }
+  if (w.kind === "untracked_lines") {
+    return `${formatPctBR(w.share, 1)} do volume em lines sem campanha vinculada — ranking e alerta por campanha incompletos.`;
+  }
+  return null;
 }
 
 const _IMPS_COMPACT = new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 });
@@ -299,18 +309,48 @@ function alertReasonText(r) {
 // grade de 2 colunas (9 = 4×2 + 1) e da de 5 (9 = 5 + 4), sem buraco cinza.
 const OOC_SPAN_NINE = "col-span-2 @min-[520px]:col-span-1 @min-[840px]:col-span-2 @min-[1340px]:col-span-1";
 
+// Popover que abre no hover (mouse) e no clique/toque/Enter. Não é Tooltip de
+// propósito: o conteúdo é uma tabela clicável, e o Tooltip do Radix (1) copia
+// o conteúdo inteiro num nó oculto de leitor de tela — a tabela seria lida
+// como "dica" do box — e (2) não abre com toque, então no celular o ranking
+// ficaria inacessível. O atraso de fechar dá tempo de atravessar o vão entre
+// o box e o painel sem ele sumir.
+const HOVER_OPEN_MS = 150;
+const HOVER_CLOSE_MS = 180;
+
+function useHoverOpen() {
+  const [open, setOpen] = useState(false);
+  const timer = useRef(null);
+  const clear = () => { if (timer.current) { clearTimeout(timer.current); timer.current = null; } };
+  const schedule = (next, ms) => {
+    clear();
+    timer.current = setTimeout(() => { timer.current = null; setOpen(next); }, ms);
+  };
+  useEffect(() => clear, []);
+  const onPointerEnter = (e) => { if (e.pointerType === "mouse") schedule(true, open ? 0 : HOVER_OPEN_MS); };
+  const onPointerLeave = (e) => { if (e.pointerType === "mouse") schedule(false, HOVER_CLOSE_MS); };
+  const onOpenChange = (next) => { clear(); setOpen(next); };
+  return { open, onOpenChange, hoverProps: { onPointerEnter, onPointerLeave } };
+}
+
 function OutOfCountryCard({ data, compact, onOpenReport }) {
+  const { open, onOpenChange, hoverProps } = useHoverOpen();
   const {
     rate, alert, alert_reasons = [], campaigns = [],
     impressions, unexpected_impressions, expected_impressions, expected_rate,
     unknown_impressions, unknown_rate, expected_countries = [], top_countries = [],
-    reference_date, day_rate, campaigns_with_unexpected,
+    reference_date, day_rate, campaigns_with_unexpected, data_warnings = [],
   } = data;
+  const suspect = data_warnings.length > 0;
 
   const footer = alert ? (
     <span className="inline-flex items-center gap-1 font-semibold text-danger whitespace-nowrap">
       <span aria-hidden="true" className="size-1.5 rounded-full bg-danger shadow-glow-danger animate-pulse" />
       fora do normal
+    </span>
+  ) : suspect ? (
+    <span className="inline-flex items-center gap-1 font-semibold text-warning whitespace-nowrap">
+      <span aria-hidden="true">⚠</span> checar dado
     </span>
   ) : reference_date ? (
     <span className="whitespace-nowrap">
@@ -321,145 +361,183 @@ function OutOfCountryCard({ data, compact, onOpenReport }) {
   );
 
   return (
-    <Tooltip delayDuration={150}>
-      <TooltipTrigger asChild>
+    <Popover.Root open={open} onOpenChange={onOpenChange}>
+      <Popover.Trigger asChild>
         {/* Fundo opaco no wrapper: o danger-soft da célula é translúcido e,
-            sem isso, o bg-border da grade (os filetes) vazaria por baixo. */}
-        <div className={cn("cursor-help bg-canvas-elevated", compact && OOC_SPAN_NINE)} tabIndex={0} aria-label="Entrega fora do Brasil — passe o mouse para ver as campanhas">
+            sem isso, o bg-border da grade (os filetes) vazaria por baixo.
+            div + role=button (e não <button>) porque a célula tem blocos
+            dentro; Enter/Espaço são tratados à mão. */}
+        <div
+          role="button"
+          tabIndex={0}
+          aria-label="Entrega fora do Brasil: ver campanhas"
+          {...hoverProps}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenChange(!open); }
+          }}
+          className={cn(
+            "cursor-pointer bg-canvas-elevated focus-visible:outline-none",
+            "focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-signature",
+            compact && OOC_SPAN_NINE,
+          )}
+        >
           <MetricCard
             compact={compact}
             label="Fora do BR"
             value={<AnimatedValue value={rate} format={formatPctTwo} />}
-            tone={alert ? "danger" : toneOutOfCountry(rate)}
+            tone={alert ? "danger" : suspect ? "muted" : toneOutOfCountry(rate)}
             footer={footer}
             className={cn("h-full", alert && "bg-danger-soft shadow-[inset_0_0_0_1px_var(--color-danger)]")}
           />
         </div>
-      </TooltipTrigger>
-      <TooltipContent
-        side="bottom"
-        align="end"
-        sideOffset={8}
-        collisionPadding={12}
-        className="max-w-none w-[min(560px,calc(100vw-24px))] p-0 max-h-[70vh] overflow-y-auto"
-      >
-        <div className="px-3.5 pt-3 pb-2 flex items-baseline justify-between gap-3 border-b border-border/60">
-          <span className="lbl-section">Entrega fora do Brasil · DV360</span>
-          {reference_date && (
-            <span className="text-[11px] text-fg-subtle whitespace-nowrap">dado até {formatDayMonth(reference_date)}</span>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          side="bottom"
+          align="end"
+          sideOffset={8}
+          collisionPadding={12}
+          // Abrir por hover não pode roubar o foco da página.
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          {...hoverProps}
+          className={cn(
+            "z-50 w-[min(560px,calc(100vw-24px))] max-h-[70vh] overflow-y-auto",
+            "rounded-md border border-border bg-canvas-elevated text-xs text-fg shadow-md",
+            "data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out focus-visible:outline-none",
           )}
-        </div>
-
-        {alert && alert_reasons.length > 0 && (
-          <div className="mx-3.5 mt-2.5 rounded-md border border-danger/40 bg-danger-soft px-3 py-2">
-            <div className="text-[11px] font-bold text-danger mb-1">Fora do normal</div>
-            <ul className="flex flex-col gap-0.5 text-[11px] text-fg">
-              {alert_reasons.map((r, i) => {
-                const text = alertReasonText(r);
-                return text ? <li key={i}>{text}</li> : null;
-              })}
-            </ul>
-          </div>
-        )}
-
-        <div className="px-3.5 py-2.5 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
-          <span className="text-fg-subtle">Fora sem previsão na line</span>
-          <span className="text-right tabular-nums">
-            <span className={cn("font-bold", TONE_CLASS[toneOutOfCountry(rate)])}>{formatPctTwo(rate)}</span>
-            <span className="text-fg-subtle"> · {formatImps(unexpected_impressions)} imps</span>
-          </span>
-          {top_countries.length > 0 && (
-            <>
-              <span className="text-fg-subtle">Principais países</span>
-              <span className="text-right truncate" title={top_countries.map((c) => countryName(c.country)).join(", ")}>
-                {top_countries.slice(0, 4).map((c) => `${c.country} ${formatImps(c.impressions)}`).join(" · ")}
-              </span>
-            </>
-          )}
-          <span className="text-fg-subtle">Previsto na line</span>
-          <span className="text-right tabular-nums">
-            {formatPctTwo(expected_rate)}
-            {expected_countries.length > 0 && (
-              <span className="text-fg-subtle"> · {expected_countries.map((c) => c.country).join(", ")}</span>
+        >
+          <div className="px-3.5 pt-3 pb-2 flex items-baseline justify-between gap-3 border-b border-border/60">
+            <span className="lbl-section">Entrega fora do Brasil · DV360</span>
+            {reference_date && (
+              <span className="text-[11px] text-fg-subtle whitespace-nowrap">dado até {formatDayMonth(reference_date)}</span>
             )}
-            <span className="text-fg-subtle"> · {formatImps(expected_impressions)}</span>
-          </span>
-          <span className="text-fg-subtle">País não identificado</span>
-          <span className="text-right tabular-nums">
-            {formatPctTwo(unknown_rate)}<span className="text-fg-subtle"> · {formatImps(unknown_impressions)}</span>
-          </span>
-          <span className="text-fg-subtle">Total DV360 no mês</span>
-          <span className="text-right tabular-nums font-semibold">{formatImps(impressions)} imps</span>
-        </div>
+          </div>
 
-        <div className="border-t border-border/60">
-          {campaigns.length === 0 ? (
-            <div className="px-3.5 py-3 text-[11px] text-fg-subtle">
-              Nenhuma campanha com entrega fora do Brasil sem previsão na line.
-            </div>
-          ) : (
-            <table className="w-full text-[11px]">
-              <thead>
-                <tr className="text-fg-subtle">
-                  <th className="text-left font-semibold px-3.5 py-1.5">Campanha</th>
-                  <th className="text-right font-semibold px-2 py-1.5">Fora</th>
-                  <th className="text-right font-semibold px-2 py-1.5">Imps fora</th>
-                  <th className="text-left font-semibold pl-2 pr-3.5 py-1.5">Países</th>
-                </tr>
-              </thead>
-              <tbody>
-                {campaigns.map((c) => {
-                  const clickable = !!onOpenReport;
-                  const name = [c.client_name, c.campaign_name].filter(Boolean).join(" · ") || c.short_token;
-                  return (
-                    <tr
-                      key={c.short_token}
-                      onClick={clickable ? () => onOpenReport(c.short_token) : undefined}
-                      className={cn(
-                        "border-t border-border/40",
-                        clickable && "cursor-pointer hover:bg-surface",
-                        c.alert && "bg-danger-soft",
-                      )}
-                    >
-                      <td className="px-3.5 py-1.5 max-w-[220px]">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          {c.alert && <span aria-label="alerta" className="size-1.5 shrink-0 rounded-full bg-danger" />}
-                          <span className="truncate font-medium text-fg" title={name}>{name}</span>
-                        </div>
-                        <div className="text-[10px] text-fg-subtle tabular-nums">
-                          {c.short_token}
-                          {c.expected_countries?.length > 0 && ` · previsto ${c.expected_countries.join(", ")}`}
-                        </div>
-                      </td>
-                      <td className={cn("px-2 py-1.5 text-right tabular-nums font-bold", TONE_CLASS[toneOutOfCountry(c.rate)])}>
-                        {formatPctTwo(c.rate)}
-                        {c.day_rate != null && (
-                          <div className="text-[10px] font-normal text-fg-subtle">dia {formatPctTwo(c.day_rate)}</div>
-                        )}
-                      </td>
-                      <td className="px-2 py-1.5 text-right tabular-nums">{formatImps(c.unexpected_impressions)}</td>
-                      <td
-                        className="pl-2 pr-3.5 py-1.5 text-fg-muted whitespace-nowrap"
-                        title={(c.top_countries || []).map((t) => countryName(t.country)).join(", ")}
-                      >
-                        {(c.top_countries || []).map((t) => t.country).join(", ") || "—"}
-                      </td>
-                    </tr>
-                  );
+          {suspect && (
+            <div className="mx-3.5 mt-2.5 rounded-md border border-warning/40 bg-warning-soft px-3 py-2">
+              <div className="text-[11px] font-bold text-warning mb-1">Dado suspeito</div>
+              <ul className="flex flex-col gap-0.5 text-[11px] text-fg">
+                {data_warnings.map((w, i) => {
+                  const text = dataWarningText(w);
+                  return text ? <li key={i}>{text}</li> : null;
                 })}
-              </tbody>
-            </table>
+              </ul>
+            </div>
           )}
-        </div>
 
-        <div className="px-3.5 py-2 border-t border-border/60 text-[10px] text-fg-subtle leading-snug">
-          {campaigns_with_unexpected > campaigns.length
-            ? `Top ${campaigns.length} de ${campaigns_with_unexpected} campanhas com entrega fora. `
-            : ""}
-          Só DV360. País escrito por extenso no nome da line (ex.: _CHILE_) conta como previsto e fica fora da taxa.
-        </div>
-      </TooltipContent>
-    </Tooltip>
+          {alert && alert_reasons.length > 0 && (
+            <div className="mx-3.5 mt-2.5 rounded-md border border-danger/40 bg-danger-soft px-3 py-2">
+              <div className="text-[11px] font-bold text-danger mb-1">Fora do normal</div>
+              <ul className="flex flex-col gap-0.5 text-[11px] text-fg">
+                {alert_reasons.map((r, i) => {
+                  const text = alertReasonText(r);
+                  return text ? <li key={i}>{text}</li> : null;
+                })}
+              </ul>
+            </div>
+          )}
+
+          <div className="px-3.5 py-2.5 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+            <span className="text-fg-subtle">Fora sem previsão na line</span>
+            <span className="text-right tabular-nums">
+              <span className={cn("font-bold", TONE_CLASS[toneOutOfCountry(rate)])}>{formatPctTwo(rate)}</span>
+              <span className="text-fg-subtle"> · {formatImps(unexpected_impressions)} imps</span>
+            </span>
+            {top_countries.length > 0 && (
+              <>
+                <span className="text-fg-subtle">Principais países</span>
+                <span className="text-right truncate" title={top_countries.map((c) => countryName(c.country)).join(", ")}>
+                  {top_countries.slice(0, 4).map((c) => `${c.country} ${formatImps(c.impressions)}`).join(" · ")}
+                </span>
+              </>
+            )}
+            <span className="text-fg-subtle">Previsto na line</span>
+            <span className="text-right tabular-nums">
+              {formatPctTwo(expected_rate)}
+              {expected_countries.length > 0 && (
+                <span className="text-fg-subtle"> · {expected_countries.map((c) => c.country).join(", ")}</span>
+              )}
+              <span className="text-fg-subtle"> · {formatImps(expected_impressions)}</span>
+            </span>
+            <span className="text-fg-subtle">País não identificado</span>
+            <span className="text-right tabular-nums">
+              {formatPctTwo(unknown_rate)}<span className="text-fg-subtle"> · {formatImps(unknown_impressions)}</span>
+            </span>
+            <span className="text-fg-subtle">Total DV360 no mês</span>
+            <span className="text-right tabular-nums font-semibold">{formatImps(impressions)} imps</span>
+          </div>
+
+          <div className="border-t border-border/60">
+            {campaigns.length === 0 ? (
+              <div className="px-3.5 py-3 text-[11px] text-fg-subtle">
+                Nenhuma campanha com entrega fora do Brasil sem previsão na line.
+              </div>
+            ) : (
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="text-fg-subtle">
+                    <th className="text-left font-semibold px-3.5 py-1.5">Campanha</th>
+                    <th className="text-right font-semibold px-2 py-1.5">Fora</th>
+                    <th className="text-right font-semibold px-2 py-1.5">Imps fora</th>
+                    <th className="text-left font-semibold pl-2 pr-3.5 py-1.5">Países</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {campaigns.map((c) => {
+                    const clickable = !!onOpenReport;
+                    const name = [c.client_name, c.campaign_name].filter(Boolean).join(" · ") || c.short_token;
+                    return (
+                      <tr
+                        key={c.short_token}
+                        onClick={clickable ? () => onOpenReport(c.short_token) : undefined}
+                        tabIndex={clickable ? 0 : undefined}
+                        onKeyDown={clickable ? (e) => { if (e.key === "Enter") onOpenReport(c.short_token); } : undefined}
+                        className={cn(
+                          "border-t border-border/40",
+                          clickable && "cursor-pointer hover:bg-surface focus-visible:outline-none focus-visible:bg-surface",
+                          c.alert && "bg-danger-soft",
+                        )}
+                      >
+                        <td className="px-3.5 py-1.5 max-w-[220px]">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            {c.alert && <span aria-label="alerta" className="size-1.5 shrink-0 rounded-full bg-danger" />}
+                            <span className="truncate font-medium text-fg" title={name}>{name}</span>
+                          </div>
+                          <div className="text-[10px] text-fg-subtle tabular-nums">
+                            {c.short_token}
+                            {c.expected_countries?.length > 0 && ` · previsto ${c.expected_countries.join(", ")}`}
+                          </div>
+                        </td>
+                        <td className={cn("px-2 py-1.5 text-right tabular-nums font-bold", TONE_CLASS[toneOutOfCountry(c.rate)])}>
+                          {formatPctTwo(c.rate)}
+                          {c.day_rate != null && (
+                            <div className="text-[10px] font-normal text-fg-subtle">dia {formatPctTwo(c.day_rate)}</div>
+                          )}
+                        </td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">{formatImps(c.unexpected_impressions)}</td>
+                        <td
+                          className="pl-2 pr-3.5 py-1.5 text-fg-muted whitespace-nowrap"
+                          title={(c.top_countries || []).map((t) => countryName(t.country)).join(", ")}
+                        >
+                          {(c.top_countries || []).map((t) => t.country).join(", ") || "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="px-3.5 py-2 border-t border-border/60 text-[10px] text-fg-subtle leading-snug">
+            {campaigns_with_unexpected > campaigns.length
+              ? `Top ${campaigns.length} de ${campaigns_with_unexpected} campanhas com entrega fora. `
+              : ""}
+            Só DV360. País escrito por extenso no nome da line (ex.: _CHILE_) conta como previsto e fica fora da taxa.
+          </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 
@@ -497,7 +575,9 @@ export function MetricStrip({ summary, outOfCountry, onOpenReport, className }) 
   const hasTechCost = tech_cost != null;
   // Box de entrega fora do BR: vem de endpoint próprio (tabela de regiões do
   // DV360) e só entra quando o payload chegou.
-  const hasOutOfCountry = outOfCountry != null && outOfCountry.impressions > 0;
+  // `alert` também segura o box: no dia 1º o mês ainda não tem entrega, mas
+  // um salto no último dia do mês anterior continua valendo aviso.
+  const hasOutOfCountry = outOfCountry != null && (outOfCountry.impressions > 0 || outOfCountry.alert);
   // Grid: 5 (sem split) + eCPM card(s) + opcionalmente Tech Cost e Fora do BR.
   const totalCols = 5 + (hasSplit ? 2 : 1) + (hasTechCost ? 1 : 0) + (hasOutOfCountry ? 1 : 0);
   const compact = totalCols >= 9;

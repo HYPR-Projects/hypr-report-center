@@ -89,6 +89,17 @@ CAMPAIGN_JUMP_PP = 10.0
 CAMPAIGN_MIN_DAY_IMPS = 5_000
 CAMPAIGN_MIN_DAY_UNEXPECTED = 1_000
 
+# Guarda de qualidade do dado. O modo de falha perigoso aqui é o SILENCIOSO:
+# se `country_code` vier num formato que a régua não reconhece, tudo cai em
+# UNKNOWN e o box mostra 0% fora, verde; se o join line_item_id → token
+# quebrar (tipo de coluna, formato do id), o ranking e o alerta por campanha
+# somem sem erro nenhum. Acima destes cortes o payload leva `data_warnings`
+# e o front avisa em vez de exibir o número como se estivesse tudo certo.
+# Alguma fatia sem token é normal (line fora da convenção ID-<token>_);
+# metade do volume não é.
+DQ_MAX_UNKNOWN_SHARE = 0.10
+DQ_MAX_UNTRACKED_SHARE = 0.50
+
 # Ranking do hover: campanha precisa de volume no mês pra entrar, senão uma
 # line de teste com 40 impressões lidera a tabela com 50%.
 RANKING_MIN_IMPS = 10_000
@@ -389,6 +400,15 @@ def build_payload(rows, month_start, month_end, is_current, meta_by_token=None):
         })
     campaigns.sort(key=lambda c: (not c["alert"], -(c["rate"] or 0), -c["unexpected_impressions"]))
 
+    data_warnings = []
+    if month["total"]:
+        unknown_share = month["unknown"] / month["total"]
+        untracked_share = untracked / month["total"]
+        if unknown_share > DQ_MAX_UNKNOWN_SHARE:
+            data_warnings.append({"kind": "unknown_country", "share": round(unknown_share * 100, 1)})
+        if untracked_share > DQ_MAX_UNTRACKED_SHARE:
+            data_warnings.append({"kind": "untracked_lines", "share": round(untracked_share * 100, 1)})
+
     return {
         "source": "DV360",
         "month": month_start.strftime("%Y-%m"),
@@ -415,6 +435,7 @@ def build_payload(rows, month_start, month_end, is_current, meta_by_token=None):
              "rate": day_rate(d)}
             for d in data_days[-14:]
         ],
+        "data_warnings": data_warnings,
         "alert": bool(reasons),
         "alert_reasons": reasons,
         "campaigns": campaigns[:RANKING_LIMIT],
