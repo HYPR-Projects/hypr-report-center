@@ -22,10 +22,7 @@ import {
   formatLastDelivery, statusPillClass, pctDeliveryClass, pctBarColor,
   METRIC,
 } from "../lib/pmpFormat";
-import {
-  campaignTotals, sortCampaigns,
-  CAMPAIGN_SITUATIONS, CAMPAIGN_CYCLES,
-} from "../lib/pmpCampaign";
+import { campaignTotals, sortCampaigns } from "../lib/pmpCampaign";
 import { PmpLineRow, PmpLineRowHeader, SourceChip, PMP_ROW_MIN_W_NOPI } from "./PmpComponents";
 
 const MONTH_ABBR = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
@@ -43,67 +40,6 @@ function formatPeriod(from, to) {
   if (!b || a === b) return a;
   if (!a) return b;
   return `${a} → ${b}`;
-}
-
-/**
- * Barra de recorte da Carteira: dois eixos independentes com contagem por
- * bucket. Vale pros dois agrupamentos (cliente e campanha) — o recorte é de
- * CAMPANHA, e a visão por cliente mostra só os clientes que sobraram.
- */
-export function PmpCarteiraFilters({ situation, cycle, onSituation, onCycle, counts }) {
-  const active = situation !== "all" || cycle !== "all";
-  return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-      <ChipGroup label="Situação" options={CAMPAIGN_SITUATIONS} value={situation}
-                 counts={counts.situation} onChange={onSituation} />
-      <span className="hidden md:inline w-px h-5 bg-border" aria-hidden />
-      <ChipGroup label="Ciclo" options={CAMPAIGN_CYCLES} value={cycle}
-                 counts={counts.cycle} onChange={onCycle} />
-      {active && (
-        <button type="button" onClick={() => { onSituation("all"); onCycle("all"); }}
-                className="text-[11.5px] text-fg-muted hover:text-fg underline-offset-2 hover:underline">
-          Limpar recorte
-        </button>
-      )}
-    </div>
-  );
-}
-
-function ChipGroup({ label, options, value, counts, onChange }) {
-  return (
-    <div className="flex items-center gap-2 min-w-0">
-      <span className="lbl-section hidden sm:inline shrink-0">
-        {label}
-      </span>
-      <div className="flex flex-wrap items-center gap-1.5">
-        {options.map((o) => {
-          const on = o.value === value;
-          const n = counts?.[o.value] ?? 0;
-          // Bucket vazio continua clicável só quando já está ativo (pra o user
-          // conseguir sair dele); senão vira ruído desabilitado.
-          const empty = n === 0 && !on;
-          return (
-            <button key={o.value} type="button" title={o.hint}
-                    disabled={empty}
-                    onClick={() => onChange(o.value)}
-                    aria-pressed={on}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-[12px] font-medium transition-colors",
-                      on ? "border-signature/50 bg-signature/10 text-signature"
-                         : empty ? "border-border/60 bg-surface/40 text-fg-subtle/50 cursor-not-allowed"
-                                 : "border-border bg-surface text-fg-muted hover:text-fg hover:bg-surface-strong",
-                    )}>
-              <span>{o.label}</span>
-              <span className={cn("tabular-nums text-[10.5px] px-1 rounded",
-                                  on ? "bg-signature/20" : "text-fg-subtle")}>
-                {n}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
 }
 
 export function PmpCampaignView({ campaigns, onLineClick, onLinkClick, sortBy = "revenue" }) {

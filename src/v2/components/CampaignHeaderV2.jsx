@@ -13,17 +13,29 @@
 // claro contra canvas. O glow radial vem por inline style (gradient
 // arbitrário, não tem utility direta).
 
-import { forwardRef, useEffect, useMemo, useState } from "react";
+import { forwardRef, Suspense, useEffect, useMemo, useState } from "react";
 
 import { useLogoAnalysis } from "../hooks/useLogoAnalysis";
 import { useTheme } from "../hooks/useTheme";
 import { TokenChip } from "../admin/components/TokenChip";
-import { NegotiationModal } from "./NegotiationModal";
-import { PosVendaModal } from "./PosVendaModal";
-import { ReportAnalyticsModal } from "../admin/components/ReportAnalyticsModal";
+import { lazyWithPreload, preloadWhenIdle } from "../../shared/lazyWithPreload";
+import LazyModalBoundary from "../../components/LazyModalBoundary";
 import { getNegotiation } from "../../lib/api";
 import { fmtR } from "../../shared/format";
 import { useSlidingThumb } from "../../ui/useSlidingThumb";
+
+// Modais sob demanda. Ficam fora do chunk do report (o ReportAnalyticsModal
+// é admin-only e o cliente nunca abre); o JS é baixado em idle depois que o
+// report pinta e o componente só monta no 1º clique. Ver lazyWithPreload.
+const NegotiationModal = lazyWithPreload(() =>
+  import("./NegotiationModal").then((m) => ({ default: m.NegotiationModal })),
+);
+const PosVendaModal = lazyWithPreload(() =>
+  import("./PosVendaModal").then((m) => ({ default: m.PosVendaModal })),
+);
+const ReportAnalyticsModal = lazyWithPreload(() =>
+  import("../admin/components/ReportAnalyticsModal").then((m) => ({ default: m.ReportAnalyticsModal })),
+);
 
 const fmtDateShort = (ymd) => {
   if (!ymd) return null;
@@ -114,6 +126,11 @@ export function CampaignHeaderV2({
   // header já é admin-aware via isAdmin e o modal é self-contained.
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [posVendaOpen, setPosVendaOpen] = useState(false);
+  // Cada modal monta no 1º clique e fica montado depois (animação de fechar
+  // e state interno preservados entre aberturas, como antes).
+  const [analyticsMounted, setAnalyticsMounted] = useState(false);
+  const [posVendaMounted, setPosVendaMounted] = useState(false);
+  const [negoMounted, setNegoMounted] = useState(false);
   const hasPosVenda = !!(posVenda && (posVenda.url || posVenda.extra_url));
   const baseStatus = deriveStatus(startDate, endDate);
   // Encerramento antecipado pinta o status de danger (vermelho) — espelha
@@ -166,6 +183,18 @@ export function CampaignHeaderV2({
     };
   }, [memberTokensKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const hasAnyNegotiation = Object.values(negotiationsByToken).some(Boolean);
+
+  // Baixa em idle só o JS dos modais que esta página pode abrir — o clique
+  // encontra o componente pronto, sem esperar download.
+  useEffect(() => {
+    const wanted = [
+      hasAnyNegotiation && NegotiationModal,
+      hasPosVenda && PosVendaModal,
+      isAdmin && ReportAnalyticsModal,
+    ].filter(Boolean);
+    if (!wanted.length) return;
+    return preloadWhenIdle(...wanted);
+  }, [hasAnyNegotiation, hasPosVenda, isAdmin]);
 
   // Agência exibida no eyebrow: override do admin (prop) vence; senão a
   // primeira agency não-vazia entre as negociações do Sales Center (em
@@ -303,13 +332,13 @@ export function CampaignHeaderV2({
             {hasAnyNegotiation && (
               <>
                 <span className="text-fg-subtle">·</span>
-                <NegotiationButton onClick={() => setNegoOpen(true)} />
+                <NegotiationButton onClick={() => { setNegoMounted(true); setNegoOpen(true); }} />
               </>
             )}
             {hasPosVenda && (
               <>
                 <span className="text-fg-subtle">·</span>
-                <PosVendaButton onClick={() => setPosVendaOpen(true)} />
+                <PosVendaButton onClick={() => { setPosVendaMounted(true); setPosVendaOpen(true); }} />
               </>
             )}
           </div>
@@ -393,39 +422,55 @@ export function CampaignHeaderV2({
               <div aria-hidden />
             )}
             {isAdmin && (
-              <AnalyticsHeaderButton onClick={() => setAnalyticsOpen(true)} />
+              <AnalyticsHeaderButton onClick={() => { setAnalyticsMounted(true); setAnalyticsOpen(true); }} />
             )}
           </div>
         )}
       </div>
 
-      <NegotiationModal
-        open={negoOpen}
-        onOpenChange={setNegoOpen}
-        negotiationsByToken={negotiationsByToken}
-        members={negotiationMembers}
-        defaultActiveToken={currentView && currentView !== "aggregated" ? currentView : (mergeMeta?.active_token || shortToken)}
-        legacyTotals={legacyTotals}
-        reportData={reportData}
-      />
-      {hasPosVenda && (
-        <PosVendaModal
-          open={posVendaOpen}
-          onOpenChange={setPosVendaOpen}
-          posVenda={posVenda}
-          clientName={clientName}
-        />
+      {/* Cada modal lazy tem boundary próprio: se o JS não baixar, o modal
+          fecha em vez de derrubar o report (ver LazyModalBoundary). */}
+      {negoMounted && (
+        <LazyModalBoundary onFail={() => { setNegoOpen(false); setNegoMounted(false); }}>
+          <Suspense fallback={null}>
+            <NegotiationModal
+              open={negoOpen}
+              onOpenChange={setNegoOpen}
+              negotiationsByToken={negotiationsByToken}
+              members={negotiationMembers}
+              defaultActiveToken={currentView && currentView !== "aggregated" ? currentView : (mergeMeta?.active_token || shortToken)}
+              legacyTotals={legacyTotals}
+              reportData={reportData}
+            />
+          </Suspense>
+        </LazyModalBoundary>
       )}
-      {isAdmin && (
-        <ReportAnalyticsModal
-          open={analyticsOpen}
-          onOpenChange={setAnalyticsOpen}
-          campaign={{
-            short_token: shortToken,
-            client_name: clientName,
-            campaign_name: campaignName,
-          }}
-        />
+      {hasPosVenda && posVendaMounted && (
+        <LazyModalBoundary onFail={() => { setPosVendaOpen(false); setPosVendaMounted(false); }}>
+          <Suspense fallback={null}>
+            <PosVendaModal
+              open={posVendaOpen}
+              onOpenChange={setPosVendaOpen}
+              posVenda={posVenda}
+              clientName={clientName}
+            />
+          </Suspense>
+        </LazyModalBoundary>
+      )}
+      {isAdmin && analyticsMounted && (
+        <LazyModalBoundary onFail={() => { setAnalyticsOpen(false); setAnalyticsMounted(false); }}>
+          <Suspense fallback={null}>
+            <ReportAnalyticsModal
+              open={analyticsOpen}
+              onOpenChange={setAnalyticsOpen}
+              campaign={{
+                short_token: shortToken,
+                client_name: clientName,
+                campaign_name: campaignName,
+              }}
+            />
+          </Suspense>
+        </LazyModalBoundary>
       )}
     </section>
   );

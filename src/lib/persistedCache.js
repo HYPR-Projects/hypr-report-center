@@ -148,7 +148,3 @@ export function writeCache(key, data) {
     }
   }
 }
-
-export function clearCache(key) {
-  try { localStorage.removeItem(PREFIX + key); } catch { /* ignore */ }
-}

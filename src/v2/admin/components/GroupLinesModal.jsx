@@ -16,7 +16,7 @@
 //   • Se a line ATUAL já está em grupo → o modal vira "Adicionar membros"
 //     em vez de "Criar grupo"
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import {
   Drawer, DrawerContent, DrawerHeader, DrawerBody, DrawerFooter,
 } from "../../../ui/Drawer";
@@ -27,7 +27,7 @@ import {
   listPmpGroupableLines, groupPmpLines, ungroupPmpLine,
 } from "../../../lib/api";
 import {
-  formatBRL, bidTypeLabel, bidTypeBadgeClass,
+  bidTypeLabel, bidTypeBadgeClass,
   statusPillClass, effectiveDeliveryMeta, effectiveStatus,
 } from "../lib/pmpFormat";
 import { SourceChip } from "./PmpComponents";

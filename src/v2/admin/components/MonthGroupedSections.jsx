@@ -27,7 +27,7 @@
 // Permite item poder ser `Campaign`, `{ kind: 'single'|'group', ... }`,
 // etc. sem o componente saber a estrutura.
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { cn } from "../../../ui/cn";
 
 export function MonthGroupedSections({
@@ -100,9 +100,39 @@ export function MonthGroupedSections({
     setCollapsed(computeDefaults(groups));
   }, [filterSignature, groups, computeDefaults]);
 
+  // Defaults do render corrente. Mês que ainda não entrou no state (1º
+  // render, ou mês que acabou de aparecer) usa o default DIRETO no render,
+  // em vez de cair em `!!undefined` = aberto até o effect de init gravar.
+  // Na prática o effect já rodava antes de qualquer commit visível (medido
+  // com MutationObserver: nenhum mês nascia aberto no DOM), mas assim o
+  // render não depende do timing do effect — e é o `defaults` que decide o
+  // que monta abaixo. O effect de init continua gravando o default (mantém a
+  // semântica de "toggle preservado até o filtro mudar").
+  const defaults = useMemo(() => computeDefaults(groups), [groups, computeDefaults]);
+  const isKeyCollapsed = useCallback(
+    (state, key) => (key in state ? !!state[key] : !!defaults[key]),
+    [defaults]
+  );
+
+  // Meses que já estiveram abertos em algum render. Mês colapsado desde o
+  // início não monta os cards (cada card tem até 9 tooltips + observers +
+  // hooks de cache): os itens só nascem quando o mês abre pela 1ª vez — por
+  // clique OU por default/filtro. Uma vez montados, ficam: é o que deixa a
+  // animação de fechar funcionar (inclusive quando um filtro fecha o mês) e
+  // evita remontar ao reabrir.
+  const [everOpen, setEverOpen] = useState(() => new Set());
+  const openNow = groups
+    .filter((g) => g.key !== "no-date" && !isKeyCollapsed(collapsed, g.key))
+    .map((g) => g.key);
+  if (openNow.some((k) => !everOpen.has(k))) {
+    // Estado derivado de render anterior (padrão documentado do React): o
+    // React refaz este render na hora, antes do commit — sem frame extra.
+    setEverOpen((prev) => new Set([...prev, ...openNow]));
+  }
+
   const toggle = useCallback(
-    (key) => setCollapsed((s) => ({ ...s, [key]: !s[key] })),
-    []
+    (key) => setCollapsed((s) => ({ ...s, [key]: !isKeyCollapsed(s, key) })),
+    [isKeyCollapsed]
   );
 
   if (!groups.length) {
@@ -117,7 +147,8 @@ export function MonthGroupedSections({
     <div className="space-y-8">
       {groups.map((g, gi) => {
         const canCollapse = g.key !== "no-date";
-        const isCollapsed = canCollapse && !!collapsed[g.key];
+        const isCollapsed = canCollapse && isKeyCollapsed(collapsed, g.key);
+        const mountItems = !isCollapsed || everOpen.has(g.key);
         return (
           <section key={g.key}>
             <button
@@ -162,18 +193,20 @@ export function MonthGroupedSections({
             {/* Items wrapper:
                 - Quando canCollapse=true (meses normais), usamos o padrão
                   action-expand (grid-template-rows 0fr↔1fr + opacity) pra
-                  animar smooth abrir/fechar. Trade-off: items ficam sempre
-                  montados (custo de render). Aceitável até ~300 cards;
-                  acima disso, considerar lazy mount por mês.
+                  animar smooth abrir/fechar. Mês que nasce colapsado não
+                  monta os items até abrir pela 1ª vez (`everOpen`); depois
+                  disso ficam montados pra animação de fechar funcionar.
                 - Quando !canCollapse (grupo "no-date"), conditional render
                   normal — não tem toggle, não precisa de animação.
                 - `inert` quando collapsed evita foco em items invisíveis (a11y). */}
             {canCollapse ? (
               <div className={cn("action-expand", !isCollapsed && "is-open")}>
                 <div className="action-expand-content" inert={isCollapsed || undefined}>
-                  <div className="space-y-2">
-                    {g.items.map((item, i) => renderItem(item, gi * 1000 + i))}
-                  </div>
+                  {mountItems && (
+                    <div className="space-y-2">
+                      {g.items.map((item, i) => renderItem(item, gi * 1000 + i))}
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (

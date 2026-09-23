@@ -29,7 +29,7 @@
 //     Analytics, Negociação, uploads RMND/PDOOH, ABS, fechamento,
 //     check-ups, pausa, encerramento antecipado) no CampaignDrawer
 
-import { useState, useEffect, useMemo, useCallback, useRef, useSyncExternalStore } from "react";
+import { Suspense, useState, useEffect, useMemo, useCallback, useRef, useSyncExternalStore } from "react";
 // IMPORT CRÍTICO — sem isso o Tailwind+theme.css não chega no bundle do
 // admin (v2.css é onde @import "tailwindcss" e tokens HYPR vivem). O
 // ClientDashboardV2 já importa em outro chunk lazy, mas o admin é a
@@ -55,10 +55,11 @@ import { normalizeSlug, computeMetricsSummary, computeWorklist, computeHealthDis
 
 import NewCampaignModal from "../../../components/modals/NewCampaignModal";
 import LoomModal from "../../../components/modals/LoomModal";
-import SurveyModal from "../../../components/modals/SurveyModal";
+import { SurveyModal, MergeModal } from "../lib/lazyModals";
+import { preloadWhenIdle } from "../../../shared/lazyWithPreload";
+import LazyModalBoundary from "../../../components/LazyModalBoundary";
 import LogoModal from "../../../components/modals/LogoModal";
 import OwnerModal from "../../../components/modals/OwnerModal";
-import MergeModal from "../../../components/modals/MergeModal";
 import RmndUploadModal from "../../../components/modals/RmndUploadModal";
 import PdoohUploadModal from "../../../components/modals/PdoohUploadModal";
 import { NegotiationModal } from "../../components/NegotiationModal";
@@ -244,6 +245,9 @@ export default function CampaignMenuV2({
   const [showNewCampaign, setShowNewCampaign] = useState(false);
   const [loomModal, setLoomModal]         = useState(null);
   const [surveyModal, setSurveyModal]     = useState(null);
+  // Survey/Merge são lazy (ver lib/lazyModals): baixa em idle pra que o
+  // clique em "Survey" ou "Agrupar" não espere download.
+  useEffect(() => preloadWhenIdle(SurveyModal, MergeModal), []);
   const [logoModal, setLogoModal]         = useState(null);
   const [ownerModal, setOwnerModal]       = useState(null);
   const [mergeModal, setMergeModal]       = useState(null);
@@ -1520,12 +1524,16 @@ export default function CampaignMenuV2({
         />
       )}
       {surveyModal && (
-        <SurveyModal
-          shortToken={surveyModal}
-          onClose={() => setSurveyModal(null)}
-          onSaved={() => setSurveyModal(null)}
-          theme={legacyModalTheme(isDark)}
-        />
+        <LazyModalBoundary onFail={() => setSurveyModal(null)}>
+          <Suspense fallback={null}>
+            <SurveyModal
+              shortToken={surveyModal}
+              onClose={() => setSurveyModal(null)}
+              onSaved={() => setSurveyModal(null)}
+              theme={legacyModalTheme(isDark)}
+            />
+          </Suspense>
+        </LazyModalBoundary>
       )}
       {logoModal && (
         <LogoModal
@@ -1545,12 +1553,16 @@ export default function CampaignMenuV2({
         />
       )}
       {mergeModal && (
-        <MergeModal
-          campaign={mergeModal}
-          onSaved={handleMergeSaved}
-          onClose={() => setMergeModal(null)}
-          theme={legacyModalTheme(isDark)}
-        />
+        <LazyModalBoundary onFail={() => setMergeModal(null)}>
+          <Suspense fallback={null}>
+            <MergeModal
+              campaign={mergeModal}
+              onSaved={handleMergeSaved}
+              onClose={() => setMergeModal(null)}
+              theme={legacyModalTheme(isDark)}
+            />
+          </Suspense>
+        </LazyModalBoundary>
       )}
       {rmndModal && (
         <RmndUploadModal

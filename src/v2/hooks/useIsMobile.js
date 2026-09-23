@@ -14,14 +14,3 @@ import { useMediaQuery } from "./useMediaQuery";
 export function useIsMobile() {
   return useMediaQuery("(max-width: 767px)");
 }
-
-// Tablet ou maior — atalho semântico.
-export function useIsTabletUp() {
-  return useMediaQuery("(min-width: 768px)");
-}
-
-// Pra coisas que só fazem sentido em desktop full (gráficos densos com
-// muitos pontos, tooltips hover-only, etc).
-export function useIsDesktop() {
-  return useMediaQuery("(min-width: 1024px)");
-}

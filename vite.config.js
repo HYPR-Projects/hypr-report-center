@@ -8,7 +8,7 @@ import tailwindcss from '@tailwindcss/vite'
 //
 //   1. Por rota (em App.jsx via React.lazy): cada page/dashboard vira
 //      um chunk próprio. Cliente que só abre /report/X carrega só o
-//      ClientDashboard (Legacy) OU ClientDashboardV2, nunca ambos.
+//      ClientDashboardV2, sem o JS do admin.
 //
 //   2. Por vendor (este arquivo): separamos as 4 famílias de libs
 //      pesadas em chunks dedicados. Esses chunks são cacheáveis a

@@ -33,7 +33,7 @@
 //   - getInitialTheme() → string (usado pelo script anti-FOUC; export
 //                         pra reutilizar a mesma lógica em ambos os lugares)
 
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 const STORAGE_KEY = "hypr_theme";
 const VALID = ["dark", "light"];

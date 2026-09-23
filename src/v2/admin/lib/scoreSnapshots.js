@@ -84,16 +84,6 @@ export function saveDailySnapshot(role, performers) {
 }
 
 /**
- * Lê o score de N dias atrás pra um email/role. Retorna null se não
- * tem snapshot daquela data ou daquele owner.
- */
-export function getScoreNDaysAgo(snapshots, role, email, n) {
-  const date = daysAgoStr(n);
-  const v = snapshots?.[date]?.[role]?.[email];
-  return Number.isFinite(v) ? v : null;
-}
-
-/**
  * Lê o snapshot ANTERIOR mais recente (não inclui hoje). Útil pra delta
  * "vs último snapshot" — quando o user não abre o app todo dia, o
  * comparativo fluctua mas sempre mostra "diferença desde a última visita".

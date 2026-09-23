@@ -17,6 +17,7 @@
 //   80    owners (avatar stack)
 //   24    chevron
 
+import { memo } from "react";
 import { cn } from "../../../ui/cn";
 import { Avatar } from "../../../ui/Avatar";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
@@ -141,7 +142,11 @@ function DateRangeCell({ startISO, endISO }) {
   );
 }
 
-function Row({ campaign, onOpen, onOpenReport, teamMap }) {
+// memo: as props já chegam estáveis (campanha preserva identidade no
+// filter/sort, `onOpen` é useCallback, `teamMap` é useMemo). Sem ele, cada
+// render do menu (tecla na busca, cada report que o prefetch traz) re-renderiza
+// todas as linhas — e cada uma tem 2 tooltips Radix.
+const Row = memo(function Row({ campaign, onOpen, onOpenReport, teamMap }) {
   const {
     short_token,
     client_name,
@@ -344,4 +349,4 @@ function Row({ campaign, onOpen, onOpenReport, teamMap }) {
       </svg>
     </div>
   );
-}
+});

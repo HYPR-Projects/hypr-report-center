@@ -325,7 +325,15 @@ BQ_TABLE: campaign_results
 LOG_EXECUTION_ID: 'true'
 JWT_SECRET: '${JWT_SECRET}'
 SHEETS_DRIVE_FOLDER_ID: '1ddnSYIYbDio5BkH3p9nq-n7evmneIHh9'
+THREADS: '10'
 EOF
+# THREADS: threads do gunicorn que o functions-framework sobe. Sem a variável,
+# ele usa os.cpu_count() * 4 — com --cpu=1 isso tende a dar 4 threads pra um
+# --concurrency=10: o Cloud Run manda até 10 requests pra instância e o que
+# passa de 4 fica na fila do gunicorn esperando thread, enquanto o autoscaler
+# acha que a instância está atendendo. Os jobs agendados (warmup, PubMatic)
+# seguram thread por minutos, o que piorava a fila no horário comercial.
+# Mantido IGUAL ao --concurrency do passo 3: mexer num sem o outro desalinha.
 
 if [ -n "$TYPEFORM_TOKEN" ]; then
   echo "TYPEFORM_TOKEN: '${TYPEFORM_TOKEN}'" >> "$ENV_FILE"

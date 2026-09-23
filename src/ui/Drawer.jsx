@@ -37,8 +37,6 @@ export function Drawer({ open, onOpenChange, children }) {
   );
 }
 
-export const DrawerTrigger = Dialog.Trigger;
-
 export const DrawerContent = forwardRef(function DrawerContent(
   { className, widthClass = "sm:w-[420px]", children, ...rest },
   ref

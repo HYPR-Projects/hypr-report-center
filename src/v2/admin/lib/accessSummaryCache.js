@@ -94,17 +94,6 @@ export function getCachedSummary(shortToken) {
 }
 
 /**
- * True se há entry em cache mas passou do TTL. Caller (hook) usa pra
- * disparar refetch em background sem trocar o número visível.
- */
-export function isStaleSummary(shortToken) {
-  if (!shortToken) return false;
-  const entry = cache.get(shortToken);
-  if (!entry) return false;
-  return Date.now() - entry.fetchedAt > TTL_MS;
-}
-
-/**
  * Loading = NÃO temos nenhum dado em cache + há request em voo. Se já
  * temos dado (mesmo stale), retornamos false: o badge mostra o número,
  * não o skeleton. Refetch em background atualiza quando chegar.
@@ -193,32 +182,25 @@ export async function prefetchAccessSummaries(tokens) {
 }
 
 /**
- * Hook minimalista pro AccessBadge consumir o cache. Re-renderiza
- * quando o cache muda (evento `access-summaries-updated`).
+ * Hook minimalista pro AccessBadge consumir o cache. Re-renderiza só quando
+ * o valor DESTE token muda.
+ *
+ * `useSyncExternalStore` compara o snapshot com o anterior: `summary` tem
+ * identidade estável (é o objeto guardado no Map) e `loading` é booleano.
+ * Antes o hook fazia `setState({...})` com objeto novo a cada `emit()` —
+ * cada batch fazia os ~200 badges do menu re-renderizarem (2x por batch, e
+ * mais uma no mount), mesmo os que não tinham mudado.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 
 export function useCachedAccessSummary(shortToken) {
-  const [state, setState] = useState(() => ({
-    summary: getCachedSummary(shortToken),
-    loading: isLoadingSummary(shortToken),
-  }));
+  const summary = useSyncExternalStore(subscribe, () => getCachedSummary(shortToken));
+  const loading = useSyncExternalStore(subscribe, () => isLoadingSummary(shortToken));
   useEffect(() => {
-    setState({
-      summary: getCachedSummary(shortToken),
-      loading: isLoadingSummary(shortToken),
-    });
     // Stale-while-revalidate: se o cache expirou (TTL > 5min), dispara
     // refetch em background. Micro-batched: 60+ badges remontando juntos
     // viram 1 só request.
     requestRefreshIfStale(shortToken);
-    const unsub = subscribe(() => {
-      setState({
-        summary: getCachedSummary(shortToken),
-        loading: isLoadingSummary(shortToken),
-      });
-    });
-    return unsub;
   }, [shortToken]);
-  return state;
+  return { summary, loading };
 }

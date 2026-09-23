@@ -9,6 +9,12 @@ import App from './App.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 import GlobalProgressBar from './components/GlobalProgressBar.jsx'
 import { ToastContainer } from './components/Toast.jsx'
+import { installChunkReload } from './shared/chunkReload.js'
+
+// Antes do primeiro render: um chunk lazy que falhe por deploy novo (aba
+// aberta com o index antigo) recarrega a página uma vez em vez de parar na
+// tela de erro. Ver src/shared/chunkReload.js.
+installChunkReload()
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

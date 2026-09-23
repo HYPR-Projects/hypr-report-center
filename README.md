@@ -4,12 +4,12 @@ Dashboard de reports de campanhas em produção em **report.hypr.mobi**, atenden
 
 ## Stack
 
-- **Frontend:** React 19 + Vite 7
+- **Frontend:** React 19 + Vite 7 + Tailwind 4 (primitives Radix em `src/ui/`)
 - **Charts:** recharts
 - **Datas:** date-fns + react-day-picker
-- **Backend:** FastAPI (Python) em Cloud Run
+- **Backend:** Flask via functions-framework, Cloud Function gen2 `report_data` (serviço Cloud Run `report-data`, `southamerica-east1`), dados no BigQuery
 - **Auth:** JWT (admin) + senha por cliente
-- **Deploy:** Vercel (frontend) + Cloud Run (backend)
+- **Deploy:** Vercel (frontend, automático) + Cloud Function (backend, manual)
 
 ## Desenvolvimento local
 
@@ -17,65 +17,49 @@ Dashboard de reports de campanhas em produção em **report.hypr.mobi**, atenden
 npm install
 npm run dev      # http://localhost:5173
 npm run lint
+npm test         # node --test src/**/*.test.js
 npm run build
+
+cd backend && python -m pytest tests/ -q   # deps em backend/requirements-dev.txt
 ```
 
 ## Estrutura do projeto
 
 ```
 src/
-├── pages/                  Páginas Legacy (LoginScreen, ClientPasswordScreen, CampaignMenu, ClientDashboard)
-├── components/             Componentes Legacy (cards, tabelas, charts, modais, abas)
-│   ├── dashboard-tabs/     Abas do ClientDashboard (Overview, Display, Video, Loom)
-│   └── modals/             Modais admin (NewCampaign, Logo, Loom, Owner, Survey)
-├── dashboards/             Dashboards específicos (RMND, PDOOH, Survey, Upload)
-├── lib/                    Cliente HTTP (api.js)
-├── shared/                 Utilitários compartilhados (auth, theme, dateFilter, aggregations…)
-├── ui/                     UI primitives compartilhados Legacy ↔ V2
-│   ├── typography.js       Urbanist (4 pesos via @fontsource) + FONT_FAMILY exportado
-│   └── global-reset.css    Reset CSS moderno (dormente até Fase 1)
-└── v2/                     Refatoração visual V2 (a partir da Fase 1)
-    ├── components/
-    └── dashboards/
-backend/                    API FastAPI (auth, owners, deploy)
-docs/
-├── EMERGENCY.md            Procedimento de rollback de emergência
-└── adr/                    Architecture Decision Records
+├── App.jsx                 Roteamento (sem React Router) + code-splitting por rota
+├── pages/                  LoginScreen, ClientPasswordScreen
+├── components/             Componentes compartilhados (ErrorBoundary, Toast, TabChat…)
+│   └── modals/             Modais admin (Survey, Merge, Logo, Loom, Owner, uploads)
+├── dashboards/             Abas de fonte específica (RMND, PDOOH, Survey, Upload)
+├── lib/                    Cliente HTTP (api.js), cache persistido, prefetch
+├── shared/                 Utilitários (auth, aggregations, format, dateFilter…)
+├── ui/                     Primitives de UI (Tabs, Tooltip, Drawer, Skeleton…)
+└── v2/
+    ├── dashboards/         Report do cliente (ClientDashboardV2 + abas)
+    ├── admin/              Menu admin, drilldown de cliente, PMP
+    ├── portal/             Portal do Cliente (/c/:shareId)
+    └── components/, hooks/, lib/
+backend/                    Cloud Function (main.py) + módulos, testes em backend/tests
+docs/                       EMERGENCY.md, ADRs e auditorias de incidentes
 ```
 
-## Arquitetura: coexistência Legacy + V2
+## Arquitetura
 
-O HYPR Report Center está em meio a uma refatoração visual profunda (Fases 0–7, ~6 semanas). Para que isso aconteça **sem big-bang rewrite e sem risco de tela branca em produção**, adotamos coexistência:
+O Legacy foi removido: a interface é toda a V2 (`src/v2/`), sem toggle de versão. O histórico da coexistência está em [`docs/adr/001-coexistencia-legacy-v2.md`](docs/adr/001-coexistencia-legacy-v2.md).
 
-- A interface atual ("Legacy") permanece intacta em `src/pages/`, `src/components/` e `src/dashboards/`
-- A nova interface ("V2") cresce em paralelo em `src/v2/`, com primitives compartilhados em `src/ui/`
-- Um toggle (`src/shared/version.js`) controla qual versão cada cliente vê
-- Um `ErrorBoundary` global captura crashes do V2 e cai automaticamente no Legacy
-- Tag `v1.0-legacy-baseline` marca o ponto de rollback de emergência
+Pontos que valem saber antes de mexer em performance:
 
-**Default permanece Legacy** durante toda a refatoração. A virada para V2 default acontece apenas na Fase 7, simultânea para todos os clientes.
-
-### Toggle de versão
-
-Quando ativo (a partir da Fase 0, PR-03), o toggle resolve a versão na seguinte ordem:
-
-1. Query param `?v=v2` ou `?v=legacy` (também persiste em localStorage)
-2. localStorage `hypr_report_version`
-3. Fallback hardcoded — `legacy` até a Fase 7, `v2` depois
-
-> Em desenvolvimento e em previews do Vercel, basta acessar `/report/<token>?v=v2` para ver a nova interface. A escolha persiste entre recarregamentos.
-
-### Documentos de referência
-
-- [`docs/EMERGENCY.md`](docs/EMERGENCY.md) — procedimento completo de rollback de emergência
-- [`docs/adr/001-coexistencia-legacy-v2.md`](docs/adr/001-coexistencia-legacy-v2.md) — racional arquitetural completo (alternativas consideradas, consequências, plano de remoção do Legacy)
-- [Release `v1.0-legacy-baseline`](https://github.com/HYPR-Projects/hypr-report-hub/releases/tag/v1.0-legacy-baseline) — snapshot do estado de produção pré-V2
+- **Code-splitting por rota** (`App.jsx`, `React.lazy`) e por família de vendor (`vite.config.js`). Modais pesados são carregados sob demanda com preload em idle (`src/shared/lazyWithPreload.js`).
+- **Deploy novo com aba aberta:** se um chunk lazy não carregar (hash antigo), o ErrorBoundary recarrega a página uma vez em vez de mostrar erro (`src/shared/chunkReload.js`). Modal lazy tem boundary próprio (`LazyModalBoundary`): se falhar, fecha sem derrubar a página.
+- **Timeouts:** as leituras que seguram tela em `src/lib/api.js` têm deadline (30s/60s/120s conforme o peso, via `src/shared/timeout.js`); escritas não têm, de propósito — abortar um save que o backend ainda vai concluir mostraria erro de algo que deu certo.
+- **Cache:** stale-while-revalidate em localStorage (`src/lib/persistedCache.js`), invalidado a cada deploy pelo BUILD_ID.
 
 ## Deploy
 
 - **Frontend:** push para `main` dispara deploy automático no Vercel
-- **Backend:** `cd backend && bash deploy.sh` (Cloud Run, exige permissão GCP)
+- **Backend:** manual — `cd backend && bash deploy.sh` (exige permissão GCP) ou o workflow **Deploy backend (Cloud Function)** no GitHub Actions
 
 ## Em caso de incidente
 
-Consulte [`docs/EMERGENCY.md`](docs/EMERGENCY.md). TL;DR: o ponto de restauração é a tag `v1.0-legacy-baseline`. Para problemas pontuais com o V2, prefira o toggle (`?v=legacy`) antes de reverter o repo.
+Consulte [`docs/EMERGENCY.md`](docs/EMERGENCY.md). TL;DR: frontend → **Promote to Production** de um deploy anterior no Vercel; backend → rotear o tráfego de `report-data` pra revisão anterior; depois `git revert` do commit culpado.

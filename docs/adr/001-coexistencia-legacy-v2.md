@@ -1,6 +1,6 @@
 # ADR 001 — Coexistência Legacy + V2 do HYPR Report Center
 
-- **Status:** aceito
+- **Status:** aceito — **concluído**: o Legacy foi removido e o toggle `?v=legacy` / `src/shared/version.js` não existe mais. Mantido como registro histórico.
 - **Data:** 2026-04-28
 - **Decisores:** time HYPR (produto + eng)
 - **Contexto:** PR-01 da Fase 0 da refatoração visual

@@ -409,13 +409,6 @@ export const groupByAudience = (rows, numeratorKey, denomKey, rateKey, overrideM
   }));
 
 /**
- * Lista de line_names únicos pra popular o MultiLineSelect, com "ALL"
- * no topo. Ordenação alfabética estável.
- */
-export const buildLineOptions = (rows) =>
-  ["ALL", ...[...new Set(rows.map(r => r.line_name).filter(Boolean))].sort()];
-
-/**
  * Calcula KPIs do Display tab (CPM efetivo, pacing, rentabilidade, CPC,
  * CTR, etc.) a partir do conjunto filtrado pelo usuário e do total não
  * filtrado.
