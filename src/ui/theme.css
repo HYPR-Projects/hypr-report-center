@@ -156,6 +156,16 @@
   --color-chart-bar: #3397B9;            /* bar principal — dark */
   --color-chart-line: #E5EBF2;           /* line de taxa (CTR/VTR) — dark */
 
+  /* Paleta categórica dos gráficos — identidade de série (Display, Vídeo,
+   * formatos Max Attention). Ordem fixa: a série 1 é sempre s1, nunca se
+   * recicla cor por ranking. Validada (faixa de luminância, croma, ΔE sob
+   * daltonismo e contraste ≥ 3:1) contra surface-2 de cada tema. Não usar
+   * para status (success/warning/danger têm tokens próprios). */
+  --color-chart-s1: #2A93BD;
+  --color-chart-s2: #D9622B;
+  --color-chart-s3: #8672DE;
+  --color-chart-s4: #CC4B93;
+
   /* Texto sobre signature sólido (ex: tab ativa, badge, pill).
    * Não muda por tema — signature-fill é azul escuro nos dois modos, então
    * branco-off contrasta bem em ambos (5,51:1 no dark, 4,8:1 no light).
@@ -416,6 +426,13 @@
    * o signature azul. */
   --color-chart-bar: #1C262F;
   --color-chart-line: #3397B9;
+
+  /* Paleta categórica no light — mesmos matizes, passos próprios validados
+   * contra o branco da surface-2. */
+  --color-chart-s1: #1A83B0;
+  --color-chart-s2: #E0662F;
+  --color-chart-s3: #5B47B8;
+  --color-chart-s4: #C9549A;
 
   /* Sombras precisam mais peso em fundo claro */
   --shadow-sm: 0 1px 2px 0 rgba(15, 20, 25, 0.06);

@@ -81,6 +81,48 @@ function noise(date, key, low = 0.85, high = 1.15) {
   return low + r * (high - low);
 }
 
+// ─── Max Attention do demo ─────────────────────────────────────────────
+//
+// Quatro peças, uma por formato, no shape público do vínculo (o mesmo que o
+// backend anexa em `max_attention.links`). Duas estão ligadas aos criativos
+// de Display do demo (a impressão principal vem da DSP); as outras duas não
+// têm criativo correspondente e usam a contagem de carregamento da peça.
+// As métricas saem de shared/demoMa.js, derivadas do detail do demo.
+export const DEMO_MA_LINKS = [
+  {
+    creative_id: "d30a0a7e-0000-4000-8000-000000000001",
+    name: "Lojas Verão",
+    format: "tap-to-map",
+    size: "300x250",
+    public_slug: "",
+    dsp_creative_names: ["300x250_Verao_v1"],
+  },
+  {
+    creative_id: "d30a0a7e-0000-4000-8000-000000000002",
+    name: "Linha Solar",
+    format: "carrossel",
+    size: "300x600",
+    public_slug: "",
+    dsp_creative_names: [],
+  },
+  {
+    creative_id: "d30a0a7e-0000-4000-8000-000000000003",
+    name: "Revele o desconto",
+    format: "scratch",
+    size: "728x90",
+    public_slug: "",
+    dsp_creative_names: ["728x90_Verao_v1"],
+  },
+  {
+    creative_id: "d30a0a7e-0000-4000-8000-000000000004",
+    name: "Oferta Verão",
+    format: "freeform",
+    size: "320x480",
+    public_slug: "",
+    dsp_creative_names: [],
+  },
+];
+
 // ─── Configuração da campanha demo ─────────────────────────────────────
 //
 // Datas relativas a "hoje" — campanha fica sempre mid-flight. Hoje
@@ -716,5 +758,8 @@ export function buildDemoPayload(today = new Date()) {
     frequencia:         "",
     auto_alcance:       false,
     alcance_updated_at: new Date(today.getTime() - 2 * 86400000).toISOString(),
+    // Aba Max Attention: vínculos das peças (as métricas vêm por período,
+    // via getMaReport → buildDemoMaReport).
+    max_attention: { links: DEMO_MA_LINKS, configured: true },
   };
 }

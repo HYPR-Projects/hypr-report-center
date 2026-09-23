@@ -108,12 +108,14 @@ export function TopBarV2({
       )}
     >
       {/* Branding: wordmark HYPR°REPORT CENTER tematizado */}
-      <div className="flex items-center text-fg">
-        <HyprReportCenterLogo height={32} />
+      {/* No celular o wordmark encolhe (proporção mantida pelo viewBox) pra
+          caber ao lado do selo de frescor, do compartilhar e do tema. */}
+      <div className="flex items-center text-fg min-w-0">
+        <HyprReportCenterLogo height={32} className="max-w-[42vw] sm:max-w-none" />
       </div>
 
       {/* Ações */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 shrink-0">
         {updatedAtLabel && (
           <span
             title={updatedAtTitle || undefined}

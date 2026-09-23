@@ -367,6 +367,16 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     setTabState(t);
     writeTabToUrl(t);
   };
+  // Atalhos de dentro do conteúdo ("Ver Display →"): troca a aba e volta ao
+  // topo, senão a aba nova abre no meio da rolagem da anterior.
+  const navigateToTab = (t) => {
+    setTab(t);
+    try {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch {
+      window.scrollTo(0, 0);
+    }
+  };
   const setDisplayTactic = (t) => {
     setDisplayTacticState(t);
     writeTacticToUrl("display_tactic", t);
@@ -1025,10 +1035,11 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 mergeMeta={data.merge_meta}
                 coreFilter={effectiveMainCore}
                 isBonusOnly={isBonusOnly}
-                onNavigate={setTab}
+                onNavigate={navigateToTab}
                 showDisplayTab={showDisplay}
                 showVideoTab={showVideo}
                 showMaxAttentionTab={showMaxAttention}
+                range={mainRange}
               />
             </TabsContent>
 

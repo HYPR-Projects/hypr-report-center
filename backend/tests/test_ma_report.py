@@ -172,7 +172,8 @@ def _item(cid, **over):
     base = {
         "id": cid, "ok": True,
         "creative": {"id": cid, "name": "Lojas Verão", "status": "published", "templateSlug": "tap-to-map",
-                     "publicSlug": "lojas-verao-x1", "clientName": "Cliente Demo", "size": "300x250",
+                     "publicSlug": "lojas-verao-x1", "clientName": "Cliente Demo",
+                     "size": {"width": 300, "height": 250, "preset": "300x250", "label": "300x250"},
                      "ctaText": "Ver lojas", "widgets": [], "hasOverlay": True, "mechanic": None,
                      "surveyMode": None, "game": None, "createdAt": "2026-08-01T00:00:00Z", "updatedAt": "2026-08-20T00:00:00Z"},
         "analytics": {
@@ -182,13 +183,14 @@ def _item(cid, **over):
             "rates": {"viewability": 0.63, "measurementRate": 0.95},
             "ctaByButton": {"directions": 4, "whatsapp": 2, "website": 1},
             "ctaBySurface": {"pin_card": 5, "nearest_card": 2, "header": 0, "overlay": 0, "split_creative": 0},
-            "topPins": [{"pinId": "p1", "pinName": "Loja Moema", "lat": -23.6, "lng": -46.66, "pinClicks": 3,
+            "topPins": [{"pinId": "p1", "pinName": "Loja Moema", "latitude": -23.6, "longitude": -46.66, "pinClicks": 3,
                          "ctaClicks": 2, "views": 40, "ctaByButton": {"directions": 2, "whatsapp": 0, "website": 0}}],
             "scratch": None,
             "timeseries": [{"bucket": "2026-09-01", "impression": 50, "viewable": 30, "pinClick": 1, "ctaClick": 0, "engagedSessions": 2}],
             "widgets": {"items": [], "closeTo": None},
         },
-        "sessionSteps": {"viewable": 590, "map_interaction": 10, "pin_click": 6, "cta_click": 5, "chave_nova": 99},
+        "sessionSteps": {"viewable": 590, "map_interaction": 10, "pin_click": 6, "cta_click": 5,
+                         "cta_location": 4, "close_to_found": 0, "chave_nova": 99},
     }
     base.update(over)
     return base
@@ -212,12 +214,15 @@ def test_fetch_pieces_manda_chave_e_normaliza(monkeypatch):
     assert res["errors"] == []
     p = res["pieces"][0]
     assert p["format"] == "tap-to-map" and p["size"] == "300x250"
+    assert p["width"] == 300 and p["height"] == 250
     assert p["preview_url"] == "https://platform.hypr.mobi/share/creatives/lojas-verao-x1?preview=1"
     assert p["dsp_creative_names"] == ["DSP A"]
     # Lista de permissão: nada interno atravessa.
     assert "measurementRate" not in p["totals"] and "segredoInterno" not in p["totals"]
     assert "chave_nova" not in p["steps"] and p["steps"]["pin_click"] == 6
+    assert p["steps"]["cta_location"] == 4
     assert p["top_pins"][0]["name"] == "Loja Moema"
+    assert p["top_pins"][0]["lat"] == -23.6 and p["top_pins"][0]["lng"] == -46.66
     assert p["daily"][0] == {"date": "2026-09-01", "impressions": 50, "viewable": 30, "pin_clicks": 1, "cta_clicks": 0, "engaged_sessions": 2}
     assert "rates" not in p
 
@@ -268,8 +273,10 @@ def test_search_monta_contexto_e_filtra_motivos(monkeypatch):
     seen = []
     payload = {"items": [
         {"id": CID_A, "name": "ID-DEMO_Lojas", "status": "published", "templateSlug": "tap-to-map",
-         "publicSlug": "lojas", "clientName": "Cliente Demo", "size": "300x250", "score": 180,
-         "reasons": ["token", "client", "inventado"]},
+         "publicSlug": "lojas", "clientName": "Cliente Demo",
+         "size": {"width": 300, "height": 250, "preset": "300x250", "label": "300x250"}, "score": 180,
+         "reasons": ["token", "client", "inventado"],
+         "match": {"dspCreativeIds": ["123"], "name": "DSP B", "nameSimilarity": 0.82}},
         {"id": "nao-e-uuid", "name": "lixo"},
     ]}
     monkeypatch.setattr(ma.urllib.request, "urlopen", _fake_urlopen(payload, seen))
@@ -277,6 +284,9 @@ def test_search_monta_contexto_e_filtra_motivos(monkeypatch):
     assert "token=DEMO" in seen[0].full_url
     assert "names=DSP+A+x%7CDSP+B" in seen[0].full_url
     assert len(items) == 1 and items[0]["reasons"] == ["token", "client"]
+    assert items[0]["size"] == "300x250"
+    assert items[0]["match_name"] == "DSP B" and items[0]["match_similarity"] == 0.82
+    assert items[0]["match_dsp_ids"] == ["123"]
 
 
 def test_search_sem_contexto_nao_chama_platform(monkeypatch):
@@ -285,3 +295,57 @@ def test_search_sem_contexto_nao_chama_platform(monkeypatch):
     monkeypatch.setattr(ma.urllib.request, "urlopen", _fake_urlopen({"items": []}, seen))
     assert ma.search_creatives() == []
     assert seen == []
+
+
+def test_formatos_ricos_seguem_o_contrato_da_platform(monkeypatch):
+    """Nomes de campo do CreativeAnalyticsDTO (service.ts da Platform)."""
+    monkeypatch.setenv("MA_SERVICE_KEY", "segredo")
+    item = _item(CID_A)
+    a = item["analytics"]
+    a["carrossel"] = {
+        "slideChanges": 40, "swipes": 55, "navSessions": 30,
+        "navBySurface": {"swipe": 25, "arrow": 10, "dot": 5},
+        "ctaSlide": 6, "ctaBackground": 1, "ctaButton": 3,
+        "topSlides": [{"slideIndex": 2, "slideLabel": "Óculos", "views": 18, "ctaClicks": 4}],
+    }
+    a["survey"] = {
+        "answeredSessions": 12, "avgTimeToAnswerMs": None, "ctaPayoff": 2, "ctaButton": 1,
+        "ctaQuestion": 0, "ctaOption": 0, "completedSessions": 0, "avgTimeToCompleteMs": None,
+        "topOptions": [{"optionId": "o1", "optionLabel": "Sim", "answers": 9, "ctaClicks": 1}],
+    }
+    a["play"] = {"playedSessions": 8, "completedSessions": 5, "avgScore": 12.5, "avgHits": None,
+                 "avgAttempts": None, "avgPlayTimeMs": 30000, "revealSessions": 4, "replays": 2,
+                 "challengeWonSessions": 1, "challengePlayed": 3, "ctaPostGame": 2, "ctaButton": 1}
+    a["widgets"] = {
+        "items": [
+            {"widgetId": "w1", "widgetType": "close_to", "enabled": True, "views": 100, "taps": 20,
+             "tapSessions": 18, "conversions": 7},
+            {"widgetId": "w2", "widgetType": "countdown", "enabled": False, "views": 0, "taps": 0,
+             "tapSessions": 0, "conversions": 0},
+        ],
+        "closeTo": {
+            "views": 100, "locate": 20, "locateSessions": 18, "gpsGranted": 6, "gpsDenied": 2,
+            "foundPrecise": 5, "foundApprox": 11, "foundSessions": 16, "redirects": 7,
+            "redirectMap": 5, "redirectUrl": 2, "redirectSessions": 7,
+            "unresolvedIdentified": 0, "unresolvedClicks": 0,
+            "addresses": [{"pinId": "a1", "name": "Loja Centro", "address": "Rua X, 10",
+                           "latitude": -23.5, "longitude": -46.6, "identified": 9, "clicks": 4,
+                           "directions": 3, "website": 1}],
+        },
+    }
+    monkeypatch.setattr(ma.urllib.request, "urlopen", _fake_urlopen({"items": [item]}, []))
+    p = ma.fetch_pieces([{"creative_id": CID_A}])["pieces"][0]
+
+    assert p["carousel"]["top_slides"] == [{"index": 2, "label": "Óculos", "views": 18, "clicks": 4}]
+    assert p["carousel"]["nav_by_surface"] == {"swipe": 25, "arrow": 10, "dot": 5}
+    assert p["survey"]["top_options"] == [{"label": "Sim", "answers": 9, "clicks": 1}]
+    assert p["survey"]["avgTimeToAnswerMs"] is None
+    assert p["game"]["challengeWonSessions"] == 1 and p["game"]["avgHits"] is None
+    assert p["game_type"] is None
+    # Widget desligado e sem evento some; o ligado passa com as conversões.
+    assert p["widgets"] == [{"id": "w1", "type": "close_to", "views": 100, "taps": 20,
+                             "tap_sessions": 18, "conversions": 7}]
+    ct = p["close_to"]
+    assert ct["foundApprox"] == 11 and ct["foundPrecise"] == 5 and ct["redirectMap"] == 5
+    assert ct["addresses"][0] == {"name": "Loja Centro", "address": "Rua X, 10", "lat": -23.5, "lng": -46.6,
+                                  "identified": 9, "clicks": 4, "directions": 3, "website": 1}

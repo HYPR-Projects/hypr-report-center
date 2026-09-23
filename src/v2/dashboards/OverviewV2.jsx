@@ -1,56 +1,69 @@
 // src/v2/dashboards/OverviewV2.jsx
 //
-// Visão Geral V2 — redesenhada em PR-13 pra implementar fielmente o
-// mockup definido na auditoria visual ("hypr_report_redesign_v2.html").
+// Visão Geral — Report 2.0.
 //
 // LAYOUT, NA ORDEM (top → bottom)
-//   1. Hero KPI (Custo Efetivo) + grid de 4 KPIs auxiliares com sparklines
-//   2. Pacing Display + Pacing Video lado a lado, com marker "esperado hoje"
-//   3. Sumário por mídia (DISPLAY + VIDEO) — 2 cards lado a lado, layout
-//      inline compacto após PR-16 (label+valor numa linha só)
-//   4. Charts diários (Display Imp×CTR + Video Views×VTR)
-//   5. DailyAggregateTableV2 — tabela "Entrega Agregada por Dia" (collapsible, aberto)
-//   6. AlcanceFrequenciaV2 — admin edita, cliente vê read-only
+//   0. Aviso admin de volumetria incoerente (só operador HYPR)
+//   1. Linha de KPIs: herói Custo efetivo (com a barra do budget, o % do
+//      período decorrido, o refaturamento de encerramento antecipado e o
+//      "custo + over" quando existe) · Imp. visíveis (viewability na nota)
+//      · Views 100% (VTR na nota) · Alcance único (frequência na nota; o
+//      admin edita no próprio card) · Pacing geral
+//   2. Ritmo de entrega: Hoje (barras de pacing por mídia, sub-barras por
+//      frente, contrato × bônus) / Evolução (curva acumulada), com a frase
+//      de ritmo e o aviso de pacing sobre o contrato original
+//   3. Resumo por mídia: Display, Vídeo (e Max Attention), cada card com
+//      atalho para a aba
+//   4. Tendência diária: uma métrica por vez, sem eixo duplo
+//   5. Entrega por dia: 7 dias mais recentes, expande para todos, CSV
 //
-// ComparisonRow (CPM Display + CPCV Video) saiu na PR-16 — era redundante
-// com o MediaSummaryV2 abaixo, que já carrega Efetivo + Delta. Continua
-// existindo como hero principal nas tabs Display e Video.
-//
-// Detalhamento por Linha (DataTableV2) também saiu na PR-16 — virou tab
-// dedicada (DetalhamentoV2). Visão Geral fica como executive summary
-// puro, sem raw data competindo por foco.
-//
-// InsightBanners (callouts auto-gerados de pacing/economia) também saíram
-// na PR-16 — competiam por foco com o Hero KPI sem agregar info que o
-// próprio MediaSummary/Pacing já carregam (over-delivery, on-target).
-//
-// Quando há filtro de período ativo, Pacing some (não faz sentido em
-// janela parcial). Insights podem se ajustar no texto (verbo passado vs
-// presente) — TODO Fase 4.
+// Com filtro de período ativo o módulo de ritmo some (pacing é conta da
+// campanha inteira) e o budget do herói vira o pro-rata do período.
 
 import { fmt, fmtR } from "../../shared/format";
 import { computeMediaPacing } from "../../shared/aggregations";
+import { computeDataUntil } from "../../shared/freshness";
+import { buildDailySeries, lastValues, periodElapsedPct } from "../../shared/overviewSeries";
 
 import { KpiCardV2 } from "../components/KpiCardV2";
 import { HeroKpiCardV2 } from "../components/HeroKpiCardV2";
 import { SparklineV2 } from "../components/SparklineV2";
-import { PacingBarV2 } from "../components/PacingBarV2";
 import { PacingOverPillV2 } from "../components/PacingOverPillV2";
-import { CumulativePacingChartV2 } from "../components/CumulativePacingChartV2";
 import { MediaSummaryV2 } from "../components/MediaSummaryV2";
-import { DualChartV2 } from "../components/DualChartV2";
-import { ChartCardV2 } from "../components/ChartCardV2";
-import { CollapsibleSectionV2 } from "../components/CollapsibleSectionV2";
 import { DailyAggregateTableV2 } from "../components/DailyAggregateTableV2";
-import { AlcanceFrequenciaV2 } from "../components/AlcanceFrequenciaV2";
+import { AlcanceKpiCardV2 } from "../components/AlcanceFrequenciaV2";
+import { DeliveryRhythmCardV2 } from "../components/DeliveryRhythmCardV2";
+import { DailyTrendCardV2 } from "../components/DailyTrendCardV2";
+import { MaxAttentionSummaryCardV2 } from "../components/MaxAttentionSummaryCardV2";
 
-export default function OverviewV2({ data, aggregates, token, view = null, isAdmin, adminJwt, mergeMeta = null, coreFilter = "ALL", isBonusOnly = false }) {
+// xl: herói ocupa 2 colunas + N cards de 1 coluna. Classes estáticas por
+// causa do scanner do Tailwind.
+const XL_COLS = { 1: "xl:grid-cols-3", 2: "xl:grid-cols-4", 3: "xl:grid-cols-5", 4: "xl:grid-cols-6" };
+
+export default function OverviewV2({
+  data,
+  aggregates,
+  token,
+  view = null,
+  isAdmin,
+  adminJwt,
+  mergeMeta = null,
+  coreFilter = "ALL",
+  isBonusOnly = false,
+  // Navegação para as abas a partir dos atalhos do Resumo por mídia.
+  onNavigate = null,
+  showDisplayTab = true,
+  showVideoTab = true,
+  showMaxAttentionTab = false,
+  // Período ativo (para o card de Max Attention buscar o mesmo recorte).
+  range = null,
+}) {
   const camp = data.campaign;
   const {
     totalImpressions, totalCusto, totalCustoOver,
-    display, video, totals,
+    display, video,
     isFiltered, budgetProRata, budgetTotal,
-    chartDisplay, chartVideo, daily0, detail,
+    daily0, detail,
   } = aggregates;
 
   // Quando o report é merged em visão agregada, o pacing/over reflete
@@ -68,20 +81,21 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
   const hasDisplay = display.length > 0;
   const hasVideo = video.length > 0;
   // Views 100% da MESMA fonte CR que a aba Video (via `video`, já
-  // sobrescrito com detail em computeAggregates). Antes somava de `totals`
-  // (UNIFIED), que divergia da aba.
+  // sobrescrito com detail em computeAggregates).
   const totalViews100 = video.reduce((s, t) => s + (t.completions || 0), 0);
+  const videoViewable = video.reduce((s, t) => s + (t.viewable_impressions || 0), 0);
+  const vtrTotal = videoViewable > 0 ? (totalViews100 / videoViewable) * 100 : null;
 
-  // Sparklines: pegamos os últimos N pontos da série diária.
-  const impSparklineValues = chartDisplay
-    .slice(-14)
-    .map((d) => d.viewable_impressions || 0);
-  const viewsSparklineValues = chartVideo
-    .slice(-14)
-    .map((d) => d.video_view_100 || 0);
-  const costSparklineValues = (chartDisplay.length || chartVideo.length)
-    ? mergeCostSeries(chartDisplay, chartVideo).slice(-14).map((d) => d.cost)
-    : [];
+  // Série diária a partir do detail (CR, custo rateado): alimenta a
+  // tendência, as sparklines (a de custo deixa de sair plana) e a
+  // viewability da nota de Imp. visíveis.
+  const series = buildDailySeries(detail);
+  const crImpressions = series.reduce((s, d) => s + d.impressions, 0);
+  const crViewable = series.reduce((s, d) => s + d.viewable_impressions, 0);
+  const viewability = crImpressions > 0 ? (crViewable / crImpressions) * 100 : null;
+  const impSparklineValues = lastValues(series, "viewable_impressions");
+  const viewsSparklineValues = lastValues(series, "video_view_100");
+  const costSparklineValues = lastValues(series, "cost");
 
   // Pacing helpers — usa a régua da campanha inteira (não actual_start
   // por frente), agregando O2O+OOH no numerador e denominador. Mantém
@@ -92,14 +106,13 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
   const pacingDisplay = computeMediaPacing(display, camp, "DISPLAY", coreFilter);
   const pacingVideo   = computeMediaPacing(video,   camp, "VIDEO",   coreFilter);
 
-  // Breakdown por tactic (O2O/OOH) sob cada barra principal. Só faz
+  // Breakdown por tactic (O2O/OOH/GF) sob cada barra principal. Só faz
   // sentido quando o filtro Core Product é "ALL" — caso contrário a barra
   // principal já é da tactic única e o breakdown seria redundante.
   //
-  // Render quando ambas as tactics têm CONTRATO (não exige delivery em
-  // ambas). Frente vendida mas ainda não iniciada aparece como 0%,
-  // sinalizando pro CS que tem entrega pendente. Quando só uma tactic foi
-  // contratada, esconde o breakdown (não há frentes pra comparar).
+  // Render quando 2+ tactics têm CONTRATO (não exige delivery em todas).
+  // Frente vendida mas ainda não iniciada aparece como 0%, sinalizando
+  // pro CS que tem entrega pendente.
   const buildTacticSubBars = (rows, mediaType) => {
     if (coreFilter !== "ALL") return null;
     const r0 = rows[0] || {};
@@ -107,7 +120,6 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
     const neg = (frente) => isVideo
       ? (r0[`contracted_${frente}_video_completions`]   || 0) + (r0[`bonus_${frente}_video_completions`]   || 0)
       : (r0[`contracted_${frente}_display_impressions`] || 0) + (r0[`bonus_${frente}_display_impressions`] || 0);
-    // Uma sub-barra por frente COM contrato; quebra aparece com 2+ frentes.
     const fronts = [
       { label: "O2O", tactic: "O2O",        neg: neg("o2o") },
       { label: "OOH", tactic: "OOH",        neg: neg("ooh") },
@@ -126,10 +138,9 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
   // usando a mesma fórmula calendar-camp acima.
   const pacingGeral = computePacingGeral(display, video, camp, coreFilter);
 
-  // Budget exibido no card "Budget" precisa respeitar o filtro Core Product.
-  // `aggregates.budgetTotal` vem do campo `budget_contracted` da campaign
-  // (sempre inteiro) — pra filtro O2O/OOH, reconstrói somando os
-  // o2o_<media>_budget ou ooh_<media>_budget das rows.
+  // Budget respeita o filtro Core Product. `aggregates.budgetTotal` vem do
+  // campo `budget_contracted` da campaign (sempre inteiro) — pra filtro
+  // O2O/OOH, reconstrói somando os <frente>_<media>_budget das rows.
   const filteredBudgetTotal = coreFilter === "ALL"
     ? budgetTotal
     : pickBudget(display[0], "display", coreFilter)
@@ -141,17 +152,13 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
   // Encerramento antes do previsto (cliente cancelou o PI): o report passa
   // a faturar pelo volume EFETIVAMENTE entregue. O budget faturável colapsa
   // pro Custo Efetivo (= novo faturável), e o contratado original vira só
-  // referência ("investimento inicial"). Pacing NÃO muda — continua vs
-  // contrato original (backend Opção B) pra preservar a leitura da entrega;
-  // um aviso explica isso acima das barras. Só aplica na visão cheia: com
-  // filtro de período ativo o budget é um recorte analítico pro-rata, não a
-  // régua de faturamento da campanha.
+  // referência. Pacing NÃO muda — continua vs contrato original (backend
+  // Opção B); um aviso explica isso no módulo de ritmo. Só aplica na visão
+  // cheia: com filtro de período o budget é um recorte analítico pro-rata.
   //
   // Guard de redução real: campanha encerrada cedo mas em OVER fatura o
-  // contrato CHEIO (backend trava o efetivo no budget quando billing_end
-  // passa) — aí não há refaturamento e o card volta a ser "Budget" normal;
-  // sem o guard mostraria "refaturado R$X / contratado R̶$̶X̶" (mesmo valor
-  // riscado). Tolerância de R$1 engole ruído de arredondamento por frente.
+  // contrato CHEIO — aí não há refaturamento. Tolerância de R$1 engole
+  // ruído de arredondamento por frente.
   const earlyEnded = !!camp.early_end_date;
   const billedEffective =
     earlyEnded && !isFiltered && totalCusto < filteredBudgetTotal - 1
@@ -164,54 +171,241 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
   // que pelo contrato representa "quanto vale o que estamos bonificando").
   const { main: bonusMain, cents: bonusCents } = splitCents(budgetTotal);
 
-  // "Custo + Over" só aparece quando há over-delivery real. Sem over,
-  // o valor é idêntico ao Hero "Custo Efetivo · Total" — duplicar o
-  // mesmo número polui o grid sem agregar info.
+  // "Custo + over" só aparece quando há over-delivery real (sem over o
+  // valor é idêntico ao custo efetivo).
   const hasOverDelivery = totalCustoOver > totalCusto;
   const showCustoOver = !isBonusOnly && hasOverDelivery;
-  const slot4Visible = hasVideo || showCustoOver;
-  const slot5Visible = (!isFiltered && pacingGeral > 0) || showCustoOver;
-  const gridColsClass = isBonusOnly
-    ? (slot4Visible ? "xl:grid-cols-5" : "xl:grid-cols-4")
-    : slot4Visible && slot5Visible
-      ? "xl:grid-cols-6"
-      : slot4Visible || slot5Visible
-        ? "xl:grid-cols-5"
-        : "xl:grid-cols-4";
 
-  // ── Última linha sem célula órfã (md/lg) ────────────────────────────
-  // Em xl o gridColsClass acima fecha a conta exata. Abaixo de xl o grid é de
-  // 2 colunas (md) e 3 (lg) com o hero ocupando 2 — e aí, dependendo de quais
-  // slots condicionais aparecem, o último card sobrava sozinho com metade da
-  // linha vazia. Acontecia justamente em lg, que é o notebook de 13" onde boa
-  // parte do time abre o report.
-  //
-  // Em vez de mexer nas condições de negócio (que decidem o que mostrar), o
-  // último card visível estica pra fechar a linha quando a contagem é ímpar.
-  // Mesma solução da grade de tiles do drawer.
-  const nonHeroCount =
-    (isBonusOnly ? 0 : 1) +          // Budget
-    1 +                               // Imp. Visíveis (sempre)
-    (slot4Visible ? 1 : 0) +
-    (slot5Visible ? 1 : 0);
-  // O `lg:grid-cols-3` saiu junto: com o hero ocupando 2 de 3 colunas, o
-  // resto da grade nunca fechava numa conta redonda (2, 3 ou 4 cards em 3
-  // vagas sempre sobrava alguém). Com 2 colunas até xl, o hero ocupa a linha
-  // inteira e os cards descem em pares — aí basta esticar o último quando a
-  // contagem é ímpar.
-  const oddTail = nonHeroCount % 2 === 1;
-  // Qual slot é o último visível — é ele que recebe o span.
-  const tailSlot = slot5Visible ? 5 : slot4Visible ? 4 : 3;
-  const tailSpan = (slot) =>
-    oddTail && tailSlot === slot ? "md:col-span-2 xl:col-span-1" : undefined;
+  // Régua do herói: custo × budget (pro-rata com filtro de período) e o
+  // quanto do período já passou, contado até a data do dado.
+  const heroBudget = isFiltered ? filteredBudgetProRata : filteredBudgetTotal;
+  const budgetPct = heroBudget > 0 ? (totalCusto / heroBudget) * 100 : null;
+  const elapsedPct = isFiltered
+    ? null
+    : periodElapsedPct(camp.start_date, camp.early_end_date || camp.end_date, computeDataUntil(data));
+
+  const heroFooter = [];
+  if (billedEffective != null) {
+    heroFooter.push(
+      <div key="refat">
+        Campanha encerrada antes do previsto: budget refaturado para o volume
+        entregue. Contratado{" "}
+        <span className="line-through decoration-fg-subtle/60 tabular-nums">
+          {fmtR(filteredBudgetTotal)}
+        </span>
+      </div>,
+    );
+  } else if (budgetPct != null) {
+    heroFooter.push(
+      <div key="budget">
+        <span className="font-semibold text-fg tabular-nums">{fmt(budgetPct, 1)}%</span>{" "}
+        {isFiltered ? (
+          <>do budget proporcional ao período ({fmtR(heroBudget)})</>
+        ) : (
+          <>
+            do budget de <span className="tabular-nums">{fmtR(heroBudget)}</span>
+            {elapsedPct != null && (
+              <> · {fmt(elapsedPct, 0)}% do período decorrido</>
+            )}
+          </>
+        )}
+      </div>,
+    );
+  }
+  if (showCustoOver) {
+    heroFooter.push(
+      <div key="over" title="Inclui o valor da entrega acima do contratado (over-delivery).">
+        Custo + over{" "}
+        <span className="font-semibold text-fg tabular-nums">{fmtR(totalCustoOver)}</span>
+      </div>,
+    );
+  }
+
+  // ─── Linha de KPIs ────────────────────────────────────────────────
+  // Escopo do alcance (target_type/target_id):
+  //   - Visão agregada de merge group → escopo "merge" com merge_id.
+  //   - Caso contrário (single token OU drill-down de membro) → "token".
+  // Impressões usam data.totals (campanha cheia, sem filtro de período) —
+  // alcance é um valor de campanha, não de janela parcial.
+  const isAggregatedView = !!mergeMeta && (view === "aggregated" || view === "all");
+  const alcanceTargetType = isAggregatedView ? "merge" : "token";
+  const alcanceTargetId = isAggregatedView
+    ? mergeMeta.merge_id
+    : (view || data.campaign?.short_token || token);
+  const alcanceImpressions = (data.totals || []).reduce((s, r) => s + (r.impressions || 0), 0);
+
+  const showPacingGeral = !isFiltered && pacingGeral > 0;
+
+  const kpiDefs = [
+    {
+      key: "vi",
+      render: () => (
+        <KpiCardV2
+          label="Imp. visíveis"
+          value={fmt(totalImpressions)}
+          hint="Impressões visíveis (viewable) no período. Viewability = imp. visíveis ÷ impressões medidas."
+          note={viewability != null ? <KpiNote label="Viewability" value={`${fmt(viewability, 1)}%`} /> : null}
+          sparkline={kpiSparkline(impSparklineValues)}
+        />
+      ),
+    },
+    hasVideo && {
+      key: "v100",
+      render: () => (
+        <KpiCardV2
+          label="Views 100%"
+          value={fmt(totalViews100)}
+          hint="Visualizações de vídeo até o fim. VTR = views 100% ÷ imp. visíveis de vídeo."
+          note={vtrTotal != null ? <KpiNote label="VTR" value={`${fmt(vtrTotal, 1)}%`} /> : null}
+          sparkline={kpiSparkline(viewsSparklineValues)}
+        />
+      ),
+    },
+    {
+      key: "alcance",
+      render: () => (
+        <AlcanceKpiCardV2
+          key={`${alcanceTargetType}:${alcanceTargetId}`}
+          targetType={alcanceTargetType}
+          targetId={alcanceTargetId}
+          isAdmin={isAdmin}
+          adminJwt={adminJwt}
+          initialAlcance={data.alcance}
+          initialFrequencia={data.frequencia}
+          initialAutoAlcance={data.auto_alcance}
+          initialUpdatedAt={data.alcance_updated_at}
+          totalImpressions={alcanceImpressions}
+        />
+      ),
+    },
+    showPacingGeral && {
+      key: "pacing",
+      render: () => (
+        <KpiCardV2
+          label={`Pacing geral${pacingSuffix}`}
+          value={
+            <span className="inline-flex items-center gap-2 flex-wrap">
+              <span>{fmt(pacingGeral, 1)}%</span>
+              <PacingOverPillV2 pacing={pacingGeral} size="md" />
+            </span>
+          }
+          accent={pacingGeral >= 90 && pacingGeral <= 110}
+          hint={
+            activeMemberMonth
+              ? `Pacing do token ativo (${activeMemberMonth}). Investimentos e entregas somam todos os meses; pacing reflete só o mês corrente.`
+              : "Média ponderada de pacing Display + Vídeo pelo budget contratado."
+          }
+          note={hasDisplay && hasVideo ? (
+            <span className="text-[11px] text-fg-subtle">Display + Vídeo, ponderado pelo budget</span>
+          ) : null}
+        />
+      ),
+    },
+  ].filter(Boolean);
+  // Abaixo de xl a grade tem 2 colunas (celular incluso) e o herói ocupa a
+  // linha inteira; com contagem ímpar o último card estica pra não sobrar
+  // meia linha.
+  const kpiCount = kpiDefs.length;
+  const tailClass = (i) =>
+    kpiCount % 2 === 1 && i === kpiCount - 1 ? "col-span-2 xl:col-span-1" : undefined;
+
+  // ─── Ritmo de entrega ─────────────────────────────────────────────
+  const showRhythm = !isFiltered && (hasDisplay || hasVideo);
+  const displayBar = showRhythm && hasDisplay ? {
+    label: `Display${pacingSuffix}`,
+    pacing: pacingDisplay,
+    budget: pickBudget(display[0], "display", coreFilter),
+    cost: display.reduce((s, r) => s + (r.effective_total_cost || 0), 0),
+    subBars: displaySubBars,
+    bonusFooter: isBonusOnly
+      ? {
+          delivered: display.reduce((s, r) => s + (r.viewable_impressions || 0), 0),
+          target: pickContracted(display[0], "display", coreFilter),
+          unit: "imp.",
+        }
+      : null,
+    contracted: pickContracted(display[0], "display", coreFilter) - pickBonus(display[0], "display", coreFilter),
+    bonus: pickBonus(display[0], "display", coreFilter),
+    delivered: display.reduce((s, r) => s + (r.viewable_impressions || 0), 0),
+  } : null;
+  const videoBar = showRhythm && hasVideo ? {
+    label: `Vídeo${pacingSuffix}`,
+    pacing: pacingVideo,
+    budget: pickBudget(video[0], "video", coreFilter),
+    cost: video.reduce((s, r) => s + (r.effective_total_cost || 0), 0),
+    subBars: videoSubBars,
+    bonusFooter: isBonusOnly
+      ? {
+          delivered: video.reduce((s, r) => s + (r.completions || 0), 0),
+          target: pickContracted(video[0], "video", coreFilter),
+          unit: "views",
+        }
+      : null,
+    contracted: pickContracted(video[0], "video", coreFilter) - pickBonus(video[0], "video", coreFilter),
+    bonus: pickBonus(video[0], "video", coreFilter),
+    delivered: video.reduce((s, r) => s + (r.completions || 0), 0),
+  } : null;
+
+  // Curva acumulada (visão Evolução): mesma régua de contrato das barras.
+  const curveContractedDisplay = pickContracted(display[0], "display", coreFilter);
+  const curveContractedVideo = pickContracted(video[0], "video", coreFilter);
+  const curve =
+    showRhythm && daily0?.length > 0 && camp.start_date && camp.end_date
+    && (curveContractedDisplay > 0 || curveContractedVideo > 0)
+      ? {
+          daily: daily0,
+          contractedDisplay: curveContractedDisplay,
+          contractedVideo: curveContractedVideo,
+          startDate: camp.start_date,
+          endDate: camp.end_date,
+          downloadable: isAdmin,
+          filename: `${camp.campaign_name} - Curva de Pacing`,
+        }
+      : null;
+
+  const rhythmSentence = showRhythm
+    ? buildRhythmSentence({
+        isBonusOnly,
+        billed: billedEffective != null,
+        budgetPct,
+        elapsedPct,
+        media: [
+          hasDisplay && { name: "Display", pacing: pacingDisplay },
+          hasVideo && { name: "Vídeo", pacing: pacingVideo },
+        ].filter(Boolean),
+      })
+    : null;
+
+  // Aviso de pacing pós-encerramento antecipado — o pacing continua medido
+  // contra o CONTRATO ORIGINAL (não contra o budget refaturado).
+  const rhythmNotice = earlyEnded && showRhythm ? (
+    <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning-soft px-3.5 py-2.5 text-[12px] leading-snug text-fg-muted">
+      <InfoIcon className="size-4 text-warning mt-px shrink-0" />
+      <span>
+        <span className="font-semibold text-fg">
+          Pacing calculado sobre o contrato original.
+        </span>{" "}
+        A campanha foi encerrada antes do previsto — as barras mostram o
+        quanto foi entregue em relação ao volume inicialmente contratado, não
+        ao valor refaturado.
+      </span>
+    </div>
+  ) : null;
+
+  // ─── Resumo por mídia ─────────────────────────────────────────────
+  const maLinks = data.max_attention?.links || [];
+  const showMaCard = showMaxAttentionTab && maLinks.length > 0;
+  const mediaCount = (hasDisplay ? 1 : 0) + (hasVideo ? 1 : 0) + (showMaCard ? 1 : 0);
+  const mediaLayout = mediaCount >= 2 ? "stacked" : "strip";
+  const mediaGridClass =
+    mediaCount >= 3 ? "md:grid-cols-2 xl:grid-cols-3" : mediaCount === 2 ? "md:grid-cols-2" : "";
 
   return (
     <div className="space-y-6">
       {/* ─── 0. Guardrail: volumetria contratada incoerente (ADMIN-ONLY) ──
           O contrato de entrega registrado (Σ volume × tarifa, base da aba
           Display) supera o investimento da campanha (base da Visão Geral) →
-          volumetria stale no checklist do Command (ex: investimento reduzido
-          sem recomputar o volume). NUNCA mostrar pro cliente — só operador HYPR.
+          volumetria stale no checklist do Command. NUNCA mostrar pro cliente.
           Backend: campaign.contract_inconsistency (_emit_contract_consistency). */}
       {isAdmin && camp?.contract_inconsistency && (
         <div className="flex items-start gap-2.5 rounded-lg border border-danger/40 bg-danger-soft px-3.5 py-2.5 text-[12px] leading-snug text-fg-muted">
@@ -231,17 +425,13 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
         </div>
       )}
 
-      {/* ─── 1. Hero KPI + auxiliares ────────────────────────────────── */}
-      {/* Em bonificada, Hero ocupa 3 cols (em vez de 2) e o grid total
-          encurta pra 5 cols — Budget, Custo+Over e Pacing Geral somem
-          (este último porque o cálculo usa budget contratado, que é 0 em
-          campanha 100% bônus). Layout fica: Hero(3)+Imp(1)+Views(1)=5. */}
-      <div className={`grid grid-cols-1 md:grid-cols-2 gap-3 ${gridColsClass}`}>
-        <div className={isBonusOnly ? "md:col-span-2 xl:col-span-3" : "md:col-span-2 xl:col-span-2"}>
+      {/* ─── 1. KPIs ─────────────────────────────────────────────────── */}
+      <div className={`grid grid-cols-2 gap-3 ${XL_COLS[kpiCount] || "xl:grid-cols-6"}`}>
+        <div className="col-span-2 grid min-w-0">
           {isBonusOnly ? (
             <HeroKpiCardV2
               icon={<GiftIcon />}
-              label="Valor Bonificado · Total"
+              label="Valor bonificado · total"
               value={bonusMain}
               cents={bonusCents}
               caption="Volume entregue como cortesia HYPR — sem custo pro cliente."
@@ -250,339 +440,103 @@ export default function OverviewV2({ data, aggregates, token, view = null, isAdm
           ) : (
             <HeroKpiCardV2
               icon={<DollarIcon />}
-              label="Custo Efetivo · Total"
+              label={isFiltered ? "Custo efetivo · período" : "Custo efetivo · total"}
               value={custoMain}
               cents={custoCents}
               sparklineValues={costSparklineValues}
-              // deltaPercent é null por enquanto — backend ainda não expõe
-              // "vs período anterior". TODO Fase 4: query comparativa.
+              meter={
+                billedEffective == null && budgetPct != null
+                  ? { pct: budgetPct, label: `${fmt(budgetPct, 1)}% do budget investido` }
+                  : null
+              }
+              footer={heroFooter.length ? heroFooter : null}
             />
           )}
         </div>
-
-        {/* Card "Budget" some em bonificada — mesmo valor que o Hero,
-            seria redundância visual. */}
-        {!isBonusOnly && (
-          <KpiCardV2
-            label={billedEffective != null ? "Budget · refaturado" : "Budget"}
-            value={fmtR(
-              billedEffective != null
-                ? billedEffective
-                : isFiltered ? filteredBudgetProRata : filteredBudgetTotal
-            )}
-            note={
-              billedEffective != null ? (
-                <span className="text-[11px] text-fg-subtle tabular-nums">
-                  contratado{" "}
-                  <span className="line-through decoration-fg-subtle/60">
-                    {fmtR(filteredBudgetTotal)}
-                  </span>
-                </span>
-              ) : null
-            }
-            accent={billedEffective != null}
-            hint={
-              billedEffective != null
-                ? `Campanha encerrada antes do previsto — budget ajustado ao volume efetivamente entregue (= novo faturável). Contratado original: ${fmtR(filteredBudgetTotal)}.`
-                : isFiltered
-                  ? "Budget contratado proporcionalizado pelo período do filtro."
-                  : "Budget contratado total da campanha."
-            }
-          />
-        )}
-
-        <KpiCardV2
-          className={tailSpan(3)}
-          label="Imp. Visíveis"
-          value={fmt(totalImpressions)}
-          hint="Soma de viewable impressions no período."
-          sparkline={
-            impSparklineValues.length >= 2 ? (
-              <SparklineV2
-                values={impSparklineValues}
-                stroke="var(--color-signature-light)"
-                strokeWidth={1.5}
-                width={100}
-                height={20}
-                className="opacity-70"
-              />
-            ) : null
-          }
-        />
-
-        {hasVideo ? (
-          <KpiCardV2
-            className={tailSpan(4)}
-            label="Views 100%"
-            value={fmt(totalViews100)}
-            hint="Completions de vídeo (visualizações até 100%)."
-            sparkline={
-              viewsSparklineValues.length >= 2 ? (
-                <SparklineV2
-                  values={viewsSparklineValues}
-                  stroke="var(--color-signature-light)"
-                  strokeWidth={1.5}
-                  width={100}
-                  height={20}
-                  className="opacity-70"
-                />
-              ) : null
-            }
-          />
-        ) : (
-          /* Fallback "Custo + Over" não faz sentido em bonificada
-             (custo é sempre 0) nem quando o valor é igual ao Hero
-             (sem over-delivery). Em ambos os casos slot fica vazio
-             e o grid reflowa pelo `gridColsClass`. */
-          showCustoOver && (
-            <KpiCardV2
-              label="Custo + Over"
-              value={fmtR(totalCustoOver)}
-              accent
-              hint="Inclui valor da over-delivery."
-            />
-          )
-        )}
-
-        {/* 5º card: Pacing Geral (só faz sentido quando sem filtro de
-            período, porque pacing é cálculo do todo da campanha. Quando
-            há filtro, ocupa esse slot com Custo+Over como fallback —
-            exceto em bonificada, onde Custo+Over não faz sentido). */}
-        {!isFiltered && pacingGeral > 0 ? (
-          <KpiCardV2
-            className={tailSpan(5)}
-            label={`Pacing Geral${pacingSuffix}`}
-            value={
-              <span className="inline-flex items-center gap-2 flex-wrap">
-                <span>{fmt(pacingGeral, 1)}%</span>
-                <PacingOverPillV2 pacing={pacingGeral} size="md" />
-              </span>
-            }
-            accent={pacingGeral >= 90 && pacingGeral <= 110}
-            hint={
-              activeMemberMonth
-                ? `Pacing do token ativo (${activeMemberMonth}). Investimentos e entregas somam todos os meses; pacing reflete só o mês corrente.`
-                : "Média ponderada de pacing Display + Video pelo budget contratado."
-            }
-          />
-        ) : (
-          showCustoOver && (
-            <KpiCardV2
-              label="Custo + Over"
-              value={fmtR(totalCustoOver)}
-              hint="Inclui valor da over-delivery."
-            />
-          )
-        )}
+        {kpiDefs.map((d, i) => (
+          <div key={d.key} className={`grid min-w-0 ${tailClass(i) || ""}`}>
+            {d.render()}
+          </div>
+        ))}
       </div>
 
-      {/* Pacing Geral pill abaixo do grid foi removido — agora é o 5º
-          card do hero grid pra bater com o mockup. */}
-
-      {/* Aviso de pacing pós-encerramento antecipado — o pacing abaixo
-          continua medido contra o CONTRATO ORIGINAL (não contra o budget
-          refaturado), pra preservar a leitura de quanto foi entregue do
-          que foi vendido. Sem esse aviso, ler "23,8%" logo abaixo de um
-          budget já refaturado pareceria contraditório. */}
-      {earlyEnded && !isFiltered && (hasDisplay || hasVideo) && (
-        <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning-soft px-3.5 py-2.5 text-[12px] leading-snug text-fg-muted">
-          <InfoIcon className="size-4 text-warning mt-px shrink-0" />
-          <span>
-            <span className="font-semibold text-fg">
-              Pacing calculado sobre o contrato original.
-            </span>{" "}
-            A campanha foi encerrada antes do previsto — as barras abaixo
-            mostram o quanto foi entregue em relação ao volume inicialmente
-            contratado, não ao valor refaturado.
-          </span>
-        </div>
-      )}
-
-      {/* ─── 2. Pacing Display + Video ───────────────────────────────── */}
-      {!isFiltered && (hasDisplay || hasVideo) && (
-        <div className={`grid grid-cols-1 gap-3 ${hasDisplay && hasVideo ? "md:grid-cols-2" : ""}`}>
-          {hasDisplay && (
-            <PacingBarV2
-              label={`Pacing Display${pacingSuffix}`}
-              pacing={pacingDisplay}
-              budget={pickBudget(display[0], "display", coreFilter)}
-              cost={display.reduce((s, r) => s + (r.effective_total_cost || 0), 0)}
-              subBars={displaySubBars}
-              bonusFooter={
-                isBonusOnly
-                  ? {
-                      delivered: display.reduce((s, r) => s + (r.viewable_impressions || 0), 0),
-                      target: pickContracted(display[0], "display", coreFilter),
-                      unit: "imp.",
-                    }
-                  : null
-              }
-              contracted={
-                pickContracted(display[0], "display", coreFilter)
-                - pickBonus(display[0], "display", coreFilter)
-              }
-              bonus={pickBonus(display[0], "display", coreFilter)}
-              delivered={display.reduce((s, r) => s + (r.viewable_impressions || 0), 0)}
-            />
-          )}
-          {hasVideo && (
-            <PacingBarV2
-              label={`Pacing Video${pacingSuffix}`}
-              pacing={pacingVideo}
-              budget={pickBudget(video[0], "video", coreFilter)}
-              cost={video.reduce((s, r) => s + (r.effective_total_cost || 0), 0)}
-              subBars={videoSubBars}
-              bonusFooter={
-                isBonusOnly
-                  ? {
-                      delivered: video.reduce((s, r) => s + (r.completions || 0), 0),
-                      target: pickContracted(video[0], "video", coreFilter),
-                      unit: "views",
-                    }
-                  : null
-              }
-              contracted={
-                pickContracted(video[0], "video", coreFilter)
-                - pickBonus(video[0], "video", coreFilter)
-              }
-              bonus={pickBonus(video[0], "video", coreFilter)}
-              delivered={video.reduce((s, r) => s + (r.completions || 0), 0)}
-            />
-          )}
-        </div>
-      )}
-
-      {/* ─── 2.5 Curva de pacing acumulado (real × 100% no alvo) ───────
-          Complementar às barras de pacing acima: enquanto a barra é um
-          snapshot do ritmo atual, este chart mostra a curva de pacing
-          ao longo do tempo. No último tick (hoje), o valor real bate
-          com o KPI Pacing Geral. Só renderiza quando sem filtro de
-          período (faz sentido olhar a campanha inteira). */}
-      {!isFiltered && daily0 && daily0.length > 0 && (
-        <CumulativePacingChartV2
-          daily={daily0}
-          contractedDisplay={pickContracted(display[0], "display", coreFilter)}
-          contractedVideo={pickContracted(video[0], "video", coreFilter)}
-          budgetDisplay={pickBudget(display[0], "display", coreFilter)}
-          budgetVideo={pickBudget(video[0], "video", coreFilter)}
-          startDate={camp.start_date}
-          endDate={camp.end_date}
-          downloadable={isAdmin}
-          filename={`${camp.campaign_name} - Curva de Pacing`}
+      {/* ─── 2. Ritmo de entrega ─────────────────────────────────────── */}
+      {showRhythm && (
+        <DeliveryRhythmCardV2
+          displayBar={displayBar}
+          videoBar={videoBar}
+          curve={curve}
+          sentence={rhythmSentence}
+          notice={rhythmNotice}
         />
       )}
 
       {/* ─── 3. Resumo por mídia ─────────────────────────────────────── */}
-      {(hasDisplay || hasVideo) && (
+      {mediaCount > 0 && (
         <section>
           <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle mb-3">
             Resumo por mídia
           </h2>
-          <div className={`grid grid-cols-1 gap-3 ${hasDisplay && hasVideo ? "md:grid-cols-2" : ""}`}>
-            {hasDisplay && <MediaSummaryV2 type="DISPLAY" rows={display} compact={hasDisplay && hasVideo} />}
-            {hasVideo && <MediaSummaryV2 type="VIDEO" rows={video} compact={hasDisplay && hasVideo} />}
-          </div>
-        </section>
-      )}
-
-      {/* ─── 4. Charts diários ───────────────────────────────────────── */}
-      {(chartDisplay.length > 0 || chartVideo.length > 0) && (
-        <section>
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle mb-3">
-            Performance diária
-          </h2>
-          <div className={`grid grid-cols-1 gap-3 ${chartDisplay.length > 0 && chartVideo.length > 0 ? "lg:grid-cols-2" : ""}`}>
-            {chartDisplay.length > 0 && (
-              <ChartCardV2
-                title="Display — Imp. Visíveis × CTR"
-                downloadable={isAdmin}
-                filename={`${camp.campaign_name} - Display Imp Visiveis x CTR`}
-              >
-                <DualChartV2
-                  data={chartDisplay}
-                  xKey="date"
-                  y1Key="viewable_impressions"
-                  y2Key="ctr"
-                  label1="Imp. Visíveis"
-                  label2="CTR %"
-                />
-              </ChartCardV2>
+          <div className={`grid grid-cols-1 gap-3 ${mediaGridClass}`}>
+            {hasDisplay && (
+              <MediaSummaryV2
+                type="DISPLAY"
+                rows={display}
+                layout={mediaLayout}
+                compact={mediaCount >= 2}
+                onNavigate={showDisplayTab ? onNavigate : null}
+              />
             )}
-            {chartVideo.length > 0 && (
-              <ChartCardV2
-                title="Video — Views 100% × VTR"
-                downloadable={isAdmin}
-                filename={`${camp.campaign_name} - Video Views 100 x VTR`}
-              >
-                <DualChartV2
-                  data={chartVideo}
-                  xKey="date"
-                  y1Key="video_view_100"
-                  y2Key="vtr"
-                  label1="Views 100%"
-                  label2="VTR %"
-                />
-              </ChartCardV2>
+            {hasVideo && (
+              <MediaSummaryV2
+                type="VIDEO"
+                rows={video}
+                layout={mediaLayout}
+                compact={mediaCount >= 2}
+                onNavigate={showVideoTab ? onNavigate : null}
+              />
+            )}
+            {showMaCard && (
+              <MaxAttentionSummaryCardV2
+                className={mediaCount >= 3 ? "md:col-span-2 xl:col-span-1" : undefined}
+                token={token}
+                view={view}
+                range={range}
+                links={maLinks}
+                layout={mediaLayout}
+                onNavigate={onNavigate}
+              />
             )}
           </div>
         </section>
       )}
 
-      {/* ─── 5. Tabela Entrega Agregada por Dia ─────────────────────── */}
-      {/* availableMedia restringe o toggle Display/Video às mídias que
-          a campanha realmente tem (contrato OU entrega). Mesma lógica
-          que oculta as tabs Display/Video em ClientDashboardV2 — assim
-          campanha só-Display não mostra um toggle "Video" que ao ser
-          clicado sempre vai dizer "Sem entregas de Video". */}
+      {/* ─── 4. Tendência diária ─────────────────────────────────────── */}
+      {series.length > 0 && (
+        <DailyTrendCardV2
+          series={series}
+          downloadable={isAdmin}
+          filename={camp.campaign_name}
+        />
+      )}
+
+      {/* ─── 5. Entrega por dia ──────────────────────────────────────── */}
+      {/* Usa `detail` (enriched) em vez de `daily0` porque o backend
+          retorna effective_total_cost em query_daily como MAX (cumulativo)
+          — somar valores diários distorce. enrichDetailCosts apportiona o
+          custo total proporcionalmente, então somar detail por dia bate
+          com o total da campanha. availableMedia restringe o toggle às
+          mídias que a campanha realmente tem. */}
       {detail && detail.length > 0 && (
-        <CollapsibleSectionV2 title="Entrega Agregada por Dia" defaultOpen>
-          {/* Usa `detail` (enriched) em vez de `daily0` porque o backend
-              retorna effective_total_cost em query_daily como MAX
-              (cumulativo) — somar valores diários distorce. enrichDetailCosts
-              apportiona o custo total proporcionalmente, então somar
-              detail por dia bate com o total da campanha. */}
-          <DailyAggregateTableV2
-            daily={detail}
-            campaignName={camp.campaign_name}
-            availableMedia={availableMediaFromData(data)}
-            downloadable={isAdmin}
-          />
-        </CollapsibleSectionV2>
+        <DailyAggregateTableV2
+          daily={detail}
+          campaignName={camp.campaign_name}
+          availableMedia={availableMediaFromData(data)}
+          downloadable={isAdmin}
+          title="Entrega por dia"
+          initialRows={7}
+        />
       )}
-
-      {/* ─── 6. Alcance & Frequência ────────────────────────────────── */}
-      {/* Escopo (target_type/target_id):
-            - Visão agregada de merge group (view = "aggregated"/"all" + mergeMeta)
-              → escopo "merge" com merge_id, valor independente dos membros.
-            - Caso contrário (single token OU drill-down de membro)
-              → escopo "token" com o token efetivamente exibido.
-          Total de impressões usa data.totals (campanha cheia, sem filtro de
-          período) — alcance é um valor de campanha, não de janela parcial. */}
-      {(() => {
-        const isAggregated = !!mergeMeta && (view === "aggregated" || view === "all");
-        const targetType = isAggregated ? "merge" : "token";
-        const targetId   = isAggregated
-          ? mergeMeta.merge_id
-          : (view || data.campaign?.short_token || token);
-        const totalImpressions = (data.totals || []).reduce(
-          (s, r) => s + (r.impressions || 0),
-          0,
-        );
-        return (
-          <AlcanceFrequenciaV2
-            key={`${targetType}:${targetId}`}
-            targetType={targetType}
-            targetId={targetId}
-            isAdmin={isAdmin}
-            adminJwt={adminJwt}
-            initialAlcance={data.alcance}
-            initialFrequencia={data.frequencia}
-            initialAutoAlcance={data.auto_alcance}
-            initialUpdatedAt={data.alcance_updated_at}
-            totalImpressions={totalImpressions}
-          />
-        );
-      })()}
     </div>
   );
 }
@@ -683,6 +637,55 @@ function splitCents(value) {
   };
 }
 
+// Nota discreta de KPI: "Viewability 80,0%".
+function KpiNote({ label, value }) {
+  return (
+    <span className="text-[11px] text-fg-subtle">
+      {label} <span className="font-semibold text-fg tabular-nums">{value}</span>
+    </span>
+  );
+}
+
+function kpiSparkline(values) {
+  if (!values || values.length < 2) return null;
+  return (
+    <SparklineV2
+      values={values}
+      stroke="var(--color-signature-light)"
+      strokeWidth={1.5}
+      width={100}
+      height={20}
+      className="opacity-70"
+    />
+  );
+}
+
+// Frase de ritmo do módulo "Ritmo de entrega": o quanto do budget foi
+// investido contra o quanto do período passou, e quem está fora do ritmo.
+// Limiar de 95%: abaixo disso a mídia é citada como atrasada.
+function buildRhythmSentence({ isBonusOnly, billed, budgetPct, elapsedPct, media }) {
+  if (elapsedPct === 0) return "A campanha ainda não começou a entregar.";
+  if (isBonusOnly || billed || budgetPct == null) {
+    return elapsedPct != null ? `${fmt(elapsedPct, 0)}% do período decorrido.` : null;
+  }
+  const behind = media.filter((m) => (Number(m.pacing) || 0) < 95).map((m) => m.name);
+  const allOnTrack = media.length > 0 && media.every((m) => (Number(m.pacing) || 0) >= 100);
+  const status = behind.length
+    ? ` ${behind.join(" e ")} ${behind.length > 1 ? "estão" : "está"} abaixo do ritmo contratado.`
+    : allOnTrack
+      ? " Entrega no ritmo contratado ou acima."
+      : " Entrega próxima do ritmo contratado.";
+  return (
+    <>
+      <span className="font-semibold text-fg">
+        {fmt(budgetPct, 1)}% do budget investido
+        {elapsedPct != null ? ` em ${fmt(elapsedPct, 0)}% do período.` : "."}
+      </span>
+      {status}
+    </>
+  );
+}
+
 // Pacing geral % = média ponderada por budget contratado de Display + Video.
 // Budget exclui bônus (bonificação não fatura), mesmo padrão do backend.
 //
@@ -710,20 +713,6 @@ function computePacingGeral(display, video, camp, tactic = "ALL") {
   if (!total) return 0;
 
   return (dpacing * dbudget + vpacing * vbudget) / total;
-}
-
-// Para a sparkline de custo do hero — combina display+video por data.
-function mergeCostSeries(chartDisplay, chartVideo) {
-  const map = {};
-  for (const r of chartDisplay) {
-    map[r.date] = (map[r.date] || 0) + (r.effective_total_cost || 0);
-  }
-  for (const r of chartVideo) {
-    map[r.date] = (map[r.date] || 0) + (r.effective_total_cost || 0);
-  }
-  return Object.entries(map)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, cost]) => ({ date, cost }));
 }
 
 // ─── Ícones ──────────────────────────────────────────────────────────

@@ -37,7 +37,8 @@ import {
   touchSession,
 } from "../shared/auth";
 import { emitSessionExpired } from "./sessionEvents";
-import { isDemoToken, buildDemoPayload, DEMO_TOKEN } from "../shared/demoData";
+import { isDemoToken, buildDemoPayload, DEMO_TOKEN, DEMO_MA_LINKS } from "../shared/demoData";
+import { buildDemoMaReport } from "../shared/demoMa";
 
 // ── Helpers internos ─────────────────────────────────────────────────────────
 
@@ -2119,4 +2120,115 @@ export async function getOutOfCountry(month = null) {
   );
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
+}
+
+// ── Max Attention (aba do report) ────────────────────────────────────────────
+//
+// `getMaReport` é público como o resto do report (o short_token é o ticket e
+// só saem peças vinculadas a ele); vínculos e busca de peças são admin. No
+// DEMO tudo é gerado no cliente (shared/demoMa.js).
+
+async function adminJwtOr(adminJwt) {
+  return adminJwt || (await getOrIssueAdminJwt());
+}
+
+/**
+ * Métricas das peças vinculadas no período. `from`/`to` em YYYY-MM-DD.
+ * `refresh` (admin) fura o cache de 10 min do backend.
+ * Devolve { configured, links, pieces, errors, fetched_at }.
+ */
+export async function getMaReport({ token, view = null, from = null, to = null, refresh = false, adminJwt = null }) {
+  if (isDemoToken(token)) return buildDemoMaReport({ from, to });
+  const params = new URLSearchParams({ action: "ma_report", token });
+  if (view) params.set("view", view);
+  if (from) params.set("date_from", from);
+  if (to) params.set("date_to", to);
+  let headers = {};
+  let suffix = "";
+  if (refresh) {
+    params.set("refresh", "true");
+    headers = adminAuthHeaders(await adminJwtOr(adminJwt));
+    if (!headers.Authorization) suffix = legacyAkSuffix();
+  }
+  const r = await fetch(`${API_URL}?${params.toString()}${suffix}`, {
+    headers,
+    signal: timeoutSignal(READ_TIMEOUT_SLOW_MS),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  return d;
+}
+
+/** Vínculos atuais do token (admin), com quem vinculou e quando. */
+export async function getMaLinks({ short_token, adminJwt = null }) {
+  if (isDemoToken(short_token)) return { links: DEMO_MA_LINKS, configured: true };
+  const headers = adminAuthHeaders(await adminJwtOr(adminJwt));
+  const suffix = headers.Authorization ? "" : legacyAkSuffix();
+  const r = await fetch(
+    `${API_URL}?action=ma_links&token=${encodeURIComponent(short_token)}${suffix}`,
+    { headers, signal: timeoutSignal(READ_TIMEOUT_LIGHT_MS) },
+  );
+  const d = await r.json().catch(() => ({}));
+  if (r.status === 401 || r.status === 403) throw adminSessionLost("getMaLinks", headers.Authorization?.slice(7) || null);
+  if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  return { links: Array.isArray(d.links) ? d.links : [], configured: !!d.configured };
+}
+
+/** Substitui os vínculos do token (lista vazia remove todos). */
+export async function saveMaLinks({ short_token, links, adminJwt = null }) {
+  if (isDemoToken(short_token)) return links;
+  const r = await postJson(
+    `${API_URL}?action=ma_links_save`,
+    { short_token, links },
+    adminAuthHeaders(await adminJwtOr(adminJwt)),
+  );
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  return Array.isArray(d.links) ? d.links : [];
+}
+
+/**
+ * Candidatos da Platform para vincular (admin). Sem `q`, o backend usa o
+ * contexto da campanha (cliente, token no nome, nomes de criativo da DSP).
+ * Devolve { items, configured, context, error }.
+ */
+export async function searchMaCreatives({ token, q = "", adminJwt = null }) {
+  if (isDemoToken(token)) {
+    const needle = q.trim().toLowerCase();
+    const items = DEMO_MA_LINKS
+      .filter((l) => !needle || l.name.toLowerCase().includes(needle))
+      .map((l) => ({
+        creative_id: l.creative_id,
+        name: l.name,
+        status: "published",
+        template_slug: l.format,
+        public_slug: l.public_slug,
+        client_name: "Cliente Demo",
+        size: l.size,
+        score: l.dsp_creative_names.length ? 150 : 60,
+        reasons: l.dsp_creative_names.length ? ["name", "client"] : ["client"],
+        match_name: l.dsp_creative_names[0] || null,
+        match_similarity: l.dsp_creative_names.length ? 0.8 : null,
+        match_dsp_ids: [],
+      }));
+    return {
+      items,
+      configured: true,
+      context: { client: "Cliente Demo", dsp_creative_names: ["300x250_Verao_v1", "728x90_Verao_v1", "320x50_Verao_v1"] },
+      error: null,
+    };
+  }
+  const headers = adminAuthHeaders(await adminJwtOr(adminJwt));
+  const suffix = headers.Authorization ? "" : legacyAkSuffix();
+  const params = new URLSearchParams({ action: "ma_search", token });
+  if (q.trim()) params.set("q", q.trim());
+  const r = await fetch(`${API_URL}?${params.toString()}${suffix}`, {
+    headers,
+    signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.status === 401 || r.status === 403) throw adminSessionLost("searchMaCreatives", headers.Authorization?.slice(7) || null);
+  if (r.status === 501) return { items: [], configured: false, context: null, error: d?.error || "Integração não configurada" };
+  if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  return { items: d.items || [], configured: true, context: d.context || null, error: null };
 }

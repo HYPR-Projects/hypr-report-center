@@ -63,7 +63,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { useMemo, useRef } from "react";
+import { useRef } from "react";
 import { useThemeColors, useChartNeutral } from "../hooks/useThemeColors";
 import { fmt } from "../../shared/format";
 import { DownloadPngButtonV2 } from "./DownloadPngButtonV2";
@@ -182,12 +182,12 @@ function ChartTooltip({ active, payload, label }) {
     display != null && {
       label: "Display",
       value: display,
-      dot: "var(--color-signature)",
+      dot: "var(--color-chart-s1)",
     },
     video != null && {
       label: "Vídeo",
       value: video,
-      dot: "var(--color-signature-light)",
+      dot: "var(--color-chart-s2)",
     },
   ].filter(Boolean);
 
@@ -233,25 +233,24 @@ export function CumulativePacingChartV2({
   // Botão de baixar PNG no header (só admin). filename = nome do arquivo.
   downloadable = false,
   filename,
+  // Sem card nem título: para morar dentro de outro card (módulo "Ritmo de
+  // entrega" da Visão Geral), que já tem título e moldura.
+  bare = false,
 }) {
   const hypr = useThemeColors();
   const chartNeutral = useChartNeutral();
   const cardRef = useRef(null);
 
-  const startDate = parseISODate(startISO);
   const endDate = parseISODate(endISO);
 
-  const series = useMemo(() => {
-    if (!startDate || !endDate || !daily.length) return [];
-    if (!contractedDisplay && !contractedVideo) return [];
-    return buildSeries({
-      daily,
-      contractedDisplay,
-      contractedVideo,
-      startDate,
-      endDate,
-    });
-  }, [daily, contractedDisplay, contractedVideo, startISO, endISO]);
+  // Sem useMemo: a série tem um ponto por dia de campanha (dezenas) e o
+  // corte em "ontem" depende do relógio, então memoizar por props podia
+  // congelar o corte numa aba aberta de um dia para o outro.
+  const startDate = parseISODate(startISO);
+  const series =
+    startDate && endDate && daily.length && (contractedDisplay || contractedVideo)
+      ? buildSeries({ daily, contractedDisplay, contractedVideo, startDate, endDate })
+      : [];
 
   if (series.length === 0) return null;
 
@@ -260,28 +259,34 @@ export function CumulativePacingChartV2({
   // Renderiza só linha que tem dado (evita Line vazia em campanha mono-mídia).
   const showDisplay = contractedDisplay > 0;
   const showVideo   = contractedVideo > 0;
+  // Identidade de série da paleta categórica (Display = s1, Vídeo = s2),
+  // a mesma dos outros gráficos que separam as duas mídias.
+  const displayColor = hypr.chartS1 || hypr.signature;
+  const videoColor   = hypr.chartS2 || hypr.signatureLight;
 
   return (
-    <div ref={cardRef} className="rounded-xl border border-border bg-surface-2 px-5 py-5">
-      <div className="flex items-baseline justify-between gap-3 mb-4 flex-wrap">
-        <span className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
-          <span className="size-2 rounded-full bg-signature" aria-hidden />
-          Curva de pacing
-        </span>
+    <div
+      ref={cardRef}
+      className={bare ? undefined : "rounded-xl border border-border bg-surface-2 px-5 py-5"}
+    >
+      <div className={`flex items-baseline gap-3 mb-4 flex-wrap ${bare ? "justify-end" : "justify-between"}`}>
+        {!bare && (
+          <span className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
+            <span className="size-2 rounded-full bg-signature" aria-hidden />
+            Curva de pacing
+          </span>
+        )}
         <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-3 text-[10px] text-fg-muted uppercase tracking-wider">
           {showDisplay && (
             <span className="inline-flex items-center gap-1.5">
-              <span className="h-0.5 w-3 bg-signature" /> Display
+              <span className="h-0.5 w-3" style={{ background: displayColor }} /> Display
             </span>
           )}
           {showVideo && (
             <span className="inline-flex items-center gap-1.5">
-              <span
-                className="h-0.5 w-3"
-                style={{ background: "var(--color-signature-light)" }}
-              />
-              Video
+              <span className="h-0.5 w-3" style={{ background: videoColor }} />
+              Vídeo
             </span>
           )}
           <span className="inline-flex items-center gap-1.5">
@@ -305,7 +310,7 @@ export function CumulativePacingChartV2({
           data={series}
           margin={{ top: 20, right: 12, left: 0, bottom: 0 }}
         >
-          <CartesianGrid stroke={chartNeutral.grid} strokeDasharray="3 3" vertical={false} />
+          <CartesianGrid stroke={chartNeutral.grid} vertical={false} />
           <XAxis
             dataKey="label"
             stroke={chartNeutral.axis}
@@ -341,10 +346,10 @@ export function CumulativePacingChartV2({
               type="monotone"
               dataKey="display"
               name="Display"
-              stroke={hypr.signature}
-              strokeWidth={2.5}
+              stroke={displayColor}
+              strokeWidth={2}
               dot={false}
-              activeDot={{ r: 4, fill: hypr.signature, stroke: hypr.canvas, strokeWidth: 2 }}
+              activeDot={{ r: 4, fill: displayColor, stroke: hypr.surface2 || hypr.canvas, strokeWidth: 2 }}
               connectNulls={false}
               // Sem animação — a re-renderização ao estreitar pra exportar
               // pegava a linha no meio da animação e a curva saía deformada
@@ -357,10 +362,10 @@ export function CumulativePacingChartV2({
               type="monotone"
               dataKey="video"
               name="Vídeo"
-              stroke={hypr.signatureLight}
-              strokeWidth={2.5}
+              stroke={videoColor}
+              strokeWidth={2}
               dot={false}
-              activeDot={{ r: 4, fill: hypr.signatureLight, stroke: hypr.canvas, strokeWidth: 2 }}
+              activeDot={{ r: 4, fill: videoColor, stroke: hypr.surface2 || hypr.canvas, strokeWidth: 2 }}
               connectNulls={false}
               // Sem animação — ver nota na Line de Display acima.
               isAnimationActive={false}

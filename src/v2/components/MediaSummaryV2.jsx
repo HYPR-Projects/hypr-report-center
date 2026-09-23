@@ -43,13 +43,14 @@ import { Card, CardBody } from "../../ui/Card";
 // que a cell estica até o fim da row do grid (sem isso, em alguns layouts
 // onde o flex-wrap quebra o delta pra outra linha numa cell e em outras
 // não, o border-l do divide-x ficava com altura inconsistente).
-function StatCell({ label, value, accent = false, delta = null }) {
+function StatCell({ label, value, accent = false, delta = null, compact = false }) {
   const hasDelta = delta !== null && delta !== undefined;
   return (
-    <div className="px-5 py-4 min-w-0 h-full flex flex-col">
+    <div className={cn("min-w-0 h-full flex flex-col", compact ? "px-5 py-3" : "px-5 py-4")}>
       <span
         className={cn(
-          "text-[22px] font-semibold tabular-nums leading-tight truncate",
+          "font-semibold tabular-nums leading-tight truncate",
+          compact ? "text-[18px]" : "text-[22px]",
           accent ? "text-signature" : "text-fg",
         )}
       >
@@ -92,7 +93,17 @@ function Delta({ rentab }) {
   );
 }
 
-export function MediaSummaryV2({ type, rows, compact = false }) {
+export function MediaSummaryV2({
+  type,
+  rows,
+  compact = false,
+  // "strip": N colunas numa linha (card sozinho, largura cheia).
+  // "stacked": efetivo em destaque + grade 2×2 embaixo, para caber em
+  // cards lado a lado (Display, Vídeo e Max Attention na mesma linha).
+  layout = "strip",
+  // Atalho para a aba da mídia ("Ver Display →"). Sem callback, sem link.
+  onNavigate = null,
+}) {
   if (!rows || rows.length === 0) return null;
 
   const isDisplay = type === "DISPLAY";
@@ -153,7 +164,11 @@ export function MediaSummaryV2({ type, rows, compact = false }) {
   // lado), usa "k/M" pra evitar truncate; quando full-width, mostra valor
   // completo. CTR/VTR sempre em 2 casas decimais (precisão importa pra
   // métricas de qualidade — diferença entre 0,5% e 0,9% é grande em adtech).
-  const fmtBig = compact ? fmtCompact : fmt;
+  const stacked = layout === "stacked";
+  const fmtBig = compact || stacked ? fmtCompact : fmt;
+  // CTR de vídeo só entra quando houve clique: vídeo raramente é clicável
+  // e "0,00%" ocupava uma célula inteira sem dizer nada.
+  const showVideoCtr = totals.clks > 0;
 
   const cells = isDisplay
     ? [
@@ -165,11 +180,79 @@ export function MediaSummaryV2({ type, rows, compact = false }) {
       ]
     : [
         { label: "CPCV efetivo",  value: fmtR(effCpcv),                                accent: true,  delta: rentab },
-        { label: "Imp. visíveis", value: fmtBig(totals.vi) },
         { label: "Views 100%",    value: fmtBig(totals.v100) },
-        { label: "CTR",           value: ctr == null ? "—" : fmtP2(ctr),               accent: true },
         { label: "VTR",           value: vtr == null ? "—" : fmtP2(vtr),               accent: true },
+        { label: "Imp. visíveis", value: fmtBig(totals.vi) },
+        ...(showVideoCtr
+          ? [{ label: "CTR", value: ctr == null ? "—" : fmtP2(ctr), accent: true }]
+          : []),
       ];
+
+  const mediaName = isDisplay ? "Display" : "Vídeo";
+  const link = onNavigate ? (
+    <button
+      type="button"
+      onClick={() => onNavigate(isDisplay ? "display" : "video")}
+      className="text-xs font-semibold text-signature hover:underline underline-offset-4 whitespace-nowrap cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature rounded"
+    >
+      Ver {mediaName} →
+    </button>
+  ) : null;
+
+  const costPill = (
+    <span
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface-strong text-[11px] tabular-nums text-fg-muted whitespace-nowrap"
+      title="Custo efetivo total entregue até o momento nesta mídia (O2O + OOH)."
+    >
+      <span className="text-[10px] uppercase tracking-wider">Custo efetivo</span>
+      <span className="font-semibold text-fg">{fmtR(totals.cost)}</span>
+    </span>
+  );
+
+  if (stacked) {
+    const [hero, ...rest] = cells;
+    return (
+      <Card className="h-full">
+        <CardBody className="p-0 h-full flex flex-col">
+          <div className="px-5 py-3 border-b border-border flex items-center justify-between gap-3">
+            <div className="inline-flex items-center gap-2 text-[13px] font-semibold text-fg">
+              {isDisplay ? <MonitorIcon /> : <PlayIcon />}
+              {mediaName}
+            </div>
+            {costPill}
+          </div>
+          <div className="px-5 pt-4 pb-3">
+            <div className="flex items-baseline gap-2 flex-wrap">
+              <span className="text-[26px] font-semibold tabular-nums leading-none text-signature">
+                {hero.value}
+              </span>
+              {hero.delta != null && <Delta rentab={hero.delta} />}
+            </div>
+            <div className="text-[11px] text-fg-muted mt-1.5">{hero.label}</div>
+          </div>
+          <div
+            className={cn(
+              "grid border-t border-border/60 divide-border/60",
+              rest.length === 3 ? "grid-cols-3 divide-x" : "grid-cols-2",
+            )}
+          >
+            {rest.map((c, i) => (
+              <div
+                key={c.label}
+                className={cn(
+                  rest.length !== 3 && i % 2 === 1 && "border-l border-border/60",
+                  rest.length !== 3 && i >= 2 && "border-t border-border/60",
+                )}
+              >
+                <StatCell label={c.label} value={c.value} accent={c.accent} compact />
+              </div>
+            ))}
+          </div>
+          {link && <div className="mt-auto px-5 py-3 border-t border-border/60">{link}</div>}
+        </CardBody>
+      </Card>
+    );
+  }
 
   return (
     <Card>
@@ -177,15 +260,12 @@ export function MediaSummaryV2({ type, rows, compact = false }) {
         {/* Header com border-bottom ancorando o card */}
         <div className="px-5 py-3 border-b border-border flex items-center justify-between gap-3">
           <div className="text-[12px] font-medium text-fg-muted">
-            {isDisplay ? "Display" : "Vídeo"}
+            {mediaName}
           </div>
-          <span
-            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface-strong text-[11px] tabular-nums text-fg-muted whitespace-nowrap"
-            title="Custo efetivo total entregue até o momento nesta mídia (O2O + OOH)."
-          >
-            <span className="text-[10px] uppercase tracking-wider">Custo efetivo</span>
-            <span className="font-semibold text-fg">{fmtR(totals.cost)}</span>
-          </span>
+          <div className="flex items-center gap-3">
+            {costPill}
+            {link}
+          </div>
         </div>
 
         {/* Strip: N colunas iguais com dividers verticais em desktop;
@@ -197,7 +277,7 @@ export function MediaSummaryV2({ type, rows, compact = false }) {
         <div
           className={cn(
             "grid grid-cols-1 items-stretch divide-y md:divide-y-0 md:divide-x divide-border/60",
-            cells.length === 5 ? "md:grid-cols-5" : "md:grid-cols-4",
+            cells.length === 5 ? "md:grid-cols-5" : cells.length === 4 ? "md:grid-cols-4" : "md:grid-cols-3",
           )}
         >
           {cells.map((c) => (
@@ -212,5 +292,24 @@ export function MediaSummaryV2({ type, rows, compact = false }) {
         </div>
       </CardBody>
     </Card>
+  );
+}
+
+function MonitorIcon() {
+  return (
+    <svg className="size-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2" y="3" width="20" height="14" rx="2" />
+      <line x1="8" y1="21" x2="16" y2="21" />
+      <line x1="12" y1="17" x2="12" y2="21" />
+    </svg>
+  );
+}
+
+function PlayIcon() {
+  return (
+    <svg className="size-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <polygon points="10 9 15 12 10 15 10 9" />
+    </svg>
   );
 }

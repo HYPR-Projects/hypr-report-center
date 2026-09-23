@@ -415,6 +415,10 @@ def search_creatives(*, q=None, client=None, token=None, names=None, limit=30) -
     for it in (data or {}).get("items") or []:
         if not isinstance(it, dict) or not valid_creative_id(it.get("id") or ""):
             continue
+        size = it.get("size")
+        size_label = size.get("label") if isinstance(size, dict) else size if isinstance(size, str) else None
+        match = it.get("match") if isinstance(it.get("match"), dict) else {}
+        sim = match.get("nameSimilarity")
         items.append({
             "creative_id": it.get("id"),
             "name": it.get("name") or "",
@@ -422,11 +426,16 @@ def search_creatives(*, q=None, client=None, token=None, names=None, limit=30) -
             "template_slug": it.get("templateSlug") or "",
             "public_slug": it.get("publicSlug") or "",
             "client_name": it.get("clientName") or "",
-            "size": it.get("size") or "",
+            "size": (size_label or "")[:40],
             "created_at": it.get("createdAt"),
             "updated_at": it.get("updatedAt"),
             "score": it.get("score") or 0,
             "reasons": [r for r in (it.get("reasons") or []) if r in ("adbolt", "token", "name", "client", "query")],
+            # Por que casou: o nome da DSP parecido vira o vínculo de entrega
+            # (dsp_creative_names) quando o admin confirma a sugestão.
+            "match_name": str(match.get("name"))[:200] if match.get("name") else None,
+            "match_similarity": sim if isinstance(sim, (int, float)) and not isinstance(sim, bool) else None,
+            "match_dsp_ids": [str(x)[:80] for x in (match.get("dspCreativeIds") or [])][:10],
         })
     _cset(_search_cache, key, items)
     return items
@@ -444,22 +453,45 @@ def _num(v):
         return 0
 
 
+def _coord(v):
+    """Latitude/longitude numérica ou None (bool também é int em Python)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v)
+
+
 def _pick(src, keys):
-    """Copia só as chaves permitidas, numéricas."""
+    """Copia só as chaves permitidas, numéricas. Médias (avg*) sem dado
+    continuam None: "sem medição" não é o mesmo que zero."""
     src = src if isinstance(src, dict) else {}
-    return {k: _num(src.get(k)) for k in keys}
+    return {
+        k: (None if k.startswith("avg") and src.get(k) is None else _num(src.get(k)))
+        for k in keys
+    }
 
 
 # Chaves de sessão distinta por etapa (Platform → sessionSteps). Lista de
 # permissão: chave nova na Platform não vaza sem passar por aqui.
 SESSION_STEP_KEYS = (
-    "impression", "viewable", "engaged", "overlay_click", "overlay_dismissed",
-    "split_creative_click", "map_interaction", "pin_click", "cta_click",
-    "cta_directions", "cta_whatsapp", "cta_website", "scratch_started",
-    "scratch_completed", "tilt_activated", "nav", "survey_answer",
-    "survey_complete", "game_started", "game_ended", "game_challenge_won",
-    "brand_reveal_viewed", "game_restarted", "video_start", "video_complete",
-    "widget_view", "close_to_locate",
+    # topo (todos os formatos)
+    "impression", "viewable", "engaged", "click",
+    # Tap to Map
+    "overlay_click", "overlay_dismissed", "split_creative_click", "map_interaction",
+    "pin_click", "cta_click", "cta_location", "cta_header",
+    "cta_directions", "cta_whatsapp", "cta_website",
+    # Reveal
+    "scratch_cover_click", "scratch_started", "scratch_completed",
+    "scratch_reveal_click", "tilt_activated",
+    # Carrossel, Survey, Game
+    "nav", "survey_answer", "survey_complete",
+    "game_started", "game_ended", "game_challenge_played", "game_challenge_won",
+    "brand_reveal_viewed", "game_restarted",
+    # vídeo (marcos VAST)
+    "video_start", "video_first_quartile", "video_midpoint", "video_third_quartile",
+    "video_complete", "video_unmute",
+    # widgets
+    "widget_view", "close_to_view", "close_to_locate", "close_to_found",
+    "close_to_redirect", "calendar_add", "calendar_open",
 )
 
 
@@ -484,8 +516,8 @@ def normalize_piece(item: dict, link: dict) -> dict:
         by_button = _pick(p.get("ctaByButton"), ("directions", "whatsapp", "website"))
         top_pins.append({
             "name": str(p.get("pinName") or p.get("pinId") or "")[:200],
-            "lat": p.get("lat") if isinstance(p.get("lat"), (int, float)) else None,
-            "lng": p.get("lng") if isinstance(p.get("lng"), (int, float)) else None,
+            "lat": _coord(p.get("latitude")),
+            "lng": _coord(p.get("longitude")),
             "views": _num(p.get("views")),
             "pin_clicks": _num(p.get("pinClicks")),
             "cta_clicks": _num(p.get("ctaClicks")),
@@ -500,20 +532,26 @@ def normalize_piece(item: dict, link: dict) -> dict:
     cal = a.get("calendar") if isinstance(a.get("calendar"), dict) else None
     wg = a.get("widgets") if isinstance(a.get("widgets"), dict) else {}
 
+    # WidgetSummary: uma linha por widget (config atual ∪ widgets com evento).
+    # Widget desligado sem nenhum evento não interessa ao cliente.
     widgets = []
-    for w in (wg.get("items") or [])[:4]:
+    for w in (wg.get("items") or [])[:6]:
         if not isinstance(w, dict):
             continue
+        views, taps = _num(w.get("views")), _num(w.get("taps"))
+        if w.get("enabled") is False and not views and not taps:
+            continue
         widgets.append({
-            "id": str(w.get("widgetId") or w.get("id") or "")[:80],
-            "type": str(w.get("widgetType") or w.get("type") or "")[:40],
-            "label": str(w.get("label") or "")[:120],
-            "views": _num(w.get("views")),
-            "taps": _num(w.get("taps")),
-            "tap_sessions": _num(w.get("tapSessions") or w.get("sessions")),
-            "final_actions": _num(w.get("finalActions") or w.get("final")),
+            "id": str(w.get("widgetId") or "")[:80],
+            "type": str(w.get("widgetType") or "")[:40],
+            "views": views,
+            "taps": taps,
+            "tap_sessions": _num(w.get("tapSessions")),
+            "conversions": _num(w.get("conversions")),
         })
 
+    # CloseToBreakdown: localizar → encontrou (GPS preciso × aproximado por
+    # IP) → redirecionou (rota × site), mais o ranking de endereços.
     close_to = None
     ct = wg.get("closeTo") if isinstance(wg.get("closeTo"), dict) else None
     if ct:
@@ -522,15 +560,20 @@ def normalize_piece(item: dict, link: dict) -> dict:
             if not isinstance(ad, dict):
                 continue
             addrs.append({
-                "name": str(ad.get("name") or ad.get("pinName") or "")[:200],
-                "identified": _num(ad.get("identified") or ad.get("views")),
+                "name": str(ad.get("name") or ad.get("pinId") or "")[:200],
+                "address": str(ad.get("address") or "")[:300],
+                "lat": _coord(ad.get("latitude")),
+                "lng": _coord(ad.get("longitude")),
+                "identified": _num(ad.get("identified")),
                 "clicks": _num(ad.get("clicks")),
-                "route": _num(ad.get("route") or ad.get("directions")),
-                "site": _num(ad.get("site") or ad.get("website")),
+                "directions": _num(ad.get("directions")),
+                "website": _num(ad.get("website")),
             })
         close_to = {
-            **_pick(ct, ("views", "taps", "tapSessions", "identified", "gps", "ip", "gpsGranted",
-                         "gpsDenied", "clicks", "route", "site")),
+            **_pick(ct, ("views", "locate", "locateSessions", "gpsGranted", "gpsDenied",
+                         "foundPrecise", "foundApprox", "foundSessions", "redirects",
+                         "redirectMap", "redirectUrl", "redirectSessions",
+                         "unresolvedIdentified", "unresolvedClicks")),
             "addresses": addrs,
         }
 
@@ -547,17 +590,31 @@ def normalize_piece(item: dict, link: dict) -> dict:
             "engaged_sessions": _num(row.get("engagedSessions")),
         })
 
+    # size vem da Platform como {width, height, preset, label}; o vínculo
+    # guarda só o rótulo ("300x250").
+    size_obj = c.get("size") if isinstance(c.get("size"), dict) else {}
+    size_label = size_obj.get("label") if isinstance(size_obj.get("label"), str) else None
+    if not size_label and isinstance(c.get("size"), str):
+        size_label = c.get("size")
+
+    def _dim(v):
+        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 5000 else None
+
     return {
         "creative_id": c.get("id") or link.get("creative_id"),
         "name": c.get("name") or link.get("name") or "",
         "format": c.get("templateSlug") or link.get("template_slug") or "",
-        "size": c.get("size") or link.get("size") or "",
+        "size": (size_label or link.get("size") or "")[:40],
+        "width": _dim(size_obj.get("width")),
+        "height": _dim(size_obj.get("height")),
         "status": status,
         "client_name": c.get("clientName") or link.get("client_name") or "",
         "cta_text": str(c.get("ctaText") or "")[:80],
         "mechanic": c.get("mechanic") or None,
         "survey_mode": c.get("surveyMode") or None,
-        "game": c.get("game") or None,
+        # Tipo do jogo do Tap to Game ("basquete"...). As estatísticas da
+        # partida vão em "game", mais abaixo.
+        "game_type": str(c.get("game"))[:60] if c.get("game") else None,
         "has_overlay": bool(c.get("hasOverlay")),
         "updated_at": c.get("updatedAt") or None,
         "preview_url": preview_url,
@@ -571,16 +628,16 @@ def normalize_piece(item: dict, link: dict) -> dict:
         "cta_by_surface": _pick(a.get("ctaBySurface"), ("pin_card", "nearest_card", "header", "overlay", "split_creative")),
         "top_pins": top_pins,
         "scratch": _pick(sc, ("scratchedSessions", "revealedSessions", "avgTimeToCompleteMs",
-                              "ctaImage", "ctaButton", "ctaCover")) if sc else None,
+                              "ctaImage", "ctaButton", "ctaCover", "tiltActivatedSessions")) if sc else None,
         "carousel": {
             **_pick(car, ("slideChanges", "swipes", "navSessions", "ctaSlide", "ctaBackground", "ctaButton")),
             "nav_by_surface": _pick(car.get("navBySurface"), ("swipe", "arrow", "dot")),
             "top_slides": [
                 {
-                    "index": _num(s.get("index") if s.get("index") is not None else s.get("slideIndex")),
-                    "label": str(s.get("label") or s.get("slideLabel") or "")[:120],
-                    "navigations": _num(s.get("navigations") or s.get("views")),
-                    "clicks": _num(s.get("clicks")),
+                    "index": _num(s.get("slideIndex")),
+                    "label": str(s.get("slideLabel") or "")[:120],
+                    "views": _num(s.get("views")),
+                    "clicks": _num(s.get("ctaClicks")),
                 }
                 for s in (car.get("topSlides") or [])[:24] if isinstance(s, dict)
             ],
@@ -589,19 +646,19 @@ def normalize_piece(item: dict, link: dict) -> dict:
                                "videoMidpoint", "videoThirdQuartile", "videoComplete", "videoUnmute")) if ff else None,
         "survey": {
             **_pick(sv, ("answeredSessions", "avgTimeToAnswerMs", "completedSessions",
-                         "ctaPayoff", "ctaButton", "ctaQuestion", "ctaOption")),
+                         "avgTimeToCompleteMs", "ctaPayoff", "ctaButton", "ctaQuestion", "ctaOption")),
             "top_options": [
                 {
-                    "label": str(o.get("label") or o.get("optionLabel") or "")[:200],
-                    "answers": _num(o.get("answers") or o.get("count")),
-                    "clicks": _num(o.get("clicks")),
+                    "label": str(o.get("optionLabel") or "")[:200],
+                    "answers": _num(o.get("answers")),
+                    "clicks": _num(o.get("ctaClicks")),
                 }
                 for o in (sv.get("topOptions") or [])[:20] if isinstance(o, dict)
             ],
         } if sv else None,
-        "game": _pick(pl, ("playedSessions", "completedSessions", "avgScore", "avgPlayTimeMs",
-                           "revealSessions", "replays", "challengeWon", "challengeLost",
-                           "ctaPostGame", "ctaButton")) if pl else None,
+        "game": _pick(pl, ("playedSessions", "completedSessions", "avgScore", "avgHits", "avgAttempts",
+                           "avgPlayTimeMs", "revealSessions", "replays", "challengeWonSessions",
+                           "challengePlayed", "ctaPostGame", "ctaButton")) if pl else None,
         "calendar": _pick(cal, ("adds", "opens")) if cal else None,
         "widgets": widgets,
         "close_to": close_to,

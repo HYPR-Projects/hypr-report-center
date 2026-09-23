@@ -25,11 +25,13 @@
 //   é só pra UX do admin.
 
 import { useEffect, useRef, useState } from "react";
+import * as Popover from "@radix-ui/react-popover";
 import { saveAlcanceFrequencia } from "../../lib/api";
 import { fmt } from "../../shared/format";
 import { Card } from "../../ui/Card";
 import { Button } from "../../ui/Button";
 import { Input } from "../../ui/Input";
+import { Tooltip, TooltipTrigger, TooltipContent } from "../../ui/Tooltip";
 import { cn } from "../../ui/cn";
 
 // Parser tolerante a formato BR ("1.250.000", "1250000", "1.250.000,5").
@@ -92,10 +94,11 @@ function formatUpdatedAt(iso) {
   return `${date} às ${time} (BRT)`;
 }
 
-export function AlcanceFrequenciaV2({
+// Estado + ações do par alcance/frequência, compartilhado pelas duas
+// apresentações (card completo e card de KPI da Visão Geral).
+function useAlcanceFrequencia({
   targetType,
   targetId,
-  isAdmin,
   adminJwt,
   initialAlcance = "",
   initialFrequencia = "",
@@ -171,7 +174,7 @@ export function AlcanceFrequenciaV2({
   const save = async () => {
     if (!targetType || !targetId) {
       setError("Escopo não definido — recarregue a página");
-      return;
+      return false;
     }
     setSaving(true);
     setError(null);
@@ -198,12 +201,52 @@ export function AlcanceFrequenciaV2({
       // muda nada na UI (mostramos só DD/MM/AAAA HH:MM).
       setUpdatedAt(new Date().toISOString());
       setEditing(false);
+      return true;
     } catch (e) {
       setError(e?.message || "Erro ao salvar");
+      return false;
     } finally {
       setSaving(false);
     }
   };
+
+  // Hint "calculada" só faz sentido pro lado que de fato está sendo derivado.
+  // Em modo padrão: aparece na frequência quando admin não preencheu.
+  // Em modo auto_alcance: aparece no alcance (sempre que houver valor derivado).
+  const freqIsAuto    = !autoAlcance && !frequencia && !!derivedFreq;
+  const alcanceIsAuto = autoAlcance && !!derivedAlcance;
+  const updatedAtLabel = !isEmpty ? formatUpdatedAt(updatedAt) : null;
+
+  return {
+    alcance, setAlcance, frequencia, setFrequencia, autoAlcance,
+    editing, saving, error,
+    derivedFreq, derivedAlcance, displayAlcance, displayFrequencia, isEmpty,
+    freqIsAuto, alcanceIsAuto, updatedAtLabel,
+    startEdit, cancel, toggleAutoAlcance, save,
+  };
+}
+
+export function AlcanceFrequenciaV2({
+  targetType,
+  targetId,
+  isAdmin,
+  adminJwt,
+  initialAlcance = "",
+  initialFrequencia = "",
+  initialAutoAlcance = false,
+  initialUpdatedAt = "",
+  totalImpressions = 0,
+}) {
+  const {
+    alcance, setAlcance, frequencia, setFrequencia, autoAlcance,
+    editing, saving, error,
+    derivedFreq, derivedAlcance, displayAlcance, displayFrequencia, isEmpty,
+    freqIsAuto, alcanceIsAuto, updatedAtLabel,
+    startEdit, cancel, toggleAutoAlcance, save,
+  } = useAlcanceFrequencia({
+    targetType, targetId, adminJwt, initialAlcance, initialFrequencia,
+    initialAutoAlcance, initialUpdatedAt, totalImpressions,
+  });
 
   if (!isAdmin && isEmpty) {
     // Cliente sem dado: mostra placeholder amigável dentro de card simples.
@@ -218,13 +261,6 @@ export function AlcanceFrequenciaV2({
       </Card>
     );
   }
-
-  // Hint "calculada" só faz sentido pro lado que de fato está sendo derivado.
-  // Em modo padrão: aparece na frequência quando admin não preencheu.
-  // Em modo auto_alcance: aparece no alcance (sempre que houver valor derivado).
-  const freqIsAuto    = !autoAlcance && !frequencia && !!derivedFreq;
-  const alcanceIsAuto = autoAlcance && !!derivedAlcance;
-  const updatedAtLabel = !isEmpty ? formatUpdatedAt(updatedAt) : null;
 
   return (
     <Card className="overflow-hidden">
@@ -322,6 +358,176 @@ export function AlcanceFrequenciaV2({
           {error}
         </p>
       )}
+    </Card>
+  );
+}
+
+// Card de KPI da Visão Geral: "Alcance único" com a frequência média na
+// nota. Mesmo estado e mesma persistência do card completo; a edição do
+// admin abre num popover ancorado no próprio card, então o bloco não
+// precisa de uma seção inteira no fim da página.
+export function AlcanceKpiCardV2({
+  targetType,
+  targetId,
+  isAdmin,
+  adminJwt,
+  initialAlcance = "",
+  initialFrequencia = "",
+  initialAutoAlcance = false,
+  initialUpdatedAt = "",
+  totalImpressions = 0,
+  className,
+}) {
+  const st = useAlcanceFrequencia({
+    targetType, targetId, adminJwt, initialAlcance, initialFrequencia,
+    initialAutoAlcance, initialUpdatedAt, totalImpressions,
+  });
+  const [open, setOpen] = useState(false);
+
+  // Abrir o popover entra em edição; fechar sem salvar descarta o rascunho.
+  const onOpenChange = (next) => {
+    if (next) {
+      st.startEdit();
+      setOpen(true);
+    } else {
+      if (st.editing) st.cancel();
+      setOpen(false);
+    }
+  };
+  const onSave = async () => {
+    const ok = await st.save();
+    if (ok) setOpen(false);
+  };
+
+  const hint = [
+    "Pessoas únicas impactadas pela campanha. Frequência média = impressões ÷ alcance.",
+    st.updatedAtLabel ? `Atualizado em ${st.updatedAtLabel}.` : null,
+  ].filter(Boolean).join(" ");
+
+  const labelEl = (
+    <span className="inline-block text-[11px] font-semibold uppercase tracking-wider leading-none text-fg-muted underline decoration-dotted decoration-fg-subtle underline-offset-4 cursor-help">
+      Alcance único
+    </span>
+  );
+
+  return (
+    <Card className={cn("min-w-0 border-border bg-surface-2", className)}>
+      <div className="flex flex-col gap-2.5 p-4">
+        <div className="flex items-center justify-between gap-2 min-h-[14px]">
+          <div className="flex items-center gap-2 min-w-0">
+            <Tooltip>
+              <TooltipTrigger asChild>{labelEl}</TooltipTrigger>
+              <TooltipContent side="top">{hint}</TooltipContent>
+            </Tooltip>
+            {isAdmin && st.alcanceIsAuto && (
+              <span className="text-[9px] font-semibold uppercase tracking-wider text-fg-subtle bg-canvas border border-border rounded px-1.5 py-0.5">
+                calculado
+              </span>
+            )}
+          </div>
+          {isAdmin && (
+            <Popover.Root open={open} onOpenChange={onOpenChange}>
+              <Popover.Trigger asChild>
+                <button
+                  type="button"
+                  aria-label="Editar alcance e frequência"
+                  className="-my-1.5 -mr-1.5 inline-flex size-7 items-center justify-center rounded-md text-fg-subtle hover:text-fg hover:bg-surface cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature"
+                >
+                  <PencilIcon />
+                </button>
+              </Popover.Trigger>
+              <Popover.Portal>
+                <Popover.Content
+                  align="end"
+                  sideOffset={8}
+                  collisionPadding={16}
+                  className="z-50 w-[300px] max-w-[calc(100vw-32px)] rounded-xl border border-border bg-surface-2 p-4 shadow-2xl"
+                >
+                  <div className="text-[11px] font-bold uppercase tracking-widest text-fg-muted">
+                    Alcance e frequência
+                  </div>
+                  {st.updatedAtLabel && (
+                    <div className="text-[10px] text-fg-subtle mt-0.5 tabular-nums">
+                      Atualizado em {st.updatedAtLabel}
+                    </div>
+                  )}
+                  <label className="mt-3 flex items-start gap-2 text-xs text-fg-subtle cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={st.autoAlcance}
+                      onChange={(e) => st.toggleAutoAlcance(e.target.checked)}
+                      className="mt-0.5 size-3.5 accent-signature cursor-pointer"
+                    />
+                    <span>Calcular o alcance pela frequência (impressões ÷ frequência)</span>
+                  </label>
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <label htmlFor="alcance-kpi-input" className="block text-[10px] font-bold uppercase tracking-wider text-fg-muted mb-1">
+                        Alcance único
+                      </label>
+                      {st.autoAlcance ? (
+                        <div className="h-10 flex items-center text-sm text-fg-subtle italic">
+                          {st.derivedAlcance ? `Calculado: ${st.derivedAlcance}` : "Calculado a partir da frequência"}
+                        </div>
+                      ) : (
+                        <Input
+                          id="alcance-kpi-input"
+                          inputMode="numeric"
+                          value={st.alcance}
+                          onChange={(e) => st.setAlcance(formatAlcanceInput(e.target.value))}
+                          placeholder="Ex: 1.250.000"
+                        />
+                      )}
+                    </div>
+                    <div>
+                      <label htmlFor="frequencia-kpi-input" className="block text-[10px] font-bold uppercase tracking-wider text-fg-muted mb-1">
+                        Frequência média
+                      </label>
+                      <Input
+                        id="frequencia-kpi-input"
+                        inputMode="decimal"
+                        value={st.frequencia}
+                        onChange={(e) => st.setFrequencia(e.target.value)}
+                        placeholder={!st.autoAlcance && st.derivedFreq ? `Auto: ${st.derivedFreq}` : "Ex: 3,2"}
+                      />
+                    </div>
+                  </div>
+                  {st.error && <p className="mt-3 text-xs text-danger">{st.error}</p>}
+                  <div className="mt-4 flex justify-end gap-2">
+                    <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)} disabled={st.saving}>
+                      Cancelar
+                    </Button>
+                    <Button variant="primary" size="sm" onClick={onSave} loading={st.saving}>
+                      {st.saving ? "Salvando..." : "Salvar"}
+                    </Button>
+                  </div>
+                </Popover.Content>
+              </Popover.Portal>
+            </Popover.Root>
+          )}
+        </div>
+
+        <span
+          className={cn(
+            "text-xl md:text-2xl font-bold leading-tight tabular-nums truncate",
+            st.displayAlcance ? "text-fg" : "text-fg-subtle",
+          )}
+        >
+          {st.displayAlcance || "—"}
+        </span>
+
+        <div className="text-[11px] leading-snug text-fg-subtle">
+          {st.displayFrequencia ? (
+            <>
+              Frequência média{" "}
+              <span className="font-semibold text-fg tabular-nums">{st.displayFrequencia}</span>
+              {isAdmin && st.freqIsAuto && <span className="ml-1">(calculada)</span>}
+            </>
+          ) : st.isEmpty ? (
+            isAdmin ? "Sem dado. Use o lápis para preencher." : "Disponível em breve"
+          ) : null}
+        </div>
+      </div>
     </Card>
   );
 }

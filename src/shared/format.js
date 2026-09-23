@@ -60,3 +60,7 @@ export const fmtCompact = (n) => {
   if (abs < 1_000_000_000)   return `${fmt(n / 1_000_000,     1)}M`;
   return                            `${fmt(n / 1_000_000_000, 1)}B`;
 };
+
+// Rótulo de eixo compacto: "140k" em vez de "140,0k" — a casa decimal só
+// aparece quando diz algo ("1,5M").
+export const fmtCompactTick = (n) => fmtCompact(n).replace(/,0(?=[kMB]?$)/, "");

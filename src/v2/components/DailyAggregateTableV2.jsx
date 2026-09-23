@@ -115,8 +115,15 @@ export function DailyAggregateTableV2({
   availableMedia = null,
   // Botão de baixar PNG no header (só admin), ao lado do CSV.
   downloadable = false,
+  // Título no header (no lugar da contagem de dias). Usado na Visão Geral,
+  // onde a tabela não tem mais uma seção colapsável em volta.
+  title = null,
+  // Modo compacto: mostra só os N dias mais recentes e oferece expandir.
+  // O total do rodapé continua somando todos os dias do período.
+  initialRows = null,
 }) {
   const cardRef = useRef(null);
+  const [expanded, setExpanded] = useState(false);
   // Filtra MEDIA_OPTIONS pelo conjunto disponível (se passado). Mantém
   // ordem original (Agregado, Display, Video). Agregado só faz sentido
   // quando há ambas mídias — se a campanha tem só uma, mostra direto a
@@ -177,16 +184,29 @@ export function DailyAggregateTableV2({
   };
 
   const empty = !aggregated.length;
+  const canCollapse = !!initialRows && aggregated.length > initialRows;
+  const collapsed = canCollapse && !expanded;
+  const visibleRows = collapsed ? aggregated.slice(0, initialRows) : aggregated;
+  const daysLabel = `${aggregated.length} ${aggregated.length === 1 ? "dia" : "dias"}`;
 
   return (
     <Card ref={cardRef} className={cn("overflow-hidden", className)}>
       {/* Header: meta-info + toggle + CSV + PNG */}
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b border-border">
-        <span className="text-xs font-semibold text-fg-muted">
-          {empty
-            ? "Sem entregas"
-            : `${aggregated.length} ${aggregated.length === 1 ? "dia" : "dias"} · sem dimensão de line`}
-        </span>
+        {title ? (
+          <span className="inline-flex items-baseline gap-2 min-w-0">
+            <span className="text-[11px] font-bold uppercase tracking-widest text-fg-muted">
+              {title}
+            </span>
+            {!empty && (
+              <span className="text-xs text-fg-subtle tabular-nums">{daysLabel}</span>
+            )}
+          </span>
+        ) : (
+          <span className="text-xs font-semibold text-fg-muted">
+            {empty ? "Sem entregas" : `${daysLabel} · sem dimensão de line`}
+          </span>
+        )}
 
         <div className="flex items-center gap-2 flex-wrap">
           {showToggle && (
@@ -243,7 +263,7 @@ export function DailyAggregateTableV2({
               </tr>
             </thead>
             <tbody>
-              {aggregated.map((r) => (
+              {visibleRows.map((r) => (
                 <tr
                   key={r.date}
                   className="border-b border-border/50 last:border-b-0 hover:bg-surface transition-colors"
@@ -270,7 +290,7 @@ export function DailyAggregateTableV2({
                       mono={c.type === "date"}
                     >
                       {c.key === "date"
-                        ? "Total"
+                        ? (collapsed ? `Total · ${daysLabel}` : "Total")
                         : formatCell(totalsRow[c.key], c.type)}
                     </Td>
                   ))}
@@ -278,6 +298,21 @@ export function DailyAggregateTableV2({
               </tfoot>
             )}
           </table>
+        </div>
+      )}
+
+      {canCollapse && (
+        <div className="px-4 py-2.5 border-t border-border">
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            className="text-xs font-semibold text-signature hover:underline underline-offset-4 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature rounded"
+          >
+            {expanded
+              ? `Mostrar só os últimos ${initialRows} dias`
+              : `Mostrar os ${aggregated.length} dias`}
+          </button>
         </div>
       )}
     </Card>
