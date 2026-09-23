@@ -448,8 +448,10 @@ export default function PmpDealsPage({
     () => ({ search: deferredSearch, customers: customer, statuses: status, bidType, source: sourceFilter, statusOf: effectiveStatus }),
     [deferredSearch, customer, status, bidType, sourceFilter],
   );
+  // Os memos abaixo dependem de `filterCriteria` (não dos campos soltos): um
+  // filtro novo entra em um lugar só e ninguém fica com lista velha.
   const applyFilters = (arr) => filterPmpLines(arr, filterCriteria);
-  const liveFiltered      = useMemo(() => applyFilters(partitions.live),    [partitions.live, deferredSearch, customer, bidType, status, sourceFilter]);
+  const liveFiltered      = useMemo(() => applyFilters(partitions.live),    [partitions.live, filterCriteria]);
   // Histórico passa a ser LIFETIME: mostra TODOS os deals (ativos + encerrados
   // + arquivados), com filtros aplicados. Vira a aba "tudo".
   // Filtros de período/trimestre só aplicam na aba Histórico, e fazem intersecção.
@@ -530,7 +532,7 @@ export default function PmpDealsPage({
       }
       return true;
     });
-  }, [lines, deferredSearch, customer, bidType, status, sourceFilter, histPeriod, quarterRanges, monthRanges]);
+  }, [lines, filterCriteria, histPeriod, quarterRanges, monthRanges]);
 
   // Histórico com métricas janeladas quando há janela ativa e dado carregado.
   // Exige mapa não-vazio: se o endpoint ainda não existir no backend (ou
@@ -542,7 +544,7 @@ export default function PmpDealsPage({
     [allLinesFiltered, windowed, windowMetrics],
   );
 
-  const allFiltered = useMemo(() => applyFilters([...partitions.live, ...partitions.other]), [partitions, deferredSearch, customer, bidType, status, sourceFilter]);
+  const allFiltered = useMemo(() => applyFilters([...partitions.live, ...partitions.other]), [partitions, filterCriteria]);
 
   // Dataset da aba Por cliente: lifetime SEM arquivadas (testes/seeds só no
   // Histórico) e SEM o filtro de período do Histórico (que sobrevive no
@@ -551,7 +553,7 @@ export default function PmpDealsPage({
   // que está exposto abaixo.
   const clientLines = useMemo(
     () => applyFilters(lines.filter(l => !l.is_archived)),
-    [lines, deferredSearch, customer, bidType, status, sourceFilter],
+    [lines, filterCriteria],
   );
 
   // Dataset da aba Analytics: LIFETIME (todas as lines, como sempre foi) mas

@@ -57,6 +57,7 @@ import NewCampaignModal from "../../../components/modals/NewCampaignModal";
 import LoomModal from "../../../components/modals/LoomModal";
 import { SurveyModal, MergeModal } from "../lib/lazyModals";
 import { preloadWhenIdle } from "../../../shared/lazyWithPreload";
+import LazyModalBoundary from "../../../components/LazyModalBoundary";
 import LogoModal from "../../../components/modals/LogoModal";
 import OwnerModal from "../../../components/modals/OwnerModal";
 import RmndUploadModal from "../../../components/modals/RmndUploadModal";
@@ -1523,14 +1524,16 @@ export default function CampaignMenuV2({
         />
       )}
       {surveyModal && (
-        <Suspense fallback={null}>
-          <SurveyModal
-            shortToken={surveyModal}
-            onClose={() => setSurveyModal(null)}
-            onSaved={() => setSurveyModal(null)}
-            theme={legacyModalTheme(isDark)}
-          />
-        </Suspense>
+        <LazyModalBoundary onFail={() => setSurveyModal(null)}>
+          <Suspense fallback={null}>
+            <SurveyModal
+              shortToken={surveyModal}
+              onClose={() => setSurveyModal(null)}
+              onSaved={() => setSurveyModal(null)}
+              theme={legacyModalTheme(isDark)}
+            />
+          </Suspense>
+        </LazyModalBoundary>
       )}
       {logoModal && (
         <LogoModal
@@ -1550,14 +1553,16 @@ export default function CampaignMenuV2({
         />
       )}
       {mergeModal && (
-        <Suspense fallback={null}>
-          <MergeModal
-            campaign={mergeModal}
-            onSaved={handleMergeSaved}
-            onClose={() => setMergeModal(null)}
-            theme={legacyModalTheme(isDark)}
-          />
-        </Suspense>
+        <LazyModalBoundary onFail={() => setMergeModal(null)}>
+          <Suspense fallback={null}>
+            <MergeModal
+              campaign={mergeModal}
+              onSaved={handleMergeSaved}
+              onClose={() => setMergeModal(null)}
+              theme={legacyModalTheme(isDark)}
+            />
+          </Suspense>
+        </LazyModalBoundary>
       )}
       {rmndModal && (
         <RmndUploadModal

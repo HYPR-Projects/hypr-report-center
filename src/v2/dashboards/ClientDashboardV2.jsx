@@ -244,6 +244,10 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   // troca de token sem reload, etc). Renderiza barra fina de progresso
   // sem mexer no skeleton inicial — UX de "algo tá vindo" sem flash.
   const [refreshing, setRefreshing] = useState(false);
+  // Flag própria do reload pós-upload (reloadReport). Separada de
+  // `refreshing` pra que o reset do ramo de cache hit (troca de view) não
+  // apague a barra de progresso de um reload forçado que ainda está rodando.
+  const [reloading, setReloading] = useState(false);
   // `switchingView` é um subset de `refreshing`: true só quando o usuário
   // troca de view (clica em pill ou hits back/forward com ?view= diferente).
   // Quando true, o conteúdo principal é dimado e fica não-clicável — sem
@@ -254,7 +258,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
 
   // 1ª carga (sem `data` ainda) e refetches em background entram no
   // contador global → barrinha no topo só aparece se demorar > 200ms.
-  useLoadingTask((!data && !error) || refreshing);
+  useLoadingTask((!data && !error) || refreshing || reloading);
 
   const [mainRange, setMainRangeState] = useState(() => readRangeFromUrl());
   // mainPresetId guarda a *intenção* do filtro (ex: "lastMonth"). Quando
@@ -443,7 +447,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   const reloadReport = useCallback(async () => {
     if (!token) return;
     try {
-      setRefreshing(true);
+      setReloading(true);
       const d = await getCampaign(token, {
         ...(view ? { view } : {}),
         refresh: true,
@@ -454,7 +458,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     } catch (e) {
       console.warn("[report] reload pós-upload falhou; mantendo payload atual", e);
     } finally {
-      setRefreshing(false);
+      setReloading(false);
     }
   }, [token, view, cacheKey]);
 

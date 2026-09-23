@@ -6,25 +6,28 @@
 // Uso:
 //   const SurveyModal = lazyWithPreload(() => import("./SurveyModal"));
 //   useEffect(() => preloadWhenIdle(SurveyModal), []);
-//   {open && <Suspense fallback={null}><SurveyModal ... /></Suspense>}
+//   {open && (
+//     <LazyModalBoundary onFail={fechar}>
+//       <Suspense fallback={null}><SurveyModal ... /></Suspense>
+//     </LazyModalBoundary>
+//   )}
 //
 // A página pinta sem o JS do modal; assim que o navegador fica ocioso o chunk
 // é baixado em background, e quando a pessoa clica o componente já está
-// pronto. Se o preload falhar (rede, deploy novo), a promise é descartada e o
-// render tenta de novo — e o `vite:preloadError` de src/shared/chunkReload.js
-// cobre o caso de deploy.
+// pronto.
+//
+// Falha de download (rede, deploy novo): o navegador guarda a falha do
+// módulo naquela página, então tentar de novo sem recarregar não adianta.
+// Preload em idle que falha não faz nada visível; quem decide é o render —
+// o LazyModalBoundary faz o reload único de deploy (chunkReload) ou, se ele
+// já aconteceu, só fecha o modal sem derrubar a página.
 
 import { lazy } from "react";
 
 export function lazyWithPreload(factory) {
   let pending = null;
   const load = () => {
-    if (!pending) {
-      pending = factory().catch((err) => {
-        pending = null;
-        throw err;
-      });
-    }
+    if (!pending) pending = factory();
     return pending;
   };
   const Component = lazy(load);
@@ -40,7 +43,7 @@ export function preloadWhenIdle(...components) {
   if (typeof window === "undefined") return () => {};
   const run = () => {
     for (const c of components) {
-      c?.preload?.().catch(() => { /* render tenta de novo */ });
+      c?.preload?.().catch(() => { /* o render tenta de novo */ });
     }
   };
   if (typeof window.requestIdleCallback === "function") {

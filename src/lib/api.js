@@ -25,6 +25,7 @@
  */
 
 import { API_URL } from "../shared/config";
+import { timeoutSignal } from "../shared/timeout.js";
 import {
   adminAuthHeaders,
   getOrIssueAdminJwt,
@@ -108,15 +109,6 @@ const READ_TIMEOUT_LIGHT_MS = 30_000;  // lookups pequenos
 // sempre quando a conexão morre calada — não cortar consulta lenta legítima.
 const READ_TIMEOUT_SLOW_MS  = 120_000;
 
-function timeoutSignal(ms) {
-  // AbortSignal.timeout é Baseline desde 2022; o guard cobre WebView antigo,
-  // onde simplesmente voltamos ao comportamento anterior (sem deadline).
-  try {
-    return AbortSignal.timeout(ms);
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * Sufixo de credencial admin legada (`&ak=hypr2026`) lido da URL da página.
@@ -1214,7 +1206,7 @@ export async function getSurvey({ short_token }) {
 export async function listTypeformForms({ refresh = false } = {}) {
   const jwt = await getOrIssueAdminJwt();
   const url = `${API_URL}?action=typeform_list_forms${refresh ? "&refresh=true" : ""}`;
-  const r = await fetch(url, { headers: adminAuthHeaders(jwt) });
+  const r = await fetch(url, { headers: adminAuthHeaders(jwt), signal: timeoutSignal(READ_TIMEOUT_SLOW_MS) });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
   return d;
@@ -1230,7 +1222,7 @@ export async function fetchTypeformFormMeta(formId, { refresh = false } = {}) {
   if (!formId) return null;
   const jwt = await getOrIssueAdminJwt();
   const url = `${API_URL}?action=typeform_form_meta&form_id=${encodeURIComponent(formId)}${refresh ? "&refresh=true" : ""}`;
-  const r = await fetch(url, { headers: adminAuthHeaders(jwt) });
+  const r = await fetch(url, { headers: adminAuthHeaders(jwt), signal: timeoutSignal(READ_TIMEOUT_SLOW_MS) });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
   return d;
@@ -1249,7 +1241,9 @@ export async function fetchTypeformViaProxy(formUrl, range = null) {
   if (range?.from) params.set("date_from", range.from);
   if (range?.to)   params.set("date_to",   range.to);
   const r = await fetch(`${API_URL}?${params.toString()}`, {
-    signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
+    // Frio, o proxy pagina TODAS as respostas do form (1000 por página, sem
+    // teto) — form grande passa de 60s legitimamente.
+    signal: timeoutSignal(READ_TIMEOUT_SLOW_MS),
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
@@ -1290,7 +1284,10 @@ export async function listMaxAttentionCreatives({ shortToken = "", days, refresh
   if (shortToken) params.set("short_token", shortToken);
   if (days) params.set("days", String(days));
   if (refresh) params.set("refresh", "true");
-  const r = await fetch(`${API_URL}?${params.toString()}`, { headers: adminAuthHeaders(jwt) });
+  const r = await fetch(`${API_URL}?${params.toString()}`, {
+    headers: adminAuthHeaders(jwt),
+    signal: timeoutSignal(READ_TIMEOUT_SLOW_MS),
+  });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) {
     const err = new Error(d?.error || `HTTP ${r.status}`);
@@ -1638,7 +1635,7 @@ export async function getReportAnalytics({ short_token, range_days = 30, include
     range: String(range_days),
   });
   if (include_internal) params.set("include_internal", "true");
-  const r = await fetch(`${API_URL}?${params}`, { headers: adminAuthHeaders(jwt) });
+  const r = await fetch(`${API_URL}?${params}`, { headers: adminAuthHeaders(jwt), signal: timeoutSignal(READ_TIMEOUT_SLOW_MS) });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }

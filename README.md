@@ -51,8 +51,8 @@ O Legacy foi removido: a interface é toda a V2 (`src/v2/`), sem toggle de vers�
 Pontos que valem saber antes de mexer em performance:
 
 - **Code-splitting por rota** (`App.jsx`, `React.lazy`) e por família de vendor (`vite.config.js`). Modais pesados são carregados sob demanda com preload em idle (`src/shared/lazyWithPreload.js`).
-- **Deploy novo com aba aberta:** se um chunk lazy não carregar (hash antigo), a página recarrega uma vez sozinha (`src/shared/chunkReload.js`).
-- **Timeouts:** toda leitura em `src/lib/api.js` tem deadline (30s/60s/120s conforme o peso); escritas não têm, de propósito.
+- **Deploy novo com aba aberta:** se um chunk lazy não carregar (hash antigo), o ErrorBoundary recarrega a página uma vez em vez de mostrar erro (`src/shared/chunkReload.js`). Modal lazy tem boundary próprio (`LazyModalBoundary`): se falhar, fecha sem derrubar a página.
+- **Timeouts:** as leituras que seguram tela em `src/lib/api.js` têm deadline (30s/60s/120s conforme o peso, via `src/shared/timeout.js`); escritas não têm, de propósito — abortar um save que o backend ainda vai concluir mostraria erro de algo que deu certo.
 - **Cache:** stale-while-revalidate em localStorage (`src/lib/persistedCache.js`), invalidado a cada deploy pelo BUILD_ID.
 
 ## Deploy

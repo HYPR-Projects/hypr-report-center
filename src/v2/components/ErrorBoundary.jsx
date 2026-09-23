@@ -38,21 +38,29 @@
 
 import React from "react";
 import { gaEvent } from "../../shared/analytics";
+import { isChunkLoadError, canReloadForChunkError, reloadForChunkError } from "../../shared/chunkReload";
 
 export default class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false, message: "" };
+    this.state = { hasError: false, message: "", reloading: false };
   }
 
   static getDerivedStateFromError(error) {
     return {
       hasError: true,
       message: error?.message || "Erro desconhecido",
+      // Chunk que não baixou (deploy novo com a aba aberta): em vez da tela
+      // de erro, recarrega uma vez — ver src/shared/chunkReload.js.
+      reloading: isChunkLoadError(error) && canReloadForChunkError(),
     };
   }
 
   componentDidCatch(error, errorInfo) {
+    if (this.state.reloading) {
+      if (reloadForChunkError()) return;
+      this.setState({ reloading: false });
+    }
     // 1. Console — para devs com DevTools aberto verem stack completo
     //    sem precisar abrir GA.
     console.error("[ErrorBoundary] Crash capturado:", error, errorInfo);
@@ -76,6 +84,7 @@ export default class ErrorBoundary extends React.Component {
 
   render() {
     if (!this.state.hasError) return this.props.children;
+    if (this.state.reloading) return null;
 
     return (
       <div

@@ -1,6 +1,7 @@
 import { Component } from "react";
 import { C } from "../shared/theme";
 import { gaEvent } from "../shared/analytics";
+import { isChunkLoadError, canReloadForChunkError, reloadForChunkError } from "../shared/chunkReload";
 
 /**
  * ErrorBoundary global. Captura erros de renderização em qualquer subárvore e
@@ -13,14 +14,20 @@ import { gaEvent } from "../shared/analytics";
 class ErrorBoundary extends Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, reloading: false };
   }
 
   static getDerivedStateFromError(error) {
-    return { hasError: true, error };
+    // Chunk que não baixou (deploy novo com a aba aberta): em vez da tela de
+    // erro, recarrega uma vez — ver src/shared/chunkReload.js.
+    return { hasError: true, error, reloading: isChunkLoadError(error) && canReloadForChunkError() };
   }
 
   componentDidCatch(error, info) {
+    if (this.state.reloading) {
+      if (reloadForChunkError()) return;
+      this.setState({ reloading: false });
+    }
     // Log estruturado pro console (sentry/logrocket entram aqui no futuro).
     console.error("[ErrorBoundary]", error, info?.componentStack);
     // Telemetria: registra evento no GA pra rastrear taxa de crashes.
@@ -40,6 +47,7 @@ class ErrorBoundary extends Component {
 
   render() {
     if (!this.state.hasError) return this.props.children;
+    if (this.state.reloading) return null;
 
     return (
       <div

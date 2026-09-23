@@ -22,10 +22,7 @@ import {
   formatLastDelivery, statusPillClass, pctDeliveryClass, pctBarColor,
   METRIC,
 } from "../lib/pmpFormat";
-import {
-  campaignTotals, sortCampaigns,
-  CAMPAIGN_SITUATIONS, CAMPAIGN_CYCLES,
-} from "../lib/pmpCampaign";
+import { campaignTotals, sortCampaigns } from "../lib/pmpCampaign";
 import { PmpLineRow, PmpLineRowHeader, SourceChip, PMP_ROW_MIN_W_NOPI } from "./PmpComponents";
 
 const MONTH_ABBR = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];

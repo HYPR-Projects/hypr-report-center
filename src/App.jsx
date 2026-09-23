@@ -70,6 +70,36 @@ function isLikelyShareId(token) {
   return false;
 }
 
+// Ao clicar "Ver Report":
+// (Função de módulo, não closure do AppRoutes: não depende de state, e com
+// identidade estável os cards/linhas em `memo` não re-renderizam à toa a
+// cada navegação.)
+//  • Tenta emitir um JWT custom de 5min via backend (modo novo).
+//  • Se backend ainda não tem o endpoint (404/erro), cai no ?ak= legacy
+//    para não quebrar o fluxo durante o período de rollout.
+async function onOpenReport(t) {
+  // ?view=<t>: landing no PRÓPRIO token que admin clicou, mesmo em
+  // campanhas agrupadas. Sem isso, o backend defaultava pro active_token
+  // (último mês), forçando admin a trocar de mês manualmente quando
+  // queria abrir o report de Abril mas caía em Maio. ?view=<t> resolve:
+  // se admin clicou no card de Abril (A6GZPX), abre direto em Abril.
+  // Em campanhas single-token (não-merged), ?view=<t> é no-op pro
+  // backend (já é o único token), então é seguro sempre adicionar.
+  const idToken = getGoogleIdToken();
+  if (idToken) {
+    const issued = await issueAdminJwt(idToken);
+    if (issued?.token) {
+      window.open(`/report/${t}?adm=${encodeURIComponent(issued.token)}&view=${encodeURIComponent(t)}`, "_blank");
+      return;
+    }
+  }
+  // Fallback: link legacy. Pode acontecer em três casos:
+  //  • Backend ainda não foi redeployado com o endpoint issue_admin_token.
+  //  • id_token do Google expirou (TTL de 1h sem refresh).
+  //  • Rede caiu na hora — usuário abre o link mesmo assim.
+  window.open(`/report/${t}?ak=hypr2026&view=${encodeURIComponent(t)}`, "_blank");
+}
+
 export default function App() {
   // SessionExpiredModalV2 é montado uma vez aqui pra cobrir todas as
   // rotas — ouve o evento global emitido pelo postJson em api.js quando
@@ -414,33 +444,6 @@ function AppRoutes() {
       </Suspense>
     );
   }
-
-  // Ao clicar "Ver Report":
-  //  • Tenta emitir um JWT custom de 5min via backend (modo novo).
-  //  • Se backend ainda não tem o endpoint (404/erro), cai no ?ak= legacy
-  //    para não quebrar o fluxo durante o período de rollout.
-  const onOpenReport = async (t) => {
-    // ?view=<t>: landing no PRÓPRIO token que admin clicou, mesmo em
-    // campanhas agrupadas. Sem isso, o backend defaultava pro active_token
-    // (último mês), forçando admin a trocar de mês manualmente quando
-    // queria abrir o report de Abril mas caía em Maio. ?view=<t> resolve:
-    // se admin clicou no card de Abril (A6GZPX), abre direto em Abril.
-    // Em campanhas single-token (não-merged), ?view=<t> é no-op pro
-    // backend (já é o único token), então é seguro sempre adicionar.
-    const idToken = getGoogleIdToken();
-    if (idToken) {
-      const issued = await issueAdminJwt(idToken);
-      if (issued?.token) {
-        window.open(`/report/${t}?adm=${encodeURIComponent(issued.token)}&view=${encodeURIComponent(t)}`, "_blank");
-        return;
-      }
-    }
-    // Fallback: link legacy. Pode acontecer em três casos:
-    //  • Backend ainda não foi redeployado com o endpoint issue_admin_token.
-    //  • id_token do Google expirou (TTL de 1h sem refresh).
-    //  • Rede caiu na hora — usuário abre o link mesmo assim.
-    window.open(`/report/${t}?ak=hypr2026&view=${encodeURIComponent(t)}`, "_blank");
-  };
 
   const onLogout = () => {
     clearSession();

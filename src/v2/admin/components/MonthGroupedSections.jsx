@@ -114,17 +114,24 @@ export function MonthGroupedSections({
     [defaults]
   );
 
-  // Meses que o user abriu/fechou na mão. Mês colapsado desde o início não
-  // monta os cards (cada card tem até 9 tooltips + observers + hooks de
-  // cache): os itens só nascem no 1º toggle. Uma vez montados, ficam — é o
-  // que deixa a animação de fechar funcionar e evita remontar ao reabrir.
-  const [touched, setTouched] = useState(() => new Set());
+  // Meses que já estiveram abertos em algum render. Mês colapsado desde o
+  // início não monta os cards (cada card tem até 9 tooltips + observers +
+  // hooks de cache): os itens só nascem quando o mês abre pela 1ª vez — por
+  // clique OU por default/filtro. Uma vez montados, ficam: é o que deixa a
+  // animação de fechar funcionar (inclusive quando um filtro fecha o mês) e
+  // evita remontar ao reabrir.
+  const [everOpen, setEverOpen] = useState(() => new Set());
+  const openNow = groups
+    .filter((g) => g.key !== "no-date" && !isKeyCollapsed(collapsed, g.key))
+    .map((g) => g.key);
+  if (openNow.some((k) => !everOpen.has(k))) {
+    // Estado derivado de render anterior (padrão documentado do React): o
+    // React refaz este render na hora, antes do commit — sem frame extra.
+    setEverOpen((prev) => new Set([...prev, ...openNow]));
+  }
 
   const toggle = useCallback(
-    (key) => {
-      setTouched((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
-      setCollapsed((s) => ({ ...s, [key]: !isKeyCollapsed(s, key) }));
-    },
+    (key) => setCollapsed((s) => ({ ...s, [key]: !isKeyCollapsed(s, key) })),
     [isKeyCollapsed]
   );
 
@@ -141,7 +148,7 @@ export function MonthGroupedSections({
       {groups.map((g, gi) => {
         const canCollapse = g.key !== "no-date";
         const isCollapsed = canCollapse && isKeyCollapsed(collapsed, g.key);
-        const mountItems = !isCollapsed || touched.has(g.key);
+        const mountItems = !isCollapsed || everOpen.has(g.key);
         return (
           <section key={g.key}>
             <button
@@ -187,8 +194,8 @@ export function MonthGroupedSections({
                 - Quando canCollapse=true (meses normais), usamos o padrão
                   action-expand (grid-template-rows 0fr↔1fr + opacity) pra
                   animar smooth abrir/fechar. Mês que nasce colapsado não
-                  monta os items até o 1º toggle (`touched`); depois disso
-                  ficam montados pra animação de fechar funcionar.
+                  monta os items até abrir pela 1ª vez (`everOpen`); depois
+                  disso ficam montados pra animação de fechar funcionar.
                 - Quando !canCollapse (grupo "no-date"), conditional render
                   normal — não tem toggle, não precisa de animação.
                 - `inert` quando collapsed evita foco em items invisíveis (a11y). */}

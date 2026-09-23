@@ -33,6 +33,7 @@ import { createOwnerMatcher } from "../lib/ownerFilter";
 import LoomModal from "../../../components/modals/LoomModal";
 import { SurveyModal, MergeModal } from "../lib/lazyModals";
 import { preloadWhenIdle } from "../../../shared/lazyWithPreload";
+import LazyModalBoundary from "../../../components/LazyModalBoundary";
 import LogoModal from "../../../components/modals/LogoModal";
 import OwnerModal from "../../../components/modals/OwnerModal";
 import { NegotiationModal } from "../../components/NegotiationModal";
@@ -726,14 +727,16 @@ export default function ClientDetailPage({
         />
       )}
       {surveyModal && (
-        <Suspense fallback={null}>
-          <SurveyModal
-            shortToken={surveyModal}
-            onClose={() => setSurveyModal(null)}
-            onSaved={() => setSurveyModal(null)}
-            theme={legacyModalTheme(isDark)}
-          />
-        </Suspense>
+        <LazyModalBoundary onFail={() => setSurveyModal(null)}>
+          <Suspense fallback={null}>
+            <SurveyModal
+              shortToken={surveyModal}
+              onClose={() => setSurveyModal(null)}
+              onSaved={() => setSurveyModal(null)}
+              theme={legacyModalTheme(isDark)}
+            />
+          </Suspense>
+        </LazyModalBoundary>
       )}
       {logoModal && (
         <LogoModal
@@ -753,14 +756,16 @@ export default function ClientDetailPage({
         />
       )}
       {mergeModal && (
-        <Suspense fallback={null}>
-          <MergeModal
-            campaign={mergeModal}
-            onSaved={handleMergeSaved}
-            onClose={() => setMergeModal(null)}
-            theme={legacyModalTheme(isDark)}
-          />
-        </Suspense>
+        <LazyModalBoundary onFail={() => setMergeModal(null)}>
+          <Suspense fallback={null}>
+            <MergeModal
+              campaign={mergeModal}
+              onSaved={handleMergeSaved}
+              onClose={() => setMergeModal(null)}
+              theme={legacyModalTheme(isDark)}
+            />
+          </Suspense>
+        </LazyModalBoundary>
       )}
       <NegotiationModal
         open={!!negotiationModal}

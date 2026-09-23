@@ -19,6 +19,7 @@ import { useLogoAnalysis } from "../hooks/useLogoAnalysis";
 import { useTheme } from "../hooks/useTheme";
 import { TokenChip } from "../admin/components/TokenChip";
 import { lazyWithPreload, preloadWhenIdle } from "../../shared/lazyWithPreload";
+import LazyModalBoundary from "../../components/LazyModalBoundary";
 import { getNegotiation } from "../../lib/api";
 import { fmtR } from "../../shared/format";
 import { useSlidingThumb } from "../../ui/useSlidingThumb";
@@ -427,38 +428,50 @@ export function CampaignHeaderV2({
         )}
       </div>
 
-      <Suspense fallback={null}>
-        {negoMounted && (
-          <NegotiationModal
-            open={negoOpen}
-            onOpenChange={setNegoOpen}
-            negotiationsByToken={negotiationsByToken}
-            members={negotiationMembers}
-            defaultActiveToken={currentView && currentView !== "aggregated" ? currentView : (mergeMeta?.active_token || shortToken)}
-            legacyTotals={legacyTotals}
-            reportData={reportData}
-          />
-        )}
-        {hasPosVenda && posVendaMounted && (
-          <PosVendaModal
-            open={posVendaOpen}
-            onOpenChange={setPosVendaOpen}
-            posVenda={posVenda}
-            clientName={clientName}
-          />
-        )}
-        {isAdmin && analyticsMounted && (
-          <ReportAnalyticsModal
-            open={analyticsOpen}
-            onOpenChange={setAnalyticsOpen}
-            campaign={{
-              short_token: shortToken,
-              client_name: clientName,
-              campaign_name: campaignName,
-            }}
-          />
-        )}
-      </Suspense>
+      {/* Cada modal lazy tem boundary próprio: se o JS não baixar, o modal
+          fecha em vez de derrubar o report (ver LazyModalBoundary). */}
+      {negoMounted && (
+        <LazyModalBoundary onFail={() => { setNegoOpen(false); setNegoMounted(false); }}>
+          <Suspense fallback={null}>
+            <NegotiationModal
+              open={negoOpen}
+              onOpenChange={setNegoOpen}
+              negotiationsByToken={negotiationsByToken}
+              members={negotiationMembers}
+              defaultActiveToken={currentView && currentView !== "aggregated" ? currentView : (mergeMeta?.active_token || shortToken)}
+              legacyTotals={legacyTotals}
+              reportData={reportData}
+            />
+          </Suspense>
+        </LazyModalBoundary>
+      )}
+      {hasPosVenda && posVendaMounted && (
+        <LazyModalBoundary onFail={() => { setPosVendaOpen(false); setPosVendaMounted(false); }}>
+          <Suspense fallback={null}>
+            <PosVendaModal
+              open={posVendaOpen}
+              onOpenChange={setPosVendaOpen}
+              posVenda={posVenda}
+              clientName={clientName}
+            />
+          </Suspense>
+        </LazyModalBoundary>
+      )}
+      {isAdmin && analyticsMounted && (
+        <LazyModalBoundary onFail={() => { setAnalyticsOpen(false); setAnalyticsMounted(false); }}>
+          <Suspense fallback={null}>
+            <ReportAnalyticsModal
+              open={analyticsOpen}
+              onOpenChange={setAnalyticsOpen}
+              campaign={{
+                short_token: shortToken,
+                client_name: clientName,
+                campaign_name: campaignName,
+              }}
+            />
+          </Suspense>
+        </LazyModalBoundary>
+      )}
     </section>
   );
 }

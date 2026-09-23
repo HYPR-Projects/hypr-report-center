@@ -25,6 +25,7 @@
 
 import { API_URL } from "./config.js";
 import { evictStaleCache, evictAllCache } from "../lib/persistedCache.js";
+import { timeoutSignal } from "./timeout.js";
 
 // Sessão persiste 8h (jornada de trabalho) em localStorage. Diferente do
 // modelo antigo, agora o admin JWT do backend (também 8h) é persistido
@@ -416,16 +417,6 @@ export function getResolvedShortToken(urlToken) {
 // pelo fallback da credencial atual ainda válida.
 const _AUTH_TIMEOUT_MS = 20_000;
 
-function _authTimeoutSignal() {
-  // Guard pra WebView antigo sem AbortSignal.timeout: volta ao comportamento
-  // anterior (sem deadline) em vez de quebrar.
-  try {
-    return AbortSignal.timeout(_AUTH_TIMEOUT_MS);
-  } catch {
-    return undefined;
-  }
-}
-
 // ─── Trade Google id_token → custom admin JWT (5min TTL) ─────────────────────
 /**
  * Troca o id_token do Google pelo admin JWT do backend.
@@ -452,7 +443,7 @@ export async function issueAdminJwt(googleIdToken) {
         "Authorization": `Bearer ${googleIdToken}`,
         "Content-Type": "application/json",
       },
-         signal: _authTimeoutSignal(),
+      signal: timeoutSignal(_AUTH_TIMEOUT_MS),
     });
   } catch {
     // Rede fora, CORS, backend inalcançável — não houve veredito.
@@ -509,7 +500,7 @@ export async function refreshAdminJwt(currentJwt) {
         "Authorization": `Bearer ${currentJwt}`,
         "Content-Type": "application/json",
       },
-         signal: _authTimeoutSignal(),
+      signal: timeoutSignal(_AUTH_TIMEOUT_MS),
     });
   } catch {
     // Rede fora, CORS, backend inalcançável — não houve veredito.
