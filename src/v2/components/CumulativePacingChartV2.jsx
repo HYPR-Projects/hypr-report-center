@@ -185,7 +185,7 @@ function ChartTooltip({ active, payload, label }) {
       dot: "var(--color-signature)",
     },
     video != null && {
-      label: "Video",
+      label: "Vídeo",
       value: video,
       dot: "var(--color-signature-light)",
     },
@@ -356,7 +356,7 @@ export function CumulativePacingChartV2({
             <Line
               type="monotone"
               dataKey="video"
-              name="Video"
+              name="Vídeo"
               stroke={hypr.signatureLight}
               strokeWidth={2.5}
               dot={false}

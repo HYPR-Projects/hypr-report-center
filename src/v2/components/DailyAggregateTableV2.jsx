@@ -50,7 +50,7 @@ const WEEKDAY_PT = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 const MEDIA_OPTIONS = [
   { value: "AGGREGATED", label: "Agregado" },
   { value: "DISPLAY",    label: "Display"  },
-  { value: "VIDEO",      label: "Video"    },
+  { value: "VIDEO",      label: "Vídeo"    },
 ];
 
 const MEDIA_LABEL = MEDIA_OPTIONS.reduce((acc, opt) => {
@@ -68,8 +68,8 @@ const COLUMNS = {
     { key: "clicks",                label: "Cliques",       type: "number" },
     { key: "ctr",                   label: "CTR",           type: "percent2" },
     { key: "viewability",           label: "Viewability",   type: "percent1" },
-    { key: "video_starts",          label: "Start Views",   type: "number" },
-    { key: "video_view_100",        label: "100% Views",    type: "number" },
+    { key: "video_starts",          label: "Views iniciadas", type: "number" },
+    { key: "video_view_100",        label: "Views 100%",    type: "number" },
     { key: "vtr",                   label: "VTR",           type: "percent1" },
     { key: "cpm",                   label: "CPM Ef.",       type: "currency" },
     { key: "cpcv",                  label: "CPCV Ef.",      type: "currency" },
@@ -92,8 +92,8 @@ const COLUMNS = {
     { key: "clicks",                label: "Cliques",       type: "number" },
     { key: "ctr",                   label: "CTR",           type: "percent2" },
     { key: "viewability",           label: "Viewability",   type: "percent1" },
-    { key: "video_starts",          label: "Start Views",   type: "number" },
-    { key: "video_view_100",        label: "100% Views",    type: "number" },
+    { key: "video_starts",          label: "Views iniciadas", type: "number" },
+    { key: "video_view_100",        label: "Views 100%",    type: "number" },
     { key: "vtr",                   label: "VTR",           type: "percent1" },
     { key: "cpcv",                  label: "CPCV Ef.",      type: "currency" },
     { key: "cost",                  label: "Custo Ef.",     type: "currency" },
@@ -222,7 +222,7 @@ export function DailyAggregateTableV2({
       {!empty && media === "AGGREGATED" && (
         <div className="px-4 py-2 border-b border-border bg-surface text-[11px] text-fg-subtle leading-snug">
           CPM Ef. é calculado apenas sobre a entrega de Display e CPCV Ef.
-          apenas sobre a de Video — coerente com o modelo de cobrança HYPR.
+          apenas sobre a de Vídeo — coerente com o modelo de cobrança HYPR.
         </div>
       )}
 

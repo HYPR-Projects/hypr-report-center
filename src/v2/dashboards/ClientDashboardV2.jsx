@@ -3,13 +3,17 @@
 // Shell do dashboard V2 — redesenhado em PR-13 pra bater com o mockup.
 //
 // LAYOUT (top → bottom):
-//   1. TopBarV2 — branding "Report Center" + share + voltar à versão atual
-//   2. CampaignHeaderV2 — hero card com gradient + nome campanha + token badge
-//   3. Filtro de período (compacto, alinhado à direita)
-//   4. Tabs Radix com ícones: Visão Geral / Display / Video / Base de Dados /
-//      RMND / PDOOH / Video Loom / Survey
-//   5. TabsContent — OverviewV2 / DisplayV2 / VideoV2 / DetalhamentoV2 /
-//      RmndV2 / PdoohV2 / LoomV2 / SurveyV2
+//   1. TopBarV2 — branding + selo de frescor real ("Dados até 22/09 ·
+//      atualizado às 06:12") + share + tema
+//   2. CampaignHeaderV2 — hero card; o vídeo explicativo (Loom) virou o chip
+//      "Assistir resumo" ali (antes era uma aba)
+//   3. Barra de controles FIXA (sticky abaixo do TopBar): abas + período +
+//      filtros. Com páginas de 2-3 mil px, trocar período ou filtro não pode
+//      exigir voltar ao topo.
+//        Abas: Visão Geral / Display / Vídeo / Max Attention · PDOOH / RMND /
+//        Brand Lift · (admin) DSPs · Base de dados (utilitário, no fim)
+//   4. TabsContent — OverviewV2 / DisplayV2 / VideoV2 / MaxAttentionV2 /
+//      PdoohV2 / RmndV2 / SurveyV2 / DetalhamentoV2
 //
 // Base de Dados (PR-16) é a tab dedicada à raw data completa (DataTableV2
 // com filter Tudo/Display/Video). Antes vivia como CollapsibleSection na
@@ -31,6 +35,7 @@ import { getCampaign, getShareId, getCachedShareId } from "../../lib/api";
 import { readCache, writeCache } from "../../lib/persistedCache";
 import { gaPageView } from "../../shared/analytics";
 import { computeAggregates, extractAudience, getCreativeLineKey } from "../../shared/aggregations";
+import { computeDataUntil, formatFreshness } from "../../shared/freshness";
 import { useLoadingTask } from "../../shared/loading";
 import {
   readRangeFromUrl,
@@ -64,13 +69,13 @@ import VideoV2 from "./VideoV2";
 import DetalhamentoV2 from "./DetalhamentoV2";
 import RmndV2 from "./RmndV2";
 import PdoohV2 from "./PdoohV2";
-import LoomV2 from "./LoomV2";
 import SurveyV2 from "./SurveyV2";
+import MaxAttentionV2 from "./MaxAttentionV2";
 import DspHealthV2 from "./DspHealthV2";
 
 // ─── Helpers de URL ────────────────────────────────────────────────────
 
-const VALID_TABS = ["overview", "display", "video", "base", "rmnd", "pdooh", "loom", "survey", "dsps"];
+const VALID_TABS = ["overview", "display", "video", "max-attention", "base", "rmnd", "pdooh", "survey", "dsps"];
 const VALID_TACTICS = ["O2O", "OOH", "GROUNDFLOW"];
 
 function readTabFromUrl() {
@@ -79,6 +84,8 @@ function readTabFromUrl() {
     const t = new URLSearchParams(window.location.search).get("tab");
     // Backward compat: ?tab=detalhamento → base (renomeado em PR-16)
     if (t === "detalhamento") return "base";
+    // Aliases da aba Max Attention (links colados à mão)
+    if (t === "maxattention" || t === "ma") return "max-attention";
     return VALID_TABS.includes(t) ? t : "overview";
   } catch {
     return "overview";
@@ -91,6 +98,43 @@ function writeTabToUrl(tab) {
     const url = new URL(window.location.href);
     if (tab === "overview") url.searchParams.delete("tab");
     else url.searchParams.set("tab", tab);
+    window.history.replaceState({}, "", url.toString());
+  } catch {
+    /* noop */
+  }
+}
+
+// Link antigo com ?tab=loom: a aba Video Loom virou o chip "Assistir resumo"
+// no header. Em vez de cair numa aba que não existe, abre o vídeo na carga.
+function readLegacyLoomDeepLink() {
+  if (typeof window === "undefined") return false;
+  try {
+    return new URLSearchParams(window.location.search).get("tab") === "loom";
+  } catch {
+    return false;
+  }
+}
+
+// Filtros globais na URL — o link compartilhado abre no mesmo recorte.
+// Chaves curtas (aud, line, cl, size, fmt), valores separados por vírgula
+// e codificados; vírgula dentro de um valor vai como %2C via encodeURIComponent.
+const FILTER_URL_KEYS = { audiences: "aud", lineNames: "line", creativeLines: "cl", sizes: "size", formats: "fmt" };
+function readListFromUrl(key) {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = new URLSearchParams(window.location.search).get(key);
+    if (!raw) return [];
+    return raw.split(",").map((v) => decodeURIComponent(v)).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+function writeListToUrl(key, list) {
+  if (typeof window === "undefined") return;
+  try {
+    const url = new URL(window.location.href);
+    if (!list || list.length === 0) url.searchParams.delete(key);
+    else url.searchParams.set(key, list.map((v) => encodeURIComponent(v)).join(","));
     window.history.replaceState({}, "", url.toString());
   } catch {
     /* noop */
@@ -283,11 +327,21 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   // computeAggregates via creativeFilters, então todas as 3 abas vêem
   // aggregates já recortados. Base de Dados NÃO usa esses — tem seus
   // próprios filtros internos (local ao DataTableV2).
-  const [audiences, setAudiences] = useState([]);
-  const [lineNames, setLineNames] = useState([]);
-  const [creativeLines, setCreativeLines] = useState([]);
-  const [sizes, setSizes] = useState([]);
-  const [formats, setFormats] = useState([]);
+  const [audiences, setAudiencesState] = useState(() => readListFromUrl(FILTER_URL_KEYS.audiences));
+  const [lineNames, setLineNamesState] = useState(() => readListFromUrl(FILTER_URL_KEYS.lineNames));
+  const [creativeLines, setCreativeLinesState] = useState(() => readListFromUrl(FILTER_URL_KEYS.creativeLines));
+  const [sizes, setSizesState] = useState(() => readListFromUrl(FILTER_URL_KEYS.sizes));
+  const [formats, setFormatsState] = useState(() => readListFromUrl(FILTER_URL_KEYS.formats));
+  const setAudiences = (v) => { setAudiencesState(v); writeListToUrl(FILTER_URL_KEYS.audiences, v); };
+  const setLineNames = (v) => { setLineNamesState(v); writeListToUrl(FILTER_URL_KEYS.lineNames, v); };
+  const setCreativeLines = (v) => { setCreativeLinesState(v); writeListToUrl(FILTER_URL_KEYS.creativeLines, v); };
+  const setSizes = (v) => { setSizesState(v); writeListToUrl(FILTER_URL_KEYS.sizes, v); };
+  const setFormats = (v) => { setFormatsState(v); writeListToUrl(FILTER_URL_KEYS.formats, v); };
+  const clearDataFilters = () => {
+    setAudiences([]); setLineNames([]); setCreativeLines([]); setSizes([]); setFormats([]);
+  };
+  // Link antigo ?tab=loom — lido uma vez, na montagem.
+  const [loomDeepLink] = useState(() => readLegacyLoomDeepLink());
 
   // Hook de tracking — moved up pra que `trackCta` esteja disponível
   // nos setters dos filtros logo abaixo. Hook tem skip-admin interno e
@@ -471,6 +525,11 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
       setVideoTacticState(readTacticFromUrl("video_tactic"));
       setMainCoreState(readCoreFromUrl());
       setViewState(readViewFromUrl());
+      setAudiencesState(readListFromUrl(FILTER_URL_KEYS.audiences));
+      setLineNamesState(readListFromUrl(FILTER_URL_KEYS.lineNames));
+      setCreativeLinesState(readListFromUrl(FILTER_URL_KEYS.creativeLines));
+      setSizesState(readListFromUrl(FILTER_URL_KEYS.sizes));
+      setFormatsState(readListFromUrl(FILTER_URL_KEYS.formats));
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -708,32 +767,34 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
 
   const camp = data.campaign;
 
-  // Tabs auxiliares (RMND, PDOOH, Loom, Survey) são complementos opcionais —
-  // só aparecem pro cliente quando o admin já inseriu dado. Admin sempre vê
-  // todas, pra poder fazer upload/cadastro. Diretiva PR-16: separar core
-  // (Visão Geral / Display / Video / Detalhamento) de plus visualmente.
+  // Selo de frescor: data da última entrega no payload + última carga da base
+  // (anexada pelo backend em `data_updated_at`, ms). Ver shared/freshness.js.
+  const freshness = formatFreshness({
+    dataUntil: computeDataUntil(data),
+    updatedAt: data.data_updated_at || null,
+    campaignEnd: camp.early_end_date || camp.end_date || null,
+  });
+
+  // Abas complementares (RMND, PDOOH, Brand Lift) só aparecem pro cliente
+  // quando o admin já inseriu dado. Admin sempre vê todas, pra poder fazer
+  // upload/cadastro.
   const hasRmnd = !!data.rmnd;
   const hasPdooh = !!data.pdooh;
-  const hasLoom = !!data.loom;
   const hasSurvey = !!data.survey;
   const showRmnd = isAdmin || hasRmnd;
   const showPdooh = isAdmin || hasPdooh;
-  const showLoom = isAdmin || hasLoom;
   const showSurvey = isAdmin || hasSurvey;
-  const hasAnySecondary = showRmnd || showPdooh || showLoom || showSurvey;
+  const hasAnySecondary = showRmnd || showPdooh || showSurvey || isAdmin;
+
+  // Max Attention: aba principal quando a campanha tem peças vinculadas.
+  // Admin vê sempre (é onde vincula as peças).
+  const maLinks = data.max_attention?.links || [];
+  const hasMaxAttention = maLinks.length > 0;
+  const showMaxAttention = isAdmin || hasMaxAttention;
 
   // Display/Video escondem pra todos (cliente + admin) quando a campanha
-  // NÃO tem nem contrato nem entrega da mídia. Regra: se há valor
-  // contratado (contracted_*_display_impressions, contracted_*_video_completions
-  // ou bonus_*) > 0, mostra mesmo sem entrega ainda (campanha recém-lançada).
-  // Se não tem contrato e não tem entrega, esconde — não faz sentido pro
-  // cliente ver uma aba que sempre vai estar vazia, nem pro admin (não tem
-  // o que configurar nessa aba; setup é via admin panel, não pelo dashboard).
-  //
-  // Contracts são denormalizados em todas as rows de totals (lidos via
-  // totals[0]), então qualquer row de qualquer mídia carrega o contrato
-  // de todas. Quando totals está totalmente vazio, hasContract degrada pra
-  // false — caso de campanha brand-new sem delivery em nada (raro).
+  // NÃO tem nem contrato nem entrega da mídia. Contracts são denormalizados
+  // em todas as rows de totals (lidos via totals[0]).
   const t0 = (data.totals || [])[0] || {};
   const hasDisplayContract =
     (t0.contracted_o2o_display_impressions || 0) > 0 ||
@@ -750,31 +811,34 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   const showDisplay = hasDisplayContract || hasDisplayDelivery;
   const showVideo = hasVideoContract || hasVideoDelivery;
 
-  // Se deep-link aponta pra tab que esse user não vê (cliente sem dado
-  // cadastrado), downgrade pra overview no render — evita tela vazia
-  // sem trigger ativo no menu. URL pode ficar momentaneamente fora de
-  // sync com a UI até o próximo clique em tab; preço aceitável pra
-  // evitar setState em effect (anti-padrão React 19).
+  // Deep-link pra aba que esse user não vê → overview no render (sem
+  // setState em effect, anti-padrão React 19).
   const effectiveTab =
     (tab === "display" && !showDisplay) ||
     (tab === "video" && !showVideo) ||
+    (tab === "max-attention" && !showMaxAttention) ||
     (tab === "rmnd" && !showRmnd) ||
     (tab === "pdooh" && !showPdooh) ||
-    (tab === "loom" && !showLoom) ||
     (tab === "survey" && !showSurvey) ||
     (tab === "dsps" && !isAdmin)
       ? "overview"
       : tab;
+
+  const usesDataFilters =
+    effectiveTab === "overview" || effectiveTab === "display" || effectiveTab === "video";
+  const activeFilterCount =
+    audiences.length + lineNames.length + creativeLines.length + sizes.length + formats.length;
 
   return (
     <ReportTrackingProvider value={{ trackCta }}>
     <TooltipProvider delayDuration={200}>
       <div className="min-h-screen bg-canvas text-fg font-sans">
         {/* Barra de progresso vem do GlobalProgressBar (montado no main.jsx),
-          * alimentada via useLoadingTask acima. O TopProgressBar local virou
-          * redundante. */}
+          * alimentada via useLoadingTask acima. */}
         <TopBarV2
-          updatedAtLabel="Atualizado agora"
+          updatedAtLabel={freshness.label}
+          updatedAtShort={freshness.shortLabel}
+          updatedAtTitle={freshness.title}
           onShare={handleShare}
           shareState={shareState}
         />
@@ -800,19 +864,15 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
             reportData={data}
             isAdmin={isAdmin}
             posVenda={data.pos_venda}
+            loomUrl={data.loom || null}
+            autoOpenLoom={loomDeepLink}
+            onLoomOpen={() => trackCta("loom_open")}
           />
 
-          {/* Tabs com filtro de período alinhado à direita.
-              Mobile: stack vertical — tabs em scroll horizontal full-width na 1ª
-              linha, filtros embaixo. Desktop: row única com filtros à direita.
-              border-b vai no container externo pra ficar contínuo entre tabs
-              e o espaço dos filtros (visual de tab bar única).
-
-              `switchingView`: durante troca de view (mês → agregada, etc) o
-              container aqui é dimado e fica não-clicável. Sem isso o cliente
-              veria dados/tabs do mês antigo enquanto o novo carrega (UX
-              confusa). O CampaignHeaderV2 acima FICA fora desse wrapper —
-              pills continuam clicáveis pra usuário corrigir/cancelar. */}
+          {/* `switchingView`: durante troca de view (mês → agregada, etc) o
+              container é dimado e fica não-clicável — sem isso o cliente veria
+              dados do mês antigo enquanto o novo carrega. O header fica FORA
+              desse wrapper: as pills continuam clicáveis. */}
           <div
             className={[
               "relative transition-opacity duration-200",
@@ -821,8 +881,22 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
             aria-busy={switchingView || undefined}
           >
           <Tabs value={effectiveTab} onValueChange={setTab}>
-            <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3 md:gap-4 border-b border-border">
-              <TabsList variant="underline" className="border-b-0 -mx-4 md:mx-0 px-4 md:px-0 min-w-0">
+            {/* ─── Barra de controles fixa ────────────────────────────────
+                Gruda logo abaixo do TopBar (h-16). Full-bleed pelo mesmo
+                padding do page-shell (4/6/8) pra o fundo fosco cobrir a
+                largura toda sem mexer no alinhamento do conteúdo. */}
+            <div
+              className={[
+                "sticky top-16 z-20",
+                "-mx-4 px-4 md:-mx-6 md:px-6 lg:-mx-8 lg:px-8",
+                "bg-canvas/85 backdrop-blur-md border-b border-border",
+              ].join(" ")}
+            >
+              <TabsList
+                variant="underline"
+                className="border-b-0 w-full md:w-full min-w-0"
+                aria-label="Seções do report"
+              >
                 <TabsTrigger value="overview" iconLeft={<GridIcon />}>
                   Visão Geral
                 </TabsTrigger>
@@ -833,95 +907,60 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 )}
                 {showVideo && (
                   <TabsTrigger value="video" iconLeft={<VideoIcon />}>
-                    Video
+                    Vídeo
                   </TabsTrigger>
                 )}
-                <TabsTrigger value="base" iconLeft={<TableIcon />}>
-                  Base de Dados
-                </TabsTrigger>
+                {showMaxAttention && (
+                  <TabsTrigger value="max-attention" iconLeft={<SparkIcon />}>
+                    Max Attention
+                  </TabsTrigger>
+                )}
 
                 {hasAnySecondary && (
-                  <span
-                    className="self-center mx-2 h-6 w-px bg-border"
-                    aria-hidden
-                  />
+                  <span className="self-center mx-2 h-6 w-px bg-border shrink-0" aria-hidden />
                 )}
 
-                {showRmnd && (
-                  <TabsTrigger
-                    value="rmnd"
-                    iconLeft={<ShoppingCartIcon />}
-                    className={SECONDARY_TAB_CLASS}
-                  >
-                    RMND
-                  </TabsTrigger>
-                )}
                 {showPdooh && (
-                  <TabsTrigger
-                    value="pdooh"
-                    iconLeft={<MapPinIcon />}
-                    className={SECONDARY_TAB_CLASS}
-                  >
+                  <TabsTrigger value="pdooh" iconLeft={<MapPinIcon />} className={SECONDARY_TAB_CLASS}>
                     PDOOH
                   </TabsTrigger>
                 )}
-                {showLoom && (
-                  <TabsTrigger
-                    value="loom"
-                    iconLeft={<FilmIcon />}
-                    className={SECONDARY_TAB_CLASS}
-                  >
-                    Video Loom
+                {showRmnd && (
+                  <TabsTrigger value="rmnd" iconLeft={<ShoppingCartIcon />} className={SECONDARY_TAB_CLASS}>
+                    RMND
                   </TabsTrigger>
                 )}
                 {showSurvey && (
-                  <TabsTrigger
-                    value="survey"
-                    iconLeft={<ClipboardIcon />}
-                    className={SECONDARY_TAB_CLASS}
-                  >
-                    Survey
+                  <TabsTrigger value="survey" iconLeft={<ClipboardIcon />} className={SECONDARY_TAB_CLASS}>
+                    Brand Lift
                   </TabsTrigger>
                 )}
                 {/* Aba interna admin-only: saúde da entrega por DSP. Cliente
                     nunca vê (gate aqui + endpoint admin-gated no backend). */}
                 {isAdmin && (
-                  <TabsTrigger
-                    value="dsps"
-                    iconLeft={<PulseIcon />}
-                    className={SECONDARY_TAB_CLASS}
-                  >
+                  <TabsTrigger value="dsps" iconLeft={<PulseIcon />} className={SECONDARY_TAB_CLASS}>
                     DSPs
                   </TabsTrigger>
                 )}
+
+                {/* Base de dados: ferramenta (auditoria e exportação), não
+                    análise. Continua a um clique, com peso de utilitário no
+                    fim da barra. */}
+                <TabsTrigger
+                  value="base"
+                  iconLeft={<TableIcon />}
+                  className={`${SECONDARY_TAB_CLASS} md:ml-auto`}
+                >
+                  Base de dados
+                </TabsTrigger>
               </TabsList>
 
-              {/* Filtros à direita das tabs. Core Product é exclusivo da
-                  Visão Geral — sai quando outra tab fica ativa pra não
-                  poluir e pra evitar confundir o user (Display/Video tem
-                  seus próprios toggles internos). E só renderiza quando a
-                  campanha tem AS DUAS frentes (O2O + OOH); campanhas
-                  mono-frente não precisam do filtro (1 opção é UI ruim e
-                  os dados já refletem a frente única).
-                  Mobile: filtros descem abaixo das tabs (flex-col no parent),
-                  flex-wrap permite que CoreProduct + DateRange quebrem em
-                  duas linhas se viewport for muito apertada. */}
-              {/* shrink-0: mantém os pills numa linha só, à direita — sem
-                  isso, quando a TabsList é larga (admin com todas as abas,
-                  incl. DSPs) numa campanha bi-frente (pill Core Product
-                  presente), a soma estourava a linha, o flex-wrap empilhava
-                  os filtros na vertical e o items-end os empurrava PRA CIMA,
-                  flutuando sobre as abas. Com shrink-0 aqui + min-w-0 na
-                  TabsList, o excesso vira scroll horizontal das abas (que a
-                  TabsList já suporta), não distorção dos filtros. */}
-              <div className="pb-3 md:pb-2 flex items-center gap-2 flex-wrap shrink-0">
-                {effectiveTab === "overview" && showCoreFilter && (
-                  <CoreProductFilterV2
-                    value={effectiveMainCore}
-                    onChange={setMainCore}
-                    available={availableCores}
-                  />
-                )}
+              {/* Linha de filtros: período primeiro (é o filtro que todo
+                  leitor procura), depois frente (só Visão Geral, 2+ frentes)
+                  e os filtros de dado (Visão Geral/Display/Vídeo). No celular
+                  a linha rola na horizontal em vez de empilhar — a barra é
+                  fixa e não pode crescer. */}
+              <div className="flex items-center gap-2 py-2.5 overflow-x-auto scrollbar-hidden md:flex-wrap md:overflow-visible">
                 <DateRangeFilterV2
                   value={mainRange}
                   presetId={mainPresetId}
@@ -930,37 +969,51 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                   availableDates={aggregates.availableDates}
                   onChange={setMainRange}
                 />
+                {effectiveTab === "overview" && showCoreFilter && (
+                  <CoreProductFilterV2
+                    value={effectiveMainCore}
+                    onChange={setMainCore}
+                    available={availableCores}
+                  />
+                )}
+                {usesDataFilters && (
+                  <>
+                    <span className="h-5 w-px bg-border shrink-0" aria-hidden />
+                    <GlobalDataFilterBarV2
+                      inline
+                      audienceOptions={filterOptions.audiences}
+                      audienceOverrideMap={data?.audience_overrides}
+                      lineOptions={filterOptions.lines}
+                      creativeLineOptions={filterOptions.creativeLines}
+                      sizeOptions={filterOptions.sizes}
+                      formatOptions={filterOptions.formats}
+                      audiences={audiences}
+                      setAudiences={setAudiences}
+                      lineNames={lineNames}
+                      setLineNames={setLineNames}
+                      creativeLines={creativeLines}
+                      setCreativeLines={setCreativeLines}
+                      sizes={sizes}
+                      setSizes={setSizes}
+                      formats={formats}
+                      setFormats={setFormats}
+                      showFormatFilter={showDisplay && showVideo}
+                    />
+                    {activeFilterCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => { trackCta("filters_clear"); clearDataFilters(); }}
+                        className="shrink-0 text-xs font-semibold text-signature hover:text-signature-hover px-2 py-1 rounded-md cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature"
+                      >
+                        Limpar filtros
+                      </button>
+                    )}
+                  </>
+                )}
               </div>
             </div>
 
-            {/* Barra global de filtros — abaixo da linha fina (que é o
-                border-b do container das tabs acima) e do botão de Período.
-                Só renderiza nas 3 abas que consomem o pipeline de aggregates
-                (Overview/Display/Video). Base de Dados tem filtros próprios
-                no DataTableV2; RMND/PDOOH/Loom/Survey usam datasources
-                separados, não compartilham este pipeline. */}
-            {(effectiveTab === "overview" || effectiveTab === "display" || effectiveTab === "video") && (
-              <GlobalDataFilterBarV2
-                audienceOptions={filterOptions.audiences}
-                audienceOverrideMap={data?.audience_overrides}
-                lineOptions={filterOptions.lines}
-                creativeLineOptions={filterOptions.creativeLines}
-                sizeOptions={filterOptions.sizes}
-                formatOptions={filterOptions.formats}
-                audiences={audiences}
-                setAudiences={setAudiences}
-                lineNames={lineNames}
-                setLineNames={setLineNames}
-                creativeLines={creativeLines}
-                setCreativeLines={setCreativeLines}
-                sizes={sizes}
-                setSizes={setSizes}
-                formats={formats}
-                setFormats={setFormats}
-                showFormatFilter={showDisplay && showVideo}
-              />
-            )}
-
+            <div className="pt-6">
             <TabsContent value="overview">
               <OverviewV2
                 data={data}
@@ -972,6 +1025,10 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 mergeMeta={data.merge_meta}
                 coreFilter={effectiveMainCore}
                 isBonusOnly={isBonusOnly}
+                onNavigate={setTab}
+                showDisplayTab={showDisplay}
+                showVideoTab={showVideo}
+                showMaxAttentionTab={showMaxAttention}
               />
             </TabsContent>
 
@@ -995,6 +1052,20 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
               />
             </TabsContent>
 
+            {showMaxAttention && (
+              <TabsContent value="max-attention">
+                <MaxAttentionV2
+                  token={token}
+                  view={view}
+                  data={data}
+                  range={mainRange}
+                  isAdmin={isAdmin}
+                  adminJwt={adminJwt}
+                  onLinksChanged={reloadReport}
+                />
+              </TabsContent>
+            )}
+
             <TabsContent value="base">
               <DetalhamentoV2
                 data={data}
@@ -1013,6 +1084,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 isAdmin={isAdmin}
                 adminJwt={adminJwt}
                 onUploaded={reloadReport}
+                range={mainRange}
               />
             </TabsContent>
 
@@ -1023,11 +1095,8 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 isAdmin={isAdmin}
                 adminJwt={adminJwt}
                 onUploaded={reloadReport}
+                range={mainRange}
               />
-            </TabsContent>
-
-            <TabsContent value="loom">
-              <LoomV2 loomUrl={data.loom} />
             </TabsContent>
 
             <TabsContent value="survey">
@@ -1049,6 +1118,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 />
               </TabsContent>
             )}
+            </div>
           </Tabs>
           </div>
         </div>
@@ -1177,7 +1247,7 @@ function MapPinIcon() {
   );
 }
 
-function FilmIcon() {
+function SparkIcon() {
   return (
     <svg
       viewBox="0 0 24 24"
@@ -1188,14 +1258,8 @@ function FilmIcon() {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18" />
-      <line x1="7" y1="2" x2="7" y2="22" />
-      <line x1="17" y1="2" x2="17" y2="22" />
-      <line x1="2" y1="12" x2="22" y2="12" />
-      <line x1="2" y1="7" x2="7" y2="7" />
-      <line x1="2" y1="17" x2="7" y2="17" />
-      <line x1="17" y1="17" x2="22" y2="17" />
-      <line x1="17" y1="7" x2="22" y2="7" />
+      <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z" />
+      <path d="M19 17l.8 2.2L22 20l-2.2.8L19 23l-.8-2.2L16 20l2.2-.8z" />
     </svg>
   );
 }

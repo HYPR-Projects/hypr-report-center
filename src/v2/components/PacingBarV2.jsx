@@ -234,7 +234,7 @@ export function PacingBarV2({
         ) : (
           <>
             <span>
-              Investido: <span className="text-fg font-semibold">{fmtR(cost)}</span>
+              Custo efetivo: <span className="text-fg font-semibold">{fmtR(cost)}</span>
             </span>
             <span>
               Budget: <span className="text-fg font-semibold">{fmtR(budget)}</span>

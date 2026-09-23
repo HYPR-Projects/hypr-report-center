@@ -151,6 +151,7 @@ const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true,
         data={data}
         onClear={readOnly ? null : clear}
         isDark={isDark}
+        isAdmin={!readOnly}
       />
       {renderModal()}
     </>

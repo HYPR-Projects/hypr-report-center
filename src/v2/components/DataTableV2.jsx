@@ -54,7 +54,7 @@ const COLUMNS = [
   { key: "impressions",              label: "Impressões",      numeric: true },
   { key: "viewable_impressions",     label: "Imp. Visíveis",   numeric: true },
   { key: "clicks",                   label: "Cliques",         numeric: true },
-  { key: "video_starts",             label: "Video Starts",    numeric: true },
+  { key: "video_starts",             label: "Views iniciadas", numeric: true },
   { key: "video_view_25",            label: "25%",             numeric: true },
   { key: "video_view_50",            label: "50%",             numeric: true },
   { key: "video_view_75",            label: "75%",             numeric: true },

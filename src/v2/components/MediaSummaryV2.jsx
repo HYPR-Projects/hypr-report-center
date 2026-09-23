@@ -85,7 +85,7 @@ function Delta({ rentab }) {
         "text-[11px] font-medium tabular-nums whitespace-nowrap",
         isGood ? "text-success" : "text-danger",
       )}
-      title="Rentabilidade — diferença % entre o CPM/CPCV negociado e o efetivo entregue"
+      title="Economia — diferença % entre o CPM/CPCV negociado e o efetivo entregue"
     >
       {isGood ? "↓" : "↑"} {fmtP2(Math.abs(rentab))}
     </span>
@@ -159,7 +159,7 @@ export function MediaSummaryV2({ type, rows, compact = false }) {
     ? [
         { label: "CPM efetivo",   value: fmtR(effCpm),                                 accent: true,  delta: rentab },
         { label: "Imp. visíveis", value: fmtBig(totals.vi) },
-        { label: "Clicks",        value: fmtBig(totals.clks) },
+        { label: "Cliques",       value: fmtBig(totals.clks) },
         { label: "CTR",           value: ctr == null ? "—" : fmtP2(ctr),               accent: true },
         { label: "CPC",           value: cpc == null ? "—" : fmtR(cpc) },
       ]
@@ -177,13 +177,13 @@ export function MediaSummaryV2({ type, rows, compact = false }) {
         {/* Header com border-bottom ancorando o card */}
         <div className="px-5 py-3 border-b border-border flex items-center justify-between gap-3">
           <div className="text-[12px] font-medium text-fg-muted">
-            {isDisplay ? "Display" : "Video"}
+            {isDisplay ? "Display" : "Vídeo"}
           </div>
           <span
             className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface-strong text-[11px] tabular-nums text-fg-muted whitespace-nowrap"
             title="Custo efetivo total entregue até o momento nesta mídia (O2O + OOH)."
           >
-            <span className="text-[10px] uppercase tracking-wider">Investido</span>
+            <span className="text-[10px] uppercase tracking-wider">Custo efetivo</span>
             <span className="font-semibold text-fg">{fmtR(totals.cost)}</span>
           </span>
         </div>

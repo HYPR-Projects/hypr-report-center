@@ -17,7 +17,11 @@ import PdoohMapLibre from "./PdoohMapLibre";
 import PdoohSiteTable from "./PdoohSiteTable";
 import { aggregateSites } from "./pdoohSites";
 
-const PdoohDashboard = ({ data, onClear, isDark = true }) => {
+// `isAdmin`: o card do mapa sem geolocalização mostrava ao CLIENTE a
+// instrução interna "Adicione colunas LATITUDE e LONGITUDE no arquivo". Pro
+// cliente, sem coordenadas o card simplesmente não aparece; o admin continua
+// vendo a instrução pra corrigir a base.
+const PdoohDashboard = ({ data, onClear, isDark = true, isAdmin = false }) => {
   const [mapMetric, setMapMetric] = useState("impressions");
   const [mapMode, setMapMode] = useState("heat");
   const [mapFocus, setMapFocus] = useState(null);
@@ -177,6 +181,7 @@ const PdoohDashboard = ({ data, onClear, isDark = true }) => {
       })()}
 
       {/* Mapa de Entrega (calor | pontos) */}
+      {(hasGeo || isAdmin) && (
       <div ref={mapCardRef} style={{background:bg2,border:`1px solid ${bdr}`,borderRadius:12,padding:20,marginBottom:16,scrollMarginTop:16}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,gap:12,flexWrap:"wrap"}}>
           <div style={{fontSize:13,fontWeight:700,color:muted,textTransform:"uppercase",letterSpacing:1}}>Mapa de Entrega</div>
@@ -220,6 +225,7 @@ const PdoohDashboard = ({ data, onClear, isDark = true }) => {
             </div>
         }
       </div>
+      )}
 
       {/* Top Cidades */}
       <div style={{background:bg2,border:`1px solid ${bdr}`,borderRadius:12,padding:20}}>

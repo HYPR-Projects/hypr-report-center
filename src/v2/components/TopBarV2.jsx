@@ -79,6 +79,10 @@ function ChatIcon({ className }) {
 
 export function TopBarV2({
   updatedAtLabel,
+  // Versão curta do selo pra telas estreitas ("até 22/09") e tooltip com a
+  // explicação da defasagem D-1. Ver src/shared/freshness.js.
+  updatedAtShort,
+  updatedAtTitle,
   onShare,
   shareState = "idle",
   onContactCS,
@@ -112,15 +116,17 @@ export function TopBarV2({
       <div className="flex items-center gap-2">
         {updatedAtLabel && (
           <span
+            title={updatedAtTitle || undefined}
             className={cn(
-              "hidden sm:inline-flex items-center gap-1.5",
+              "inline-flex items-center gap-1.5",
               "px-3 py-1 rounded-full",
               "bg-surface border border-border",
-              "text-[11px] font-medium text-fg-muted",
+              "text-[11px] font-medium text-fg-muted whitespace-nowrap",
             )}
           >
-            <span className="size-1.5 rounded-full bg-signature" aria-hidden />
-            {updatedAtLabel}
+            <span className="size-1.5 rounded-full bg-success" aria-hidden />
+            <span className="hidden sm:inline">{updatedAtLabel}</span>
+            <span className="sm:hidden">{updatedAtShort || updatedAtLabel}</span>
           </span>
         )}
 
