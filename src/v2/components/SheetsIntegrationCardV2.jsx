@@ -305,7 +305,7 @@ export default function SheetsIntegrationCardV2({
                       Último sync com sucesso: <span className="text-fg-muted">{fmtDateTimeBR(integration.last_synced_at)}</span>
                     </div>
                   )}
-                  {integration.last_attempt_at && (
+                  {showLastAttempt(integration) && (
                     <div>
                       Última tentativa: <span className="text-fg-muted">{fmtDateTimeBR(integration.last_attempt_at)}</span>
                     </div>
@@ -432,16 +432,17 @@ export default function SheetsIntegrationCardV2({
             )}
             <p className="text-xs text-fg-muted mt-2">
               {integration.status === "revoked"
-                ? "Acesso revogado pelo Google ou planilha foi deletada. Reconecte pra recriar a planilha."
-                : "Falha no último sync — pode ter sido um erro temporário do Google (ex.: 502). Tente sincronizar de novo na MESMA planilha. Só reconecte (que recria uma planilha nova) se o erro persistir."}
+                ? "O Google recusou o acesso salvo (token expirado ou revogado) ou a planilha foi apagada. O sync automático segue re-tentando; se não voltar, reconecte. A mesma planilha é mantida quando ainda estiver acessível."
+                : "Falha no último sync — pode ter sido um erro temporário do Google (ex.: 502). O sync automático re-tenta sozinho; pra não esperar, sincronize de novo agora."}
             </p>
             {error && <ErrorLine msg={error} />}
           </div>
           <div className="shrink-0 flex flex-col gap-2">
             {/* Em erro genérico (transiente), a ação primária NÃO-destrutiva é
-                re-sincronizar a planilha existente — não recriar. Reconectar
-                fica como fallback. Em 'revoked' o acesso à planilha sumiu, então
-                reconectar (recria) é o caminho primário. */}
+                re-sincronizar a planilha existente. Reconectar fica como
+                fallback. Em 'revoked' o token salvo morreu, então reconectar é o
+                caminho primário — e reaproveita a planilha quando o token novo
+                ainda enxerga ela (backend: reattach_existing_sheet). */}
             {integration.status !== "revoked" && (
               <button
                 type="button"
@@ -462,7 +463,7 @@ export default function SheetsIntegrationCardV2({
                   : "px-3 py-1.5 text-[11px] font-semibold rounded-md border border-border text-fg-subtle hover:text-fg-muted disabled:opacity-50 transition cursor-pointer"
               }
             >
-              {busy && integration.status === "revoked" ? "..." : "Reconectar (recria)"}
+              {busy && integration.status === "revoked" ? "Reconectando..." : "Reconectar"}
             </button>
             <button
               type="button"
@@ -596,6 +597,15 @@ function computeFreshness(integration) {
     return { level: "tried-and-failed", hoursSinceSync };
   }
   return { level: "never-tried", hoursSinceSync };
+}
+
+// "Última tentativa" só informa quando é mais nova que o último sync com
+// sucesso (= tentou e falhou depois). Mais velha, ela é resto de antes de um
+// reconnect e só confunde (ex.: "sync 24/09, tentativa 22/09").
+function showLastAttempt(integration) {
+  if (!integration?.last_attempt_at) return false;
+  if (!integration.last_synced_at) return true;
+  return new Date(integration.last_attempt_at) > new Date(integration.last_synced_at);
 }
 
 // Uma integração continua "ativa" pra sempre — inclusive depois que a campanha

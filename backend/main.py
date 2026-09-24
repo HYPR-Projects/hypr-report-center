@@ -1825,14 +1825,28 @@ def report_data(request):
                 if not members_payload:
                     return (jsonify({"error": "Nenhum membro do grupo retornou dados"}), 404, headers)
 
-                result = sheets_integration.create_sheet_for_merge(
-                    merge_id=target_id,
-                    refresh_token=refresh_token,
-                    member_email=admin_email,
-                    members=members_payload,
-                    client_name=client_name_pick,
-                    campaign_name=campaign_name_pick,
+                # Reconexão mantém a planilha (e o link já compartilhado)
+                # quando o token novo ainda enxerga ela; senão cria outra.
+                result = sheets_integration.reattach_existing_sheet(
+                    target_id, "merge", refresh_token, admin_email,
                 )
+                if result:
+                    try:
+                        sheets_integration.sync_merge_sheet(target_id, members_payload)
+                    except Exception as e:
+                        # Planilha existe mas não aceita o sync (ex.: aba de
+                        # dados apagada). Cai no comportamento antigo: recria.
+                        logger.warning(f"[WARN sheets_create reattach merge/{target_id}] {e} — recriando")
+                        result = None
+                if not result:
+                    result = sheets_integration.create_sheet_for_merge(
+                        merge_id=target_id,
+                        refresh_token=refresh_token,
+                        member_email=admin_email,
+                        members=members_payload,
+                        client_name=client_name_pick,
+                        campaign_name=campaign_name_pick,
+                    )
                 # Invalida cache de TODOS os tokens do grupo + do merged.
                 for m in group["members"]:
                     if m.get("short_token"):
@@ -1852,18 +1866,31 @@ def report_data(request):
                 start_date_obj = _parse_iso_date_safe(campaign.get("start_date"))
                 end_date_obj   = _parse_iso_date_safe(campaign.get("end_date"))
 
-                result = sheets_integration.create_sheet_for_campaign(
-                    short_token=target_id,
-                    refresh_token=refresh_token,
-                    member_email=admin_email,
-                    detail_rows=detail_rows,
-                    totals_rows=totals_rows,
-                    campaign_name=campaign_name,
-                    client_name=client_name,
-                    start_date=start_date_obj,
-                    end_date=end_date_obj,
-                    campaign=campaign,
+                result = sheets_integration.reattach_existing_sheet(
+                    target_id, "token", refresh_token, admin_email,
                 )
+                if result:
+                    try:
+                        sheets_integration.sync_sheet(
+                            target_id, detail_rows, totals_rows, campaign=campaign,
+                        )
+                    except Exception as e:
+                        # Ver nota no ramo merge: sem sync, recria a planilha.
+                        logger.warning(f"[WARN sheets_create reattach token/{target_id}] {e} — recriando")
+                        result = None
+                if not result:
+                    result = sheets_integration.create_sheet_for_campaign(
+                        short_token=target_id,
+                        refresh_token=refresh_token,
+                        member_email=admin_email,
+                        detail_rows=detail_rows,
+                        totals_rows=totals_rows,
+                        campaign_name=campaign_name,
+                        client_name=client_name,
+                        start_date=start_date_obj,
+                        end_date=end_date_obj,
+                        campaign=campaign,
+                    )
                 _cache_invalidate_token(target_id)
 
             return (jsonify({
