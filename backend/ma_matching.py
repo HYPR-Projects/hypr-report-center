@@ -81,6 +81,17 @@ def creative_line(name, size=None) -> str:
     return (out or raw).upper()
 
 
+def sizes_in(s) -> set:
+    """Tamanhos NxM citados no nome, normalizados ("300X250" → "300x250")."""
+    return {re.sub(r"\s+", "", m.group(0)).lower().replace("×", "x") for m in _SIZE_RE.finditer(str(s or ""))}
+
+
+def compact(s) -> str:
+    """Nome só com letras e dígitos, sem acento: "HYPR_Mobland_Carousel_300x250"
+    e "HYPR_MOBLAND_CAROUSEL_300X250" viram a mesma coisa."""
+    return re.sub(r"[^a-z0-9]", "", fold(s))
+
+
 def tokens(s) -> list:
     """Tokens informativos, na ordem, sem repetir."""
     out = []
@@ -277,7 +288,15 @@ def rank(candidates, *, lines, ctx, client=None, q=None) -> list:
     Tiros" e "Reveal Grafite" na Platform, cada linha REVEAL cai na sua; com
     uma peça "Reveal" só, as duas caem nela. Devolve os candidatos com
     `reasons`, `score`, `dsp_lines` (linhas casadas, melhor primeiro) e
-    `dsp_creative_names` (nomes crus dessas linhas, pro vínculo)."""
+    `dsp_creative_names` (nomes crus dessas linhas, pro vínculo).
+
+    Peça com tamanho no nome ("..._Carousel_300x250" — na Platform é comum
+    uma peça por tamanho) leva só os nomes da DSP do MESMO tamanho; nome
+    igual ao da DSP (ignorando caixa e pontuação) leva exatamente aquele."""
+    raw_by_compact = {}
+    for e in lines or []:
+        for n in e.get("names") or []:
+            raw_by_compact.setdefault(compact(n), (e["line"], n))
     line_tok = [(e, tokens(e["line"])) for e in lines or []]
     common = ctx.get("common") or frozenset()
     camp = ctx.get("campaign") or frozenset()
@@ -308,11 +327,31 @@ def rank(candidates, *, lines, ctx, client=None, q=None) -> list:
             (line for line, v in s.items() if v >= NAME_THRESHOLD and v >= best_for_line.get(line, 1) - 1e-9),
             key=lambda line: -s[line],
         )
+        exact = raw_by_compact.get(compact(c.get("name")))
+        if exact and exact[0] not in matched:
+            matched.insert(0, exact[0])
+            s = {**s, exact[0]: 1.0}
         # Fallback: a Platform casou pelo nome e nós não — respeita a dela.
         if not matched and c.get("platform_match_name"):
             pl = creative_line(c["platform_match_name"])
             if any(e["line"] == pl for e, _ in line_tok):
                 matched = [pl]
+        names = []
+        for line in matched:
+            for n in by_line.get(line, {}).get("names", []):
+                if n not in names:
+                    names.append(n)
+        piece_sizes = sizes_in(c.get("name"))
+        if exact:
+            names = [exact[1]]
+        elif piece_sizes and names:
+            same = [n for n in names if sizes_in(n) & piece_sizes]
+            unsized = [n for n in names if not sizes_in(n)]
+            # Peça de um tamanho que não rodou nesta linha não é esta linha
+            # (DSP sem tamanho no nome: não dá pra separar, fica a linha toda).
+            names = same or unsized
+            if not names:
+                matched = []
         name_sim = max((s[line] for line in matched if line in s), default=None)
         if matched:
             reasons.add("name")
@@ -325,11 +364,6 @@ def rank(candidates, *, lines, ctx, client=None, q=None) -> list:
         if not reasons:
             continue
         score = sum(WEIGHTS[r] for r in reasons if r != "name") + (WEIGHTS["name"] * (name_sim or 0.6) if "name" in reasons else 0)
-        names = []
-        for line in matched:
-            for n in by_line.get(line, {}).get("names", []):
-                if n not in names:
-                    names.append(n)
         out.append({
             **{k: v for k, v in c.items() if k not in ("platform_reasons", "platform_match_name", "user_query")},
             "reasons": [r for r in REASON_ORDER if r in reasons],

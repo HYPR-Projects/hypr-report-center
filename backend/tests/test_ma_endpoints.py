@@ -120,9 +120,14 @@ def test_ma_links_save_erro_de_validacao_vira_400(monkeypatch):
 
 def test_ma_search_sem_config_e_501_com_instrucao(monkeypatch):
     monkeypatch.setattr(main, "authenticate_admin", lambda req: {"email": "ana@hypr.mobi", "admin": True})
+    report = {"campaign": {"client_name": "PARAMOUNT", "campaign_name": "MobLand"}, "detail": [
+        {"creative_name": "HYPR_MOBLAND_PARAMOUNT_CAROUSEL_300X250", "creative_size": "300x250", "impressions": 7}]}
+    monkeypatch.setattr(main, "_get_report_cached", lambda tok, force_refresh=False: (report, True))
     status, data = call("/?action=ma_search&token=DEMO01&q=lojas")
     assert status == 501 and data["configured"] is False
     assert "MA_SERVICE_KEY" in data["error"]
+    # Sem chave, as linhas da DSP ainda chegam (vêm do report, não da Platform).
+    assert data["context"]["lines"][0]["line"] == "HYPR_MOBLAND_PARAMOUNT_CAROUSEL"
 
 
 def test_ma_search_usa_cliente_e_linhas_do_report(monkeypatch):
