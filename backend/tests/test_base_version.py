@@ -35,11 +35,16 @@ class FakeBase:
         self.cr_lm = 1000
         self.ck_lm = 5000
         self.ck_fp = 111
+        self.adj_lm = 9000
         self.fp_fails = False
         self.scans = 0
 
     def last_modified(self, dataset, table, location=None):
-        return self.cr_lm if table == main.TABLE else self.ck_lm
+        if table == main.TABLE:
+            return self.cr_lm
+        if table == main.geo_exclusions.ADJ_TABLE_ID:
+            return self.adj_lm
+        return self.ck_lm
 
     def fingerprint(self, dataset, table, location=None):
         self.scans += 1
@@ -122,3 +127,13 @@ def test_last_modified_ilegivel_ignora_o_componente(base, monkeypatch):
     )
     check()
     assert cached()
+
+
+def test_recalculo_da_exclusao_geo_fura(base):
+    """O refresh das frações roda numa instância; as outras só ficam sabendo
+    pela versão da base — senão serviriam o report sem o ajuste por até 3h."""
+    check()
+    warm_caches()
+    base.adj_lm = 9500
+    check()
+    assert not cached()

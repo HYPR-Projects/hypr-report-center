@@ -70,6 +70,7 @@ import maxattention
 import ma_report
 import ma_matching
 import out_of_country
+import geo_exclusions
 import bq_client
 
 logger = logging.getLogger(__name__)
@@ -297,6 +298,17 @@ def _cache_get(store, key, ttl):
 def _cache_set(store, key, value):
     with _cache_lock:
         store[key] = (time.time(), value)
+
+
+def _invalidate_geo_tokens(tokens):
+    """Derruba o cache dos tokens cujo ajuste geo mudou (report, lista,
+    merged). As outras instâncias furam pela versão da base (_base_version
+    olha o last_modified da tabela de frações)."""
+    geo_exclusions.invalidate_active_cache()
+    with _cache_lock:
+        _base_version_cache.clear()
+    for t in tokens:
+        _cache_invalidate_token(t)
 
 
 def _cache_invalidate_token(short_token):
@@ -538,7 +550,8 @@ def _checklist_content_version():
 
 
 def _base_version():
-    """Assinatura de versão da base: (campaign_results_ms, checklist_info_fp).
+    """Assinatura de versão da base: (campaign_results_ms, checklist_info_fp,
+    geo_adjustments_ms).
     Cacheado 60s. Componente None quando aquela tabela falhou na checagem."""
     cached = _cache_get(_base_version_cache, "v", _BASE_VERSION_CACHE_TTL)
     if cached is not None:
@@ -546,6 +559,9 @@ def _base_version():
     ver = (
         _table_last_modified(DATASET_HUB, TABLE),                     # default loc
         _checklist_content_version(),
+        # Frações da exclusão geo: o refresh roda numa instância, as outras
+        # precisam furar o cache pra servir o report já ajustado.
+        _table_last_modified(DATASET_ASSETS, geo_exclusions.ADJ_TABLE_ID, "US"),
     )
     _cache_set(_base_version_cache, "v", ver)
     return ver
@@ -579,6 +595,7 @@ def _bust_stale_caches_if_base_changed():
             _report_asset_ver.clear()
             _list_cache.pop("all", None)
             _clients_cache.pop("all", None)
+            geo_exclusions.invalidate_active_cache()
             logger.info(
                 f"[cache] base mudou ({prev} → {merged}); "
                 f"{n} entrada(s) invalidada(s) (report+merged+lista+clientes)"
@@ -2092,7 +2109,25 @@ def report_data(request):
         try:
             refresh_q = (request.args.get("refresh") or "").strip().lower()
             force = refresh_q not in ("0", "false", "no")  # default: true
-            summary = warmup_caches(force_refresh=force)
+            # Exclusão geo antes do warmup: se o Region ou a entrega mudaram, as
+            # frações são recalculadas e o cache aquecido já sai ajustado.
+            geo_status = None
+            geo_t0 = time.time()
+            try:
+                before = set(geo_exclusions.active_tokens(bq))
+                geo_status = geo_exclusions.refresh_if_stale(bq)
+                if geo_status is not None:
+                    _invalidate_geo_tokens(before | {r["short_token"] for r in geo_status})
+            except Exception as e:  # noqa: BLE001 — ajuste não pode derrubar o warmup
+                logger.error(f"[ERROR warmup geo_exclusions] {e}")
+            # O recálculo sai do orçamento de tempo do warmup (a função tem
+            # timeout fixo): o que ele gastou, o warmup deixa de gastar.
+            geo_spent = int(time.time() - geo_t0)
+            summary = warmup_caches(force_refresh=force, deadline_s=max(120, 480 - geo_spent))
+            if geo_status is not None:
+                summary["geo_exclusions"] = [
+                    {"short_token": r["short_token"], "status": r["status"]} for r in geo_status
+                ]
             logger.warning(f"[warmup] {json.dumps(summary)}")
             return (jsonify(summary), 200, headers)
         except Exception as e:
@@ -4355,6 +4390,15 @@ def report_data(request):
             return (jsonify({"error": "Erro ao salvar países liberados"}), 500, headers)
         with _cache_lock:
             _out_of_country_cache.clear()
+        # País liberado muda a fração retirada do report quando a campanha tem
+        # exclusão geo: recalcula na hora (senão só no próximo warmup).
+        try:
+            if short_token in geo_exclusions.active_tokens(bq):
+                before = set(geo_exclusions.active_tokens(bq))
+                status = geo_exclusions.refresh(bq)
+                _invalidate_geo_tokens(before | {r["short_token"] for r in status})
+        except Exception as e:  # noqa: BLE001 — o override já foi salvo
+            logger.error(f"[ERROR save_country_override geo refresh] {e}")
         audit_log.safe_write_event(
             short_token=short_token,
             event_type="countries_override",
@@ -4366,6 +4410,83 @@ def report_data(request):
             payload={"countries": saved},
         )
         return (jsonify({"ok": True, "countries": saved}), 200, headers)
+
+    # ── Endpoints: exclusão de entrega fora do BR no report (admin) ─────────
+    # Ajuste excepcional (set/2026): retira do report do cliente a entrega DV360
+    # fora do Brasil, campanha por campanha. Ver backend/geo_exclusions.py.
+    #   GET  ?action=geo_exclusions                    → config + status por token
+    #   POST ?action=save_geo_exclusion   {short_token, date_from?, date_to?, reason?}
+    #   POST ?action=delete_geo_exclusion {short_token}
+    #   POST ?action=refresh_geo_exclusions            → recalcula as frações agora
+    # Save/delete recalculam na hora (o report muda na próxima leitura). O cron
+    # de warmup recalcula sozinho quando o Region ou a entrega mudam.
+    if request.method == "GET" and request.args.get("action") == "geo_exclusions":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            return (jsonify({"exclusions": geo_exclusions.list_exclusions(bq)}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR geo_exclusions] {e}")
+            return (jsonify({"error": "Erro ao listar exclusões fora do BR"}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") in (
+        "save_geo_exclusion", "delete_geo_exclusion", "refresh_geo_exclusions",
+    ):
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        action = request.args.get("action")
+        body = request.get_json(silent=True) or {}
+        try:
+            saved = None
+            if action == "save_geo_exclusion":
+                saved = geo_exclusions.save_exclusion(
+                    bq, body.get("short_token"),
+                    date_from=body.get("date_from"), date_to=body.get("date_to"),
+                    reason=body.get("reason"), updated_by=admin.get("email"),
+                )
+            elif action == "delete_geo_exclusion":
+                saved = {"short_token": geo_exclusions.delete_exclusion(bq, body.get("short_token"))}
+        except ValueError as e:
+            return (jsonify({"error": str(e)}), 400, headers)
+        except Exception as e:
+            logger.error(f"[ERROR {action}] {e}")
+            return (jsonify({"error": "Erro ao salvar exclusão fora do BR"}), 500, headers)
+        before = set(geo_exclusions.active_tokens(bq))
+        try:
+            status = geo_exclusions.refresh(bq)
+        except Exception as e:
+            logger.error(f"[ERROR {action} refresh] {e}")
+            return (jsonify({
+                "ok": saved is not None, "saved": saved,
+                "error": "Configuração salva, mas o recálculo falhou. Rode o recálculo de novo.",
+            }), 500, headers)
+        _invalidate_geo_tokens(before | {r["short_token"] for r in status})
+        if saved:
+            tok = saved["short_token"]
+            row = next((r for r in status if r["short_token"] == tok), None)
+            if action == "save_geo_exclusion":
+                msg = "retirou do report a entrega fora do BR"
+                if row and row.get("status") != "ok":
+                    msg += f" (conciliação: {row.get('status')}, ajuste não aplicado)"
+            else:
+                msg = "voltou a mostrar no report a entrega fora do BR"
+            audit_log.safe_write_event(
+                short_token=tok,
+                event_type="geo_exclusion",
+                actor_email=admin.get("email"),
+                message=msg,
+                payload={"action": action, "config": saved, "status": row},
+            )
+        warning = None
+        if action == "save_geo_exclusion" and saved:
+            try:
+                if saved["short_token"] in query_frozen_tokens():
+                    warning = ("O report desta campanha está congelado e continua servindo o "
+                               "snapshot antigo. Descongele pra o ajuste aparecer.")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[geo_exclusions] checagem de freeze falhou: {e}")
+        return (jsonify({"ok": True, "saved": saved, "status": status, "warning": warning}), 200, headers)
 
     # ── Endpoints: PMP Deals (admin) ──────────────────────────────────────────
     # Análise das entregas dos deals de pagamento HYPR — substitui o fluxo
@@ -6493,6 +6614,32 @@ def _get_merged_report_cached(merge_id, force_refresh=False):
 
 def table_ref():
     return f"`{PROJECT_ID}.{DATASET_HUB}.{TABLE}`"
+
+
+UNIFIED_REF = "`site-hypr.prod_assets.unified_daily_performance_metrics`"
+
+
+def _geo_src(base, kind, token=None):
+    """FROM de delivery com a entrega fora do BR retirada, para os tokens com
+    exclusão geo configurada (ver geo_exclusions.py). Sem exclusão, devolve
+    `base` intacto. Falha no ajuste nunca derruba a leitura: cai na base crua."""
+    try:
+        return geo_exclusions.adjusted_source(bq, base, kind, token)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[geo_exclusions] fonte ajustada indisponível ({kind}): {e}")
+        return base
+
+
+def _geo_sql(sql, token=None):
+    """Troca as referências cruas a campaign_results e unified numa SQL já
+    montada pela fonte ajustada. Usado nas queries grandes (lista admin,
+    performers) que citam as tabelas várias vezes."""
+    cr_adj = _geo_src(table_ref(), "campaign_results", token)
+    uni_adj = _geo_src(UNIFIED_REF, "unified", token)
+    if cr_adj == table_ref() and uni_adj == UNIFIED_REF:
+        return sql
+    return (sql.replace(table_ref(), "\x00CR\x00").replace(UNIFIED_REF, "\x00UNI\x00")
+               .replace("\x00CR\x00", cr_adj).replace("\x00UNI\x00", uni_adj))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -8762,6 +8909,15 @@ def _stability_ok(short_token, viewable_now) -> tuple:
     (ok, reason). Tolera falha do time-travel (não bloqueia por isso)."""
     if viewable_now <= 0:
         return (False, "sem entrega (viewable=0)")
+    # Exclusão geo ativa: o report já sai sem a entrega fora do BR (queda
+    # proposital vs a unified crua) e a fração ainda pode mudar — o dia que
+    # faltava no Region é reprocessado e a estimativa vira número exato.
+    # Congelar agora travaria a estimativa. Congela manualmente depois.
+    try:
+        if short_token.upper() in geo_exclusions.active_tokens(bq):
+            return (False, "exclusão geo ativa — congelar manualmente")
+    except Exception:
+        pass
     # Tokens com janela de entrega são curados manualmente — bound != all-time,
     # então a comparação com a unified crua não se aplica. Libera.
     try:
@@ -9875,7 +10031,7 @@ def query_totals(token, campaign_info, unified_src=None, win_from=None, win_to=N
     `win_from`/`win_to` (opcional): janela de entrega — exclui delivery fora do
     range (token que herdou delivery de outro período via rename de line).
     """
-    UNIFIED = unified_src or "`site-hypr.prod_assets.unified_daily_performance_metrics`"
+    UNIFIED = _geo_src(unified_src or UNIFIED_REF, "unified", token)
     win_sql = _win_clause(win_from, win_to)
     CHECKLIST = "`site-hypr.prod_assets.checklist_info`"
 
@@ -10338,7 +10494,7 @@ def query_daily(token, cr_src=None, win_from=None, win_to=None):
             -- effective_total_cost é acumulado: usar MAX por (date, line) para evitar inflação
             -- Aqui já agrupamos por date+line_name, então MAX = valor daquele dia para aquela linha
             MAX(effective_total_cost)               AS effective_total_cost
-        FROM {cr_src or table_ref()}
+        FROM {_geo_src(cr_src or table_ref(), "campaign_results", token)}
         WHERE short_token = @token
           AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
           AND UPPER(creative_name) NOT LIKE '%SURVEY%'{win_sql}
@@ -10401,7 +10557,7 @@ def query_campaign_lines(token):
             SUM(clicks)                             AS clicks,
             SUM(viewable_video_starts)              AS video_starts,
             SUM(viewable_video_view_100_complete)   AS video_view_100
-        FROM {table_ref()}
+        FROM {_geo_src(table_ref(), "campaign_results", token)}
         WHERE short_token = @token
           AND media_type IN ('DISPLAY', 'VIDEO')
           AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
@@ -10409,12 +10565,12 @@ def query_campaign_lines(token):
         GROUP BY line_name, media_type
         ORDER BY impressions DESC
     """
-    sql_cost = """
+    sql_cost = f"""
         SELECT
             line_name,
             media_type,
             SUM(total_cost) AS admin_total_cost
-        FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+        FROM {_geo_src(UNIFIED_REF, "unified", token)}
         WHERE short_token = @token
           AND media_type IN ('DISPLAY', 'VIDEO')
           AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
@@ -10478,7 +10634,7 @@ def query_detail(token, cr_src=None, win_from=None, win_to=None):
             AVG(effective_cpm_amount)               AS effective_cpm_amount,
             -- effective_total_cost é acumulado: MAX por (date, line, creative) = custo real do dia
             MAX(effective_total_cost)               AS effective_total_cost
-        FROM {cr_src or table_ref()}
+        FROM {_geo_src(cr_src or table_ref(), "campaign_results", token)}
         WHERE short_token = @token
           AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
           AND UPPER(creative_name) NOT LIKE '%SURVEY%'{win_sql}
@@ -11122,6 +11278,10 @@ def query_campaigns_list():
         LEFT JOIN campaign_abs       ab USING (short_token)
         ORDER BY b.start_date DESC
     """
+
+    # Entrega fora do BR retirada dos tokens com exclusão geo (geo_exclusions):
+    # o card do menu admin tem de bater com o report do cliente.
+    sql = _geo_sql(sql)
 
     # ── Paralelização dos enrichments ─────────────────────────────────────────
     # Owners (Sheets + BQ overrides) e share_ids (BQ) não dependem do resultado
@@ -11983,6 +12143,7 @@ def query_performers_for_period(window_from: date, window_to: date):
         LEFT JOIN campaign_abs     ab USING (short_token)
     """
 
+    sql = _geo_sql(sql)  # mesma régua do report (geo_exclusions)
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("from_date", "DATE", window_from),

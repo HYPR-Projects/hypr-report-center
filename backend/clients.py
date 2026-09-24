@@ -37,6 +37,8 @@ import unicodedata
 from collections import Counter, defaultdict
 from datetime import date, timedelta
 
+import geo_exclusions
+
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -424,13 +426,21 @@ def query_client_timeseries(weeks=12):
     if bq is None:
         return {}
 
+    # Entrega fora do BR retirada dos tokens com exclusão geo — a sparkline
+    # tem de bater com o report (ver geo_exclusions.py).
+    unified = "`site-hypr.prod_assets.unified_daily_performance_metrics`"
+    try:
+        unified = geo_exclusions.adjusted_source(bq, unified, "unified")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[WARN query_client_timeseries geo] {e}")
+
     sql = f"""
         WITH weekly AS (
             SELECT
                 client_name,
                 DATE_TRUNC(date, WEEK(MONDAY)) AS week_start,
                 SUM(viewable_impressions)      AS vi
-            FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+            FROM {unified}
             WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL {int(weeks) * 7} DAY)
               AND UPPER(line_name) NOT LIKE '%SURVEY%'
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
