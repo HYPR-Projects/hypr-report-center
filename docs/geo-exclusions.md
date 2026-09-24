@@ -8,8 +8,11 @@ congelar o report. Código: `backend/geo_exclusions.py`.
 ## Como ligar
 
 No menu admin, abra o drawer da campanha → **Entrega fora do Brasil** →
-**Retirar do report a entrega fora do BR**. O backend recalcula na hora (até
-1 min) e mostra quanto saiu, a conciliação e quanto foi estimado.
+**Retirar do report a entrega fora do BR**. Ligar recalcula só aquela
+campanha (segundos, com contador na tela); desligar apaga as frações na hora.
+O drawer mostra quanto saiu (display e vídeo), o custo DSP fora do BR, a
+conciliação e quanto foi estimado. A lista do admin recarrega junto; o report
+do cliente em outras abas atualiza em até 1 min.
 
 Por API (admin JWT):
 
@@ -67,6 +70,7 @@ linhas e sparkline de clientes.
 | `campaign_geo_exclusions` | config: token, janela opcional, motivo, quem ligou |
 | `campaign_geo_adjustments` | frações por token × dia × line × criativo |
 | `campaign_geo_exclusion_status` | status do último recálculo por token |
+| `dv360_region_country_compact` | cópia do Region por dia × line × criativo × país, particionada por data (a original não é, e cada leitura varria ~19 GB). Refeita no warmup quando o Region muda; é o que deixa o toggle rápido |
 
 ## Desligar tudo em emergência
 

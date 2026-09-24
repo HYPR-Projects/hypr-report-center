@@ -384,6 +384,16 @@ def _client_name_for_token(token):
     return None
 
 
+def _fresh_read_prelude():
+    """Pedido com refresh=true: lê a verdade do servidor NESTA instância.
+    Descarta o cache de tokens com ajuste geo (senão uma instância que ainda
+    não viu o recálculo monta o report cru e guarda por 3h) e força a checagem
+    de versão da base na hora, em vez de esperar os 60s do cache dela."""
+    geo_exclusions.invalidate_active_cache()
+    with _cache_lock:
+        _base_version_cache.clear()
+
+
 def _get_campaigns_list_cached(force_refresh=False):
     """Wrapper single-flight em torno de query_campaigns_list().
 
@@ -395,6 +405,8 @@ def _get_campaigns_list_cached(force_refresh=False):
     # checklist_info) mudou desde a última leitura — mesmo gatilho do report.
     # Sem isso, uma edição de contrato feita no Command aparecia no report (que
     # fura por versão) mas NÃO no card do menu admin (que só tinha TTL de 3h).
+    if force_refresh:
+        _fresh_read_prelude()
     _bust_stale_caches_if_base_changed()
 
     if not force_refresh:
@@ -703,6 +715,8 @@ def _get_report_cached(short_token, force_refresh=False):
     # Fura os caches se a base foi reconstruída desde a última leitura (rebuild
     # manual, catch-up do pipeline, backfill, edição de contrato) — ver
     # _base_version. Mesma checagem no caminho da lista (menu admin).
+    if force_refresh:
+        _fresh_read_prelude()
     _bust_stale_caches_if_base_changed()
 
     if not force_refresh:
@@ -4417,9 +4431,10 @@ def report_data(request):
     #   GET  ?action=geo_exclusions                    → config + status por token
     #   POST ?action=save_geo_exclusion   {short_token, date_from?, date_to?, reason?}
     #   POST ?action=delete_geo_exclusion {short_token}
-    #   POST ?action=refresh_geo_exclusions            → recalcula as frações agora
-    # Save/delete recalculam na hora (o report muda na próxima leitura). O cron
-    # de warmup recalcula sozinho quando o Region ou a entrega mudam.
+    #   POST ?action=refresh_geo_exclusions            → recalcula todas agora
+    # Save recalcula só aquela campanha (~segundos); delete apaga as frações na
+    # hora. O report muda na próxima leitura. O cron de warmup recalcula tudo
+    # sozinho quando o Region ou a entrega mudam.
     if request.method == "GET" and request.args.get("action") == "geo_exclusions":
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
@@ -4454,14 +4469,28 @@ def report_data(request):
             return (jsonify({"error": "Erro ao salvar exclusão fora do BR"}), 500, headers)
         before = set(geo_exclusions.active_tokens(bq))
         try:
-            status = geo_exclusions.refresh(bq)
+            # Ligar recalcula SÓ a campanha clicada (as outras mantêm o que já
+            # está publicado); desligar já apagou frações e status em
+            # delete_exclusion, não há o que recalcular; o botão de recálculo
+            # refaz todas.
+            if action == "save_geo_exclusion":
+                status = geo_exclusions.refresh(bq, scope=[saved["short_token"]])
+            elif action == "refresh_geo_exclusions":
+                status = geo_exclusions.refresh(bq)
+            else:
+                status = []
         except Exception as e:
             logger.error(f"[ERROR {action} refresh] {e}")
             return (jsonify({
                 "ok": saved is not None, "saved": saved,
                 "error": "Configuração salva, mas o recálculo falhou. Rode o recálculo de novo.",
             }), 500, headers)
-        _invalidate_geo_tokens(before | {r["short_token"] for r in status})
+        # O token salvo/apagado entra explícito: no delete ele já saiu dos
+        # ativos antes desta linha, e o cache dele ficaria com o report ajustado.
+        _invalidate_geo_tokens(
+            before | {r["short_token"] for r in status}
+            | ({saved["short_token"]} if saved else set())
+        )
         if saved:
             tok = saved["short_token"]
             row = next((r for r in status if r["short_token"] == tok), None)

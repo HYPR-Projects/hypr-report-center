@@ -119,11 +119,11 @@ def test_refresh_publica_so_token_conciliado_e_guarda_o_ultimo_bom():
     sql = ge.build_refresh_script(tolerance=0.005)
     assert "<= 0.005 THEN 'ok'" in sql
     publish = sql[sql.index(f"CREATE OR REPLACE TABLE {ge.ADJ_TABLE}"):]
-    assert "FROM new_adj\nWHERE short_token IN (SELECT short_token FROM" in publish
-    assert "WHERE status = 'ok'" in publish
-    # quem não fechou mantém a fração publicada antes
-    assert f"FROM {ge.ADJ_TABLE}\nWHERE short_token IN" in publish
-    assert "status != 'ok'" in publish
+    # fração nova só pra quem conciliou
+    assert "FROM new_adj\nWHERE short_token IN (SELECT short_token FROM new_status WHERE status = 'ok')" in publish
+    # quem não fechou (ou ficou fora do cálculo) mantém a publicada; quem saiu da config some
+    assert f"FROM {ge.ADJ_TABLE}\nWHERE short_token IN (SELECT short_token FROM cfg_all)" in publish
+    assert "NOT IN (SELECT short_token FROM new_status WHERE status = 'ok')" in publish
 
 
 def test_refresh_nao_conta_pais_nao_resolvido_nem_liberado():
@@ -242,3 +242,74 @@ def test_resumo_sem_token_ativo_nem_consulta():
     fake = FakeBQ(rows=[{"short_token": "X"}])
     assert ge.summary_by_token(fake) == {}
     assert fake.queries == []
+
+
+# ── Velocidade do toggle ───────────────────────────────────────────────────
+
+def test_recalculo_parcial_preserva_os_outros_tokens():
+    sql = ge.build_refresh_script()
+    assert "DECLARE scope ARRAY<STRING> DEFAULT @scope;" in sql
+    assert "WHERE NOT scoped OR e.short_token IN UNNEST(scope)" in sql
+    # status dos tokens fora do cálculo é reaproveitado, com colunas explícitas
+    assert f"SELECT {ge._STATUS_COLS} FROM {ge.STATUS_TABLE}\nWHERE scoped" in sql
+    # frações dos tokens fora do cálculo (ou que não fecharam) ficam
+    assert "AND short_token NOT IN (SELECT short_token FROM new_status WHERE status = 'ok')" in sql
+
+
+def test_recalculo_le_a_copia_compacta_particionada():
+    sql = ge.build_refresh_script()
+    assert ge.COMPACT_TABLE in sql
+    assert ge.REGIONS_TABLE not in sql  # a original não é particionada (~19 GB por leitura)
+    compact = ge.build_compact_sql()
+    assert "PARTITION BY date" in compact and "CLUSTER BY line_item_id" in compact
+    assert ge.REGIONS_TABLE in compact
+
+
+def test_refresh_parcial_vira_total_com_status_de_versao_antiga(monkeypatch):
+    monkeypatch.setattr(ge, "ensure_tables", lambda bq: None)
+    monkeypatch.setattr(ge, "_last_modified_ms", lambda bq, d, t: 1)
+    monkeypatch.setattr(ge, "_status_is_current", lambda bq: False)
+    seen = {}
+
+    class CaptureBQ(FakeBQ):
+        def query(self, sql, job_config=None, location=None):
+            seen["params"] = {p.name: p.values for p in job_config.query_parameters}
+            return FakeJob([])
+
+    ge.refresh(CaptureBQ(), scope=["rpljp9"])
+    assert seen["params"]["scope"] == []
+
+
+def test_refresh_parcial_manda_so_o_token(monkeypatch):
+    monkeypatch.setattr(ge, "ensure_tables", lambda bq: None)
+    monkeypatch.setattr(ge, "_last_modified_ms", lambda bq, d, t: 1)
+    monkeypatch.setattr(ge, "_status_is_current", lambda bq: True)
+    seen = {}
+
+    class CaptureBQ(FakeBQ):
+        def query(self, sql, job_config=None, location=None):
+            seen["params"] = {p.name: p.values for p in job_config.query_parameters}
+            return FakeJob([])
+
+    ge.refresh(CaptureBQ(), scope=["rpljp9"])
+    assert seen["params"]["scope"] == ["RPLJP9"]
+
+
+def test_desligar_apaga_config_fracoes_e_status_sem_recalcular(monkeypatch):
+    monkeypatch.setattr(ge, "ensure_tables", lambda bq: None)
+    set_active(["RPLJP9"])
+    fake = FakeBQ()
+    assert ge.delete_exclusion(fake, "rpljp9") == "RPLJP9"
+    sql = fake.queries[0]
+    for table in (ge.CONFIG_TABLE, ge.ADJ_TABLE, ge.STATUS_TABLE):
+        assert f"DELETE FROM {table} WHERE short_token = @token" in sql
+    assert ge._active_cache["tokens"] is None  # cache derrubado na hora
+
+
+def test_refresh_true_descarta_o_cache_geo_da_instancia():
+    import main
+    set_active(["RPLJP9"])
+    main._cache_set(main._base_version_cache, "v", (1, 2, 3))
+    main._fresh_read_prelude()
+    assert ge._active_cache["tokens"] is None
+    assert "v" not in main._base_version_cache
