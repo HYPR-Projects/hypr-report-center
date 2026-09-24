@@ -19,7 +19,11 @@ const pct = (v) => (v == null ? "—" : `${fmt(v, v < 1 ? 2 : 1)}%`);
 const ROW = "grid items-center gap-x-3 gap-y-1 grid-cols-[minmax(0,1fr)_auto_4.5rem] sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)_5.5rem_5rem]";
 const BAR = "order-last col-span-3 sm:order-none sm:col-span-1";
 
-export function MaFunnelV2({ steps, subs = [], note = null, unitLabel = "pessoas" }) {
+// `baseAsPercent`: a base aparece como 100%, sem a contagem. No report do
+// cliente o total de pessoas que viram a peça competiria com as impressões
+// da DSP (a peça conta tráfego que a DSP filtra); as etapas seguintes são
+// comportamento e ficam em pessoas.
+export function MaFunnelV2({ steps, subs = [], note = null, unitLabel = "pessoas", baseAsPercent = false }) {
   const { rows, biggestDrop } = funnelConversions(steps || []);
   if (!rows.length) return null;
   const base = rows[0].value;
@@ -54,7 +58,7 @@ export function MaFunnelV2({ steps, subs = [], note = null, unitLabel = "pessoas
                 />
               </div>
               <span role="cell" className="text-[12px] font-semibold text-fg tabular-nums text-right">
-                {fmt(r.value)}
+                {i === 0 && baseAsPercent ? "100%" : fmt(r.value)}
               </span>
               <span
                 role="cell"

@@ -19,7 +19,7 @@ import {
 } from "../../../shared/maMetrics";
 import { cn } from "../../../ui/cn";
 import { KpiCardV2 } from "../KpiCardV2";
-import { CsvButton, MaCard, PuzzleIcon } from "./maUi";
+import { CsvButton, HyprOnlyBadge, MaCard, PuzzleIcon } from "./maUi";
 import { downloadCsv, keyMetricText, pct } from "./maFormat";
 import { MaStackedDailyChartV2 } from "./MaStackedDailyChartV2";
 import { MaThumbV2 } from "./MaThumbV2";
@@ -32,13 +32,30 @@ const SOURCE_NOTE = {
   mixed: "DSP nas peças ligadas a criativos; nas demais, carregamentos da peça",
 };
 
+// Sem criativo da DSP ligado, a única medição de clique que existe é a da
+// peça — ela entra no lugar (a coluna não fica vazia nem mistura as duas).
+const clicksOf = (m) => (m?.deliverySource === "dsp" ? m.clicks : m?.ctaClicks);
+const ctrOf = (m) => (m?.deliverySource === "dsp" ? m.ctr : m?.ctaCtr);
+
 function Note({ children }) {
   return <span className="text-[11px] text-fg-subtle leading-snug">{children}</span>;
 }
 
+/* O que só a HYPR vê: a medição da própria peça ao lado da entrega da DSP.
+ * Pro cliente, um número por métrica — entrega pela DSP, comportamento pela
+ * peça — sem duas medições da mesma coisa lado a lado. */
+function HyprNote({ children }) {
+  return (
+    <span className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-fg-subtle leading-snug">
+      <HyprOnlyBadge />
+      {children}
+    </span>
+  );
+}
+
 // `heroId`: peça sendo aberta pelo card; a miniatura dela ganha o
 // view-transition-name que vira o preview no detalhe (MaxAttentionV2).
-export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campaignName = "campanha", heroId = null }) {
+export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campaignName = "campanha", heroId = null, hypr = false }) {
   const list = pieces.map((p) => ({ p, m: medias.get(p.creative_id), km: keyMetric(p) }));
   const total = sumMedia(list.map((x) => x.m));
   const best = list.length > 1
@@ -48,98 +65,114 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campai
   const groups = groupByFormat(pieces);
   const exact = list.every((x) => x.m.exactPeople);
 
-  // CSV do comparativo: números crus (Excel/Sheets), taxas com 2 casas.
+  // CSV do comparativo: números crus (Excel/Sheets), taxas com 2 casas. O do
+  // cliente leva só a entrega da DSP e o comportamento; o da HYPR leva
+  // também a medição da peça.
   const rate = (v) => (v == null ? "" : Number(v).toFixed(2));
-  const csv = () =>
+  const keyVal = (km) => (km?.value == null ? "" : km.kind === "count" ? km.value : rate(km.value));
+  const csv = () => {
+    const head = ["Formato", "Peça", "Tamanho", "Impressões", "Imp. visíveis", "Viewability (%)", "Cliques", "CTR (%)", "Sessões engajadas", "Engajamento (%)", "Destaque do formato", "Valor do destaque"];
+    const hyprHead = ["Fonte da entrega", "Imp. medidas pela peça", "Visíveis medidas pela peça", "Viewability da peça (%)", "Cliques em CTA (peça)", "CTR da peça (%)", "Sessões (peça)"];
     downloadCsv(
       `${campaignName} - max attention - comparativo`.replace(/[\\/:*?"<>|]+/g, " "),
-      [
-        "Formato", "Peça", "Tamanho", "Fonte da entrega",
-        "Impressões", "Imp. visíveis", "Viewability (%)", "Cliques", "CTR (%)",
-        "Imp. medidas pela peça", "Visíveis medidas pela peça", "Viewability da peça (%)", "Cliques em CTA", "CTR da peça (%)",
-        "Sessões", "Sessões engajadas", "Engajamento (%)", "Destaque do formato", "Valor do destaque",
-      ],
-      list.map(({ p, m, km }) =>
-        isWaiting(p)
-          ? [formatLabel(p.format), p.name, p.size || "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", km?.label || "", ""]
-          : [
-              formatLabel(p.format), p.name, p.size || "", m.deliverySource === "dsp" ? "DSP" : "Peça",
-              m.impressions, m.viewable, rate(m.viewability), m.clicks ?? "", rate(m.ctr),
-              m.measured, m.pieceViewable, rate(m.pieceViewability), m.ctaClicks, rate(m.ctaCtr),
-              m.sessions, m.engaged, rate(m.engagement), km?.label || "", km?.value == null ? "" : km.kind === "count" ? km.value : rate(km.value),
-            ],
-      ),
+      hypr ? [...head, ...hyprHead] : head,
+      list.map(({ p, m, km }) => {
+        if (isWaiting(p)) {
+          const blank = [formatLabel(p.format), p.name, p.size || "", "", "", "", "", "", "", "", km?.label || "", ""];
+          return hypr ? [...blank, "", "", "", "", "", "", ""] : blank;
+        }
+        // Sem DSP ligada, a entrega é a medição da peça (a única que existe).
+        const row = [
+          formatLabel(p.format), p.name, p.size || "",
+          m.impressions, m.viewable, rate(m.viewability),
+          clicksOf(m), rate(ctrOf(m)),
+          m.engaged, rate(m.engagement), km?.label || "", keyVal(km),
+        ];
+        return hypr
+          ? [...row, m.deliverySource === "dsp" ? "DSP" : "Peça", m.measured, m.pieceViewable, rate(m.pieceViewability), m.ctaClicks, rate(m.ctaCtr), m.sessions]
+          : row;
+      }),
     );
+  };
+  const clicksValue = total.clicks ?? total.ctaClicks;
+  const ctrValue = total.clicks != null ? total.ctr : total.ctaCtr;
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
         <KpiCardV2
           label="Impressões"
           value={fmt(total.impressions)}
-          hint="Entrega da DSP dos criativos ligados às peças Max Attention — mesma régua da aba Display. A aba Display soma todos os criativos da campanha (inclusive os que não são Max Attention), por isso pode ser maior. Peça sem criativo da DSP ligado entra com os carregamentos contados por ela."
-          note={<Note>{SOURCE_NOTE[total.impressionsSource]}. Carregadas pela peça: <b className="text-fg tabular-nums">{fmt(total.measured)}</b></Note>}
+          hint="Entrega da DSP dos criativos ligados às peças Max Attention, a mesma base da aba Display. A aba Display soma todos os criativos da campanha, inclusive os que não são Max Attention."
+          note={
+            <>
+              <Note>{total.impressionsSource === "dsp" ? "Só as peças Max Attention · mesma base da aba Display" : SOURCE_NOTE[total.impressionsSource]}</Note>
+              {hypr && <HyprNote>Carregadas pela peça: <b className="text-fg tabular-nums">{fmt(total.measured)}</b></HyprNote>}
+            </>
+          }
         />
         <KpiCardV2
           label="Viewability"
           value={pct(total.viewability, 1)}
-          hint="Impressões visíveis ÷ impressões, pela DSP (mesma conta da aba Display). Cada DSP mede do seu jeito: a DV360 e a Yahoo não usam a mesma régua. A medição da própria peça (50% dela na tela por 1 segundo, igual em todas as DSPs) fica ao lado e é a base justa pra comparar peças."
-          note={<Note>Medida pela peça: <b className="text-fg tabular-nums">{pct(total.pieceViewability, 1)}</b></Note>}
+          hint="Impressões visíveis ÷ impressões, pela DSP — a mesma conta da aba Display."
+          note={
+            <>
+              <Note>Visíveis ÷ impressões</Note>
+              {hypr && <HyprNote>Medida pela peça: <b className="text-fg tabular-nums">{pct(total.pieceViewability, 1)}</b></HyprNote>}
+            </>
+          }
         />
         <KpiCardV2
-          label="Sessões"
-          value={fmt(total.sessions)}
-          hint="Pessoas (sessões distintas) que carregaram a peça no período."
-          note={<Note>{exact ? "Pessoas que carregaram a peça" : "Estimativa: soma diária de pessoas"}</Note>}
+          label="Cliques"
+          value={fmt(clicksValue)}
+          hint={total.clicks != null
+            ? "Cliques registrados pela DSP. CTR = cliques ÷ impressões visíveis, a mesma conta da aba Display."
+            : "Cliques no CTA medidos pela peça (nenhuma peça está ligada a criativo da DSP)."}
+          note={
+            <>
+              <Note>CTR <b className="text-fg tabular-nums">{pct(ctrValue)}</b></Note>
+              {hypr && total.clicks != null && <HyprNote>Cliques no CTA da peça: <b className="text-fg tabular-nums">{fmt(total.ctaClicks)}</b></HyprNote>}
+            </>
+          }
         />
         <KpiCardV2
           label="Taxa de engajamento"
           value={pct(total.engagement)}
           accent
-          hint="Sessões com interação ativa ÷ sessões. Interação ativa: mexer no mapa, clicar em pin, raspar, trocar slide, responder, jogar, tocar num widget ou clicar."
-          note={<Note>Sessões com interação ÷ sessões</Note>}
+          hint="Pessoas que interagiram ÷ pessoas que viram a peça, medido pela peça. Interação: mexer no mapa, clicar em pin, raspar, trocar slide, responder, jogar, tocar num widget ou clicar."
+          note={
+            <>
+              <Note>Interações medidas pela peça</Note>
+              {hypr && <HyprNote>Base: <b className="text-fg tabular-nums">{fmt(total.sessions)}</b> {exact ? "pessoas" : "sessões (estimado)"}</HyprNote>}
+            </>
+          }
         />
         <KpiCardV2
-          label="Sessões engajadas"
+          label="Pessoas que interagiram"
           value={fmt(total.engaged)}
           hint="Pessoas que fizeram ao menos uma interação ativa com a peça."
-          note={<Note>Pessoas que interagiram</Note>}
+          note={<Note>Ao menos uma interação ativa</Note>}
         />
-        {total.clicks != null ? (
-          <KpiCardV2
-            label="Cliques"
-            value={fmt(total.clicks)}
-            hint="Cliques registrados pela DSP. CTR = cliques ÷ impressões visíveis, a mesma conta da aba Display. Os cliques no CTA contados pela própria peça ficam ao lado: a peça conta todo toque no botão, a DSP descarta clique inválido e só conta o que passa pelo rastreador dela."
-            note={<Note>CTR <b className="text-fg tabular-nums">{pct(total.ctr)}</b> · CTA da peça: <b className="text-fg tabular-nums">{fmt(total.ctaClicks)}</b></Note>}
-          />
-        ) : (
-          <KpiCardV2
-            label="Cliques em CTA"
-            value={fmt(total.ctaClicks)}
-            hint="Sem criativo da DSP ligado: cliques no CTA contados pela própria peça. CTR da peça = cliques em CTA ÷ impressões medidas pela peça."
-            note={<Note>CTR da peça <b className="text-fg tabular-nums">{pct(total.ctaCtr)}</b></Note>}
-          />
-        )}
       </div>
 
       <MaCard
         title="Comparativo das peças"
-        subtitle={list.length > 1 ? "Entrega pela DSP; viewability da peça é a base pra comparar peças · ★ maior engajamento" : "Métricas comparáveis da peça"}
+        subtitle={list.length > 1 ? "Entrega pela DSP · engajamento medido pela peça · ★ maior engajamento" : "Entrega pela DSP · engajamento medido pela peça"}
         actions={<CsvButton onClick={csv} />}
       >
         <div className="overflow-x-auto -mx-4 md:-mx-5">
-          <table className="w-full text-xs min-w-[1040px]">
+          <table className={cn("w-full text-xs", hypr ? "min-w-[1040px]" : "min-w-[860px]")}>
             <thead>
               <tr className="border-b border-border text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
                 <th className="px-4 md:px-5 py-2.5 text-left">Formato</th>
                 <th className="px-3 py-2.5 text-left">Peça</th>
-                <th className="px-3 py-2.5 text-right" title="Entrega da DSP (ou carregamentos da peça, sem criativo ligado)">Impressões</th>
-                <th className="px-3 py-2.5 text-right" title="Visíveis ÷ impressões, pela DSP — mesma conta da aba Display">Viewab. DSP</th>
-                <th className="px-3 py-2.5 text-right" title="Medida pela própria peça, mesma regra em todas as DSPs — a base pra comparar peças">Viewab. peça</th>
+                <th className="px-3 py-2.5 text-right" title="Entrega da DSP, mesma base da aba Display">Impressões</th>
+                <th className="px-3 py-2.5 text-right" title="Visíveis ÷ impressões, pela DSP">Viewability</th>
+                {hypr && <th className="px-3 py-2.5 text-right text-warning" title="Só HYPR: medida pela própria peça, mesma regra em todas as DSPs">Viewab. peça</th>}
                 <th className="px-3 py-2.5 text-right">Engajamento</th>
                 <th className="px-3 py-2.5 text-right" title="Cliques da DSP">Cliques</th>
-                <th className="px-3 py-2.5 text-right" title="Cliques da DSP ÷ impressões visíveis da DSP">CTR</th>
-                <th className="px-3 py-2.5 text-right" title="Cliques no CTA contados pela própria peça">CTA da peça</th>
+                <th className="px-3 py-2.5 text-right" title="Cliques ÷ impressões visíveis">CTR</th>
+                {hypr && <th className="px-3 py-2.5 text-right text-warning" title="Só HYPR: cliques no CTA contados pela própria peça">CTA peça</th>}
                 <th className="px-4 md:px-5 py-2.5 text-left">Destaque do formato</th>
               </tr>
             </thead>
@@ -168,22 +201,22 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campai
                       </button>
                     </td>
                     {waiting ? (
-                      <td colSpan={8} className="px-3 py-2.5 text-fg-subtle italic">Aguardando a primeira impressão</td>
+                      <td colSpan={hypr ? 8 : 6} className="px-3 py-2.5 text-fg-subtle italic">Aguardando a primeira impressão</td>
                     ) : (
                       <>
                         <td className="px-3 py-2.5 text-right tabular-nums text-fg">
                           {fmt(m.impressions)}
                           {m.deliverySource !== "dsp" && <span className="ml-1 text-fg-subtle" title="Sem criativo da DSP ligado: carregamentos contados pela peça">*</span>}
                         </td>
-                        <td className="px-3 py-2.5 text-right tabular-nums text-fg">{m.deliverySource === "dsp" ? pct(m.viewability, 1) : "—"}</td>
-                        <td className="px-3 py-2.5 text-right tabular-nums text-fg">{pct(m.pieceViewability, 1)}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-fg">{pct(m.viewability, 1)}</td>
+                        {hypr && <td className="px-3 py-2.5 text-right tabular-nums text-fg-muted">{pct(m.pieceViewability, 1)}</td>}
                         <td className="px-3 py-2.5 text-right tabular-nums text-fg whitespace-nowrap">
                           {best != null && m.engagement === best && <span className="text-warning mr-1" title="Maior engajamento">★</span>}
                           {pct(m.engagement)}
                         </td>
-                        <td className="px-3 py-2.5 text-right tabular-nums text-fg">{m.clicks == null ? "—" : fmt(m.clicks)}</td>
-                        <td className="px-3 py-2.5 text-right tabular-nums text-fg">{pct(m.ctr)}</td>
-                        <td className="px-3 py-2.5 text-right tabular-nums text-fg-muted">{fmt(m.ctaClicks)}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-fg">{fmt(clicksOf(m))}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-fg">{pct(ctrOf(m))}</td>
+                        {hypr && <td className="px-3 py-2.5 text-right tabular-nums text-fg-muted">{fmt(m.ctaClicks)}</td>}
                         <td className="px-4 md:px-5 py-2.5 text-fg-muted whitespace-nowrap">
                           {km.label}: <b className="text-fg tabular-nums">{keyMetricText(km)}</b>
                         </td>
@@ -199,12 +232,12 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campai
                   <td className="px-4 md:px-5 py-2.5">Total</td>
                   <td className="px-3 py-2.5 text-fg-muted">{list.length} peças</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{fmt(total.impressions)}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{total.dspPieces ? pct(total.viewability, 1) : "—"}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{pct(total.pieceViewability, 1)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{pct(total.viewability, 1)}</td>
+                  {hypr && <td className="px-3 py-2.5 text-right tabular-nums text-fg-muted">{pct(total.pieceViewability, 1)}</td>}
                   <td className="px-3 py-2.5 text-right tabular-nums">{pct(total.engagement)}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{total.clicks == null ? "—" : fmt(total.clicks)}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{pct(total.ctr)}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{fmt(total.ctaClicks)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{fmt(clicksValue)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{pct(ctrValue)}</td>
+                  {hypr && <td className="px-3 py-2.5 text-right tabular-nums text-fg-muted">{fmt(total.ctaClicks)}</td>}
                   <td className="px-4 md:px-5 py-2.5" />
                 </tr>
               </tfoot>
@@ -214,7 +247,7 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campai
       </MaCard>
 
       {stackRows.length > 0 && (
-        <MaCard title="Sessões engajadas por dia" subtitle={formats.length > 1 ? "Empilhado por formato" : null}>
+        <MaCard title="Pessoas que interagiram por dia" subtitle={formats.length > 1 ? "Empilhado por formato" : null}>
           <MaStackedDailyChartV2 rows={stackRows} formats={formats} colors={formatColors} />
         </MaCard>
       )}
@@ -317,7 +350,7 @@ function PieceCard({ piece, media, color, onOpen, showFormatDesc = false, hero =
         ) : (
           <div className="mt-2 grid grid-cols-3 gap-2">
             <Mini label="Engajamento" value={pct(media.engagement)} />
-            <Mini label="Cliques CTA" value={fmt(media.ctaClicks)} />
+            <Mini label="Cliques" value={fmt(clicksOf(media))} />
             <Mini label={km.label} value={keyMetricText(km)} />
           </div>
         )}

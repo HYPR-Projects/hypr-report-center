@@ -2,8 +2,8 @@
 //
 // Card "Max Attention" do Resumo por mídia (Visão Geral). Mesma moldura dos
 // cards de Display e Vídeo, com as métricas comparáveis de todas as peças
-// vinculadas: taxa de engajamento em destaque, sessões engajadas, cliques
-// em CTA (da peça), viewability e CTR (da DSP, mesma régua da aba Display).
+// vinculadas: taxa de engajamento em destaque e sessões engajadas (da peça);
+// cliques, viewability e CTR (da DSP, mesma base da aba Display).
 // Busca pelo mesmo cache da aba
 // (useMaReport), então abrir a aba depois não refaz a requisição.
 
@@ -44,11 +44,11 @@ export function MaxAttentionSummaryCardV2({
 
   const cells = [
     { label: "Sessões engajadas", value: fmtCompact(total.engaged) },
-    { label: "Cliques em CTA", value: fmtCompact(total.ctaClicks) },
+    // Um número por métrica: cliques e CTR da DSP; sem peça ligada à DSP,
+    // os da própria peça (a única medição que existe).
+    { label: "Cliques", value: fmtCompact(total.clicks ?? total.ctaClicks) },
     { label: "Viewability", value: pct(total.viewability, 1) },
-    total.ctr != null
-      ? { label: "CTR", value: pct(total.ctr), accent: true }
-      : { label: "CTR da peça", value: pct(total.ctaCtr), accent: true },
+    { label: "CTR", value: pct(total.clicks != null ? total.ctr : total.ctaCtr), accent: true },
   ];
 
   const link = onNavigate ? (

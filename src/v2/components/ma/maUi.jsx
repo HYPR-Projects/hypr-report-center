@@ -39,6 +39,15 @@ export function MaCard({ title, subtitle, layer, actions, className, children })
   );
 }
 
+/** Marca o que só a HYPR (admin) vê — nunca aparece no report do cliente. */
+export function HyprOnlyBadge() {
+  return (
+    <span className="inline-flex items-center rounded border border-warning/40 bg-warning-soft px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-warning">
+      Só HYPR
+    </span>
+  );
+}
+
 export function CsvButton({ onClick, label = "CSV" }) {
   return (
     <button
