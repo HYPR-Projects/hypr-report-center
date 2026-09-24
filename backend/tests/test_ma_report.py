@@ -498,3 +498,106 @@ def test_contrato_platform_normaliza_todos_os_formatos(monkeypatch):
     assert video["freeform"]["videoComplete"] == 17000 and video["steps"]["video_complete"] == 16100
 
     assert by["Mapa sem lake (funil indisponível)"]["steps"] is None
+
+
+# ─── Cache por peça, lotes paralelos, servir vencido ───────────────────────
+
+def _ids_urlopen(seen, fail_ids=()):
+    """Platform falsa que responde só os ids pedidos (e cai nos `fail_ids`)."""
+    import urllib.parse as up
+
+    def fn(req, timeout=None):
+        ids = up.parse_qs(up.urlparse(req.full_url).query)["ids"][0].split(",")
+        seen.append(ids)
+        if any(i in fail_ids for i in ids):
+            raise urllib.error.URLError("caiu")
+        return _Resp(json.dumps({"items": [_item(i) for i in ids]}).encode())
+    return fn
+
+
+def _cid(n):
+    return f"{n:08d}-1111-4111-8111-111111111111"
+
+
+def test_pecas_vao_em_lotes_paralelos(monkeypatch):
+    monkeypatch.setenv("MA_SERVICE_KEY", "segredo")
+    seen = []
+    monkeypatch.setattr(ma.urllib.request, "urlopen", _ids_urlopen(seen))
+    links = [{"creative_id": _cid(i)} for i in range(7)]
+    res = ma.fetch_pieces(links)
+    assert len(res["pieces"]) == 7 and res["errors"] == []
+    assert sorted(len(c) for c in seen) == [1, 3, 3]
+    # Ordem do vínculo preservada, apesar dos lotes.
+    assert [p["creative_id"] for p in res["pieces"]] == [l["creative_id"] for l in links]
+
+
+def test_peca_nova_busca_so_ela(monkeypatch):
+    monkeypatch.setenv("MA_SERVICE_KEY", "segredo")
+    seen = []
+    monkeypatch.setattr(ma.urllib.request, "urlopen", _ids_urlopen(seen))
+    ma.fetch_pieces([{"creative_id": CID_A}])
+    ma.fetch_pieces([{"creative_id": CID_A}, {"creative_id": CID_B}])
+    assert seen == [[CID_A], [CID_B]]
+
+
+def test_vencido_serve_na_hora_e_atualiza_por_tras(monkeypatch):
+    monkeypatch.setenv("MA_SERVICE_KEY", "segredo")
+    seen = []
+    monkeypatch.setattr(ma.urllib.request, "urlopen", _ids_urlopen(seen))
+    ma.fetch_pieces([{"creative_id": CID_A}])
+    key = ma._piece_key(CID_A, None, None)
+    ts, entry = ma._pieces_cache[key]
+    ma._pieces_cache[key] = (ts - ma.PIECES_TTL - 1, entry)  # envelhece
+    res = ma.fetch_pieces([{"creative_id": CID_A}])
+    assert len(res["pieces"]) == 1 and res["fetched_at"] == entry["fetched_at"]
+    ma._revalidate_pool.submit(lambda: None).result(timeout=5)  # drena a fila
+    for _ in range(50):
+        if len(seen) == 2 and not ma._revalidating:
+            break
+        import time as _t
+        _t.sleep(0.02)
+    assert len(seen) == 2
+    assert ma._pieces_cache[key][0] > ts
+
+
+def test_velho_demais_espera_a_platform(monkeypatch):
+    monkeypatch.setenv("MA_SERVICE_KEY", "segredo")
+    seen = []
+    monkeypatch.setattr(ma.urllib.request, "urlopen", _ids_urlopen(seen))
+    ma.fetch_pieces([{"creative_id": CID_A}])
+    key = ma._piece_key(CID_A, None, None)
+    ts, entry = ma._pieces_cache[key]
+    ma._pieces_cache[key] = (ts - ma.PIECES_STALE_TTL - 1, entry)
+    ma.fetch_pieces([{"creative_id": CID_A}])
+    assert len(seen) == 2
+
+
+def test_lote_que_cai_vira_erro_so_das_pecas_dele(monkeypatch):
+    monkeypatch.setenv("MA_SERVICE_KEY", "segredo")
+    links = [{"creative_id": _cid(i), "name": f"P{i}"} for i in range(6)]
+    monkeypatch.setattr(ma.urllib.request, "urlopen", _ids_urlopen([], fail_ids={_cid(4)}))
+    res = ma.fetch_pieces(links)
+    assert len(res["pieces"]) == 3
+    assert sorted(e["creative_id"] for e in res["errors"]) == [_cid(3), _cid(4), _cid(5)]
+    assert all(e["error"] == "missing" for e in res["errors"])
+
+
+def test_refresh_fura_so_as_pecas_pedidas(monkeypatch):
+    monkeypatch.setenv("MA_SERVICE_KEY", "segredo")
+    seen = []
+    monkeypatch.setattr(ma.urllib.request, "urlopen", _ids_urlopen(seen))
+    ma.fetch_pieces([{"creative_id": CID_A}])
+    ma.fetch_pieces([{"creative_id": CID_B}])
+    ma.fetch_pieces([{"creative_id": CID_A}], refresh=True)
+    ma.fetch_pieces([{"creative_id": CID_B}])
+    assert seen == [[CID_A], [CID_B], [CID_A]]
+
+
+def test_erro_interno_da_platform_nao_fica_no_cache(monkeypatch):
+    monkeypatch.setenv("MA_SERVICE_KEY", "segredo")
+    seen = []
+    payload = {"items": [{"id": CID_A, "ok": False, "error": "internal"}]}
+    monkeypatch.setattr(ma.urllib.request, "urlopen", _fake_urlopen(payload, seen))
+    assert ma.fetch_pieces([{"creative_id": CID_A}])["errors"][0]["error"] == "internal"
+    ma.fetch_pieces([{"creative_id": CID_A}])
+    assert len(seen) == 2

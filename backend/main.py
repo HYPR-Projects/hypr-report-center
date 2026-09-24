@@ -864,6 +864,27 @@ def warmup_caches(force_refresh=True, max_reports=150, deadline_s=480):
     summary["merged_warmed"] = merged_ok
     summary["merged_errors"] = merged_errors
 
+    # Max Attention: métricas das peças vinculadas às campanhas aquecidas, no
+    # período todo (o que a aba abre por padrão). A Platform leva 15–25 s por
+    # campanha; aquecido aqui, o 1º acesso do dia sai do cache. O cache é por
+    # peça, então a visão agregada de um grupo reaproveita o dos membros.
+    ma_ok = ma_errors = 0
+    if not timed_out and ma_report.is_configured():
+        for st, _ in candidates:
+            if time.time() - t0 > deadline_s:
+                timed_out = True
+                break
+            try:
+                links = ma_report.links_for_tokens([st])
+                if links:
+                    ma_report.fetch_pieces(links, None, None, refresh=force_refresh)
+                    ma_ok += 1
+            except Exception as e:
+                ma_errors += 1
+                logger.warning(f"[WARN warmup max attention {st}] {e}")
+    summary["ma_pieces_warmed"] = ma_ok
+    summary["ma_pieces_errors"] = ma_errors
+
     # Portais ativos: pré-aquece o payload de cada um (mata o cold do 1º acesso
     # ao link compartilhável /c/<share_id>). Queries GLOBAIS (shares + elements)
     # rodam uma vez só; por portal, só published_tokens + logos (escopados,
@@ -3112,9 +3133,10 @@ def report_data(request):
                 "fetched_at": None,
             }
             if links and ma_report.is_configured():
-                if request.args.get("refresh") == "true" and authenticate_admin(request):
-                    ma_report.clear_caches()
-                res = ma_report.fetch_pieces(links, date_from, date_to)
+                # "Atualizar métricas" (admin) fura só as peças desta visão —
+                # antes zerava o cache de todas as campanhas da instância.
+                refresh = request.args.get("refresh") == "true" and bool(authenticate_admin(request))
+                res = ma_report.fetch_pieces(links, date_from, date_to, refresh=refresh)
                 payload.update(res)
             resp_headers = {**headers, "Cache-Control": "private, max-age=60"}
             return (jsonify(payload), 200, resp_headers)

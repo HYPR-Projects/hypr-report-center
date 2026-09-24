@@ -58,14 +58,14 @@ def test_ma_report_configurado_busca_pecas(monkeypatch):
     monkeypatch.setattr(ma_report, "links_for_tokens", lambda toks: [{"creative_id": CID}])
     seen = {}
 
-    def fake_fetch(links, date_from, date_to):
-        seen.update(date_from=date_from, date_to=date_to)
+    def fake_fetch(links, date_from, date_to, refresh=False):
+        seen.update(date_from=date_from, date_to=date_to, refresh=refresh)
         return {"pieces": [{"creative_id": CID}], "errors": [], "fetched_at": "2026-09-23T10:00:00+00:00"}
     monkeypatch.setattr(ma_report, "fetch_pieces", fake_fetch)
     status, data = call("/?action=ma_report&token=DEMO01&date_from=2026-09-01&date_to=2026-09-22")
     assert status == 200 and data["configured"] is True
     assert data["pieces"][0]["creative_id"] == CID
-    assert seen == {"date_from": "2026-09-01", "date_to": "2026-09-22"}
+    assert seen == {"date_from": "2026-09-01", "date_to": "2026-09-22", "refresh": False}
 
 
 def test_ma_report_erro_da_platform_vira_502_sem_detalhe_interno(monkeypatch):
@@ -176,3 +176,21 @@ def test_attach_data_freshness(monkeypatch):
     assert main._attach_data_freshness({})["data_updated_at"] == 1758622320000
     monkeypatch.setattr(main, "_base_version", lambda: (None, None))
     assert "data_updated_at" not in main._attach_data_freshness({})
+
+
+def test_warmup_aquece_pecas_max_attention(monkeypatch):
+    monkeypatch.setenv("MA_SERVICE_KEY", "k")
+    monkeypatch.setattr(main, "_get_campaigns_list_cached", lambda force_refresh=False: ([{"short_token": "O3HI21", "end_date": "2099-01-01"}], True))
+    monkeypatch.setattr(main, "_build_clients_payload", lambda c: {})
+    monkeypatch.setattr(main.maxattention, "is_configured", lambda: False)
+    monkeypatch.setattr(main, "query_frozen_tokens", lambda: {})
+    monkeypatch.setattr(main, "_get_report_cached", lambda tok, force_refresh=False: ({"campaign": {}}, True))
+    monkeypatch.setattr(main, "_safe_get_merges", lambda: {})
+    monkeypatch.setattr(main.client_portal, "list_active_configs", lambda: [])
+    monkeypatch.setattr(main.owners, "invalidate_cache", lambda: None)
+    monkeypatch.setattr(ma_report, "links_for_tokens", lambda toks: [{"creative_id": CID}] if toks == ["O3HI21"] else [])
+    got = []
+    monkeypatch.setattr(ma_report, "fetch_pieces", lambda links, f, t, refresh=False: got.append((links, f, t, refresh)))
+    summary = main.warmup_caches(force_refresh=True)
+    assert summary["ma_pieces_warmed"] == 1 and summary["ma_pieces_errors"] == 0
+    assert got == [([{"creative_id": CID}], None, None, True)]
