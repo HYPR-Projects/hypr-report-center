@@ -24,7 +24,7 @@ Como funciona
    que foi entregue fora, tirada do relatório de Region do DV360
    (`dv360_daily_regions_performance_metrics`). Fração, e não valor absoluto,
    porque unified e campaign_results divergem por arredondamento; a fração
-   aplica igual nas duas. Métrica a métrica (viewable, cliques, vídeo, custo)
+   aplica igual nas duas. Métrica a métrica (viewable, cliques, vídeo)
    porque o CTR fora chega a 5% contra 0,1% no BR: escalar cliques pela fração
    de impressões deixaria clique de bot no report.
 
@@ -46,7 +46,12 @@ Como funciona
 
 4. `adjusted_source()` devolve o FROM que as queries do report usam: a tabela
    original com as métricas multiplicadas por (1 − fração), via LEFT JOIN com
-   a tabela de frações. Token sem ajuste passa intacto; sem nenhum token
+   a tabela de frações. O custo DSP (`total_cost`, admin-only) fica intacto:
+   foi gasto de verdade e a análise de custo do mês precisa dele cheio. O
+   custo da entrega retirada vai pro status (`removed_cost`) e aparece no card
+   do menu admin como "fora do BR (oculto)". O custo cliente
+   (`effective_total_cost` do campaign_results = entrega × CPM/CPCV negociado)
+   é descontado, porque é valor de entrega. Token sem ajuste passa intacto; sem nenhum token
    configurado a tabela original é devolvida crua (custo zero).
 
 O box "Fora do BR" do admin segue lendo o Region cru: é o monitor da operação
@@ -95,6 +100,10 @@ MAX_LOOKBACK_DAYS = 400
 
 TOKEN_RE = re.compile(r"^[A-Z0-9]{4,12}$")
 
+# Sobe quando o formato do status/frações muda: o próximo warmup recalcula
+# mesmo sem mudança nas fontes (ver `needs_refresh`).
+SCRIPT_VERSION = 2
+
 # ── Colunas ajustadas por tabela ────────────────────────────────────────────
 # (coluna, fração, é inteiro). A fração é o nome da coluna na tabela de
 # ajustes; "cost_cr" é resolvida por mídia (viewable no display, vídeo no
@@ -104,7 +113,10 @@ _UNIFIED_COLS = [
     ("measurable_impressions",  "f_imps",     True),
     ("viewable_impressions",    "f_viewable", True),
     ("clicks",                  "f_clicks",   True),
-    ("total_cost",              "f_cost",     False),
+    # `total_cost` (custo DSP, admin-only) NÃO é descontado de propósito: o
+    # dinheiro foi gasto, e a visão de custo do mês/tech cost tem de mostrar
+    # o gasto real. O quanto disso foi fora do BR sai em `removed_cost` no
+    # status e aparece no card do menu admin.
     ("conversions",             "f_imps",     False),
     ("video_starts",            "f_video",    True),
     ("video_view_25_complete",  "f_video",    True),
@@ -172,6 +184,9 @@ def invalidate_active_cache():
     with _active_lock:
         _active_cache["ts"] = 0.0
         _active_cache["tokens"] = None
+    with _summary_lock:
+        _summary_cache["ts"] = 0.0
+        _summary_cache["data"] = None
 
 
 def active_tokens(bq):
@@ -206,6 +221,48 @@ def adjusted_source(bq, base_table, kind, token=None):
     if token is not None and str(token).upper() not in tokens:
         return base_table
     return adjusted_sql(base_table, kind)
+
+
+# ── Resumo por token (card do menu admin) ────────────────────────────────────
+_summary_lock = threading.Lock()
+_summary_cache = {"ts": 0.0, "data": None}
+
+
+def summary_by_token(bq):
+    """{token: {impressions, viewable, cost, status}} dos tokens com ajuste
+    publicado — o que foi ocultado do cliente. Cacheado 60s junto com os
+    tokens ativos. Falha devolve o último valor ou vazio (o card só não mostra
+    a linha)."""
+    now = time.time()
+    with _summary_lock:
+        if _summary_cache["data"] is not None and now - _summary_cache["ts"] < ACTIVE_TTL_S:
+            return _summary_cache["data"]
+        prev = _summary_cache["data"]
+    active = active_tokens(bq)
+    if not active:
+        data = {}
+    else:
+        try:
+            rows = bq.query(f"SELECT * FROM {STATUS_TABLE}", location="US").result()
+            data = {}
+            for r in rows:
+                r = dict(r)
+                tok = r.get("short_token")
+                if tok not in active:
+                    continue
+                data[tok] = {
+                    "impressions": round(float(r.get("removed_imps") or 0)),
+                    "viewable": round(float(r.get("removed_viewable") or 0)),
+                    "cost": round(float(r.get("removed_cost") or 0), 2) if r.get("removed_cost") is not None else None,
+                    "status": r.get("status"),
+                }
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[geo_exclusions] leitura do resumo falhou: {e}")
+            data = prev if prev is not None else {}
+    with _summary_lock:
+        _summary_cache["ts"] = now
+        _summary_cache["data"] = data
+    return data
 
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -252,10 +309,13 @@ def ensure_tables(bq):
               removed_viewable        FLOAT64,
               removed_clicks          FLOAT64,
               removed_video_100       FLOAT64,
+              removed_cost            FLOAT64,
+              unified_cost            FLOAT64,
               exact_imps              INT64,
               estimated_imps          INT64,
               no_geo_imps             INT64,
-              last_geo_date           DATE
+              last_geo_date           DATE,
+              script_version          INT64
             );
         """, location="US").result()
         _ready = True
@@ -284,9 +344,7 @@ def list_exclusions(bq):
     ensure_tables(bq)
     rows = bq.query(f"""
         SELECT e.short_token, e.date_from, e.date_to, e.reason, e.updated_at, e.updated_by,
-               s.refreshed_at, s.status, s.recon_diff_pct, s.unified_imps,
-               s.removed_imps, s.removed_viewable, s.removed_clicks, s.removed_video_100,
-               s.exact_imps, s.estimated_imps, s.no_geo_imps, s.last_geo_date
+               s.* EXCEPT (short_token)
         FROM {CONFIG_TABLE} e
         LEFT JOIN {STATUS_TABLE} s USING (short_token)
         ORDER BY e.short_token
@@ -484,7 +542,8 @@ CREATE OR REPLACE TABLE {STATUS_TABLE} AS
 WITH u AS (
   SELECT u.short_token, u.line_item_id, u.date, u.creative_id,
          SUM(u.impressions) imps, SUM(u.viewable_impressions) vw,
-         SUM(u.clicks) clk, SUM(u.video_view_100_complete) vid
+         SUM(u.clicks) clk, SUM(u.video_view_100_complete) vid,
+         SUM(u.total_cost) cost
   FROM {UNIFIED_TABLE} u JOIN cfg c USING (short_token)
   WHERE u.date >= d_from
     AND (c.date_from IS NULL OR u.date >= c.date_from)
@@ -498,6 +557,8 @@ agg AS (
     SUM(u.vw * IFNULL(a.f_viewable, 0)) AS removed_viewable,
     SUM(u.clk * IFNULL(a.f_clicks, 0)) AS removed_clicks,
     SUM(u.vid * IFNULL(a.f_video, 0)) AS removed_video_100,
+    SUM(u.cost * IFNULL(a.f_cost, 0)) AS removed_cost,
+    SUM(u.cost) AS unified_cost,
     SUM(IF(a.method = 'exact', u.imps, 0)) AS exact_imps,
     SUM(IF(a.method IN ('line_day', 'line_window'), u.imps, 0)) AS estimated_imps,
     SUM(IF(a.method IS NULL, u.imps, 0)) AS no_geo_imps
@@ -514,10 +575,13 @@ SELECT c.short_token,
   ROUND(SAFE_DIVIDE(ABS(r.exact_u_imps - r.exact_g_imps), r.exact_u_imps) * 100, 3) AS recon_diff_pct,
   CAST(g.unified_imps AS INT64) AS unified_imps,
   g.removed_imps, g.removed_viewable, g.removed_clicks, g.removed_video_100,
+  ROUND(g.removed_cost, 2) AS removed_cost,
+  ROUND(g.unified_cost, 2) AS unified_cost,
   CAST(g.exact_imps AS INT64) AS exact_imps,
   CAST(g.estimated_imps AS INT64) AS estimated_imps,
   CAST(g.no_geo_imps AS INT64) AS no_geo_imps,
-  (SELECT MAX(date) FROM geo x WHERE x.short_token = c.short_token) AS last_geo_date
+  (SELECT MAX(date) FROM geo x WHERE x.short_token = c.short_token) AS last_geo_date,
+  {SCRIPT_VERSION} AS script_version
 FROM cfg c
 LEFT JOIN recon r USING (short_token)
 LEFT JOIN agg g USING (short_token);
@@ -581,6 +645,17 @@ def needs_refresh(bq):
     adj = _last_modified_ms(bq, "prod_assets", ADJ_TABLE_ID)
     if adj is None:
         return False
+    try:
+        schema = {f.name for f in bq.get_table(STATUS_TABLE.strip("`")).schema}
+        if "script_version" not in schema:
+            return True
+        rows = list(bq.query(f"SELECT MIN(script_version) AS v FROM {STATUS_TABLE}",
+                             location="US").result())
+        v = rows[0]["v"] if rows else None
+        if v is not None and v != SCRIPT_VERSION:
+            return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[geo_exclusions] checagem de versão do status falhou: {e}")
     for ds, tb in SOURCE_TABLES:
         lm = _last_modified_ms(bq, ds, tb)
         if lm is not None and lm > adj:

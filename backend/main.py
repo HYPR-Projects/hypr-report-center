@@ -11450,6 +11450,12 @@ def query_campaigns_list():
     def _dod_ecpm(cost, impr):
         return round(cost / impr * 1000, 2) if impr >= _ECPM_DOD_MIN_IMPR and cost > 0 else None
 
+    # Entrega fora do BR ocultada do cliente (geo_exclusions) — admin-only.
+    try:
+        geo_hidden = geo_exclusions.summary_by_token(bq)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[geo_exclusions] resumo pro card indisponível: {e}")
+        geo_hidden = {}
     result = []
     for r in rows:
         # Cópia mutável da Row do BQ: pra tokens congelados sobrescrevemos os
@@ -11652,6 +11658,13 @@ def query_campaigns_list():
             entry["admin_total_cost"] = round(admin_total_cost, 2)
             entry["admin_impressions"] = admin_impressions
             entry["admin_ecpm"] = round(admin_total_cost / admin_impressions * 1000, 2)
+
+        # Entrega fora do BR retirada do report do cliente (exclusão geo). O
+        # custo DSP acima segue CHEIO (foi gasto); aqui vai quanto dele foi
+        # fora do BR, pra o card mostrar "fora do BR (oculto)". Admin-only.
+        _geo = geo_hidden.get(entry.get("short_token"))
+        if _geo:
+            entry["admin_geo_excluded"] = _geo
 
         # Custo TOTAL incluindo lines de survey — admin-only. Usado SOMENTE
         # pelo calculo de Tech Cost (numerador do `cost / client_budget`).

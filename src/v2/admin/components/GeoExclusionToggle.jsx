@@ -29,6 +29,9 @@ function compact(n) {
   if (v >= 1e3) return `${Math.round(v / 1e3)} mil`;
   return nf.format(Math.round(v));
 }
+function brl(n) {
+  return (Number(n) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
+}
 function pct(part, total) {
   const t = Number(total) || 0;
   if (!t) return null;
@@ -62,6 +65,7 @@ function StatusLine({ row }) {
       {" "}Conciliação Region × entrega: {row.recon_diff_pct}%.
       {row.estimated_imps > 0 && estShare ? ` ${estShare} estimado (dia sem Region).` : ""}
       {row.no_geo_imps > 0 && noGeoShare ? ` ${noGeoShare} sem país (Yahoo/outras DSPs), mantido.` : ""}
+      {row.removed_cost > 0 ? ` Custo DSP fora do BR: ${brl(row.removed_cost)} (segue no Gasto do admin).` : ""}
     </p>
   );
 }
