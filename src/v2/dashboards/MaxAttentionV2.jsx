@@ -13,10 +13,11 @@
 //   • sem peça vinculada → a aba só aparece para o admin, com "Vincular";
 //   • integração não configurada → admin vê o que falta; cliente vê aviso;
 //   • peça sem entrega no período → "aguardando a primeira impressão";
-//   • só uma peça → abre direto no detalhe;
+//   • só uma peça → abre direto no detalhe na 1ª entrada; "Max Attention"
+//     (migalha ou aba) sempre volta ao menu;
 //   • merge de meses → peças de todos os membros juntas.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { isDemoToken } from "../../shared/demoData";
 import { ymd } from "../../shared/dateFilter";
@@ -56,6 +57,7 @@ function writePieceToUrl(id) {
     const url = new URL(window.location.href);
     if (id) url.searchParams.set(PIECE_PARAM, id);
     else url.searchParams.delete(PIECE_PARAM);
+    if (url.toString() === window.location.href) return;
     window.history.pushState(null, "", url.toString());
   } catch {
     /* URL indisponível (SSR/teste) — segue só com o estado */
@@ -75,7 +77,9 @@ function monthLabel(ymdStr) {
   return `${MESES[m - 1]}/${String(y).slice(-2)}`;
 }
 
-export default function MaxAttentionV2({ token, view = null, data, range = null, isAdmin = false, adminJwt = null, onLinksChanged }) {
+// `ref.goHome()`: volta ao menu (a aba "Max Attention" chama quando clicada
+// já ativa — o Radix não dispara onValueChange para o valor atual).
+export default function MaxAttentionV2({ ref, token, view = null, data, range = null, isAdmin = false, adminJwt = null, onLinksChanged }) {
   const payloadLinks = data?.max_attention?.links || [];
   const { status, data: ma, error, refreshing, reload } = useMaReport({
     token,
@@ -85,6 +89,11 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
     adminJwt,
   });
   const [pieceId, setPieceId] = useState(() => readPieceFromUrl());
+  // Campanha com uma peça abre direto nela, mas só até a pessoa pedir o
+  // menu: depois disso, sem ?piece= na URL é sempre o menu.
+  const [autoOpenDone, setAutoOpenDone] = useState(false);
+  // Rolagem do menu na hora de abrir uma peça, para voltar ao mesmo ponto.
+  const menuScrollRef = useRef(null);
   const [formatFilter, setFormatFilter] = useState("all");
   const [linksOpen, setLinksOpen] = useState(false);
 
@@ -98,10 +107,14 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
   const [heroId, setHeroId] = useState(null);
 
   const openPiece = (id, { fromCard = false } = {}) => {
+    if (id != null && !selected) menuScrollRef.current = window.scrollY;
+    const top = id == null && menuScrollRef.current != null ? menuScrollRef.current : 0;
     const apply = (smooth) => {
       setPieceId(id);
+      if (id == null) setAutoOpenDone(true);
       writePieceToUrl(id);
-      try { window.scrollTo({ top: 0, behavior: smooth ? "smooth" : "instant" }); } catch { window.scrollTo(0, 0); }
+      try { window.scrollTo({ top, behavior: smooth ? "smooth" : "instant" }); } catch { window.scrollTo(0, top); }
+      if (id == null) menuScrollRef.current = null;
     };
     // Entrar ou sair do detalhe vira View Transition: a página faz crossfade
     // e, vindo do card, a miniatura cresce até o preview. Trocar de peça
@@ -118,7 +131,12 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
     const vt = withViewTransition(() => apply(false));
     vt?.finished.finally(() => setHeroId(null)).catch(() => {});
   };
-  const backToAll = () => openPiece(null);
+  // `format`: vindo da migalha do formato, o menu abre filtrado por ele.
+  const backToAll = (format = null) => {
+    if (typeof format === "string") setFormatFilter(format);
+    else setFormatFilter("all");
+    openPiece(null);
+  };
 
   const rangeYmd = range?.from && range?.to ? { from: ymd(range.from), to: ymd(range.to) } : null;
   const links = ma?.links?.length ? ma.links : payloadLinks;
@@ -142,7 +160,15 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
   );
   const groups = groupByFormat(allPieces);
   const pieces = formatFilter === "all" ? allPieces : allPieces.filter((p) => p.format === formatFilter);
-  const selected = allPieces.find((p) => p.creative_id === pieceId) || (allPieces.length === 1 ? allPieces[0] : null);
+  const selected =
+    allPieces.find((p) => p.creative_id === pieceId) ||
+    (!pieceId && !autoOpenDone && allPieces.length === 1 ? allPieces[0] : null);
+
+  useImperativeHandle(ref, () => ({
+    goHome: () => {
+      if (selected) backToAll();
+    },
+  }));
   const avgEngagement = sumMedia(allPieces.filter((p) => !isWaiting(p)).map((p) => medias.get(p.creative_id))).engagement;
 
   const targets = useMemo(() => {
@@ -308,6 +334,8 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
           formatColors={formatColors}
           onSelect={openPiece}
           onBack={backToAll}
+          canFilterFormat={groups.length > 1}
+          campaignTitle={data?.campaign?.campaign_name || null}
           campaignStart={data?.campaign?.start_date || null}
           isDemo={isDemoToken(token)}
           campaignName={data?.campaign?.campaign_name || "campanha"}
