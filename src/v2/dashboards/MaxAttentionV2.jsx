@@ -17,6 +17,7 @@
 //   • merge de meses → peças de todos os membros juntas.
 
 import { useEffect, useMemo, useState } from "react";
+import { flushSync } from "react-dom";
 import { isDemoToken } from "../../shared/demoData";
 import { ymd } from "../../shared/dateFilter";
 import { fmt } from "../../shared/format";
@@ -31,12 +32,14 @@ import {
   sumMedia,
 } from "../../shared/maMetrics";
 import { Button } from "../../ui/Button";
+import { cn } from "../../ui/cn";
 import { Skeleton } from "../../ui/Skeleton";
 import { ChipGroupV2 } from "../components/ChipGroupV2";
 import { MaOverviewV2 } from "../components/ma/MaOverviewV2";
 import { MaPieceDetailV2 } from "../components/ma/MaPieceDetailV2";
 import { MaLinksModalV2 } from "../components/ma/MaLinksModalV2";
 import { invalidateMaReport, useMaReport } from "../hooks/useMaReport";
+import { viewTransitionsEnabled, withViewTransition } from "../lib/motion";
 
 const PIECE_PARAM = "piece";
 
@@ -91,10 +94,29 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  const openPiece = (id) => {
-    setPieceId(id);
-    writePieceToUrl(id);
-    try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+  // Peça cuja miniatura vira o preview na View Transition (só durante ela).
+  const [heroId, setHeroId] = useState(null);
+
+  const openPiece = (id, { fromCard = false } = {}) => {
+    const apply = (smooth) => {
+      setPieceId(id);
+      writePieceToUrl(id);
+      try { window.scrollTo({ top: 0, behavior: smooth ? "smooth" : "instant" }); } catch { window.scrollTo(0, 0); }
+    };
+    // Entrar ou sair do detalhe vira View Transition: a página faz crossfade
+    // e, vindo do card, a miniatura cresce até o preview. Trocar de peça
+    // dentro do detalhe não passa por aqui (lá é o slide do MaPieceDetailV2).
+    // A rolagem vai pro topo sem animar: dentro da transição o browser já
+    // interpola entre os dois snapshots.
+    const crossing = !!selected !== (id != null);
+    if (!crossing || !viewTransitionsEnabled()) {
+      apply(true);
+      return;
+    }
+    // O nome precisa estar no DOM "antes" quando o browser tira o snapshot.
+    flushSync(() => setHeroId(fromCard ? id : null));
+    const vt = withViewTransition(() => apply(false));
+    vt?.finished.finally(() => setHeroId(null)).catch(() => {});
   };
   const backToAll = () => openPiece(null);
 
@@ -153,7 +175,7 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
         <h2 className="text-lg font-bold text-fg leading-tight">Max Attention</h2>
         <p className="text-[12px] text-fg-subtle mt-0.5">
           {shownCount} {shownCount === 1 ? "peça" : "peças"}
-          {groups.length ? ` em ${groups.length} ${groups.length === 1 ? "formato" : "formatos"}` : ""} · métricas medidas pela própria peça
+          {groups.length ? ` em ${groups.length} ${groups.length === 1 ? "formato" : "formatos"}` : ""} · entrega pela DSP, comportamento medido pela peça
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
@@ -269,11 +291,16 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
     );
   }
 
+  // Sem View Transition (browser antigo ou movimento reduzido), grade ↔
+  // detalhe entra com fade simples. Com ela, o fade duplicaria o crossfade.
+  const swapClass = viewTransitionsEnabled() ? undefined : "content-swap-in";
+
   if (selected) {
     return (
-      <div className="space-y-5">
+      <div key="ma-detail" className={cn("space-y-5", swapClass)}>
         {errorNote}
         <MaPieceDetailV2
+          heroId={heroId}
           piece={selected}
           pieces={allPieces}
           media={medias.get(selected.creative_id)}
@@ -296,7 +323,7 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
   }
 
   return (
-    <div className="space-y-5">
+    <div key="ma-overview" className={cn("space-y-5", swapClass)}>
       {header}
       {errorNote}
       {groups.length > 1 && (
@@ -315,6 +342,7 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
         medias={medias}
         formatColors={formatColors}
         onOpenPiece={openPiece}
+        heroId={heroId}
         campaignName={data?.campaign?.campaign_name || "campanha"}
       />
       {modal}

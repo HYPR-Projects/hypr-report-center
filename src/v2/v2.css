@@ -27,6 +27,11 @@
  */
 
 @import "tailwindcss";
+/* Utilitárias `animate-in` / `fade-in-0` / `zoom-in-95` / `slide-in-from-*`
+ * usadas pelos popovers e modais Radix. Só CSS, e o Tailwind gera apenas as
+ * classes que aparecem no código. Sem este import essas classes não existiam
+ * no build e os popovers abriam sem animação. */
+@import "tw-animate-css";
 @import "../ui/theme.css";
 @import "../ui/global-reset.css";
 
@@ -392,19 +397,31 @@
 }
 
 /* ───────────────────────────────────────────────────────────
- * Tab content — fade-in suave ao ativar tab
+ * Tab content — entrada da aba
  * ───────────────────────────────────────────────────────────
- * Radix Tabs muda data-state=active mas não anima conteúdo —
- * troca de aba é hard-cut. Aqui plugamos fade-in 180ms
- * expo-out via seletor de atributo (mesmo padrão do drawer).
- * Saída é instantânea porque Radix unmount conteúdo inativo
- * — pra animar saída precisaria forceMount + handling extra.
+ * Radix desmonta a aba inativa, então só existe entrada. O painel
+ * faz fade e as 5 primeiras seções do root (`space-y-6` em todas as
+ * abas) sobem 6px em cascata de 40ms. Settle total ~480ms.
+ *
+ * Fill `backwards` (não `both`): terminada a animação, o elemento
+ * volta a não ter transform nem opacity aplicados. Com `both` o
+ * transform final ficava valendo pra sempre e criava containing
+ * block pra qualquer `position: fixed` descendente (e stacking
+ * context permanente, ver ModalShell).
  */
 .tabs-content[data-state="active"] {
-  animation: fade-in 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: fade-in 200ms var(--motion-ease-out) backwards;
 }
+.tabs-content[data-state="active"] > .space-y-6 > :nth-child(-n+5) {
+  animation: motion-rise 360ms var(--motion-ease-out) backwards;
+}
+.tabs-content[data-state="active"] > .space-y-6 > :nth-child(2) { animation-delay: 40ms; }
+.tabs-content[data-state="active"] > .space-y-6 > :nth-child(3) { animation-delay: 80ms; }
+.tabs-content[data-state="active"] > .space-y-6 > :nth-child(4) { animation-delay: 120ms; }
+.tabs-content[data-state="active"] > .space-y-6 > :nth-child(5) { animation-delay: 160ms; }
 @media (prefers-reduced-motion: reduce) {
-  .tabs-content { animation: none; }
+  .tabs-content,
+  .tabs-content > .space-y-6 > * { animation: none !important; }
 }
 
 /* ───────────────────────────────────────────────────────────
@@ -476,8 +493,10 @@
  * quando o drawer abre — listing ainda não anima por card por
  * decisão de perf, ver PR3).
  */
+/* Fill `backwards`: terminada a entrada, o wrapper não guarda opacity
+ * animada (que manteria um stacking context pra sempre, ver .tabs-content). */
 .content-fade-in {
-  animation: fade-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: fade-in 220ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 @media (prefers-reduced-motion: reduce) {
   .content-fade-in { animation: none; }
@@ -527,3 +546,152 @@
  * dinheiro, lidos em conferência. O ganho vem do espaço morto
  * entre as linhas, que é de onde ele deve vir.
  */
+
+/* ───────────────────────────────────────────────────────────
+ * Motion do report — tokens e peças reutilizáveis
+ * ───────────────────────────────────────────────────────────
+ * Regras que valem pra tudo abaixo:
+ *   - só `transform` e `opacity` (GPU, sem layout por frame);
+ *   - interface 150–250ms, dado 400–600ms, um easing só (expo-out);
+ *   - fill `backwards`: acabou, o elemento volta ao estado natural;
+ *   - `prefers-reduced-motion` desliga tudo (e o hook
+ *     usePrefersReducedMotion cobre o que roda em JS: Recharts,
+ *     contagem de número, View Transition).
+ */
+:root {
+  --motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-ui: 220ms;
+  --motion-data: 520ms;
+}
+
+@keyframes motion-rise {
+  from { opacity: 0; transform: translateY(6px); }
+}
+@keyframes motion-fade {
+  from { opacity: 0; }
+}
+
+/* Barras de div (Explorador, funil e breakdowns do Max Attention,
+ * retenção): crescem da base na montagem, em cascata pelo índice
+ * `--i` (teto de 12 pra lista longa não demorar), e transicionam a
+ * largura/altura quando o valor muda sem remontar. */
+@keyframes bar-grow-x {
+  from { transform: scaleX(0); }
+}
+@keyframes bar-grow-y {
+  from { transform: scaleY(0); }
+}
+.bar-grow-x {
+  transform-origin: left center;
+  animation: bar-grow-x var(--motion-data) var(--motion-ease-out) backwards;
+  animation-delay: calc(min(var(--i, 0), 12) * 28ms);
+  transition: width var(--motion-data) var(--motion-ease-out);
+}
+.bar-grow-y {
+  transform-origin: center bottom;
+  animation: bar-grow-y var(--motion-data) var(--motion-ease-out) backwards;
+  animation-delay: calc(min(var(--i, 0), 12) * 40ms);
+  transition: height var(--motion-data) var(--motion-ease-out);
+}
+
+/* Troca de conteúdo no mesmo lugar (Tabela ↔ Gráfico, dimensão do
+ * Explorador). Só fade: o conteúdo novo não "vem de algum lugar". */
+.content-swap-in {
+  animation: motion-fade var(--motion-ui) var(--motion-ease-out) backwards;
+}
+
+/* Peça anterior / próxima no Max Attention: desliza 14px no sentido
+ * do clique. */
+@keyframes slide-from-right {
+  from { opacity: 0; transform: translateX(14px); }
+}
+@keyframes slide-from-left {
+  from { opacity: 0; transform: translateX(-14px); }
+}
+.slide-in-next { animation: slide-from-right 300ms var(--motion-ease-out) backwards; }
+.slide-in-prev { animation: slide-from-left 300ms var(--motion-ease-out) backwards; }
+
+/* Valor de KPI que mudou (período, filtro, view): além da contagem,
+ * o texto nasce na cor signature e volta pra cor normal. */
+@keyframes value-flash {
+  from { color: var(--color-signature); }
+}
+.value-flash {
+  animation: value-flash 900ms var(--motion-ease-out);
+}
+
+/* Preview (iframe) do Max Attention: fica invisível até carregar, em
+ * cima de um shimmer. Sem isso o fundo branco da peça piscava no dark. */
+.ma-preview-frame {
+  opacity: 0;
+  transition: opacity 280ms var(--motion-ease-out);
+}
+.ma-preview-frame[data-loaded="true"] {
+  opacity: 1;
+}
+/* Rede de segurança: se o `load` nunca disparar, mostra mesmo assim. */
+@keyframes ma-preview-reveal {
+  to { opacity: 1; }
+}
+.ma-preview-frame[data-loaded="false"] {
+  animation: ma-preview-reveal 1ms 5s forwards;
+}
+
+/* Shimmer do Skeleton: faixa de luz atravessando o bloco. */
+@keyframes skeleton-shimmer {
+  to { transform: translateX(100%); }
+}
+.skeleton-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-fg) 7%, transparent) 50%,
+    transparent 100%
+  );
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+/* View Transition (grade ↔ peça do Max Attention): a miniatura
+ * clicada vira o preview. O resto da página sai rápido e a nova entra
+ * logo depois, em vez de crossfade simultâneo: com a rolagem mudando
+ * entre os dois snapshots, as duas páginas sobrepostas embaralhavam.
+ * O TopBar tem nome próprio e fica parado (é igual nos dois lados). */
+@keyframes vt-out {
+  to { opacity: 0; }
+}
+@keyframes vt-in {
+  from { opacity: 0; }
+}
+::view-transition-old(root) {
+  animation: vt-out 120ms ease-out both;
+}
+::view-transition-new(root) {
+  animation: vt-in 240ms var(--motion-ease-out) 80ms both;
+}
+::view-transition-group(ma-hero) {
+  animation-duration: 420ms;
+  animation-timing-function: var(--motion-ease-out);
+}
+::view-transition-old(ma-hero),
+::view-transition-new(ma-hero) {
+  height: 100%;
+  object-fit: contain;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar-grow-x,
+  .bar-grow-y,
+  .content-swap-in,
+  .slide-in-next,
+  .slide-in-prev,
+  .value-flash { animation: none; transition: none; }
+  .ma-preview-frame { transition: none; }
+  .skeleton-shimmer::after { animation: none; display: none; }
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) { animation: none !important; }
+}

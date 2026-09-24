@@ -65,6 +65,7 @@ import {
 } from "recharts";
 import { useRef } from "react";
 import { useThemeColors, useChartNeutral } from "../hooks/useThemeColors";
+import { CHART_ANIMATION_MS, seriesSignature, useAnimationWindow } from "../lib/motion";
 import { fmt } from "../../shared/format";
 import { DownloadPngButtonV2 } from "./DownloadPngButtonV2";
 
@@ -251,6 +252,9 @@ export function CumulativePacingChartV2({
     startDate && endDate && daily.length && (contractedDisplay || contractedVideo)
       ? buildSeries({ daily, contractedDisplay, contractedVideo, startDate, endDate })
       : [];
+  // Linhas se desenham na montagem e em troca real de dado; desligadas em
+  // resize e durante o export PNG (ver useAnimationWindow).
+  const animate = useAnimationWindow(seriesSignature(series, ["display", "video"]));
 
   if (series.length === 0) return null;
 
@@ -351,10 +355,12 @@ export function CumulativePacingChartV2({
               dot={false}
               activeDot={{ r: 4, fill: displayColor, stroke: hypr.surface2 || hypr.canvas, strokeWidth: 2 }}
               connectNulls={false}
-              // Sem animação — a re-renderização ao estreitar pra exportar
-              // pegava a linha no meio da animação e a curva saía deformada
-              // no PNG (mesmo motivo do DualChartV2).
-              isAnimationActive={false}
+              // A re-renderização ao estreitar pra exportar pegava a linha no
+              // meio da animação e a curva saía deformada no PNG; o
+              // useAnimationWindow desliga a animação durante o export.
+              isAnimationActive={animate}
+              animationDuration={CHART_ANIMATION_MS}
+              animationEasing="ease-out"
             />
           )}
           {showVideo && (
@@ -367,8 +373,11 @@ export function CumulativePacingChartV2({
               dot={false}
               activeDot={{ r: 4, fill: videoColor, stroke: hypr.surface2 || hypr.canvas, strokeWidth: 2 }}
               connectNulls={false}
-              // Sem animação — ver nota na Line de Display acima.
-              isAnimationActive={false}
+              // Ver nota na Line de Display acima.
+              isAnimationActive={animate}
+              animationBegin={100}
+              animationDuration={CHART_ANIMATION_MS}
+              animationEasing="ease-out"
             />
           )}
 

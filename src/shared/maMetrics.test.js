@@ -61,10 +61,21 @@ test("impressão principal: DSP quando vinculada, senão servida, senão medida"
   assert.equal(pieceMedia(mapPiece).impressions, 1000);
   const semBeacon = { totals: { ...mapPiece.totals, impressionServed: 0 } };
   assert.equal(pieceMedia(semBeacon).impressionsSource, "measured");
-  // taxas sempre sobre a base medida
-  const m = pieceMedia(mapPiece, { impressions: 1200 });
-  assert.equal(m.viewability, (600 / 950) * 100);
-  assert.equal(m.ctr, (12 / 950) * 100);
+  // Entrega na régua da DSP; medição da peça ao lado
+  const m = pieceMedia(mapPiece, { impressions: 1200, viewable: 900, clicks: 18 });
+  assert.equal(m.deliverySource, "dsp");
+  assert.equal(m.viewability, (900 / 1200) * 100);
+  assert.equal(m.clicks, 18);
+  assert.equal(m.ctr, (18 / 900) * 100);
+  assert.equal(m.pieceViewability, (600 / 950) * 100);
+  assert.equal(m.ctaCtr, (12 / 950) * 100);
+  assert.equal(m.ctaClicks, 12);
+  // Sem DSP: entrega cai na medição da peça, sem cliques/CTR da DSP
+  const semDsp = pieceMedia(mapPiece);
+  assert.equal(semDsp.deliverySource, "piece");
+  assert.equal(semDsp.viewability, (600 / 950) * 100);
+  assert.equal(semDsp.clicks, null);
+  assert.equal(semDsp.ctr, null);
   // pessoas exatas do sessionSteps; sem ele, os totais (teto)
   assert.equal(m.sessions, 780);
   assert.equal(m.engagement, 5);
@@ -76,14 +87,23 @@ test("impressão principal: DSP quando vinculada, senão servida, senão medida"
 });
 
 test("soma da camada mídia recalcula taxas e sinaliza fontes misturadas", () => {
-  const a = pieceMedia(mapPiece, { impressions: 1200 });
+  const a = pieceMedia(mapPiece, { impressions: 1200, viewable: 900, clicks: 18 });
   const b = pieceMedia(mapPiece);
   const s = sumMedia([a, b]);
   assert.equal(s.impressions, 2200);
   assert.equal(s.engagement, 5);
   assert.equal(s.sessions, 1560);
   assert.equal(s.impressionsSource, "mixed");
+  // viewability de entrega: (900 + 600) ÷ (1200 + 950)
+  assert.equal(s.viewability, (1500 / 2150) * 100);
+  // cliques/CTR da DSP só das peças ligadas
+  assert.equal(s.clicks, 18);
+  assert.equal(s.ctr, (18 / 900) * 100);
+  assert.equal(s.dspPieces, 1);
+  assert.equal(s.pieceViewability, (1200 / 1900) * 100);
+  assert.equal(s.ctaClicks, 24);
   assert.equal(sumMedia([a]).impressionsSource, "dsp");
+  assert.equal(sumMedia([b]).clicks, null);
 });
 
 test("funil do Tap to Map em pessoas, aninhado e com CTA por botão como sub-etapa", () => {

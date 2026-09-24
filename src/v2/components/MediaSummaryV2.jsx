@@ -37,6 +37,7 @@
 import { fmt, fmtCompact, fmtP2, fmtR } from "../../shared/format";
 import { cn } from "../../ui/cn";
 import { Card, CardBody } from "../../ui/Card";
+import { TweenedValueV2 } from "./TweenedValueV2";
 
 // Stat secundário (value-first, label embaixo). Tabular-nums pra alinhar
 // dígitos verticalmente quando aparece em coluna. h-full + flex-col garantem
@@ -54,7 +55,7 @@ function StatCell({ label, value, accent = false, delta = null, compact = false 
           accent ? "text-signature" : "text-fg",
         )}
       >
-        {value}
+        <TweenedValueV2 value={value} />
       </span>
       {hasDelta && (
         <div className="mt-0.5">
@@ -231,7 +232,7 @@ export function MediaSummaryV2({
           <div className="px-5 pt-4 pb-3">
             <div className="flex items-baseline gap-2 flex-wrap">
               <span className="text-[26px] font-semibold tabular-nums leading-none text-signature">
-                {hero.value}
+                <TweenedValueV2 value={hero.value} />
               </span>
               {hero.delta != null && <Delta rentab={hero.delta} />}
             </div>

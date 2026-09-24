@@ -520,6 +520,7 @@ export default function OverviewV2({
                 view={view}
                 range={range}
                 links={maLinks}
+                detail={data?.detail}
                 layout={mediaLayout}
                 onNavigate={onNavigate}
               />
