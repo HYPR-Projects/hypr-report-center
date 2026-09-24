@@ -314,6 +314,7 @@ function VideoContent({
     { label: "Budget", value: fmtR(kpis.budget), hint: "Budget alocado à frente selecionada." },
     { label: "Views contratadas", value: fmt(contractedViews) },
     bonusViews > 0 ? { label: "Bônus", value: `${fmt(bonusViews)} views`, hint: "Bônus negociado além do contratado." } : null,
+    bonusViews > 0 ? { label: "Total c/ bônus", value: `${fmt(contractedViews + bonusViews)} views`, hint: "Views contratadas + bonificadas." } : null,
     { label: "CPCV negociado", value: fmtCpcv(kpis.cpcvNeg) },
   ].filter(Boolean);
 
