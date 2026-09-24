@@ -331,6 +331,24 @@ def exchange_code_for_tokens(code: str, redirect_uri: str) -> Dict:
         raise RuntimeError(f"OAuth token exchange falhou ({e.code}): {detail}")
 
 
+# Espera antes de re-tentar um `invalid_grant`. O Google devolve esse erro
+# também em soluços do token endpoint — uma 2ª tentativa separa o blip do
+# token morto de verdade antes de marcar a integração como revoked.
+_INVALID_GRANT_RETRY_DELAY_S = 2
+
+
+def _invalid_grant_reason(detail: str) -> str:
+    """Extrai o motivo legível do corpo de erro do token endpoint
+    (ex.: "Token has been expired or revoked."). Sem isso o last_error só
+    dizia "revogado" e não dava pra distinguir expiração de revogação."""
+    try:
+        data = json.loads(detail)
+        desc = (data.get("error_description") or "").strip()
+        return f"invalid_grant: {desc}" if desc else "invalid_grant"
+    except Exception:
+        return "invalid_grant"
+
+
 def _refresh_access_token(refresh_token: str) -> str:
     """Pega novo access_token a partir do refresh_token salvo."""
     body = urllib.parse.urlencode({
@@ -339,22 +357,27 @@ def _refresh_access_token(refresh_token: str) -> str:
         "refresh_token": refresh_token,
         "grant_type":    "refresh_token",
     }).encode("utf-8")
-    req = urllib.request.Request(
-        GOOGLE_TOKEN_URL,
-        data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data["access_token"]
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", errors="replace")
-        # Se refresh_token foi revogado, Google retorna 400 com
-        # `invalid_grant`. Sinaliza pra cima pra marcar status=revoked.
-        if e.code == 400 and "invalid_grant" in detail:
-            raise PermissionError("refresh_token revogado")
-        raise RuntimeError(f"refresh_token exchange falhou ({e.code}): {detail}")
+    for attempt in range(2):
+        req = urllib.request.Request(
+            GOOGLE_TOKEN_URL,
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data["access_token"]
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")
+            # Se refresh_token foi revogado, Google retorna 400 com
+            # `invalid_grant`. Sinaliza pra cima pra marcar status=revoked —
+            # mas só depois de confirmar numa 2ª tentativa.
+            if e.code == 400 and "invalid_grant" in detail:
+                if attempt == 0:
+                    time.sleep(_INVALID_GRANT_RETRY_DELAY_S)
+                    continue
+                raise PermissionError(_invalid_grant_reason(detail))
+            raise RuntimeError(f"refresh_token exchange falhou ({e.code}): {detail}")
 
 
 # Socket timeout das APIs Drive/Sheets. Sem `http=` explícito, o
@@ -706,7 +729,13 @@ def delete_integration(
 def list_active_integrations() -> List[Dict]:
     """
     Retorna todas as integrações que ainda devem sincronizar
-    (status='active' AND sync_until >= today). Usado pelo cron diário.
+    (status active/error/revoked AND sync_until >= today). Usado pelo cron.
+
+    `error` e `revoked` entram de propósito: antes uma única falha tirava a
+    row do cron pra sempre, e até um blip do Google virava card vermelho
+    permanente. Re-tentando, o sync que der certo volta a row pra `active`
+    sozinho (ver `sync_sheet`). Token morto de verdade só custa 1 chamada
+    ao token endpoint por ciclo e continua `revoked`.
 
     Cada item traz target_type/target_id pra que `sync_all_due` saiba se
     é uma integração token ou merge e roteie pro loader correto.
@@ -720,7 +749,7 @@ def list_active_integrations() -> List[Dict]:
         refresh_token_enc,
         created_by_email
     FROM `{_table_id()}`
-    WHERE status = 'active'
+    WHERE status IN ('active', 'error', 'revoked')
       AND sync_until >= CURRENT_DATE("America/Sao_Paulo")
     """
     rows = list(_bq_client().query(sql).result())
@@ -1559,6 +1588,69 @@ def create_sheet_for_merge(
     }
 
 
+def reattach_existing_sheet(
+    target_id: str,
+    target_type: str,
+    refresh_token: str,
+    member_email: str,
+) -> Optional[Dict]:
+    """Reconexão sem recriar: se o target já tem planilha e o token NOVO
+    ainda enxerga ela, troca só o refresh_token da row e mantém a mesma
+    planilha (e o link que o cliente já recebeu).
+
+    Antes, "Reconectar" sempre criava planilha nova — o cliente ficava com
+    o link antigo, parado, sem ninguém perceber.
+
+    Retorna {spreadsheet_id, spreadsheet_url} quando reaproveitou, ou None
+    quando não há planilha anterior acessível (apagada, ou reconexão feita
+    por outra conta — `drive.file` só enxerga arquivos criados pra ela).
+    Nesse caso o caller cria uma nova. O caller roda o sync em seguida.
+    """
+    _validate_target_type(target_type)
+    integ = get_integration(target_id, target_type=target_type)
+    if not integ or not integ.get("spreadsheet_id"):
+        return None
+    spreadsheet_id = integ["spreadsheet_id"]
+
+    access_token = _refresh_access_token(refresh_token)
+    try:
+        _build_sheets_client(access_token).spreadsheets().get(
+            spreadsheetId=spreadsheet_id, fields="spreadsheetId",
+        ).execute(num_retries=_SHEETS_NUM_RETRIES)
+    except HttpError as e:
+        if getattr(e.resp, "status", None) in (403, 404):
+            logger.info(
+                f"[sheets reattach {target_type}/{target_id}] planilha "
+                f"{spreadsheet_id} inacessível com o token novo — recriando"
+            )
+            return None
+        raise
+
+    sql = f"""
+    UPDATE `{_table_id()}`
+    SET refresh_token_enc = @refresh_token_enc,
+        created_by_email  = @created_by_email,
+        status            = 'active',
+        last_error        = NULL
+    WHERE short_token = @target_id
+      AND COALESCE(target_type, 'token') = @target_type
+      AND status != 'deleted'
+    """
+    _bq_client().query(
+        sql,
+        job_config=bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("refresh_token_enc", "BYTES", _encrypt(refresh_token)),
+            bigquery.ScalarQueryParameter("created_by_email",  "STRING", member_email),
+            bigquery.ScalarQueryParameter("target_id",         "STRING", target_id),
+            bigquery.ScalarQueryParameter("target_type",       "STRING", target_type),
+        ]),
+    ).result()
+    return {
+        "spreadsheet_id":  spreadsheet_id,
+        "spreadsheet_url": integ["spreadsheet_url"],
+    }
+
+
 def _resolve_refresh_token(integ: Dict, target_id: str, target_type: str) -> str:
     """Decifra o refresh_token a partir da row de integração. Atualiza
     status='error' em caso de falha de decrypt e propaga a exceção."""
@@ -1578,9 +1670,12 @@ def _exchange_or_mark(refresh_token: str, target_id: str, target_type: str) -> s
     """Troca refresh_token por access_token. Marca revoked/error se falhar."""
     try:
         return _refresh_access_token(refresh_token)
-    except PermissionError:
+    except PermissionError as e:
+        # Guarda o motivo que o Google deu. "revogado pelo usuário" era
+        # chute: o mesmo invalid_grant vem de expiração, limite de tokens
+        # por conta ou revogação no admin do Workspace.
         _update_status(target_id, target_type=target_type, status="revoked",
-                       last_error="refresh_token revogado pelo usuário")
+                       last_error=f"Google recusou o refresh_token ({e})")
         raise
     except Exception as e:
         _update_status(target_id, target_type=target_type, status="error", last_error=str(e)[:500])
