@@ -99,7 +99,7 @@ export function ComparisonCardV2({
 
   const economyDisplay = !isSignificant
     ? "—"
-    : `${isEconomy ? "↓" : "↑"} ${Math.abs(economyPct).toFixed(decimalsForDelta)}%`;
+    : `${isEconomy ? "↓" : "↑"} ${Math.abs(economyPct).toFixed(decimalsForDelta).replace(".", ",")}%`;
 
   const economyLabel = isEconomy
     ? "Economia"
@@ -156,6 +156,7 @@ export function ComparisonCardV2({
               label="Negociado Ajustado"
               value={formatValue(negociadoComBonus)}
               tone="muted"
+              tooltip={`${unit} de tabela recalculado com ${unit === "CPCV" ? "as views bonificadas" : "as impressões bonificadas"}: o mesmo budget dividido por contratado + bônus. O bônus entra na conta e barateia o ${unit} de tabela.`}
             />
             <ComparisonCell
               label="Efetivo"
@@ -195,8 +196,8 @@ export function ComparisonCardV2({
       </div>
 
       {contract?.length > 0 && (
-        <div className="px-5 py-2.5 border-t border-border bg-surface/60 flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-fg-subtle">
-          <span className="font-semibold uppercase tracking-wider text-[10px] text-fg-muted">Contrato</span>
+        <div className="px-5 py-3 border-t border-border bg-surface/60 flex flex-wrap items-baseline gap-x-6 gap-y-1.5 text-[13px] text-fg-subtle">
+          <span className="font-semibold uppercase tracking-wider text-[11px] text-fg-muted">Contratado</span>
           {contract.map((c) => (
             <span key={c.label} className="whitespace-nowrap" title={c.hint || undefined}>
               {c.label} <span className="font-semibold text-fg tabular-nums">{c.value}</span>

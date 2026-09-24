@@ -346,6 +346,7 @@ function DisplayContent({
     { label: "Budget", value: fmtR(kpis.budget), hint: "Budget alocado à frente selecionada." },
     { label: "Imp. contratadas", value: fmt(contractedImps) },
     bonusImps > 0 ? { label: "Bônus", value: `${fmt(bonusImps)} imp.`, hint: "Bônus negociado além do contratado." } : null,
+    bonusImps > 0 ? { label: "Total c/ bônus", value: `${fmt(contractedImps + bonusImps)} imp.`, hint: "Impressões contratadas + bonificadas." } : null,
     { label: "CPM negociado", value: fmtR(kpis.cpmNeg) },
   ].filter(Boolean);
 
