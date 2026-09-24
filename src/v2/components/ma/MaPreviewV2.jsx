@@ -12,8 +12,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { fmtDateBR } from "../../../shared/format";
-import { cn } from "../../../ui/cn";
 import { MaThumbV2 } from "./MaThumbV2";
+import { MaActionButton, MaCard } from "./maUi";
 
 const MAX_H = 620;
 
@@ -26,10 +26,14 @@ function nativeSize(piece) {
 
 // `hero`: a miniatura do card clicado na grade vira este preview numa View
 // Transition (MaxAttentionV2.openPiece). O nome só existe durante a troca.
-export function MaPreviewV2({ piece, color, campaignStart = null, isDemo = false, hero = false }) {
+export function MaPreviewV2({ piece, color, campaignStart = null, isDemo = false, hero = false, collapsible = false }) {
   const boxRef = useRef(null);
   const [boxW, setBoxW] = useState(0);
   const [nonce, setNonce] = useState(0);
+  // Celular: a peça começa recolhida numa linha, para os números virem
+  // primeiro. Abre sob demanda.
+  const [expanded, setExpanded] = useState(false);
+  const collapsed = collapsible && !expanded;
   // Qual iframe (src + recarga) já terminou de carregar. Comparar com a
   // chave atual reseta sozinho ao trocar de peça ou recarregar, sem efeito.
   const [loadedKey, setLoadedKey] = useState(null);
@@ -43,7 +47,7 @@ export function MaPreviewV2({ piece, color, campaignStart = null, isDemo = false
     const ro = new ResizeObserver(([entry]) => setBoxW(entry.contentRect.width));
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [collapsed]);
 
   const w = size?.w || 360;
   const h = size?.h || 360;
@@ -52,15 +56,57 @@ export function MaPreviewV2({ piece, color, campaignStart = null, isDemo = false
   const editedMidFlight =
     piece?.updated_at && campaignStart && String(piece.updated_at).slice(0, 10) > campaignStart;
 
-  return (
-    <div className="rounded-xl border border-border bg-surface-2 p-4 min-w-0">
-      <div className="flex items-center justify-between gap-2 mb-3">
-        <span className="text-[11px] font-bold uppercase tracking-widest text-fg-muted">
-          Preview{piece?.size ? ` · ${piece.size}` : ""}
-        </span>
-        {piece?.preview_url && <span className="text-[11px] text-fg-subtle">interativo</span>}
-      </div>
+  if (collapsed) {
+    return (
+      <MaCard>
+        <div className="flex items-center gap-3">
+          <MaThumbV2 format={piece?.format} color={color} className="h-14 w-10 shrink-0 [&_svg]:size-4" />
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] font-bold text-fg">Preview da peça</div>
+            <div className="text-xs text-fg-subtle">{piece?.size ? `${piece.size} · ` : ""}{piece?.preview_url ? "interativo" : "quadro do formato"}</div>
+          </div>
+          <MaActionButton onClick={() => setExpanded(true)}>Ver peça</MaActionButton>
+        </div>
+      </MaCard>
+    );
+  }
 
+  const iconBtn = "inline-grid size-7 place-items-center rounded-md border border-border text-fg-muted hover:text-fg hover:border-border-strong cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature";
+
+  return (
+    <MaCard
+      title="Preview"
+      subtitle={[piece?.size, piece?.preview_url ? "Interativo · versão atual" : null].filter(Boolean).join(" · ") || null}
+      actions={
+        <>
+          {piece?.preview_url && (
+            <>
+              <button type="button" onClick={() => setNonce((n) => n + 1)} className={iconBtn} aria-label="Recarregar a peça" title="Recarregar">
+                <ReloadIcon />
+              </button>
+              <a href={piece.preview_url} target="_blank" rel="noopener noreferrer" className={iconBtn} aria-label="Abrir a peça em nova aba" title="Abrir em nova aba">
+                <ExternalIcon />
+              </a>
+            </>
+          )}
+          {collapsible && <MaActionButton onClick={() => setExpanded(false)}>Recolher</MaActionButton>}
+        </>
+      }
+      footer={
+        <span>
+          {piece?.preview_url
+            ? "Interagir aqui não conta impressão nem clique."
+            : archived
+              ? "Peça arquivada na Platform: sem preview. As métricas do período continuam valendo."
+              : isDemo
+                ? "No demo, o quadro representa o formato. Nas campanhas reais, a peça abre aqui e responde a toques."
+                : "Esta peça não tem link público de preview."}
+          {piece?.preview_url && editedMidFlight
+            ? ` A peça foi editada em ${fmtDateBR(String(piece.updated_at).slice(0, 10))}, depois do início da campanha.`
+            : ""}
+        </span>
+      }
+    >
       <div
         ref={boxRef}
         className="grid place-items-center rounded-lg bg-canvas-deeper p-3 overflow-hidden"
@@ -111,42 +157,7 @@ export function MaPreviewV2({ piece, color, campaignStart = null, isDemo = false
           />
         )}
       </div>
-
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        {piece?.preview_url && (
-          <>
-            <button
-              type="button"
-              onClick={() => setNonce((n) => n + 1)}
-              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-border text-xs font-semibold text-fg-muted hover:text-fg hover:border-border-strong cursor-pointer"
-            >
-              <ReloadIcon /> Recarregar
-            </button>
-            <a
-              href={piece.preview_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-border text-xs font-semibold text-fg-muted hover:text-fg hover:border-border-strong"
-            >
-              <ExternalIcon /> Abrir em nova aba
-            </a>
-          </>
-        )}
-      </div>
-
-      <p className={cn("mt-2 text-[11px] leading-snug text-fg-subtle")}>
-        {piece?.preview_url
-          ? "Peça real, na versão atual. Interagir aqui não conta impressão nem clique."
-          : archived
-            ? "Peça arquivada na Platform: sem preview. As métricas do período continuam valendo."
-            : isDemo
-              ? "No demo, o quadro representa o formato. Nas campanhas reais, a peça abre aqui e responde a toques."
-              : "Esta peça não tem link público de preview."}
-        {piece?.preview_url && editedMidFlight
-          ? ` A peça foi editada em ${fmtDateBR(String(piece.updated_at).slice(0, 10))}, depois do início da campanha.`
-          : ""}
-      </p>
-    </div>
+    </MaCard>
   );
 }
 
