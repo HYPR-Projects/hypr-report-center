@@ -156,15 +156,7 @@
   --color-chart-bar: #3397B9;            /* bar principal — dark */
   --color-chart-line: #E5EBF2;           /* line de taxa (CTR/VTR) — dark */
 
-  /* Paleta categórica dos gráficos — identidade de série (Display, Vídeo,
-   * formatos Max Attention). Ordem fixa: a série 1 é sempre s1, nunca se
-   * recicla cor por ranking. Validada (faixa de luminância, croma, ΔE sob
-   * daltonismo e contraste ≥ 3:1) contra surface-2 de cada tema. Não usar
-   * para status (success/warning/danger têm tokens próprios). */
-  --color-chart-s1: #2A93BD;
-  --color-chart-s2: #D9622B;
-  --color-chart-s3: #8672DE;
-  --color-chart-s4: #CC4B93;
+  /* Paleta categórica (chart-s1..s4): bloco `@theme static` logo abaixo. */
 
   /* Texto sobre signature sólido (ex: tab ativa, badge, pill).
    * Não muda por tema — signature-fill é azul escuro nos dois modos, então
@@ -282,6 +274,24 @@
     from { transform: translateX(0); }
     to   { transform: translateX(100%); }
   }
+}
+
+/* Paleta categórica dos gráficos — identidade de série (Display, Vídeo,
+ * formatos Max Attention). Ordem fixa: a série 1 é sempre s1, nunca se
+ * recicla cor por ranking. Validada (faixa de luminância, croma, ΔE sob
+ * daltonismo e contraste ≥ 3:1) contra surface-2 de cada tema. Não usar
+ * para status (success/warning/danger têm tokens próprios).
+ *
+ * `static` porque o Tailwind v4 só emite variável de @theme que ele vê
+ * usada no código, e o formatColorSlots monta o nome em runtime
+ * (`var(--color-chart-s${i + 1})`). Sem static, s3/s4 sumiam do CSS de
+ * produção no tema escuro: barra preta no Recharts, bolinha da legenda
+ * invisível e MaThumbV2 sem fundo (color-mix com var indefinida). */
+@theme static {
+  --color-chart-s1: #2A93BD;
+  --color-chart-s2: #D9622B;
+  --color-chart-s3: #8672DE;
+  --color-chart-s4: #CC4B93;
 }
 
 /* ──────────────────────────────────────────────────────────────────────
