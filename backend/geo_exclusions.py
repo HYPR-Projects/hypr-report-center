@@ -64,6 +64,7 @@ import threading
 import time
 from datetime import date
 
+from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 
 logger = logging.getLogger(__name__)
@@ -75,12 +76,21 @@ ADJ_TABLE = f"`{PROJECT}.prod_assets.{ADJ_TABLE_ID}`"
 STATUS_TABLE = f"`{PROJECT}.prod_assets.campaign_geo_exclusion_status`"
 OVERRIDES_TABLE = f"`{PROJECT}.prod_assets.campaign_country_overrides`"
 REGIONS_TABLE = f"`{PROJECT}.prod_assets.dv360_daily_regions_performance_metrics`"
+# Cópia compacta do Region (dia × line × criativo × país, sem cidade/DMA),
+# particionada por data. A tabela original NÃO é particionada: qualquer leitura
+# varre ~19 GB. Refeita quando o Region muda (warmup); o toggle lê só ela.
+COMPACT_TABLE_ID = "dv360_region_country_compact"
+COMPACT_TABLE = f"`{PROJECT}.prod_assets.{COMPACT_TABLE_ID}`"
+COMPACT_LOOKBACK_DAYS = 120
+# Janela máxima para trás no refresh: a mesma da cópia compacta (proteção de
+# custo). Campanha com entrega mais antiga que isso não é ajustada.
+MAX_LOOKBACK_DAYS = COMPACT_LOOKBACK_DAYS
 UNIFIED_TABLE = f"`{PROJECT}.prod_assets.unified_daily_performance_metrics`"
 CR_TABLE = f"`{PROJECT}.prod_prod_hypr_reporthub.campaign_results`"
 
 # Tabelas cujo last_modified dispara um refresh (ver `needs_refresh`).
 SOURCE_TABLES = [
-    ("prod_assets", "dv360_daily_regions_performance_metrics"),
+    ("prod_assets", COMPACT_TABLE_ID),
     ("prod_assets", "unified_daily_performance_metrics"),
     ("prod_prod_hypr_reporthub", "campaign_results"),
     ("prod_assets", "campaign_geo_exclusions"),
@@ -95,8 +105,7 @@ RECON_TOLERANCE = 0.005
 # data e filtro de line um mês fica em ~17 GB.
 MAX_BYTES_BILLED = str(80 * 1024 ** 3)
 
-# Janela máxima para trás no refresh (proteção de custo).
-MAX_LOOKBACK_DAYS = 400
+
 
 TOKEN_RE = re.compile(r"^[A-Z0-9]{4,12}$")
 
@@ -340,15 +349,18 @@ def _parse_date(raw, field):
 
 
 def list_exclusions(bq):
-    """Config + status do último refresh, por token."""
-    ensure_tables(bq)
-    rows = bq.query(f"""
-        SELECT e.short_token, e.date_from, e.date_to, e.reason, e.updated_at, e.updated_by,
-               s.* EXCEPT (short_token)
-        FROM {CONFIG_TABLE} e
-        LEFT JOIN {STATUS_TABLE} s USING (short_token)
-        ORDER BY e.short_token
-    """, location="US").result()
+    """Config + status do último refresh, por token. Leitura sem DDL (o drawer
+    abre mais rápido); tabela ainda inexistente = nenhuma exclusão."""
+    try:
+        rows = bq.query(f"""
+            SELECT e.short_token, e.date_from, e.date_to, e.reason, e.updated_at, e.updated_by,
+                   s.* EXCEPT (short_token)
+            FROM {CONFIG_TABLE} e
+            LEFT JOIN {STATUS_TABLE} s USING (short_token)
+            ORDER BY e.short_token
+        """, location="US").result()
+    except NotFound:
+        return []
     out = []
     for r in rows:
         d = dict(r)
@@ -391,15 +403,20 @@ def save_exclusion(bq, short_token, date_from=None, date_to=None, reason=None, u
 
 
 def delete_exclusion(bq, short_token):
-    """Remove a config. As frações do token somem no próximo refresh — quem
-    chama deve rodar `refresh` em seguida pra o report voltar na hora."""
+    """Desliga o ajuste do token: apaga config, frações e status de uma vez.
+    Não precisa recalcular nada — sem fração, o report volta a ler a entrega
+    cheia na próxima leitura."""
     tok = normalize_token(short_token)
     ensure_tables(bq)
     cfg = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("token", "STRING", tok),
     ])
-    bq.query(f"DELETE FROM {CONFIG_TABLE} WHERE short_token = @token",
-             job_config=cfg, location="US").result()
+    bq.query(f"""
+        DELETE FROM {CONFIG_TABLE} WHERE short_token = @token;
+        DELETE FROM {ADJ_TABLE} WHERE short_token = @token;
+        DELETE FROM {STATUS_TABLE} WHERE short_token = @token;
+    """, job_config=cfg, location="US").result()
+    invalidate_active_cache()
     return tok
 
 
@@ -412,12 +429,27 @@ def _out_cond(cc_col="cc"):
             f"AND {cc_col} NOT IN UNNEST(allowed))")
 
 
+# Ordem explícita das colunas do status: o recálculo parcial faz UNION do
+# status novo com o publicado, e `SELECT *` dependeria da ordem física.
+_STATUS_COLS = ", ".join([
+    "short_token", "refreshed_at", "status", "recon_diff_pct", "unified_imps",
+    "removed_imps", "removed_viewable", "removed_clicks", "removed_video_100",
+    "removed_cost", "unified_cost", "exact_imps", "estimated_imps", "no_geo_imps",
+    "last_geo_date", "script_version",
+])
+
+
 def build_refresh_script(tolerance=RECON_TOLERANCE):
     """Script BQ (multi-statement) que recalcula frações e status. Pura."""
     out = _out_cond()
     frac = lambda o, g: (f"LEAST(1.0, GREATEST(0.0, COALESCE(SAFE_DIVIDE({o}, {g}), "
                          f"SAFE_DIVIDE(o_imps, g_imps), 0)))")
     return f"""
+-- @scope vazio = recalcula todos os tokens da config; com tokens = só eles
+-- (os demais mantêm fração e status publicados). É o que deixa o toggle do
+-- drawer rápido: ligar uma campanha não recalcula as outras.
+DECLARE scope ARRAY<STRING> DEFAULT @scope;
+DECLARE scoped BOOL DEFAULT IFNULL(ARRAY_LENGTH(scope), 0) > 0;
 DECLARE d_from DATE DEFAULT (
   SELECT GREATEST(
     COALESCE(MIN(COALESCE(e.date_from, u.first_date)), CURRENT_DATE()),
@@ -429,14 +461,20 @@ DECLARE d_from DATE DEFAULT (
     WHERE short_token IN (SELECT short_token FROM {CONFIG_TABLE})
     GROUP BY 1
   ) u USING (short_token)
+  WHERE NOT scoped OR e.short_token IN UNNEST(scope)
 );
 
--- Config + países liberados (BR sempre; demais do drawer do box Fora do BR).
+CREATE TEMP TABLE cfg_all AS
+SELECT DISTINCT short_token FROM {CONFIG_TABLE};
+
+-- Tokens deste cálculo + países liberados (BR sempre; demais do drawer do
+-- box Fora do BR).
 CREATE TEMP TABLE cfg AS
 SELECT e.short_token, e.date_from, e.date_to,
        ARRAY_CONCAT(['BR'], IFNULL(o.countries, [])) AS allowed
 FROM {CONFIG_TABLE} e
-LEFT JOIN {OVERRIDES_TABLE} o USING (short_token);
+LEFT JOIN {OVERRIDES_TABLE} o USING (short_token)
+WHERE NOT scoped OR e.short_token IN UNNEST(scope);
 
 -- Chaves que o report lê (as duas bases), já na janela de cada token.
 -- u_imps vem só da unified: é a régua da conciliação.
@@ -464,8 +502,8 @@ FROM keys k JOIN cfg c USING (short_token);
 -- Region por token × dia × line × criativo: total e parcela fora.
 CREATE TEMP TABLE geo AS
 SELECT l.short_token, r.date,
-       CAST(r.line_item_id AS STRING) AS line_item_id,
-       CAST(r.creative_id AS STRING) AS creative_id,
+       r.line_item_id,
+       r.creative_id,
        SUM(r.impressions) AS g_imps,
        SUM(IF({out}, r.impressions, 0)) AS o_imps,
        SUM(r.viewable_impressions) AS g_vw,
@@ -477,11 +515,14 @@ SELECT l.short_token, r.date,
        SUM(r.total_media_cost_advertiser_currency) AS g_cost,
        SUM(IF({out}, r.total_media_cost_advertiser_currency, 0)) AS o_cost
 FROM (
-  SELECT *, UPPER(TRIM(CAST(country_code AS STRING))) AS cc
-  FROM {REGIONS_TABLE}
+  -- Cópia compacta particionada (ver COMPACT_TABLE): lê só as datas da janela.
+  SELECT date, line_item_id, creative_id, cc,
+         impressions, viewable_impressions, clicks, video_view_100_complete,
+         total_media_cost_advertiser_currency
+  FROM {COMPACT_TABLE}
   WHERE date >= d_from
 ) r
-JOIN lines l ON l.line_item_id = CAST(r.line_item_id AS STRING)
+JOIN lines l ON l.line_item_id = r.line_item_id
 GROUP BY 1, 2, 3, 4;
 
 CREATE TEMP TABLE geo_line_day AS
@@ -538,7 +579,7 @@ SELECT c.short_token,
 FROM cfg c LEFT JOIN new_adj a USING (short_token)
 GROUP BY 1;
 
-CREATE OR REPLACE TABLE {STATUS_TABLE} AS
+CREATE TEMP TABLE new_status AS
 WITH u AS (
   SELECT u.short_token, u.line_item_id, u.date, u.creative_id,
          SUM(u.impressions) imps, SUM(u.viewable_impressions) vw,
@@ -586,19 +627,31 @@ FROM cfg c
 LEFT JOIN recon r USING (short_token)
 LEFT JOIN agg g USING (short_token);
 
+-- Status: os tokens calculados agora + (no recálculo parcial) o status
+-- publicado dos demais tokens da config.
+CREATE OR REPLACE TABLE {STATUS_TABLE} AS
+SELECT {_STATUS_COLS} FROM new_status
+UNION ALL
+SELECT {_STATUS_COLS} FROM {STATUS_TABLE}
+WHERE scoped
+  AND short_token IN (SELECT short_token FROM cfg_all)
+  AND short_token NOT IN (SELECT short_token FROM cfg);
+
 -- Publica: token conciliado recebe a fração nova; token que não fechou
--- mantém a última publicada (ou fica sem ajuste). Token fora da config some.
+-- mantém a última publicada (ou fica sem ajuste); token fora deste cálculo
+-- mantém a sua. Token que saiu da config some.
 CREATE OR REPLACE TABLE {ADJ_TABLE}
 CLUSTER BY short_token AS
 SELECT short_token, date, line_item_id, creative_id, method,
        f_imps, f_viewable, f_clicks, f_video, f_cost
 FROM new_adj
-WHERE short_token IN (SELECT short_token FROM {STATUS_TABLE} WHERE status = 'ok')
+WHERE short_token IN (SELECT short_token FROM new_status WHERE status = 'ok')
 UNION ALL
 SELECT short_token, date, line_item_id, creative_id, method,
        f_imps, f_viewable, f_clicks, f_video, f_cost
 FROM {ADJ_TABLE}
-WHERE short_token IN (SELECT short_token FROM {STATUS_TABLE} WHERE status != 'ok');
+WHERE short_token IN (SELECT short_token FROM cfg_all)
+  AND short_token NOT IN (SELECT short_token FROM new_status WHERE status = 'ok');
 
 SELECT * FROM {STATUS_TABLE} ORDER BY short_token;
 """
@@ -607,13 +660,38 @@ SELECT * FROM {STATUS_TABLE} ORDER BY short_token;
 _refresh_lock = threading.Lock()
 
 
-def refresh(bq):
-    """Recalcula frações e status. Um refresh por instância por vez. Devolve
-    a lista de status por token."""
+def _status_is_current(bq):
+    """O status publicado está no formato desta versão? Recálculo parcial só
+    é seguro assim (ele reaproveita as linhas dos outros tokens)."""
+    try:
+        schema = {f.name for f in bq.get_table(STATUS_TABLE.strip("`")).schema}
+        if "script_version" not in schema:
+            return False
+        rows = list(bq.query(f"SELECT MIN(script_version) AS v FROM {STATUS_TABLE}",
+                             location="US").result())
+        v = rows[0]["v"] if rows else None
+        return v is None or v == SCRIPT_VERSION
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[geo_exclusions] checagem de versão do status falhou: {e}")
+        return False
+
+
+def refresh(bq, scope=None):
+    """Recalcula frações e status. `scope` (lista de tokens) limita o cálculo
+    a eles; sem scope, ou com status de versão antiga, recalcula todos. Um
+    refresh por instância por vez. Devolve o status de todos os tokens."""
     ensure_tables(bq)
+    if _last_modified_ms(bq, "prod_assets", COMPACT_TABLE_ID) is None:
+        sync_compact(bq, force=True)  # primeira vez: ~20s, depois só no warmup
+    scope = sorted({normalize_token(t) for t in (scope or [])})
+    if scope and not _status_is_current(bq):
+        scope = []
     with _refresh_lock:
         t0 = time.time()
-        cfg = bigquery.QueryJobConfig(maximum_bytes_billed=MAX_BYTES_BILLED)
+        cfg = bigquery.QueryJobConfig(
+            maximum_bytes_billed=MAX_BYTES_BILLED,
+            query_parameters=[bigquery.ArrayQueryParameter("scope", "STRING", scope)],
+        )
         job = bq.query(build_refresh_script(), job_config=cfg, location="US")
         rows = [dict(r) for r in job.result()]
         invalidate_active_cache()
@@ -621,7 +699,7 @@ def refresh(bq):
             for k in ("refreshed_at", "last_geo_date"):
                 if r.get(k) is not None:
                     r[k] = r[k].isoformat()
-        logger.warning(f"[geo_exclusions] refresh em {time.time() - t0:.1f}s: "
+        logger.warning(f"[geo_exclusions] refresh {scope or 'total'} em {time.time() - t0:.1f}s: "
                        + ", ".join(f"{r['short_token']}={r['status']}" for r in rows))
         return rows
 
@@ -645,17 +723,8 @@ def needs_refresh(bq):
     adj = _last_modified_ms(bq, "prod_assets", ADJ_TABLE_ID)
     if adj is None:
         return False
-    try:
-        schema = {f.name for f in bq.get_table(STATUS_TABLE.strip("`")).schema}
-        if "script_version" not in schema:
-            return True
-        rows = list(bq.query(f"SELECT MIN(script_version) AS v FROM {STATUS_TABLE}",
-                             location="US").result())
-        v = rows[0]["v"] if rows else None
-        if v is not None and v != SCRIPT_VERSION:
-            return True
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[geo_exclusions] checagem de versão do status falhou: {e}")
+    if not _status_is_current(bq):
+        return True
     for ds, tb in SOURCE_TABLES:
         lm = _last_modified_ms(bq, ds, tb)
         if lm is not None and lm > adj:
@@ -673,11 +742,53 @@ def has_config(bq):
         return False
 
 
+def build_compact_sql():
+    return f"""
+        CREATE OR REPLACE TABLE {COMPACT_TABLE}
+        PARTITION BY date
+        CLUSTER BY line_item_id AS
+        SELECT date,
+               CAST(line_item_id AS STRING) AS line_item_id,
+               CAST(creative_id AS STRING) AS creative_id,
+               UPPER(TRIM(CAST(country_code AS STRING))) AS cc,
+               SUM(impressions) AS impressions,
+               SUM(viewable_impressions) AS viewable_impressions,
+               SUM(clicks) AS clicks,
+               SUM(video_view_100_complete) AS video_view_100_complete,
+               SUM(total_media_cost_advertiser_currency) AS total_media_cost_advertiser_currency
+        FROM {REGIONS_TABLE}
+        WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL {COMPACT_LOOKBACK_DAYS} DAY)
+        GROUP BY 1, 2, 3, 4
+    """
+
+
+_compact_lock = threading.Lock()
+
+
+def sync_compact(bq, force=False):
+    """Refaz a cópia compacta quando o Region mudou depois dela (ou quando
+    não existe). Reconstrução inteira, não incremental: pega também dia antigo
+    reprocessado (o 12/09 que faltou). Devolve True se reconstruiu."""
+    with _compact_lock:
+        compact = _last_modified_ms(bq, "prod_assets", COMPACT_TABLE_ID)
+        if not force and compact is not None:
+            regions = _last_modified_ms(bq, "prod_assets", "dv360_daily_regions_performance_metrics")
+            if regions is None or regions <= compact:
+                return False
+        t0 = time.time()
+        cfg = bigquery.QueryJobConfig(maximum_bytes_billed=MAX_BYTES_BILLED)
+        bq.query(build_compact_sql(), job_config=cfg, location="US").result()
+        logger.warning(f"[geo_exclusions] cópia compacta do Region refeita em {time.time() - t0:.1f}s")
+        return True
+
+
 def refresh_if_stale(bq):
-    """Chamado pelo cron de warmup. Não faz nada sem config; com config, só
-    recalcula se alguma fonte mudou. Devolve o status, ou None se não rodou."""
+    """Chamado pelo cron de warmup. Não faz nada sem config; com config,
+    atualiza a cópia compacta do Region se ele mudou e só recalcula se alguma
+    fonte mudou. Devolve o status, ou None se não rodou."""
     if not has_config(bq) and not active_tokens(bq):
         return None
+    sync_compact(bq)
     if not needs_refresh(bq):
         return None
     return refresh(bq)
