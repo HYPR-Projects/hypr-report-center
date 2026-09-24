@@ -17,7 +17,7 @@
 // uma linha discreta de pills via SecondaryAlerts — preserva a função
 // de filtro do worklist sem competir com os números.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { cn } from "../../../ui/cn";
 import { formatBRL, formatPct as formatPctBR } from "../lib/format";
 import * as Popover from "@radix-ui/react-popover";
@@ -305,6 +305,195 @@ function alertReasonText(r) {
   return null;
 }
 
+// ── Tendência diária no hover ───────────────────────────────────────────────
+// Taxa fora (UNEXPECTED / total) dos últimos 7 dias com dado, vindo de
+// `daily` do payload. Responde "está melhorando ou piorando?" sem abrir o
+// DV360: linha + área, dot por dia, valor só no ponto em foco (último dia por
+// padrão; hover/toque troca). A linha verde é a régua de 1% do box.
+//
+// SVG medido (ResizeObserver) em vez de viewBox esticado: o popover vai de
+// 560px a ~350px no celular, e esticar deformaria dots e texto.
+const TREND_DAYS = 7;
+const TREND_H = 92;
+const TREND_PAD = { top: 20, bottom: 18, x: 18 };
+const TREND_FLAT_PP = 0.5;
+
+function useElementWidth() {
+  const ref = useRef(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, width];
+}
+
+// Último dia vs taxa ponderada dos dias anteriores da janela. Comparar só com
+// o primeiro dia seria refém de um dia atípico; a média dos anteriores é a
+// mesma lógica do alerta de base no backend.
+function trendSummary(points) {
+  const last = points[points.length - 1];
+  const before = points.slice(0, -1);
+  const tot = before.reduce((s, p) => s + (p.impressions || 0), 0);
+  const unx = before.reduce((s, p) => s + (p.unexpected_impressions || 0), 0);
+  if (!tot || last.rate == null) return null;
+  const baseRate = (unx / tot) * 100;
+  const delta = last.rate - baseRate;
+  const dir = Math.abs(delta) < TREND_FLAT_PP ? "flat" : delta > 0 ? "up" : "down";
+  return { delta, dir, baseRate, from: before[0].date, to: before[before.length - 1].date, last };
+}
+
+function TrendBadge({ summary }) {
+  if (!summary) return null;
+  const { delta, dir, baseRate, from, to, last } = summary;
+  const cfg = {
+    up:   { arrow: "▲", text: "piorando",   cls: "text-danger" },
+    down: { arrow: "▼", text: "melhorando", cls: "text-success" },
+    flat: { arrow: "•", text: "estável",    cls: "text-fg-subtle" },
+  }[dir];
+  const pp = `${formatPctBR(Math.abs(delta), 1).replace("%", "")} pp`;
+  return (
+    <span
+      className={cn("inline-flex items-center gap-1 font-semibold whitespace-nowrap", cfg.cls)}
+      title={`${formatDayMonth(last.date)}: ${formatPctTwo(last.rate)} vs ${formatPctTwo(baseRate)} de ${formatDayMonth(from)} a ${formatDayMonth(to)}`}
+    >
+      <span aria-hidden="true" className="text-[9px] leading-none">{cfg.arrow}</span>
+      {dir !== "flat" && <span className="tabular-nums">{pp}</span>}
+      <span className="font-normal text-fg-subtle">{dir === "flat" ? "" : "· "}{cfg.text}</span>
+    </span>
+  );
+}
+
+function OutOfCountryTrend({ daily, alert }) {
+  const points = (daily || []).filter((d) => d.rate != null).slice(-TREND_DAYS);
+  const [ref, width] = useElementWidth();
+  const [active, setActive] = useState(null);
+  const gradId = `ooc-trend-${useId().replace(/:/g, "")}`;
+
+  if (points.length < 2) return null;
+
+  const n = points.length;
+  const lastIdx = n - 1;
+  const focus = active ?? lastIdx;
+  const summary = trendSummary(points);
+
+  const W = Math.max(width, 0);
+  const plotH = TREND_H - TREND_PAD.top - TREND_PAD.bottom;
+  const baseY = TREND_PAD.top + plotH;
+  // Teto com folga e nunca abaixo de 1,5%: com a semana toda em 0,2% a linha
+  // não pode ocupar a altura inteira e parecer um incêndio.
+  const yMax = Math.max(1.5, ...points.map((p) => p.rate)) * 1.15;
+  const x = (i) => TREND_PAD.x + (i / (n - 1)) * (W - TREND_PAD.x * 2);
+  const y = (v) => TREND_PAD.top + plotH * (1 - v / yMax);
+
+  const xy = points.map((p, i) => [x(i), y(p.rate)]);
+  const line = xy.map(([px, py], i) => `${i ? "L" : "M"}${px.toFixed(1)},${py.toFixed(1)}`).join(" ");
+  const area = `M${xy[0][0].toFixed(1)},${baseY} ${xy.map(([px, py]) => `L${px.toFixed(1)},${py.toFixed(1)}`).join(" ")} L${xy[lastIdx][0].toFixed(1)},${baseY} Z`;
+  const refY = y(1);
+
+  const onMove = (e) => {
+    if (!W) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const rel = (e.clientX - rect.left - TREND_PAD.x) / (W - TREND_PAD.x * 2);
+    setActive(Math.min(lastIdx, Math.max(0, Math.round(rel * (n - 1)))));
+  };
+
+  const fp = points[focus];
+  const [fx, fy] = xy[focus];
+  // Rótulo do ponto em foco preso às bordas: no primeiro/último dia ele
+  // alinha pela ponta em vez de centralizar e sair do SVG.
+  const labelAnchor = fx < 36 ? "start" : fx > W - 36 ? "end" : "middle";
+  const labelX = labelAnchor === "start" ? fx - 6 : labelAnchor === "end" ? fx + 6 : fx;
+  const alertDot = alert && focus === lastIdx;
+
+  return (
+    <div className="px-3.5 pt-2.5 pb-2 border-b border-border/60">
+      <div className="flex items-baseline justify-between gap-3 text-[11px]">
+        <span className="text-fg-subtle">Taxa fora por dia · últimos {n} dias</span>
+        <TrendBadge summary={summary} />
+      </div>
+
+      <div ref={ref} className="mt-1 w-full" style={{ height: TREND_H }}>
+        {W > 0 && (
+          <svg
+            width={W}
+            height={TREND_H}
+            className="block touch-none select-none overflow-visible"
+            role="img"
+            aria-label={`Taxa fora do Brasil por dia: ${points.map((p) => `${formatDayMonth(p.date)} ${formatPctTwo(p.rate)}`).join(", ")}`}
+            onPointerMove={onMove}
+            onPointerDown={onMove}
+            onPointerLeave={() => setActive(null)}
+          >
+            <defs>
+              <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="var(--color-signature)" stopOpacity={0.22} />
+                <stop offset="100%" stopColor="var(--color-signature)" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+
+            <line x1={0} x2={W} y1={baseY} y2={baseY} stroke="var(--color-border)" strokeWidth={1} />
+
+            {/* Régua de 1%: abaixo dela o box fica verde. O rótulo mora na
+                margem esquerda, antes do primeiro dot, pra nunca brigar com o
+                crosshair nem com o valor do ponto em foco. */}
+            <line x1={13} x2={W} y1={refY} y2={refY} stroke="var(--color-success)" strokeOpacity={0.45} strokeWidth={1} />
+            <text x={0} y={refY} dominantBaseline="middle" className="fill-fg-subtle" style={{ fontSize: 9 }}>1%</text>
+
+            <path d={area} fill={`url(#${gradId})`} />
+            <path d={line} fill="none" stroke="var(--color-signature)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+
+            <line x1={fx} x2={fx} y1={TREND_PAD.top - 4} y2={baseY} stroke="var(--color-border-strong)" strokeWidth={1} />
+
+            {xy.map(([px, py], i) => (
+              <circle
+                key={points[i].date}
+                cx={px}
+                cy={py}
+                r={i === focus ? 4.5 : 3}
+                fill={i === focus && alertDot ? "var(--color-danger)" : "var(--color-signature)"}
+                stroke="var(--color-canvas-elevated)"
+                strokeWidth={2}
+                style={{ transition: "r 120ms ease-out" }}
+              />
+            ))}
+
+            <text
+              x={labelX}
+              y={Math.max(fy - 9, 10)}
+              textAnchor={labelAnchor}
+              className={cn("font-bold tabular-nums", alertDot ? "fill-danger" : "fill-fg")}
+              style={{ fontSize: 11 }}
+            >
+              {formatPctTwo(fp.rate)}
+            </text>
+
+            {points.map((p, i) => (
+              <text
+                key={p.date}
+                x={x(i)}
+                y={TREND_H - 3}
+                textAnchor="middle"
+                className={cn("tabular-nums", i === focus ? "fill-fg font-semibold" : "fill-fg-subtle")}
+                style={{ fontSize: 10 }}
+              >
+                {formatDayMonth(p.date)}
+              </text>
+            ))}
+          </svg>
+        )}
+      </div>
+
+      <div className="text-[10px] text-fg-subtle tabular-nums text-right">
+        {formatDayMonth(fp.date)}: {formatImps(fp.unexpected_impressions)} fora de {formatImps(fp.impressions)} imps
+      </div>
+    </div>
+  );
+}
+
 // Classes de span quando a strip tem nove células: fecha a última linha da
 // grade de 2 colunas (9 = 4×2 + 1) e da de 5 (9 = 5 + 4), sem buraco cinza.
 const OOC_SPAN_NINE = "col-span-2 @min-[520px]:col-span-1 @min-[840px]:col-span-2 @min-[1340px]:col-span-1";
@@ -339,7 +528,7 @@ function OutOfCountryCard({ data, compact, onOpenReport }) {
     rate, alert, alert_reasons = [], campaigns = [],
     impressions, unexpected_impressions, expected_impressions, expected_rate,
     unknown_impressions, unknown_rate, expected_countries = [], top_countries = [],
-    reference_date, day_rate, campaigns_with_unexpected, data_warnings = [],
+    reference_date, day_rate, campaigns_with_unexpected, data_warnings = [], daily = [],
   } = data;
   const suspect = data_warnings.length > 0;
 
@@ -436,6 +625,8 @@ function OutOfCountryCard({ data, compact, onOpenReport }) {
               </ul>
             </div>
           )}
+
+          <OutOfCountryTrend daily={daily} alert={alert} />
 
           <div className="px-3.5 py-2.5 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
             <span className="text-fg-subtle">Fora sem previsão na line</span>
