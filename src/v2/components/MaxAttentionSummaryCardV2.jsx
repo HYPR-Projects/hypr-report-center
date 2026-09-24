@@ -3,11 +3,14 @@
 // Card "Max Attention" do Resumo por mídia (Visão Geral). Mesma moldura dos
 // cards de Display e Vídeo, com as métricas comparáveis de todas as peças
 // vinculadas: taxa de engajamento em destaque, sessões engajadas, cliques
-// em CTA, viewability e CTR da peça. Busca pelo mesmo cache da aba
+// em CTA (da peça), viewability e CTR (da DSP, mesma régua da aba Display).
+// Busca pelo mesmo cache da aba
 // (useMaReport), então abrir a aba depois não refaz a requisição.
 
+import { useMemo } from "react";
 import { fmt, fmtCompact } from "../../shared/format";
-import { pieceMedia, sumMedia } from "../../shared/maMetrics";
+import { dspDeliveryByPiece, pieceMedia, sumMedia } from "../../shared/maMetrics";
+import { ymd } from "../../shared/dateFilter";
 import { Card, CardBody } from "../../ui/Card";
 import { Skeleton } from "../../ui/Skeleton";
 import { cn } from "../../ui/cn";
@@ -21,20 +24,31 @@ export function MaxAttentionSummaryCardV2({
   view = null,
   range = null,
   links = [],
+  detail = null,
   layout = "stacked",
   onNavigate = null,
   className,
 }) {
   const { status, data } = useMaReport({ token, view, range, enabled: links.length > 0 });
   const pieces = data?.pieces || [];
-  const total = sumMedia(pieces.map((p) => pieceMedia(p)));
+  // Mesma régua da aba: entrega pela DSP dos criativos ligados às peças.
+  const from = range?.from ? ymd(range.from) : null;
+  const to = range?.to ? ymd(range.to) : null;
+  const dspLinks = data?.links?.length ? data.links : links;
+  const dsp = useMemo(
+    () => dspDeliveryByPiece(dspLinks, detail || [], from && to ? { from, to } : null),
+    [dspLinks, detail, from, to],
+  );
+  const total = sumMedia(pieces.map((p) => pieceMedia(p, dsp.get(p.creative_id))));
   const count = links.length;
 
   const cells = [
     { label: "Sessões engajadas", value: fmtCompact(total.engaged) },
     { label: "Cliques em CTA", value: fmtCompact(total.ctaClicks) },
     { label: "Viewability", value: pct(total.viewability, 1) },
-    { label: "CTR da peça", value: pct(total.ctr), accent: true },
+    total.ctr != null
+      ? { label: "CTR", value: pct(total.ctr), accent: true }
+      : { label: "CTR da peça", value: pct(total.ctaCtr), accent: true },
   ];
 
   const link = onNavigate ? (

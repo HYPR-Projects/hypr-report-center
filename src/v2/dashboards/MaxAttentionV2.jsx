@@ -175,7 +175,7 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
         <h2 className="text-lg font-bold text-fg leading-tight">Max Attention</h2>
         <p className="text-[12px] text-fg-subtle mt-0.5">
           {shownCount} {shownCount === 1 ? "peça" : "peças"}
-          {groups.length ? ` em ${groups.length} ${groups.length === 1 ? "formato" : "formatos"}` : ""} · métricas medidas pela própria peça
+          {groups.length ? ` em ${groups.length} ${groups.length === 1 ? "formato" : "formatos"}` : ""} · entrega pela DSP, comportamento medido pela peça
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
