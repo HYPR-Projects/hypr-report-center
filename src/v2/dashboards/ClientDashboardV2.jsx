@@ -285,6 +285,22 @@ const REPORT_PERSIST_TTL_MS = 24 * 60 * 60 * 1000;
 
 // ─── Componente principal ──────────────────────────────────────────────
 
+const VIEW_AS_KEY = "hypr.report.viewAs";
+function readViewAsPref() {
+  try {
+    return window.localStorage.getItem(VIEW_AS_KEY);
+  } catch {
+    return null;
+  }
+}
+function writeViewAsPref(v) {
+  try {
+    window.localStorage.setItem(VIEW_AS_KEY, v);
+  } catch {
+    /* storage indisponível: a escolha vale só nesta aba */
+  }
+}
+
 export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -344,6 +360,18 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   const clearDataFilters = () => {
     setAudiences([]); setLineNames([]); setCreativeLines([]); setSizes([]); setFormats([]);
   };
+  // Visão HYPR × Cliente (só admin): mostra o report exatamente como o
+  // cliente vê, sem sair da sessão. Troca só o que a TELA decide por
+  // "é admin?" (`adminUi`); identidade continua a real — comentário enviado
+  // sai como HYPR e a visita não conta como visita do cliente (tracking).
+  // Lembrada por navegador (conveniência; sem storage, volta pra HYPR).
+  const [previewClient, setPreviewClientState] = useState(() => readViewAsPref() === "client");
+  const setPreviewClient = (v) => {
+    setPreviewClientState(v);
+    writeViewAsPref(v ? "client" : "hypr");
+  };
+  const adminUi = isAdmin && !previewClient;
+
   // Link antigo ?tab=loom — lido uma vez, na montagem.
   const [loomDeepLink] = useState(() => readLegacyLoomDeepLink());
 
@@ -835,16 +863,16 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   const hasRmnd = !!data.rmnd;
   const hasPdooh = !!data.pdooh;
   const hasSurvey = !!data.survey;
-  const showRmnd = isAdmin || hasRmnd;
-  const showPdooh = isAdmin || hasPdooh;
-  const showSurvey = isAdmin || hasSurvey;
-  const hasAnySecondary = showRmnd || showPdooh || showSurvey || isAdmin;
+  const showRmnd = adminUi || hasRmnd;
+  const showPdooh = adminUi || hasPdooh;
+  const showSurvey = adminUi || hasSurvey;
+  const hasAnySecondary = showRmnd || showPdooh || showSurvey || adminUi;
 
   // Max Attention: aba principal quando a campanha tem peças vinculadas.
   // Admin vê sempre (é onde vincula as peças).
   const maLinks = data.max_attention?.links || [];
   const hasMaxAttention = maLinks.length > 0;
-  const showMaxAttention = isAdmin || hasMaxAttention;
+  const showMaxAttention = adminUi || hasMaxAttention;
 
   // Display/Video escondem pra todos (cliente + admin) quando a campanha
   // NÃO tem nem contrato nem entrega da mídia. Contracts são denormalizados
@@ -874,7 +902,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     (tab === "rmnd" && !showRmnd) ||
     (tab === "pdooh" && !showPdooh) ||
     (tab === "survey" && !showSurvey) ||
-    (tab === "dsps" && !isAdmin)
+    (tab === "dsps" && !adminUi)
       ? "overview"
       : tab;
 
@@ -897,6 +925,8 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
           shareState={shareState}
           onOpenComments={() => handleCommentsOpenChange(true)}
           commentsUnread={reportComments.unread}
+          viewAs={isAdmin ? (previewClient ? "client" : "hypr") : null}
+          onViewAsChange={isAdmin ? (v) => setPreviewClient(v === "client") : null}
         />
 
         <CommentsDrawerV2
@@ -934,7 +964,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
             isBonusOnly={isBonusOnly}
             legacyTotals={(data.totals || [])[0]}
             reportData={data}
-            isAdmin={isAdmin}
+            isAdmin={adminUi}
             posVenda={data.pos_venda}
             loomUrl={data.loom || null}
             autoOpenLoom={loomDeepLink}
@@ -1010,7 +1040,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 )}
                 {/* Aba interna admin-only: saúde da entrega por DSP. Cliente
                     nunca vê (gate aqui + endpoint admin-gated no backend). */}
-                {isAdmin && (
+                {adminUi && (
                   <TabsTrigger value="dsps" iconLeft={<PulseIcon />} className={SECONDARY_TAB_CLASS}>
                     DSPs
                   </TabsTrigger>
@@ -1093,7 +1123,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 aggregates={aggregatesOverview}
                 token={token}
                 view={view}
-                isAdmin={isAdmin}
+                isAdmin={adminUi}
                 adminJwt={adminJwt}
                 mergeMeta={data.merge_meta}
                 coreFilter={effectiveMainCore}
@@ -1112,7 +1142,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 aggregates={aggregates}
                 tactic={displayTactic}
                 setTactic={setDisplayTactic}
-                isAdmin={isAdmin}
+                isAdmin={adminUi}
               />
             </TabsContent>
 
@@ -1122,7 +1152,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 aggregates={aggregates}
                 tactic={videoTactic}
                 setTactic={setVideoTactic}
-                isAdmin={isAdmin}
+                isAdmin={adminUi}
               />
             </TabsContent>
 
@@ -1133,7 +1163,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                   view={view}
                   data={data}
                   range={mainRange}
-                  isAdmin={isAdmin}
+                  isAdmin={adminUi}
                   adminJwt={adminJwt}
                   onLinksChanged={reloadReport}
                 />
@@ -1146,7 +1176,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 aggregates={aggregates}
                 token={token}
                 view={view}
-                isAdmin={isAdmin}
+                isAdmin={adminUi}
                 adminJwt={adminJwt}
               />
             </TabsContent>
@@ -1155,7 +1185,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
               <RmndV2
                 token={token}
                 data={data}
-                isAdmin={isAdmin}
+                isAdmin={adminUi}
                 adminJwt={adminJwt}
                 onUploaded={reloadReport}
                 range={mainRange}
@@ -1166,7 +1196,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
               <PdoohV2
                 token={token}
                 data={data}
-                isAdmin={isAdmin}
+                isAdmin={adminUi}
                 adminJwt={adminJwt}
                 onUploaded={reloadReport}
                 range={mainRange}
@@ -1177,17 +1207,17 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
               <SurveyV2
                 token={token}
                 data={data}
-                isAdmin={isAdmin}
+                isAdmin={adminUi}
                 adminJwt={adminJwt}
               />
             </TabsContent>
 
-            {isAdmin && (
+            {adminUi && (
               <TabsContent value="dsps">
                 <DspHealthV2
                   token={token}
                   data={data}
-                  isAdmin={isAdmin}
+                  isAdmin={adminUi}
                   adminJwt={adminJwt}
                 />
               </TabsContent>
