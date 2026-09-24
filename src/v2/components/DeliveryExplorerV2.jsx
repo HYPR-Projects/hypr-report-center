@@ -10,8 +10,11 @@
 //              por coluna, CSV, PNG admin, renomear admin) · Gráfico (volume
 //              e taxa lado a lado, cada um na sua escala)
 //
-// Dimensão com um valor só no recorte fica desligada (nada a comparar). O
-// Dia usa a tabela diária completa (mesmas colunas e CSV de antes).
+// Toda dimensão com dado é clicável, inclusive com um valor só: campanha de
+// uma audiência ou um formato ainda precisa mostrar a entrega dele (e o admin
+// precisa renomear a audiência). A dimensão que abre por padrão continua
+// sendo a primeira com 2+ valores, onde há o que comparar. O Dia usa a tabela
+// diária completa (mesmas colunas e CSV de antes).
 
 import { useRef, useState } from "react";
 import { cn } from "../../ui/cn";
@@ -47,8 +50,9 @@ export function DeliveryExplorerV2({
   isAdmin = false,
 }) {
   const cardRef = useRef(null);
-  const enabledOf = (d) => d.key === "day" ? (dailyDetail?.length || 0) > 0 : (d.rows?.length || 0) > 1;
-  const firstEnabled = dims.find(enabledOf)?.key || dims[0]?.key;
+  const enabledOf = (d) => d.key === "day" ? (dailyDetail?.length || 0) > 0 : (d.rows?.length || 0) > 0;
+  const comparable = (d) => d.key === "day" ? enabledOf(d) : (d.rows?.length || 0) > 1;
+  const firstEnabled = (dims.find(comparable) || dims.find(enabledOf) || dims[0])?.key;
   const [dimKey, setDimKey] = useState(firstEnabled);
   const [viewMode, setViewMode] = useState("table");
   const current = dims.find((d) => d.key === dimKey && enabledOf(d)) || dims.find((d) => d.key === firstEnabled);
@@ -80,7 +84,7 @@ export function DeliveryExplorerV2({
             label: d.label,
             count: d.key === "day" ? null : d.rows?.length || 0,
             disabled: !enabledOf(d),
-            title: enabledOf(d) ? undefined : "Só um valor neste recorte, nada a comparar",
+            title: enabledOf(d) ? undefined : "Sem entrega nesta dimensão no recorte",
           }))}
         />
       </div>
