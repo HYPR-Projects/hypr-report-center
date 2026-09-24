@@ -8,6 +8,8 @@
 //   - Share (copiar link do report)
 //   - Toggle dark/light (PR-18 — botão icon-only, sol quando dark, lua
 //     quando light, persiste em localStorage)
+//   - Visão HYPR × Cliente (só admin): alterna o report entre o que a HYPR
+//     vê e exatamente o que o cliente vê (ClientDashboardV2 → adminUi)
 //
 // O Voltar à versão atual é movido aqui também — é uma ação global,
 // não pertence ao header da campanha.
@@ -17,6 +19,7 @@
 // Mesmo padrão do header do Portal do Cliente (ClientPortalPage).
 
 import { cn } from "../../ui/cn";
+import { useSlidingThumb } from "../../ui/useSlidingThumb";
 import { ThemeToggleV2 } from "./ThemeToggleV2";
 import HyprReportCenterLogo from "../../components/HyprReportCenterLogo";
 
@@ -79,6 +82,77 @@ function ChatIcon({ className }) {
   );
 }
 
+function EyeIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function ShieldIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
+  );
+}
+
+const VIEW_AS_OPTIONS = [
+  { value: "hypr", label: "HYPR", Icon: ShieldIcon, title: "Visão HYPR: tudo, inclusive o que só a HYPR vê" },
+  { value: "client", label: "Cliente", Icon: EyeIcon, title: "Visão do cliente: exatamente o que o cliente vê neste report" },
+];
+
+/* Seletor HYPR × Cliente. Thumb deslizante (mesmo hook dos outros toggles);
+ * na visão do cliente o thumb fica na cor da marca, pra ninguém esquecer
+ * em qual das duas está. No celular, só os ícones. */
+function ViewAsToggle({ value, onChange }) {
+  const active = Math.max(0, VIEW_AS_OPTIONS.findIndex((o) => o.value === value));
+  const { containerRef, setItemRef, thumbStyle } = useSlidingThumb(active, VIEW_AS_OPTIONS.length);
+  const client = value === "client";
+  return (
+    <div
+      ref={containerRef}
+      role="radiogroup"
+      aria-label="Ver o report como"
+      className="relative inline-flex items-center h-9 p-0.5 rounded-lg border border-border bg-surface"
+    >
+      <span
+        aria-hidden
+        className={cn(
+          "absolute top-0.5 bottom-0.5 left-0 rounded-md shadow-sm transition-colors duration-200",
+          client ? "bg-signature" : "bg-canvas-elevated border border-border-strong",
+        )}
+        style={thumbStyle}
+      />
+      {VIEW_AS_OPTIONS.map((o, i) => {
+        const on = o.value === value;
+        return (
+          <button
+            key={o.value}
+            ref={setItemRef(i)}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            title={o.title}
+            onClick={() => !on && onChange(o.value)}
+            className={cn(
+              "relative z-10 inline-flex items-center gap-1.5 h-full px-2 sm:px-2.5 rounded-md",
+              "text-[11px] font-bold tracking-wide cursor-pointer transition-colors duration-200",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
+              on ? (client ? "text-white" : "text-fg") : "text-fg-muted hover:text-fg",
+            )}
+          >
+            <o.Icon className="size-3.5" />
+            <span className="hidden sm:inline">{o.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function TopBarV2({
   updatedAtLabel,
   // Versão curta do selo pra telas estreitas ("até 22/09") e tooltip com a
@@ -90,6 +164,9 @@ export function TopBarV2({
   onContactCS,
   onOpenComments,
   commentsUnread = 0,
+  // Só admin: "hypr" | "client" e o setter. Sem eles o seletor não aparece.
+  viewAs = null,
+  onViewAsChange = null,
   className,
 }) {
   // Mapeia estado do share pro tooltip + ícone do botão. O ClientDashboard
@@ -120,6 +197,8 @@ export function TopBarV2({
 
       {/* Ações */}
       <div className="flex items-center gap-2 shrink-0">
+        {viewAs && onViewAsChange && <ViewAsToggle value={viewAs} onChange={onViewAsChange} />}
+
         {updatedAtLabel && (
           <span
             title={updatedAtTitle || undefined}
