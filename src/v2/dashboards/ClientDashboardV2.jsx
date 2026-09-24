@@ -404,6 +404,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   // do conteúdo (barra fixa grudada no TopBar, h-16) sem animar a rolagem,
   // que competiria com a entrada da aba. Rolado acima disso, não mexe.
   const tabsTopRef = useRef(null);
+  const maRef = useRef(null);
   const onTabChange = (t) => {
     setTab(t);
     const el = tabsTopRef.current;
@@ -1014,7 +1015,13 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                   </TabsTrigger>
                 )}
                 {showMaxAttention && (
-                  <TabsTrigger value="max-attention" iconLeft={<SparkIcon />}>
+                  <TabsTrigger
+                    value="max-attention"
+                    iconLeft={<SparkIcon />}
+                    // Já na aba, dentro de uma peça: o clique volta ao menu
+                    // (o Radix não chama onValueChange para a aba ativa).
+                    onClick={() => { if (effectiveTab === "max-attention") maRef.current?.goHome(); }}
+                  >
                     Max Attention
                   </TabsTrigger>
                 )}
@@ -1159,6 +1166,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
             {showMaxAttention && (
               <TabsContent value="max-attention">
                 <MaxAttentionV2
+                  ref={maRef}
                   token={token}
                   view={view}
                   data={data}

@@ -2,22 +2,35 @@
 //
 // Mapa dos endereços (Top endereços do Tap to Map e da Loja mais próxima).
 // Mesmo MapLibre + basemap CARTO do PDOOH, com marcadores numerados na ordem
-// da tabela e tamanho proporcional às interações. Clique no marcador ou na
-// linha da tabela foca o endereço.
+// do ranking e tamanho proporcional ao peso (exibições/identificações).
+//
+// Câmera previsível (regras e testes em maMapCamera.js):
+//   • o mapa é criado UMA vez; re-render, refetch e troca de tema não o
+//     recriam (o tema troca só o basemap, com setStyle);
+//   • marcadores sincronizam quando o conjunto de pontos muda de conteúdo;
+//     o enquadramento geral só acontece na 1ª carga ou quando o conjunto muda
+//     e o usuário ainda não mexeu no mapa;
+//   • focar um ponto nunca afasta: desliza (easeTo) quando está perto ou
+//     visível, corta com fade curto quando está longe;
+//   • `fit` ({ keys, n }) enquadra um subconjunto a pedido (filtro por
+//     cidade, "Ver todos"); só muda quando `n` muda.
 //
 // Sem MapLibre (CDN bloqueada, rede lenta), cai num mapa esquemático em SVG
-// com as posições relativas — a tabela ao lado continua sendo a leitura
+// com as posições relativas — a lista ao lado continua sendo a leitura
 // principal.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { fmt } from "../../../shared/format";
 import { useMapLibreStatus } from "../../../shared/useMapLibre";
+import { prefersReducedMotion } from "../../lib/motion";
 import { useTheme } from "../../hooks/useTheme";
+import { haversineKm, planFocus, pointsSignature } from "./maMapCamera";
 
 const STYLE_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
 const STYLE_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const easeOutCubic = (t) => 1 - (1 - t) ** 3;
 
 const CSS_ID = "ma-map-css";
 function ensureCss() {
@@ -25,67 +38,92 @@ function ensureCss() {
   const st = document.createElement("style");
   st.id = CSS_ID;
   st.textContent = `
-.ma-marker{display:grid;place-items:center;border-radius:9999px;background:var(--color-chart-s1);color:#fff;font:700 11px/1 Urbanist,system-ui,sans-serif;border:2px solid var(--color-surface-2);box-shadow:0 2px 8px rgba(0,0,0,.35);cursor:pointer}
-.ma-marker[data-active="true"]{outline:2px solid var(--color-fg);outline-offset:1px}
-.ma-popup .maplibregl-popup-content{border-radius:10px;padding:10px 12px;background:var(--color-surface-2);color:var(--color-fg);border:1px solid var(--color-border);font-family:inherit}
+.ma-marker{display:grid;place-items:center;border-radius:9999px;background:var(--color-signature);color:#fff;font:700 11px/1 Urbanist,system-ui,sans-serif;border:2px solid var(--color-surface-2);box-shadow:0 2px 8px rgba(0,0,0,.3);cursor:pointer;padding:0}
+.ma-marker[data-active="true"]{outline:2px solid var(--color-fg);outline-offset:1px;z-index:2}
+.ma-marker:focus-visible{outline:2px solid var(--color-signature);outline-offset:2px}
+.ma-popup .maplibregl-popup-content{border-radius:12px;padding:12px 14px;background:var(--color-surface-2);color:var(--color-fg);border:1px solid var(--color-border);font-family:inherit;box-shadow:0 6px 20px rgba(0,0,0,.18)}
 .ma-popup .maplibregl-popup-tip{display:none}
-.ma-popup .maplibregl-popup-close-button{color:var(--color-fg-subtle);font-size:15px;padding:2px 6px}
+.ma-popup .maplibregl-popup-close-button{color:var(--color-fg-subtle);font-size:16px;padding:2px 7px}
 `;
   document.head.appendChild(st);
 }
 
+// Popup no padrão de número da aba: rótulo em caixa alta em cima, valor.
 function popupHtml(p, i) {
   const rows = (p.rows || [])
-    .map(([l, v]) => `<div><div style="font-size:10px;color:var(--color-fg-subtle);text-transform:uppercase;letter-spacing:.05em">${esc(l)}</div><div style="font-size:13px;font-weight:700">${esc(v)}</div></div>`)
+    .map(([l, v]) => `<div><div style="font-size:11px;font-weight:700;color:var(--color-fg-subtle);text-transform:uppercase;letter-spacing:.06em">${esc(l)}</div><div style="margin-top:4px;font-size:15px;font-weight:700;font-variant-numeric:tabular-nums">${esc(v)}</div></div>`)
     .join("");
-  return `<div style="font-size:13px;font-weight:700;margin-bottom:2px">${i + 1}. ${esc(p.name)}</div>${p.subtitle ? `<div style="font-size:11px;color:var(--color-fg-subtle);margin-bottom:8px">${esc(p.subtitle)}</div>` : ""}<div style="display:flex;gap:14px">${rows}</div>`;
+  return `<div style="font-size:13px;font-weight:700;padding-right:14px">${i + 1}. ${esc(p.name)}</div>${p.subtitle ? `<div style="font-size:12px;color:var(--color-fg-subtle);margin-top:2px">${esc(p.subtitle)}</div>` : ""}<div style="display:flex;gap:18px;margin-top:10px">${rows}</div>`;
 }
 
 const radiusFor = (w, max) => 10 + Math.sqrt((w || 0) / (max || 1)) * 9;
 
-export function MaAddressMapV2({ points = [], focusKey = null, onFocus, height = 320 }) {
-  const geo = points.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng) && (p.lat !== 0 || p.lng !== 0));
+function boundsOf(lib, pts) {
+  const b = new lib.LngLatBounds();
+  pts.forEach((p) => b.extend([p.lng, p.lat]));
+  return b;
+}
+
+export function MaAddressMapV2({ points = [], focusKey = null, onFocus, fit = null, height = 320, minHeight, className }) {
   const { lib, failed } = useMapLibreStatus();
   const [theme] = useTheme();
+  // Filtro com identidade estável: só muda quando o conteúdo muda.
+  const sig = pointsSignature(points);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const geo = useMemo(() => points.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng) && (p.lat !== 0 || p.lng !== 0)), [sig]);
+  const style = { height: height ?? undefined, minHeight };
 
   if (!geo.length) {
     return (
-      <div className="grid place-items-center rounded-lg bg-canvas-deeper text-[12px] text-fg-subtle" style={{ height }}>
+      <div className={`grid place-items-center rounded-lg bg-canvas-deeper text-[13px] text-fg-subtle ${className || ""}`} style={style}>
         Sem coordenadas para mostrar no mapa.
       </div>
     );
   }
   if (failed || !lib) {
     return failed ? (
-      <SchematicMap points={geo} focusKey={focusKey} onFocus={onFocus} height={height} />
+      <SchematicMap points={geo} focusKey={focusKey} onFocus={onFocus} className={className} />
     ) : (
-      <div className="relative overflow-hidden skeleton-shimmer grid place-items-center rounded-lg bg-canvas-deeper text-[12px] text-fg-subtle" style={{ height }} aria-busy="true">
+      <div className={`relative overflow-hidden skeleton-shimmer grid place-items-center rounded-lg bg-canvas-deeper text-[13px] text-fg-subtle ${className || ""}`} style={style} aria-busy="true">
         <span className="relative">Carregando mapa…</span>
       </div>
     );
   }
-  return <LiveMap key={theme} lib={lib} isDark={theme !== "light"} points={geo} focusKey={focusKey} onFocus={onFocus} height={height} />;
+  return <LiveMap lib={lib} isDark={theme !== "light"} points={geo} focusKey={focusKey} onFocus={onFocus} fit={fit} style={style} className={className} />;
 }
 
-function LiveMap({ lib, isDark, points, focusKey, onFocus, height }) {
+function LiveMap({ lib, isDark, points, focusKey, onFocus, fit, style, className }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef([]);
   const popupRef = useRef(null);
+  const closingRef = useRef(false);
+  const lastFocusRef = useRef(null);
+  const framedSigRef = useRef(null);
+  const userMovedRef = useRef(false);
+  const styleRef = useRef(isDark ? STYLE_DARK : STYLE_LIGHT);
   const onFocusRef = useRef(onFocus);
+  const pointsRef = useRef(points);
+  const sig = pointsSignature(points);
+  // Marcadores também dependem de número e peso (troca de período).
+  const markerSig = `${sig}#${points.map((p) => `${p.rank ?? ""}:${p.weight ?? ""}`).join(",")}`;
+
   useEffect(() => {
     onFocusRef.current = onFocus;
-  }, [onFocus]);
+    pointsRef.current = points;
+  });
 
+  // Mapa: uma instância por montagem.
   useEffect(() => {
     if (!boxRef.current) return undefined;
     ensureCss();
     let map;
+    const first = pointsRef.current[0];
     try {
       map = new lib.Map({
         container: boxRef.current,
-        style: isDark ? STYLE_DARK : STYLE_LIGHT,
-        center: [points[0].lng, points[0].lat],
+        style: styleRef.current,
+        center: [first.lng, first.lat],
         zoom: 11,
         attributionControl: { compact: true },
         cooperativeGestures: true,
@@ -100,59 +138,154 @@ function LiveMap({ lib, isDark, points, focusKey, onFocus, height }) {
     }
     mapRef.current = map;
     map.addControl(new lib.NavigationControl({ showCompass: false }), "top-left");
-    const max = Math.max(...points.map((p) => p.weight || 0), 1);
-    markersRef.current = points.map((p, i) => {
+    // Movimento feito pela pessoa (arrastar, zoom, botões) tem originalEvent;
+    // os nossos (easeTo, fitBounds) não.
+    const markUser = (e) => { if (e.originalEvent) userMovedRef.current = true; };
+    map.on("dragstart", markUser);
+    map.on("zoomstart", markUser);
+    const popup = new lib.Popup({ className: "ma-popup", offset: 18, maxWidth: "320px", focusAfterOpen: false });
+    popup.on("close", () => {
+      // Fechar no "×" limpa o foco (linha destacada e reclique no mesmo ponto).
+      if (closingRef.current) return;
+      lastFocusRef.current = null;
+      onFocusRef.current?.(null);
+    });
+    popupRef.current = popup;
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => map.resize()) : null;
+    ro?.observe(boxRef.current);
+    return () => {
+      ro?.disconnect();
+      closingRef.current = true;
+      popup.remove();
+      markersRef.current.forEach((m) => m.marker.remove());
+      markersRef.current = [];
+      map.remove();
+      mapRef.current = null;
+      popupRef.current = null;
+      framedSigRef.current = null;
+      lastFocusRef.current = null;
+    };
+  }, [lib]);
+
+  // Tema: troca só o basemap. Marcadores e popup são DOM e ficam.
+  useEffect(() => {
+    const next = isDark ? STYLE_DARK : STYLE_LIGHT;
+    if (next === styleRef.current) return;
+    styleRef.current = next;
+    mapRef.current?.setStyle(next);
+  }, [isDark]);
+
+  // Marcadores: sincronizam quando o conjunto muda de conteúdo.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const pts = pointsRef.current;
+    markersRef.current.forEach((m) => m.marker.remove());
+    const max = Math.max(...pts.map((p) => p.weight || 0), 1);
+    markersRef.current = pts.map((p, i) => {
       const el = document.createElement("button");
       el.type = "button";
       el.className = "ma-marker";
       const r = radiusFor(p.weight, max);
       el.style.width = `${r * 2}px`;
       el.style.height = `${r * 2}px`;
-      el.textContent = String(i + 1);
-      el.setAttribute("aria-label", `${i + 1}. ${p.name}`);
+      el.textContent = String(p.rank ?? i + 1);
+      el.setAttribute("aria-label", `${p.rank ?? i + 1}. ${p.name}`);
+      el.setAttribute("data-active", String(p.key === lastFocusRef.current));
       el.addEventListener("click", (e) => {
         e.stopPropagation();
         onFocusRef.current?.(p.key);
       });
       return { key: p.key, el, marker: new lib.Marker({ element: el }).setLngLat([p.lng, p.lat]).addTo(map) };
     });
-    if (points.length > 1) {
-      const b = new lib.LngLatBounds();
-      points.forEach((p) => b.extend([p.lng, p.lat]));
-      map.fitBounds(b, { padding: 48, maxZoom: 14, duration: 0 });
+    // Enquadra na 1ª carga; num conjunto novo, só se a pessoa não mexeu.
+    if (framedSigRef.current == null || (framedSigRef.current !== sig && !userMovedRef.current)) {
+      const firstTime = framedSigRef.current == null;
+      if (pts.length > 1) {
+        map.fitBounds(boundsOf(lib, pts), { padding: 56, maxZoom: 14, duration: firstTime || prefersReducedMotion() ? 0 : 500 });
+      } else {
+        map.jumpTo({ center: [pts[0].lng, pts[0].lat], zoom: 13 });
+      }
     }
-    return () => {
+    framedSigRef.current = sig;
+    if (lastFocusRef.current && !pts.some((p) => p.key === lastFocusRef.current)) {
+      closingRef.current = true;
       popupRef.current?.remove();
-      markersRef.current.forEach((m) => m.marker.remove());
-      markersRef.current = [];
-      map.remove();
-      mapRef.current = null;
-    };
-  }, [lib, isDark, points]);
+      closingRef.current = false;
+      lastFocusRef.current = null;
+    }
+  }, [markerSig, sig, lib]);
 
+  // Foco: só quando o focusKey muda de verdade. Nunca afasta.
   useEffect(() => {
     const map = mapRef.current;
     markersRef.current.forEach((m) => m.el.setAttribute("data-active", String(m.key === focusKey)));
-    if (!map || !focusKey) return;
-    const i = points.findIndex((p) => p.key === focusKey);
+    if (!map) return;
+    if (!focusKey) {
+      lastFocusRef.current = null;
+      closingRef.current = true;
+      popupRef.current?.remove();
+      closingRef.current = false;
+      return;
+    }
+    if (focusKey === lastFocusRef.current) return;
+    const pts = pointsRef.current;
+    const i = pts.findIndex((p) => p.key === focusKey);
     if (i < 0) return;
-    const p = points[i];
-    map.flyTo({ center: [p.lng, p.lat], zoom: Math.max(map.getZoom(), 13), speed: 1.4, essential: true });
-    popupRef.current?.remove();
-    popupRef.current = new lib.Popup({ className: "ma-popup", offset: 18, maxWidth: "320px" })
-      .setLngLat([p.lng, p.lat])
-      .setHTML(popupHtml(p, i))
-      .addTo(map);
-  }, [focusKey, points, lib]);
+    lastFocusRef.current = focusKey;
+    const p = pts[i];
+    const target = [p.lng, p.lat];
+    const c = map.getCenter();
+    const plan = planFocus({
+      zoom: map.getZoom(),
+      inView: map.getBounds().contains(target),
+      distanceKm: haversineKm({ lat: c.lat, lng: c.lng }, p),
+      reducedMotion: prefersReducedMotion(),
+    });
+    map.stop();
+    if (plan.mode === "ease") {
+      map.easeTo({ center: target, zoom: plan.zoom, duration: 600, easing: easeOutCubic, essential: true });
+    } else {
+      if (!prefersReducedMotion()) boxRef.current?.animate?.([{ opacity: 0.35 }, { opacity: 1 }], { duration: 220, easing: "ease-out" });
+      map.jumpTo({ center: target, zoom: plan.zoom });
+    }
+    // addTo de um popup aberto dispara "close" antes de reabrir: não é a
+    // pessoa fechando.
+    closingRef.current = true;
+    popupRef.current?.setLngLat(target).setHTML(popupHtml(p, p.rank != null ? p.rank - 1 : i)).addTo(map);
+    closingRef.current = false;
+  }, [focusKey, sig]);
 
-  return <div ref={boxRef} className="rounded-lg overflow-hidden" style={{ height }} />;
+  // Enquadramento pedido (filtro por cidade, "Ver todos").
+  const fitN = fit?.n ?? 0;
+  const fitRef = useRef(fit);
+  useEffect(() => {
+    fitRef.current = fit;
+  });
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !fitN) return;
+    const keys = fitRef.current?.keys;
+    const pts = pointsRef.current.filter((p) => !keys || keys.includes(p.key));
+    if (!pts.length) return;
+    userMovedRef.current = !!keys; // "Ver todos" devolve o enquadramento automático
+    map.stop();
+    const duration = prefersReducedMotion() ? 0 : 600;
+    if (pts.length === 1) {
+      map.easeTo({ center: [pts[0].lng, pts[0].lat], zoom: Math.max(map.getZoom(), 13), duration, easing: easeOutCubic });
+    } else {
+      map.fitBounds(boundsOf(lib, pts), { padding: 56, maxZoom: 14, duration });
+    }
+  }, [fitN, lib]);
+
+  return <div ref={boxRef} className={`rounded-lg overflow-hidden ${className || ""}`} style={style} />;
 }
 
 // Mapa esquemático: projeção equiretangular simples dentro da caixa dos
 // pontos. Honesto sobre o que é — sem ruas desenhadas.
-function SchematicMap({ points, focusKey, onFocus, height }) {
+function SchematicMap({ points, focusKey, onFocus, className }) {
   const W = 900;
-  const H = Math.round((height / 320) * 300);
+  const H = 420;
   const lats = points.map((p) => p.lat);
   const lngs = points.map((p) => p.lng);
   const minLat = Math.min(...lats), maxLat = Math.max(...lats);
@@ -164,8 +297,8 @@ function SchematicMap({ points, focusKey, onFocus, height }) {
   const x = (lng) => pad + ((lng - minLng) / spanLng) * (W - pad * 2);
   const y = (lat) => pad + ((maxLat - lat) / spanLat) * (H - pad * 2);
   return (
-    <div className="rounded-lg overflow-hidden bg-canvas-deeper">
-      <svg viewBox={`0 0 ${W} ${H}`} className="block w-full h-auto" role="img" aria-label="Mapa esquemático dos endereços">
+    <div className={`flex flex-col rounded-lg overflow-hidden bg-canvas-deeper ${className || ""}`}>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" className="block w-full h-auto flex-1 min-h-0" role="img" aria-label="Mapa esquemático dos endereços">
         <defs>
           <pattern id="ma-grid" width="45" height="45" patternUnits="userSpaceOnUse">
             <path d="M45 0H0V45" fill="none" stroke="var(--color-border)" strokeWidth="1" />
@@ -175,21 +308,22 @@ function SchematicMap({ points, focusKey, onFocus, height }) {
         {points.map((p, i) => {
           const r = radiusFor(p.weight, max) * 1.1;
           const active = p.key === focusKey;
+          const n = p.rank ?? i + 1;
           return (
             <g
               key={p.key}
               role="button"
               tabIndex={0}
-              aria-label={`${i + 1}. ${p.name}`}
+              aria-label={`${n}. ${p.name}`}
               onClick={() => onFocus?.(p.key)}
               onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onFocus?.(p.key); } }}
               style={{ cursor: "pointer" }}
             >
-              <title>{`${i + 1}. ${p.name}${p.rows?.length ? ` · ${p.rows.map(([l, v]) => `${l}: ${v}`).join(" · ")}` : ""}`}</title>
+              <title>{`${n}. ${p.name}${p.rows?.length ? ` · ${p.rows.map(([l, v]) => `${l}: ${v}`).join(" · ")}` : ""}`}</title>
               <circle cx={x(p.lng)} cy={y(p.lat)} r={r + 3} fill="var(--color-surface-2)" />
-              <circle cx={x(p.lng)} cy={y(p.lat)} r={r} fill="var(--color-chart-s1)" stroke={active ? "var(--color-fg)" : "none"} strokeWidth="2.5" />
+              <circle cx={x(p.lng)} cy={y(p.lat)} r={r} fill="var(--color-signature)" stroke={active ? "var(--color-fg)" : "none"} strokeWidth="2.5" />
               <text x={x(p.lng)} y={y(p.lat) + 4} textAnchor="middle" fontSize="12" fontWeight="700" fill="#fff">
-                {i + 1}
+                {n}
               </text>
             </g>
           );

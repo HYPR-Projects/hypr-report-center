@@ -5,6 +5,7 @@
 
 import { fmt } from "../../../shared/format";
 import { downloadCsvText } from "../../../shared/download";
+import { formatLabel } from "../../../shared/maMetrics";
 
 export const pct = (v, d = 2) => (v == null ? "—" : `${fmt(v, d)}%`);
 
@@ -38,4 +39,30 @@ export function resolveChartVar(c, hypr) {
   if (m) return hypr?.[`chartS${m[1]}`] || undefined;
   if (/--color-fg-subtle/.test(c || "")) return hypr?.fgSubtle || undefined;
   return c;
+}
+
+/** Nome de trafficking ("HYPR_NIELY_COR&TON_TAP-TO-MAP_AGO26"): sem espaço, com "_". */
+export function looksTechnical(name) {
+  const s = String(name || "");
+  return s.includes("_") && !/\s/.test(s);
+}
+
+/**
+ * Como a peça aparece no detalhe. Nome de trafficking não vira título: o
+ * título passa a ser "Formato · Campanha" e o nome técnico fica na linha de
+ * metadados (com copiar). Nome legível ("Lojas Verão") segue como título.
+ */
+export function pieceDisplay(piece, campaignTitle = null) {
+  const format = formatLabel(piece?.format);
+  const size = piece?.size ? ` · ${piece.size}` : "";
+  if (looksTechnical(piece?.name)) {
+    return {
+      title: campaignTitle ? `${format} · ${campaignTitle}` : format,
+      crumb: `${campaignTitle || "Peça"}${size}`,
+      technical: piece.name,
+      formatInTitle: true,
+    };
+  }
+  const name = piece?.name || "Peça sem nome";
+  return { title: name, crumb: `${name}${size}`, technical: null, formatInTitle: false };
 }
