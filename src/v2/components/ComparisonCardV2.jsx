@@ -99,7 +99,7 @@ export function ComparisonCardV2({
 
   const economyDisplay = !isSignificant
     ? "—"
-    : `${isEconomy ? "↓" : "↑"} ${Math.abs(economyPct).toFixed(decimalsForDelta)}%`;
+    : `${isEconomy ? "↓" : "↑"} ${Math.abs(economyPct).toFixed(decimalsForDelta).replace(".", ",")}%`;
 
   const economyLabel = isEconomy
     ? "Economia"
