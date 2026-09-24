@@ -64,7 +64,7 @@ export function MaFunnelV2({ steps, subs = [], note = null, unitLabel = "pessoas
                 )}
                 title={i === 0 ? "Base do funil" : "Conversão da etapa anterior"}
               >
-                {i === 0 ? "base" : r.conversion == null ? "—" : `↓ ${pct(r.conversion)}`}
+                {i === 0 ? "base" : pct(r.conversion)}
               </span>
             </div>
           );
@@ -90,10 +90,12 @@ export function MaFunnelV2({ steps, subs = [], note = null, unitLabel = "pessoas
         {biggestDrop ? (
           <>
             Maior perda depois da visualização:{" "}
-            <span className="font-semibold text-fg">{biggestDrop.from} → {biggestDrop.to}</span>.{" "}
+            <span className="font-semibold text-fg">{biggestDrop.from} → {biggestDrop.to}</span>{" "}
+            (−{fmt(biggestDrop.drop)} {unitLabel}).{" "}
           </>
         ) : null}
-        Todas as etapas contam {unitLabel} (sessões distintas).
+        O percentual de cada etapa é sobre a etapa anterior{subs.length ? "; nos detalhes (↳), sobre a última etapa" : ""}.
+        {" "}Todas as etapas contam {unitLabel} (sessões distintas).
         {broken ? " A barra da base está fora de escala; as demais usam a régua da segunda etapa." : ""}
         {note ? ` ${note}` : ""}
       </p>

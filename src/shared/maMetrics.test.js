@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  canonicalMaFormat,
+  foldFormatSeries,
   dspDeliveryByPiece,
   pieceMedia,
   sumMedia,
@@ -215,4 +217,33 @@ test("selo relativo do Max Attention", () => {
   assert.equal(relativeUpdated("2026-09-23T11:59:50Z", now), "Atualizado agora");
   assert.equal(relativeUpdated("2026-09-23T09:00:00Z", now), "Atualizado há 3 h");
   assert.equal(relativeUpdated(null, now), null);
+});
+
+test("slider legado é tratado como carrossel (label, cor e agrupamento)", () => {
+  assert.equal(canonicalMaFormat("slider"), "carrossel");
+  assert.equal(canonicalMaFormat(" scratch "), "scratch");
+  assert.equal(canonicalMaFormat(null), "");
+  assert.equal(formatLabel("slider"), "Tap to Carousel");
+  assert.equal(formatLabel("formato-novo"), "formato-novo");
+  const colors = formatColorSlots(["slider", "carrossel", "tap-to-map"]);
+  assert.deepEqual(Object.keys(colors), ["tap-to-map", "carrossel"]);
+  const groups = groupByFormat([{ format: "slider" }, { format: "carrossel" }]);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].format, "carrossel");
+  assert.equal(groups[0].items.length, 2);
+});
+
+test("empilhado: do 2º formato cinza em diante vira 'Outros formatos'", () => {
+  const formats = ["play", "tap-to-map", "survey", "scratch", "freeform", "carrossel"];
+  const colors = formatColorSlots(formats);
+  const rows = [{ date: "2026-09-01", "tap-to-map": 10, carrossel: 5, scratch: 4, freeform: 3, survey: 2, play: 1 }];
+  const out = foldFormatSeries({ rows, formats }, colors);
+  assert.deepEqual(out.formats, ["tap-to-map", "carrossel", "scratch", "freeform", "outros"]);
+  assert.equal(out.rows[0].outros, 3);
+  assert.equal(out.rows[0]["tap-to-map"], 10);
+  assert.equal(formatLabel("outros"), "Outros formatos");
+  // Um cinza só mantém o nome do formato.
+  const five = ["tap-to-map", "carrossel", "scratch", "freeform", "survey"];
+  const kept = foldFormatSeries({ rows, formats: five }, formatColorSlots(five));
+  assert.deepEqual(kept.formats, five);
 });

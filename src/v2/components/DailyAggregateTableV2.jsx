@@ -165,7 +165,10 @@ export function DailyAggregateTableV2({
     [aggregated],
   );
 
-  const columns = COLUMNS[media];
+  // Sem nenhum clique no recorte (ex.: campanha só de vídeo sem CTA), as
+  // colunas de Cliques e CTR seriam só zeros e traços: somem da tabela e do CSV.
+  const hasClicks = aggregated.some((r) => (r.clicks || 0) > 0);
+  const columns = COLUMNS[media].filter((c) => hasClicks || (c.key !== "clicks" && c.key !== "ctr"));
 
   const downloadCsv = () => {
     const headers = columns.map((c) => c.label);

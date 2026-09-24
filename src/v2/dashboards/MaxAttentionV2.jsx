@@ -60,7 +60,7 @@ function writePieceToUrl(id) {
 }
 
 const ERROR_TEXT = {
-  not_found: "não encontrada na Platform (excluída?)",
+  not_found: "não encontrada na Platform (pode ter sido excluída)",
   internal: "erro ao calcular as métricas",
   missing: "sem resposta da Platform",
 };
@@ -144,12 +144,15 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
     reload({ refresh: false }).catch(() => {});
   };
 
+  // Cliente conta só as peças que carregaram (a que falhou fica no aviso do
+  // admin); antes do primeiro carregamento, os vínculos.
+  const shownCount = isAdmin || !ma ? links.length : allPieces.length;
   const header = (
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div className="min-w-0">
         <h2 className="text-lg font-bold text-fg leading-tight">Max Attention</h2>
         <p className="text-[12px] text-fg-subtle mt-0.5">
-          {links.length} {links.length === 1 ? "peça" : "peças"}
+          {shownCount} {shownCount === 1 ? "peça" : "peças"}
           {groups.length ? ` em ${groups.length} ${groups.length === 1 ? "formato" : "formatos"}` : ""} · métricas medidas pela própria peça
         </p>
       </div>
@@ -247,7 +250,7 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
     isAdmin ? (
       <div className="rounded-lg border border-warning/30 bg-warning-soft px-3.5 py-2.5 text-[12px] leading-snug text-fg-muted">
         <span className="font-semibold text-fg">{errors.length} {errors.length === 1 ? "peça não carregou" : "peças não carregaram"}:</span>{" "}
-        {errors.map((e) => `${e.name || e.creative_id} (${ERROR_TEXT[e.error] || e.error})`).join(" · ")}. Aviso interno — o cliente vê só as peças que carregaram.
+        {errors.map((e) => `${e.name || e.creative_id}: ${ERROR_TEXT[e.error] || e.error}`).join(" · ")}. Aviso interno — o cliente vê só as peças que carregaram.
       </div>
     ) : null
   );

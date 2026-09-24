@@ -9,6 +9,7 @@ import {
   MA_FORMATS,
   MECHANIC_LABELS,
   engagedByDayAndFormat,
+  foldFormatSeries,
   formatLabel,
   groupByFormat,
   isWaiting,
@@ -41,7 +42,7 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campai
   const best = list.length > 1
     ? Math.max(...list.filter((x) => !isWaiting(x.p)).map((x) => x.m.engagement ?? -1))
     : null;
-  const { rows: stackRows, formats } = engagedByDayAndFormat(pieces);
+  const { rows: stackRows, formats } = foldFormatSeries(engagedByDayAndFormat(pieces), formatColors);
   const groups = groupByFormat(pieces);
   const exact = list.every((x) => x.m.exactPeople);
 

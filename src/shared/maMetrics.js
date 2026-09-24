@@ -49,8 +49,19 @@ export const WIDGET_LABELS = {
 /** Widgets só de exibição: não têm toque, só aparecem na peça. */
 export const DISPLAY_ONLY_WIDGETS = new Set(["countdown", "sports_score", "f1_race"]);
 
+// O "slider" legado roda no carrossel unificado e a Platform trata os dois
+// como carrossel. O report trabalha só com o nome canônico.
+const FORMAT_ALIASES = { slider: "carrossel" };
+
+export function canonicalMaFormat(slug) {
+  const s = String(slug ?? "").trim();
+  return FORMAT_ALIASES[s] || s;
+}
+
 export function formatLabel(slug) {
-  return MA_FORMATS[slug]?.label || (slug ? String(slug) : "Formato");
+  const f = canonicalMaFormat(slug);
+  if (f === "outros") return "Outros formatos";
+  return MA_FORMATS[f]?.label || (f ? f : "Formato");
 }
 
 export function widgetLabel(type) {
@@ -512,7 +523,7 @@ export function engagedByDayAndFormat(pieces) {
   const byDate = new Map();
   const formats = [];
   for (const p of pieces || []) {
-    const f = p.format || "outros";
+    const f = canonicalMaFormat(p.format) || "outros";
     if (!formats.includes(f)) formats.push(f);
     for (const d of p.daily || []) {
       if (!d?.date) continue;
@@ -537,7 +548,7 @@ function orderOf(slug) {
  * formato (nunca por ranking). Do 5º formato em diante, "Outros" (neutro).
  */
 export function formatColorSlots(formats) {
-  const present = [...new Set(formats || [])].sort((a, b) => orderOf(a) - orderOf(b));
+  const present = [...new Set((formats || []).map(canonicalMaFormat).filter(Boolean))].sort((a, b) => orderOf(a) - orderOf(b));
   const out = {};
   present.forEach((f, i) => {
     out[f] = i < 4 ? `var(--color-chart-s${i + 1})` : "var(--color-fg-subtle)";
@@ -545,11 +556,33 @@ export function formatColorSlots(formats) {
   return out;
 }
 
+/**
+ * Séries do empilhado por formato respeitando a paleta: a categórica tem 4
+ * cores, e do 5º formato em diante tudo fica cinza. Com dois ou mais
+ * formatos cinza, eles viram uma série só ("outros"), em vez de cinzas
+ * iguais com rótulos diferentes na legenda. Um único cinza fica com o nome.
+ */
+export function foldFormatSeries({ rows, formats }, colors) {
+  const ordered = [...(formats || [])].sort((a, b) => orderOf(a) - orderOf(b));
+  const colored = ordered.filter((f) => /--color-chart-s\d/.test(colors?.[f] || ""));
+  const rest = ordered.filter((f) => !colored.includes(f));
+  if (rest.length <= 1) return { rows: rows || [], formats: [...colored, ...rest] };
+  return {
+    formats: [...colored, "outros"],
+    rows: (rows || []).map((r) => {
+      const out = { date: r.date };
+      for (const f of colored) if (r[f] != null) out[f] = r[f];
+      out.outros = rest.reduce((acc, f) => acc + num(r[f]), 0);
+      return out;
+    }),
+  };
+}
+
 /** Agrupa peças por formato na ordem canônica. */
 export function groupByFormat(pieces) {
   const groups = new Map();
   for (const p of pieces || []) {
-    const f = p.format || "outros";
+    const f = canonicalMaFormat(p.format) || "outros";
     if (!groups.has(f)) groups.set(f, []);
     groups.get(f).push(p);
   }

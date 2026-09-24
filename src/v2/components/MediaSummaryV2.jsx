@@ -103,6 +103,9 @@ export function MediaSummaryV2({
   layout = "strip",
   // Atalho para a aba da mídia ("Ver Display →"). Sem callback, sem link.
   onNavigate = null,
+  // Campanha só com bônus: o valor é mídia entregue como cortesia, não custo
+  // pro cliente (mesma leitura do destaque "Valor bonificado" do topo).
+  isBonusOnly = false,
 }) {
   if (!rows || rows.length === 0) return null;
 
@@ -202,9 +205,13 @@ export function MediaSummaryV2({
   const costPill = (
     <span
       className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface-strong text-[11px] tabular-nums text-fg-muted whitespace-nowrap"
-      title="Custo efetivo total entregue até o momento nesta mídia (O2O + OOH)."
+      title={
+        isBonusOnly
+          ? "Valor da mídia entregue como cortesia até o momento nesta mídia (O2O + OOH). Sem custo pro cliente."
+          : "Custo efetivo total entregue até o momento nesta mídia (O2O + OOH)."
+      }
     >
-      <span className="text-[10px] uppercase tracking-wider">Custo efetivo</span>
+      <span className="text-[10px] uppercase tracking-wider">{isBonusOnly ? "Valor entregue" : "Custo efetivo"}</span>
       <span className="font-semibold text-fg">{fmtR(totals.cost)}</span>
     </span>
   );

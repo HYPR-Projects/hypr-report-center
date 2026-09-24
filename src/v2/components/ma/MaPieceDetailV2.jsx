@@ -287,7 +287,7 @@ function useExpandable(rows, initial = 10) {
 }
 
 function MapAddresses({ piece, fileBase }) {
-  const pins = (piece.top_pins || []).map((p, i) => ({ ...p, key: `pin-${i}` }));
+  const pins = (piece.top_pins || []).map((p, i) => ({ ...p, name: p.name || "Endereço sem nome", key: `pin-${i}` }));
   const [focus, setFocus] = useState(null);
   const { visible, canExpand, open, toggle } = useExpandable(pins);
   if (!pins.length) return null;
@@ -527,7 +527,7 @@ function WidgetBlock({ w, fileBase }) {
 
 function CloseToBlock({ w, fileBase }) {
   const [focus, setFocus] = useState(null);
-  const addrs = w.addresses.map((a, i) => ({ ...a, key: `ct-${i}` }));
+  const addrs = w.addresses.map((a, i) => ({ ...a, name: a.name || a.address || "Endereço sem nome", key: `ct-${i}` }));
   const { visible, canExpand, open, toggle } = useExpandable(addrs);
   const found = w.precise + w.approx;
   const top = addrs[0];

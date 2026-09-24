@@ -255,13 +255,24 @@ def _parse_names(raw):
     return [str(v)[:300] for v in val if isinstance(v, (str, int, float)) and str(v).strip()][:50]
 
 
+# Formatos com mais de um template na Platform: o "slider" legado roda no
+# carrossel unificado e a própria Platform trata os dois como carrossel
+# (CreativeAnalyticsPanel, report-catalog). O report usa só o canônico.
+FORMAT_ALIASES = {"slider": "carrossel"}
+
+
+def canonical_format(slug) -> str:
+    s = str(slug or "").strip()
+    return FORMAT_ALIASES.get(s, s)
+
+
 def _row_to_link(row) -> dict:
     ts = row.get("linked_at")
     return {
         "creative_id": row.get("creative_id"),
         "position": row.get("position") or 0,
         "name": row.get("name") or "",
-        "template_slug": row.get("template_slug") or "",
+        "template_slug": canonical_format(row.get("template_slug")),
         "public_slug": row.get("public_slug") or "",
         "size": row.get("size") or "",
         "client_name": row.get("client_name") or "",
@@ -310,7 +321,7 @@ def public_link(link: dict) -> dict:
     return {
         "creative_id": link.get("creative_id"),
         "name": link.get("name") or "",
-        "format": link.get("template_slug") or "",
+        "format": canonical_format(link.get("template_slug")),
         "size": link.get("size") or "",
         "public_slug": link.get("public_slug") or "",
         "dsp_creative_names": list(link.get("dsp_creative_names") or []),
@@ -340,7 +351,7 @@ def sanitize_links_input(raw_links) -> list:
             "creative_id": cid.lower(),
             "position": len(out),
             "name": str(item.get("name") or "")[:300],
-            "template_slug": str(item.get("template_slug") or "")[:40],
+            "template_slug": canonical_format(item.get("template_slug"))[:40],
             "public_slug": slug,
             "size": str(item.get("size") or "")[:20],
             "client_name": str(item.get("client_name") or "")[:200],
@@ -433,7 +444,7 @@ def search_creatives(*, q=None, client=None, token=None, names=None, limit=30) -
             "creative_id": it.get("id"),
             "name": it.get("name") or "",
             "status": it.get("status") or "",
-            "template_slug": it.get("templateSlug") or "",
+            "template_slug": canonical_format(it.get("templateSlug")),
             "public_slug": it.get("publicSlug") or "",
             "client_name": it.get("clientName") or "",
             "size": (size_label or "")[:40],
@@ -525,7 +536,9 @@ def normalize_piece(item: dict, link: dict) -> dict:
             continue
         by_button = _pick(p.get("ctaByButton"), ("directions", "whatsapp", "website"))
         top_pins.append({
-            "name": str(p.get("pinName") or p.get("pinId") or "")[:200],
+            # Sem nome (endereço apagado da base) fica vazio: o id interno do
+            # pin não é coisa de mostrar ao cliente; o front escreve "sem nome".
+            "name": str(p.get("pinName") or "")[:200],
             "lat": _coord(p.get("latitude")),
             "lng": _coord(p.get("longitude")),
             "views": _num(p.get("views")),
@@ -570,7 +583,7 @@ def normalize_piece(item: dict, link: dict) -> dict:
             if not isinstance(ad, dict):
                 continue
             addrs.append({
-                "name": str(ad.get("name") or ad.get("pinId") or "")[:200],
+                "name": str(ad.get("name") or "")[:200],
                 "address": str(ad.get("address") or "")[:300],
                 "lat": _coord(ad.get("latitude")),
                 "lng": _coord(ad.get("longitude")),
@@ -613,7 +626,7 @@ def normalize_piece(item: dict, link: dict) -> dict:
     return {
         "creative_id": c.get("id") or link.get("creative_id"),
         "name": c.get("name") or link.get("name") or "",
-        "format": c.get("templateSlug") or link.get("template_slug") or "",
+        "format": canonical_format(c.get("templateSlug") or link.get("template_slug")),
         "size": (size_label or link.get("size") or "")[:40],
         "width": _dim(size_obj.get("width")),
         "height": _dim(size_obj.get("height")),

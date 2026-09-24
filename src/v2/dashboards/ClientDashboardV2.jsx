@@ -1022,7 +1022,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                     available={availableCores}
                   />
                 )}
-                {usesDataFilters && (
+                {usesDataFilters && Object.values(filterOptions).some((o) => o?.length > 0) && (
                   <>
                     <span className="h-5 w-px bg-border shrink-0" aria-hidden />
                     <GlobalDataFilterBarV2

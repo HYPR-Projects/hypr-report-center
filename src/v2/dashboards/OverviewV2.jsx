@@ -20,7 +20,7 @@
 // Com filtro de período ativo o módulo de ritmo some (pacing é conta da
 // campanha inteira) e o budget do herói vira o pro-rata do período.
 
-import { fmt, fmtR } from "../../shared/format";
+import { fmt, fmtDateBR, fmtR } from "../../shared/format";
 import { computeMediaPacing } from "../../shared/aggregations";
 import { computeDataUntil } from "../../shared/freshness";
 import { buildDailySeries, lastValues, periodElapsedPct } from "../../shared/overviewSeries";
@@ -395,6 +395,8 @@ export default function OverviewV2({
   // ─── Resumo por mídia ─────────────────────────────────────────────
   const maLinks = data.max_attention?.links || [];
   const showMaCard = showMaxAttentionTab && maLinks.length > 0;
+  const todaySP = new Date().toLocaleDateString("sv-SE", { timeZone: "America/Sao_Paulo" });
+  const notStarted = !(data.detail || []).length && !!camp?.start_date && String(camp.start_date).slice(0, 10) > todaySP;
   const mediaCount = (hasDisplay ? 1 : 0) + (hasVideo ? 1 : 0) + (showMaCard ? 1 : 0);
   const mediaLayout = mediaCount >= 2 ? "stacked" : "strip";
   const mediaGridClass =
@@ -421,6 +423,19 @@ export default function OverviewV2({
             A aba Display está exibindo o volume antigo; corrija a volumetria no
             checklist do Command para os números baterem. (Aviso interno — o
             cliente não vê esta mensagem.)
+          </span>
+        </div>
+      )}
+
+      {/* ─── 0.1 Campanha que ainda não começou ──────────────────────────
+          Sem nenhuma entrega e início no futuro: explica por que está tudo
+          zerado em vez de deixar o leitor achando que é erro. */}
+      {notStarted && (
+        <div className="flex items-start gap-2.5 rounded-lg border border-border bg-surface px-3.5 py-3 text-[13px] leading-snug text-fg-muted">
+          <InfoIcon className="size-4 text-signature mt-0.5 shrink-0" />
+          <span>
+            <span className="font-semibold text-fg">A campanha começa em {fmtDateBR(camp.start_date)}.</span>{" "}
+            Os números aparecem aqui a partir do primeiro dia de entrega.
           </span>
         </div>
       )}
@@ -485,6 +500,7 @@ export default function OverviewV2({
                 layout={mediaLayout}
                 compact={mediaCount >= 2}
                 onNavigate={showDisplayTab ? onNavigate : null}
+                isBonusOnly={isBonusOnly}
               />
             )}
             {hasVideo && (
@@ -494,6 +510,7 @@ export default function OverviewV2({
                 layout={mediaLayout}
                 compact={mediaCount >= 2}
                 onNavigate={showVideoTab ? onNavigate : null}
+                isBonusOnly={isBonusOnly}
               />
             )}
             {showMaCard && (

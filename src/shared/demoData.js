@@ -611,6 +611,10 @@ function buildPdooh(today) {
   ];
   const owners = ["EletroMidia", "Clear Channel", "Otima"];
   const formats = ["DOOH Indoor", "DOOH Street", "DOOH Mall"];
+  // Um ponto por cidade × media owner. SITE é o que liga a linha ao mapa e
+  // à tabela de endereços (pdoohSites.aggregateSites); sem ele o demo não
+  // mostrava mapa nem "Performance por endereço".
+  const siteKinds = ["Shopping", "Avenida", "Metrô"];
 
   const rows = [];
   for (const date of dates) {
@@ -623,12 +627,16 @@ function buildPdooh(today) {
         rows.push({
           DATE: date,
           CITY: c.city,
+          SITE: `${c.city} · ${siteKinds[oi]}`,
+          SCREEN: `${c.city.normalize("NFD").replace(/[\u0300-\u036f]/g, "").slice(0, 3).toUpperCase()}-${oi + 1}`,
           MEDIA_OWNER: owners[oi],
           MEDIA_FORMAT: formats[oi % formats.length],
           IMPRESSIONS: impressions,
           PLAYS: plays,
-          LATITUDE: c.lat + (seededRand(hashStr(seed)) - 0.5) * 0.04,
-          LONGITUDE: c.lng + (seededRand(hashStr(seed + "x")) - 0.5) * 0.04,
+          // Posição fixa por ponto (não por dia), senão o mesmo SITE
+          // "anda" no mapa conforme o dia da primeira linha.
+          LATITUDE: c.lat + (seededRand(hashStr(`${c.city}|${oi}`)) - 0.5) * 0.04,
+          LONGITUDE: c.lng + (seededRand(hashStr(`${c.city}|${oi}|x`)) - 0.5) * 0.04,
         });
       }
     }

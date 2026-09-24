@@ -349,3 +349,92 @@ def test_formatos_ricos_seguem_o_contrato_da_platform(monkeypatch):
     assert ct["foundApprox"] == 11 and ct["foundPrecise"] == 5 and ct["redirectMap"] == 5
     assert ct["addresses"][0] == {"name": "Loja Centro", "address": "Rua X, 10", "lat": -23.5, "lng": -46.6,
                                   "identified": 9, "clicks": 4, "directions": 3, "website": 1}
+
+
+def test_slider_legado_vira_carrossel_em_todas_as_pontas(monkeypatch, fake_bq):
+    # A Platform ainda tem peças com template "slider" (carrossel antigo, mesmo
+    # runtime). O report só conhece "carrossel": sem isso a peça perdia funil,
+    # blocos do formato e a cor da série.
+    assert ma.canonical_format("slider") == "carrossel"
+    assert ma.canonical_format(" tap-to-map ") == "tap-to-map"
+    assert ma.canonical_format(None) == ""
+    monkeypatch.setenv("MA_SERVICE_KEY", "segredo")
+    item = _item(CID_A)
+    item["creative"]["templateSlug"] = "slider"
+    monkeypatch.setattr(ma.urllib.request, "urlopen", _fake_urlopen({"items": [item]}, []))
+    p = ma.fetch_pieces([{"creative_id": CID_A, "template_slug": "slider"}])["pieces"][0]
+    assert p["format"] == "carrossel"
+    assert ma.public_link({"creative_id": CID_A, "template_slug": "slider"})["format"] == "carrossel"
+    saved = ma.sanitize_links_input([{"creative_id": CID_A, "template_slug": "slider"}])
+    assert saved[0]["template_slug"] == "carrossel"
+
+
+# ─── contrato com a Platform (resposta completa, todos os formatos) ────────
+#
+# fixtures/platform_report_center_creatives.json foi gerado com os TIPOS da
+# Platform (ReportCenterCreativesResponse / CreativeAnalyticsDTO /
+# FunnelSessions, com `tsc` sem erro no o2o-platform): campo a mais, a menos
+# ou com outro nome não compila lá. Um item por formato + peça sem funil +
+# peça apagada. Se a Platform mudar o DTO, regere o fixture do mesmo jeito e
+# este teste mostra o que mudou do lado do report.
+
+import os as _os
+
+_FIXTURE = _os.path.join(_os.path.dirname(__file__), "fixtures", "platform_report_center_creatives.json")
+
+
+def _contract_links():
+    ids = [it["id"] for it in json.load(open(_FIXTURE, encoding="utf-8"))["items"]]
+    return [{"creative_id": cid, "name": f"peça {i}"} for i, cid in enumerate(ids)]
+
+
+def test_contrato_platform_normaliza_todos_os_formatos(monkeypatch):
+    monkeypatch.setenv("MA_SERVICE_KEY", "segredo")
+    sample = json.load(open(_FIXTURE, encoding="utf-8"))
+    monkeypatch.setattr(ma.urllib.request, "urlopen", _fake_urlopen(sample, []))
+    res = ma.fetch_pieces(_contract_links(), "2026-09-01", "2026-09-22")
+
+    assert [e["error"] for e in res["errors"]] == ["not_found"]
+    by = {p["name"]: p for p in res["pieces"]}
+    assert len(by) == 7
+    formats = sorted(p["format"] for p in res["pieces"])
+    assert formats == ["carrossel", "freeform", "play", "scratch", "survey", "tap-to-map", "tap-to-map"]
+
+    for p in res["pieces"]:
+        # Nada fora da lista de permissão chega no navegador.
+        assert "rates" not in p and "avgDwellMs" not in p and "granularity" not in p
+        assert len(p["daily"]) == 22 and p["daily"][0]["date"] == "2026-09-01"
+        assert p["preview_url"] and p["width"] and p["height"]
+
+    mapa = by["Lojas Verão SP"]
+    assert mapa["steps"]["cta_location"] == 2600 and mapa["steps"]["close_to_found"] == 4300
+    assert [w["type"] for w in mapa["widgets"]] == ["close_to", "add_to_calendar", "countdown"]  # desligado sem evento sai
+    ct = mapa["close_to"]
+    assert ct["foundPrecise"] == 1600 and ct["foundApprox"] == 2900 and ct["redirectMap"] == 1300
+    assert ct["addresses"][0] == {"name": "Loja Moema", "address": "Av. Ibirapuera, 3103", "lat": -23.6009,
+                                  "lng": -46.6623, "identified": 1500, "clicks": 640, "directions": 450, "website": 190}
+    assert mapa["calendar"] == {"adds": 830, "opens": 610}
+    assert mapa["top_pins"][3]["name"] == "" and mapa["top_pins"][3]["lat"] is None  # sem nome: nunca o id interno
+    assert mapa["totals"]["impressionServed"] == 212000 and mapa["has_overlay"] is True
+
+    car = by["Vitrine Linha Solar (slider antigo)"]
+    assert car["format"] == "carrossel"
+    assert car["carousel"]["nav_by_surface"] == {"swipe": 14000, "arrow": 5000, "dot": 2000}
+    assert car["carousel"]["top_slides"][2] == {"index": 0, "label": "", "views": 2100, "clicks": 150}
+
+    tilt = by["Incline e descubra"]
+    assert tilt["mechanic"] == "tilt" and tilt["scratch"]["tiltActivatedSessions"] == 9800
+    assert tilt["steps"]["tilt_activated"] == 9800
+
+    poll = by["Qual seu protetor?"]
+    assert poll["survey_mode"] == "poll" and poll["survey"]["completedSessions"] == 4700
+    assert poll["survey"]["top_options"][1] == {"label": "FPS 50", "answers": 3100, "clicks": 210}
+
+    jogo = by["Cesta do Verão"]
+    assert jogo["game_type"] == "basquete" and jogo["game"]["challengeWonSessions"] == 2100
+    assert jogo["game"]["avgScore"] == 7.4
+
+    video = by["Filme Verão 15s (Free Form)"]
+    assert video["freeform"]["videoComplete"] == 17000 and video["steps"]["video_complete"] == 16100
+
+    assert by["Mapa sem lake (funil indisponível)"]["steps"] is None

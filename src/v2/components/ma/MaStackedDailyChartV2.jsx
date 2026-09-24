@@ -58,7 +58,10 @@ export function MaStackedDailyChartV2({ rows, formats, colors, height = 210 }) {
   if (!rows?.length || !formats?.length) return null;
   // Recharts precisa da cor resolvida (var() não entra no fill do SVG em
   // todos os navegadores): traduz var(--color-chart-sN) pelo tema atual.
-  const colorFor = (f) => resolveChartVar(colors[f], hypr) || colors[f];
+  const colorFor = (f) => {
+    const c = colors[f] || "var(--color-fg-subtle)"; // "outros" e formato sem vaga
+    return resolveChartVar(c, hypr) || c;
+  };
   const n = rows.length;
   return (
     <div>

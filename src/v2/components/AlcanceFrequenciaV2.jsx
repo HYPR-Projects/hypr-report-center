@@ -66,7 +66,11 @@ function formatAlcanceInput(s) {
 function deriveFrequencia(alcanceStr, totalImpressions) {
   const a = parseAlcanceNumber(alcanceStr);
   if (!a || !totalImpressions || totalImpressions <= 0) return null;
-  return fmt(totalImpressions / a, 2);
+  const f = totalImpressions / a;
+  // Frequência abaixo de 1 não existe (cada pessoa alcançada viu ao menos uma
+  // impressão): é alcance digitado maior que as impressões. Não mostra.
+  if (f < 1) return null;
+  return fmt(f, 2);
 }
 
 // Calcula alcance derivado (impressões / frequência) formatado em pt-BR.
@@ -214,6 +218,10 @@ function useAlcanceFrequencia({
   // Em modo padrão: aparece na frequência quando admin não preencheu.
   // Em modo auto_alcance: aparece no alcance (sempre que houver valor derivado).
   const freqIsAuto    = !autoAlcance && !frequencia && !!derivedFreq;
+  // Alcance manual maior que as impressões da campanha: erro de digitação
+  // quase certo (as impressões aqui são as da campanha inteira, não do filtro).
+  const alcanceNum = parseAlcanceNumber(alcance);
+  const reachExceedsImpressions = !autoAlcance && !!alcanceNum && totalImpressions > 0 && alcanceNum > totalImpressions;
   const alcanceIsAuto = autoAlcance && !!derivedAlcance;
   const updatedAtLabel = !isEmpty ? formatUpdatedAt(updatedAt) : null;
 
@@ -221,7 +229,7 @@ function useAlcanceFrequencia({
     alcance, setAlcance, frequencia, setFrequencia, autoAlcance,
     editing, saving, error,
     derivedFreq, derivedAlcance, displayAlcance, displayFrequencia, isEmpty,
-    freqIsAuto, alcanceIsAuto, updatedAtLabel,
+    freqIsAuto, alcanceIsAuto, updatedAtLabel, reachExceedsImpressions,
     startEdit, cancel, toggleAutoAlcance, save,
   };
 }
@@ -526,6 +534,11 @@ export function AlcanceKpiCardV2({
           ) : st.isEmpty ? (
             isAdmin ? "Sem dado. Use o lápis para preencher." : "Disponível em breve"
           ) : null}
+          {isAdmin && st.reachExceedsImpressions && (
+            <span className="block text-warning">
+              Alcance maior que as impressões da campanha: confira o valor.
+            </span>
+          )}
         </div>
       </div>
     </Card>

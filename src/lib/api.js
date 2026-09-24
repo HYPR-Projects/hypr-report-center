@@ -39,6 +39,7 @@ import {
 import { emitSessionExpired } from "./sessionEvents";
 import { isDemoToken, buildDemoPayload, DEMO_TOKEN, DEMO_MA_LINKS } from "../shared/demoData";
 import { buildDemoMaReport } from "../shared/demoMa";
+import { canonicalMaFormat } from "../shared/maMetrics";
 
 // ── Helpers internos ─────────────────────────────────────────────────────────
 
@@ -2157,6 +2158,9 @@ export async function getMaReport({ token, view = null, from = null, to = null, 
   });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  // Formato canônico ("slider" legado = carrossel), mesmo se o backend for antigo.
+  if (Array.isArray(d.pieces)) d.pieces = d.pieces.map((p) => ({ ...p, format: canonicalMaFormat(p?.format) }));
+  if (Array.isArray(d.links)) d.links = d.links.map((l) => ({ ...l, format: canonicalMaFormat(l?.format) }));
   return d;
 }
 
@@ -2172,7 +2176,8 @@ export async function getMaLinks({ short_token, adminJwt = null }) {
   const d = await r.json().catch(() => ({}));
   if (r.status === 401 || r.status === 403) throw adminSessionLost("getMaLinks", headers.Authorization?.slice(7) || null);
   if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
-  return { links: Array.isArray(d.links) ? d.links : [], configured: !!d.configured };
+  const links = Array.isArray(d.links) ? d.links.map((l) => ({ ...l, template_slug: canonicalMaFormat(l?.template_slug) })) : [];
+  return { links, configured: !!d.configured };
 }
 
 /** Substitui os vínculos do token (lista vazia remove todos). */
@@ -2231,5 +2236,6 @@ export async function searchMaCreatives({ token, q = "", adminJwt = null }) {
   if (r.status === 401 || r.status === 403) throw adminSessionLost("searchMaCreatives", headers.Authorization?.slice(7) || null);
   if (r.status === 501) return { items: [], configured: false, context: null, error: d?.error || "Integração não configurada" };
   if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
-  return { items: d.items || [], configured: true, context: d.context || null, error: null };
+  const items = (d.items || []).map((it) => ({ ...it, template_slug: canonicalMaFormat(it?.template_slug) }));
+  return { items, configured: true, context: d.context || null, error: null };
 }
