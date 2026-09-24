@@ -45,6 +45,18 @@ function load(params, { refresh = false, adminJwt = null } = {}) {
   return promise;
 }
 
+/**
+ * Começa a buscar as métricas antes de alguém abrir a aba (o report chama
+ * ao carregar, em qualquer aba). Mesma chave do hook: quando a aba ou o card
+ * da Visão Geral montam, pegam a requisição em voo ou o resultado pronto.
+ */
+export function prefetchMaReport({ token, view = null, range = null }) {
+  if (!token) return;
+  const from = range?.from ? ymd(range.from) : null;
+  const to = range?.to ? ymd(range.to) : null;
+  load({ token, view, from, to }).catch(() => {});
+}
+
 /** Limpa o cache (ex.: depois de salvar vínculos). */
 export function invalidateMaReport(token = null) {
   for (const k of [...cache.keys()]) {
