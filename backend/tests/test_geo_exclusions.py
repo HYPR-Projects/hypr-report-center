@@ -61,8 +61,9 @@ def test_unified_ajusta_cada_metrica_pela_sua_fracao():
     # clique fora tem CTR de bot: usa a fração de cliques, não a de impressões
     assert "CAST(ROUND(t.clicks * (1 - IFNULL(a.f_clicks, 0))) AS INT64) AS clicks" in sql
     assert "t.video_view_100_complete * (1 - IFNULL(a.f_video, 0))" in sql
-    # custo é FLOAT: sem CAST
-    assert "t.total_cost * (1 - IFNULL(a.f_cost, 0)) AS total_cost" in sql
+    # custo DSP (admin) fica cheio: o dinheiro foi gasto, e a visão de custo
+    # do mês/tech cost precisa dele inteiro
+    assert "AS total_cost" not in sql
     for key in ("short_token", "date", "line_item_id", "creative_id"):
         assert f"a.{key} = t.{key}" in sql
 
@@ -215,3 +216,29 @@ def test_auto_freeze_pula_campanha_com_ajuste_ativo():
     ok, reason = main._stability_ok("FITP2U", 40_000)
     assert ok is False
     assert "exclusão geo" in reason
+
+
+def test_status_guarda_o_custo_dsp_fora_do_br_e_a_versao():
+    sql = ge.build_refresh_script()
+    assert "SUM(u.cost * IFNULL(a.f_cost, 0)) AS removed_cost" in sql
+    assert f"{ge.SCRIPT_VERSION} AS script_version" in sql
+
+
+def test_resumo_pro_card_so_de_token_ativo(monkeypatch):
+    set_active(["O3HI21"])
+    rows = [
+        {"short_token": "O3HI21", "removed_imps": 12860878.6, "removed_viewable": 11036294.7,
+         "removed_cost": 6040.21, "status": "ok"},
+        {"short_token": "RPLJP9", "removed_imps": 1, "removed_viewable": 1,
+         "removed_cost": 1, "status": "blocked"},
+    ]
+    out = ge.summary_by_token(FakeBQ(rows=rows))
+    assert out == {"O3HI21": {"impressions": 12860879, "viewable": 11036295,
+                              "cost": 6040.21, "status": "ok"}}
+
+
+def test_resumo_sem_token_ativo_nem_consulta():
+    set_active([])
+    fake = FakeBQ(rows=[{"short_token": "X"}])
+    assert ge.summary_by_token(fake) == {}
+    assert fake.queries == []

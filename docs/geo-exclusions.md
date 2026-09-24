@@ -25,10 +25,14 @@ campanha sai, inclusive a de dias futuros.
 
 ## O que sai e o que fica
 
-- Sai: impressões, viewable, cliques, vídeo e custo entregues em país que não
-  é BR nem está em **Países liberados** do mesmo drawer. Cada métrica sai pela
-  sua própria fração (o CTR fora chega a 5%, então cliques saem mais que
-  impressões).
+- Sai: impressões, viewable, cliques, vídeo e o valor entregue ao cliente
+  (entrega × CPM/CPCV negociado) em país que não é BR nem está em **Países
+  liberados** do mesmo drawer. Cada métrica sai pela sua própria fração (o CTR
+  fora chega a 5%, então cliques saem mais que impressões).
+- **Custo DSP não sai.** O Gasto do admin, o Tech ADM e o Tech Cost continuam
+  com o custo cheio, porque o dinheiro foi gasto. Embaixo do Gasto, o card
+  mostra **Fora do BR (oculto)**: a parte desse custo que foi entregue fora e
+  não aparece como entrega pro cliente. O drawer mostra o mesmo valor.
 - Fica: país não resolvido pelo DV360, e linhas de DSPs sem país no BQ
   (Yahoo, StackAdapt, Amazon). O status mostra esse volume como "sem país".
 - O box **Fora do BR** do admin continua mostrando a entrega real. Ele é o

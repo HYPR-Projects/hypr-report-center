@@ -235,6 +235,10 @@ function CampaignCardV2Inner({
     // sem budget → tech cost null → célula "—".
     admin_total_cost_full,
     admin_total_cost,
+    // Entrega fora do BR retirada do report do cliente (exclusão geo):
+    // { impressions, viewable, cost, status }. O Gasto acima segue cheio; esta
+    // é a parte dele que foi fora do BR e ficou oculta do cliente.
+    admin_geo_excluded,
     d_client_budget,
     v_client_budget,
     // Valor entregue ao cliente (faturável consumido) — backend espelha o
@@ -829,6 +833,22 @@ function CampaignCardV2Inner({
                     {formatBrlCompact(techCostCost)}
                   </span>
                 </div>
+                {/* Parte do Gasto que foi fora do BR e saiu do report do
+                    cliente (exclusão geo). Já está somada no Gasto: aqui só
+                    fica visível quanto do custo não aparece como entrega. */}
+                {admin_geo_excluded?.cost > 0 && (
+                  <div
+                    className="flex items-baseline justify-between gap-2 leading-none card-split:justify-start card-split:gap-2.5 card-split:shrink-0"
+                    title={`Custo DSP de ${Math.round(admin_geo_excluded.impressions || 0).toLocaleString("pt-BR")} impressões entregues fora do BR, retiradas do report do cliente. Já está incluso no Gasto.`}
+                  >
+                    <span className="lbl-micro text-warning">
+                      Fora do BR (oculto)
+                    </span>
+                    <span className="text-[11px] tabular-nums text-warning">
+                      {formatBrlCompact(admin_geo_excluded.cost)}
+                    </span>
+                  </div>
+                )}
               </div>
               {/* Sinal de refaturamento — encerrada antes do previsto fatura
                   pelo volume entregue, então o "Investido" (PI cliente) deixa
