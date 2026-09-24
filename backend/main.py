@@ -68,6 +68,7 @@ import audience_normalize
 import audience_ai
 import maxattention
 import ma_report
+import ma_matching
 import out_of_country
 import bq_client
 
@@ -3167,15 +3168,25 @@ def report_data(request):
         if not ma_report.is_configured():
             return (jsonify({"error": ma_report.not_configured_message(), "configured": False}), 501, headers)
         try:
-            client_name = _client_name_for_token(token) if ma_report.valid_token(token) else None
-            names = _dsp_creative_names_for_token(token) if ma_report.valid_token(token) else []
+            ctx = _ma_search_context(token) if ma_report.valid_token(token) else {}
+            lines = ctx.get("lines") or []
             items = ma_report.search_creatives(
                 q=q or None,
-                client=client_name,
+                client=ctx.get("client"),
                 token=token if ma_report.valid_token(token) else None,
-                names=names,
+                lines=lines,
+                campaign_name=ctx.get("campaign_name"),
             )
-            return (jsonify({"items": items, "configured": True, "context": {"client": client_name, "dsp_creative_names": names}}), 200, headers)
+            names = []
+            for e in lines:
+                names.extend(n for n in e["names"] if n not in names)
+            return (jsonify({"items": items, "configured": True, "context": {
+                "client": ctx.get("client"),
+                "campaign_name": ctx.get("campaign_name"),
+                "lines": lines,
+                "terms": ma_report.search_terms(lines, ctx.get("client"), ctx.get("campaign_name")),
+                "dsp_creative_names": names[:300],
+            }}), 200, headers)
         except ma_report.PlatformError as e:
             logger.error(f"[ERROR ma_search] {token}: {e}")
             return (jsonify({"error": f"Busca na Platform falhou: {e}"}), 502, headers)
@@ -5480,17 +5491,26 @@ def _ma_tokens_for_view(token: str, view: str) -> list:
     return [token]
 
 
-def _dsp_creative_names_for_token(token: str) -> list:
-    """Nomes de criativo da DSP nesta campanha (contexto da busca de peças:
-    peça Max Attention ativada por AdBolt costuma ter o mesmo nome na DSP).
-    Lê do report cacheado — não custa query quando o report já foi aberto."""
+def _ma_search_context(token: str) -> dict:
+    """Contexto da busca de peças Max Attention: cliente, nome da campanha e
+    linhas criativas da DSP (com os nomes crus e a impressão de cada uma).
+    Lê do report cacheado — não custa query quando o report já foi aberto.
+
+    O cliente sai do próprio report (`campaign.client_name`) e só cai na
+    lista de campanhas se faltar: a lista é outro cache, e quando falhava o
+    modal buscava sem cliente nenhum."""
+    out = {"client": None, "campaign_name": None, "lines": []}
     try:
         data, _ = _get_report_cached(token, force_refresh=False)
-        names = sorted({(r.get("creative_name") or "").strip() for r in (data or {}).get("detail") or []} - {""})
-        return names[:50]
+        camp = (data or {}).get("campaign") or {}
+        out["client"] = (camp.get("client_name") or "").strip() or None
+        out["campaign_name"] = (camp.get("campaign_name") or "").strip() or None
+        out["lines"] = ma_matching.dsp_lines((data or {}).get("detail") or [])
     except Exception as e:
-        logger.warning(f"[WARN dsp creative names {token}] {e}")
-        return []
+        logger.warning(f"[WARN ma search context {token}] {e}")
+    if not out["client"]:
+        out["client"] = _client_name_for_token(token)
+    return out
 
 
 def _emit_contract_consistency(campaign_info):

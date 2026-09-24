@@ -2195,7 +2195,9 @@ export async function saveMaLinks({ short_token, links, adminJwt = null }) {
 
 /**
  * Candidatos da Platform para vincular (admin). Sem `q`, o backend usa o
- * contexto da campanha (cliente, token no nome, nomes de criativo da DSP).
+ * contexto da campanha (cliente, token no nome, linhas criativas da DSP,
+ * termos da campanha). Cada item traz `dsp_lines`/`dsp_creative_names` (o
+ * que ele casou); `context.lines` são as linhas da DSP com nomes e impressão.
  * Devolve { items, configured, context, error }.
  */
 export async function searchMaCreatives({ token, q = "", adminJwt = null }) {
@@ -2216,11 +2218,20 @@ export async function searchMaCreatives({ token, q = "", adminJwt = null }) {
         match_name: l.dsp_creative_names[0] || null,
         match_similarity: l.dsp_creative_names.length ? 0.8 : null,
         match_dsp_ids: [],
+        dsp_lines: l.dsp_creative_names,
+        dsp_creative_names: l.dsp_creative_names,
       }));
+    const names = ["300x250_Verao_v1", "728x90_Verao_v1", "320x50_Verao_v1"];
     return {
       items,
       configured: true,
-      context: { client: "Cliente Demo", dsp_creative_names: ["300x250_Verao_v1", "728x90_Verao_v1", "320x50_Verao_v1"] },
+      context: {
+        client: "Cliente Demo",
+        campaign_name: "Verão",
+        terms: ["verao"],
+        lines: names.map((n, i) => ({ line: n, names: [n], impressions: 900000 - i * 250000 })),
+        dsp_creative_names: names,
+      },
       error: null,
     };
   }

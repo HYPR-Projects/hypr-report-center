@@ -47,11 +47,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from google.cloud import bigquery
 
 import bq_client
+import ma_matching
 
 logger = logging.getLogger(__name__)
 
@@ -409,24 +411,14 @@ def save_links(short_token: str, links: list, linked_by: str | None = None) -> l
 
 # ─── Busca (admin) ─────────────────────────────────────────────────────────
 
-def search_creatives(*, q=None, client=None, token=None, names=None, limit=30) -> list:
-    """Candidatos da Platform, já pontuados. `names` são os criativos da DSP
-    nesta campanha (sinal de "nome parecido")."""
-    names = [n for n in (names or []) if isinstance(n, str) and n.strip()][:50]
-    # A Platform recusa (400) cliente com menos de 2 letras/dígitos depois de
-    # normalizado — melhor não mandar do que derrubar a busca inteira.
-    client = (client or "").strip()[:120]
-    if len(re.sub(r"[^0-9A-Za-zÀ-ÿ]", "", client)) < 2:
-        client = ""
-    params = {
-        "q": (q or "").strip()[:120] or None,
-        "client": client or None,
-        "token": token.strip().upper() if valid_token(token or "") else None,
-        "names": "|".join(n.replace("|", " ")[:200] for n in names) or None,
-        "limit": max(1, min(int(limit or 30), 100)),
-    }
-    if not any(params[k] for k in ("q", "client", "token", "names")):
-        return []
+# Buscas extras por termo da campanha correm em paralelo — cada uma é uma
+# ida HTTP à Platform (folha: nunca espera outra task deste pool).
+_search_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ma-search")
+SEARCH_PLATFORM_CAP = 100
+
+
+def _platform_search(params: dict) -> list:
+    """Uma chamada à busca da Platform, normalizada e cacheada."""
     key = json.dumps(params, sort_keys=True)
     cached = _cget(_search_cache, key, SEARCH_TTL)
     if cached is not None:
@@ -439,7 +431,6 @@ def search_creatives(*, q=None, client=None, token=None, names=None, limit=30) -
         size = it.get("size")
         size_label = size.get("label") if isinstance(size, dict) else size if isinstance(size, str) else None
         match = it.get("match") if isinstance(it.get("match"), dict) else {}
-        sim = match.get("nameSimilarity")
         items.append({
             "creative_id": it.get("id"),
             "name": it.get("name") or "",
@@ -450,16 +441,101 @@ def search_creatives(*, q=None, client=None, token=None, names=None, limit=30) -
             "size": (size_label or "")[:40],
             "created_at": it.get("createdAt"),
             "updated_at": it.get("updatedAt"),
-            "score": it.get("score") or 0,
             "reasons": [r for r in (it.get("reasons") or []) if r in ("adbolt", "token", "name", "client", "query")],
-            # Por que casou: o nome da DSP parecido vira o vínculo de entrega
-            # (dsp_creative_names) quando o admin confirma a sugestão.
             "match_name": str(match.get("name"))[:200] if match.get("name") else None,
-            "match_similarity": sim if isinstance(sim, (int, float)) and not isinstance(sim, bool) else None,
             "match_dsp_ids": [str(x)[:80] for x in (match.get("dspCreativeIds") or [])][:10],
         })
     _cset(_search_cache, key, items)
     return items
+
+
+def search_creatives(*, q=None, client=None, token=None, names=None, lines=None,
+                     campaign_name=None, limit=40) -> list:
+    """Sugestões de peça para a campanha, pontuadas AQUI (ma_matching).
+
+    A Platform entra como fonte de candidatos, não como juíza: a nota dela
+    descarta peça cujo nome não passa num Jaccard ≥ 0,6 contra o nome cru da
+    DSP (com prefixo, tamanho, cliente) — e era por isso que campanhas
+    inteiras de Max Attention voltavam sem sugestão. Então, além da chamada
+    de contexto (cliente, token, linhas da DSP), o RC busca por TEXTO os
+    termos que identificam a campanha ("mobland", "paramount"): toda peça
+    com o termo no nome chega, e o `ma_matching` decide qual linha é qual.
+
+    `lines` = linhas criativas da DSP (`ma_matching.dsp_lines`); `names`
+    (nomes crus) segue aceito e vira linhas."""
+    if lines is None:
+        lines = ma_matching.dsp_lines([{"creative_name": n} for n in (names or []) if isinstance(n, str)])
+    lines = [e for e in lines if isinstance(e, dict) and e.get("line")]
+    ctx = ma_matching.campaign_tokens(lines, client=client, campaign_name=campaign_name)
+
+    # A Platform recusa (400) cliente com menos de 2 letras/dígitos depois de
+    # normalizado — melhor não mandar do que derrubar a busca inteira.
+    client = (client or "").strip()[:120]
+    if len(re.sub(r"[^0-9A-Za-zÀ-ÿ]", "", client)) < 2:
+        client = ""
+    q = (q or "").strip()[:120]
+    token = token.strip().upper() if valid_token(token or "") else None
+    # Linha (sem tamanho) em vez do nome cru: menos ruído pra nota da
+    # Platform e cabem mais criativos distintos no teto de 50.
+    line_names = [e["line"].replace("|", " ")[:200] for e in lines][:50]
+
+    main_params = {
+        "q": q or None,
+        "client": client or None,
+        "token": token,
+        "names": "|".join(line_names) or None,
+        "limit": SEARCH_PLATFORM_CAP,
+    }
+    if not any(main_params[k] for k in ("q", "client", "token", "names")):
+        return []
+
+    extra = []  # (params, is_user_query)
+    if q:
+        # "mobland carrossel" não casa "MobLand - Carrossel" no ILIKE da
+        # Platform: busca também cada palavra (o filtro fino é local).
+        words = [w for w in ma_matching.tokens(q) if w != ma_matching.fold(q)]
+        for w in sorted(words, key=len, reverse=True)[:2]:
+            extra.append(({"q": w, "limit": SEARCH_PLATFORM_CAP}, True))
+    else:
+        for term in ctx["terms"]:
+            extra.append(({"q": term, "limit": SEARCH_PLATFORM_CAP}, False))
+
+    futures = [_search_pool.submit(_platform_search, p) for p, _ in extra]
+    main_items = _platform_search(main_params)  # falha aqui sobe (o admin vê o erro)
+    batches = [(main_items, bool(q))]
+    for (params, user_q), fut in zip(extra, futures):
+        try:
+            batches.append((fut.result(timeout=HTTP_TIMEOUT_S + 5), user_q))
+        except Exception as e:  # noqa: BLE001 — busca extra nunca derruba a principal
+            logger.warning(f"[ma_search] busca extra {params.get('q')!r} falhou: {e}")
+
+    merged = {}
+    for items, user_q in batches:
+        for it in items:
+            cid = it["creative_id"].lower()
+            cur = merged.get(cid)
+            if cur is None:
+                cur = merged[cid] = {
+                    **{k: v for k, v in it.items() if k not in ("reasons", "match_name")},
+                    "creative_id": cid,
+                    "platform_reasons": set(),
+                    "platform_match_name": None,
+                    "user_query": False,
+                }
+            cur["platform_reasons"].update(r for r in it["reasons"] if r != "query")
+            cur["platform_match_name"] = cur["platform_match_name"] or it.get("match_name")
+            if user_q and "query" in it["reasons"]:
+                cur["user_query"] = True
+            if it.get("match_dsp_ids") and not cur.get("match_dsp_ids"):
+                cur["match_dsp_ids"] = it["match_dsp_ids"]
+
+    ranked = ma_matching.rank(list(merged.values()), lines=lines, ctx=ctx, client=client or None, q=q or None)
+    return ranked[: max(1, min(int(limit or 40), 100))]
+
+
+def search_terms(lines, client=None, campaign_name=None) -> list:
+    """Termos de campanha que a busca automática usa (a UI mostra)."""
+    return ma_matching.campaign_tokens(lines, client=client, campaign_name=campaign_name)["terms"]
 
 
 # ─── Métricas das peças ────────────────────────────────────────────────────

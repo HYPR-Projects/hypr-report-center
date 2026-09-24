@@ -48,12 +48,24 @@ no resto do report.
 
 ## Operação no dia a dia (admin)
 
-- **Vincular peças**: aba Max Attention → "Gerenciar peças". A busca sugere
-  peças por creid da DV360, AdBolt, token no nome e cliente, com o motivo de
-  cada sugestão. Em report mesclado, escolha o mês de destino.
+- **Vincular peças**: aba Max Attention → "Gerenciar peças". O modal abre
+  pelas linhas criativas da DSP (nome sem tamanho, por impressão) e mostra,
+  em cada uma, a peça vinculada ou a sugerida. "Vincular as N sugestões"
+  adiciona de uma vez as que casaram; nada é salvo sem "Salvar vínculos".
+  Em report mesclado, escolha o mês de destino.
+- **Como a sugestão é feita** (`backend/ma_matching.py`): a Platform é só a
+  fonte de candidatos. O RC chama a busca dela com o contexto (cliente, token,
+  linhas da DSP) e também por texto com os termos da campanha (nome da
+  campanha e tokens presentes na maioria das linhas, ex. "mobland"), e pontua
+  localmente: tira prefixo da casa, tamanho e siglas, trata "carrossel" =
+  "carousel", tolera erro de digitação e palavra colada, e compara a peça com
+  o que distingue cada linha dentro da campanha. Cada linha vai para a peça
+  que mais se parece com ela.
 - **Criativos da DSP**: ao ligar a peça aos nomes de criativo da DSP, o card
   de mídia passa a usar as impressões da DSP (mesma régua da aba Display).
-  Sem isso, a peça mostra os carregamentos que ela mesma contou.
+  Sem isso, a peça mostra os carregamentos que ela mesma contou. Vincular pela
+  sugestão já marca todos os tamanhos da linha; o seletor de cada peça marca
+  e desmarca por linha.
 - **Atualizar métricas**: o botão fura o cache de 10 min do backend.
 - A aba só aparece para o cliente quando há pelo menos uma peça vinculada.
 
@@ -67,3 +79,4 @@ no resto do report.
 | "Funil indisponível" numa peça | o lake não tem sessões da peça no período (`sessionSteps` nulo) |
 | Mapa aparece como esquema | o navegador não carregou o MapLibre (CDN bloqueada); os endereços seguem na tabela |
 | Peça "aguardando a primeira impressão" | vinculada, mas ainda sem entrega no período |
+| Linha da DSP "sem peça sugerida" | a peça não tem no nome nada do que distingue a linha nem o termo da campanha; use "Buscar" na linha ou busque pelo nome dado na Platform |

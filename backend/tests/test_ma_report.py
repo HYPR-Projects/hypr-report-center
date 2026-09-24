@@ -268,6 +268,11 @@ def test_erro_http_vira_platform_error(monkeypatch):
     assert "401" in str(e.value)
 
 
+def _main_call(seen):
+    """A chamada de contexto (a que leva `names`/`client`), entre as extras."""
+    return next(r for r in seen if "client=" in r.full_url or "names=" in r.full_url)
+
+
 def test_search_monta_contexto_e_filtra_motivos(monkeypatch):
     monkeypatch.setenv("MA_SERVICE_KEY", "segredo")
     seen = []
@@ -276,17 +281,72 @@ def test_search_monta_contexto_e_filtra_motivos(monkeypatch):
          "publicSlug": "lojas", "clientName": "Cliente Demo",
          "size": {"width": 300, "height": 250, "preset": "300x250", "label": "300x250"}, "score": 180,
          "reasons": ["token", "client", "inventado"],
-         "match": {"dspCreativeIds": ["123"], "name": "DSP B", "nameSimilarity": 0.82}},
+         "match": {"dspCreativeIds": ["123"], "name": None, "nameSimilarity": None}},
         {"id": "nao-e-uuid", "name": "lixo"},
     ]}
     monkeypatch.setattr(ma.urllib.request, "urlopen", _fake_urlopen(payload, seen))
     items = ma.search_creatives(client="Cliente Demo", token="demo", names=["DSP A|x", "DSP B"])
-    assert "token=DEMO" in seen[0].full_url
-    assert "names=DSP+A+x%7CDSP+B" in seen[0].full_url
+    main = _main_call(seen)
+    assert "token=DEMO" in main.full_url
+    # Linha criativa (sem tamanho, maiúscula), "|" vira espaço.
+    assert "names=DSP+A+X%7CDSP+B" in main.full_url
     assert len(items) == 1 and items[0]["reasons"] == ["token", "client"]
     assert items[0]["size"] == "300x250"
-    assert items[0]["match_name"] == "DSP B" and items[0]["match_similarity"] == 0.82
     assert items[0]["match_dsp_ids"] == ["123"]
+
+
+def test_search_acha_peca_que_a_nota_da_platform_descartava(monkeypatch):
+    """Caso MobLand: a Platform só devolve a peça na busca por TEXTO do termo
+    da campanha (a nota de nome dela não passa), e o RC casa a linha."""
+    monkeypatch.setenv("MA_SERVICE_KEY", "segredo")
+    seen = []
+
+    def fn(req, timeout=None):
+        seen.append(req)
+        items = []
+        if "q=mobland" in req.full_url:
+            items = [{"id": CID_A, "name": "MobLand - Carrossel", "reasons": ["query"], "updatedAt": "2026-05-01"},
+                     {"id": CID_B, "name": "Mobland Reveal Tiros", "reasons": ["query"], "updatedAt": "2026-05-02"}]
+        return _Resp(json.dumps({"items": items}).encode())
+    monkeypatch.setattr(ma.urllib.request, "urlopen", fn)
+    lines = [
+        {"line": "HYPR_MOBLAND_PARAMOUNT_CAROUSEL", "names": ["HYPR_MOBLAND_PARAMOUNT_CAROUSEL_300x600", "HYPR_MOBLAND_PARAMOUNT_CAROUSEL_300x250"], "impressions": 10},
+        {"line": "HYPR_MOBLAND_PARAMOUNT_REVEAL_TIROS", "names": ["HYPR_MOBLAND_PARAMOUNT_REVEAL_TIROS_300x250"], "impressions": 5},
+        {"line": "HYPR_MOBLAND_PARAMOUNT_REVEAL_GRAFITE", "names": ["HYPR_MOBLAND_PARAMOUNT_REVEAL_GRAFITE_300x250"], "impressions": 4},
+    ]
+    items = ma.search_creatives(client="Paramount", token="O3HI21", lines=lines, campaign_name="MobLand")
+    by_id = {it["creative_id"]: it for it in items}
+    car = by_id[CID_A]
+    assert "name" in car["reasons"] and "campaign" in car["reasons"] and "query" not in car["reasons"]
+    assert car["dsp_lines"] == ["HYPR_MOBLAND_PARAMOUNT_CAROUSEL"]
+    # Todos os tamanhos da linha entram no vínculo, não só o primeiro.
+    assert len(car["dsp_creative_names"]) == 2
+    assert by_id[CID_B]["dsp_lines"] == ["HYPR_MOBLAND_PARAMOUNT_REVEAL_TIROS"]
+    assert any("q=mobland" in r.full_url for r in seen)
+
+
+def test_search_extra_que_falha_nao_derruba_a_principal(monkeypatch):
+    monkeypatch.setenv("MA_SERVICE_KEY", "segredo")
+
+    def fn(req, timeout=None):
+        if "q=mobland" in req.full_url:
+            raise urllib.error.URLError("caiu")
+        return _Resp(json.dumps({"items": [{"id": CID_A, "name": "ID-O3HI21_Peça", "reasons": ["token"]}]}).encode())
+    monkeypatch.setattr(ma.urllib.request, "urlopen", fn)
+    items = ma.search_creatives(token="O3HI21", campaign_name="MobLand", lines=[])
+    assert [it["creative_id"] for it in items] == [CID_A]
+
+
+def test_search_digitada_marca_query_so_quando_bate(monkeypatch):
+    monkeypatch.setenv("MA_SERVICE_KEY", "segredo")
+    payload = {"items": [{"id": CID_A, "name": "MobLand - Carrossel", "reasons": ["query"]},
+                         {"id": CID_B, "name": "Outra peça", "reasons": ["client"], "clientName": "Paramount"}]}
+    monkeypatch.setattr(ma.urllib.request, "urlopen", _fake_urlopen(payload, []))
+    items = ma.search_creatives(q="mobland carrossel", client="Paramount")
+    by_id = {it["creative_id"]: it for it in items}
+    assert "query" in by_id[CID_A]["reasons"]
+    assert by_id[CID_B]["reasons"] == ["client"]
+    assert items[0]["creative_id"] == CID_A
 
 
 def test_search_sem_contexto_nao_chama_platform(monkeypatch):

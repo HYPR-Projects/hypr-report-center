@@ -125,6 +125,31 @@ def test_ma_search_sem_config_e_501_com_instrucao(monkeypatch):
     assert "MA_SERVICE_KEY" in data["error"]
 
 
+def test_ma_search_usa_cliente_e_linhas_do_report(monkeypatch):
+    monkeypatch.setenv("MA_SERVICE_KEY", "k")
+    monkeypatch.setattr(main, "authenticate_admin", lambda req: {"email": "ana@hypr.mobi", "admin": True})
+    report = {"campaign": {"client_name": "Paramount", "campaign_name": "MobLand"}, "detail": [
+        {"creative_name": "HYPR_MOBLAND_PARAMOUNT_CAROUSEL_300x600", "creative_size": "300x600", "impressions": 10},
+        {"creative_name": "HYPR_MOBLAND_PARAMOUNT_CAROUSEL_300x250", "creative_size": "300x250", "impressions": 5},
+    ]}
+    monkeypatch.setattr(main, "_get_report_cached", lambda tok, force_refresh=False: (report, True))
+    # A lista de campanhas não é consultada quando o report já diz o cliente.
+    monkeypatch.setattr(main, "_client_name_for_token", lambda tok: (_ for _ in ()).throw(AssertionError("não devia")))
+    got = {}
+
+    def fake_search(**kw):
+        got.update(kw)
+        return []
+    monkeypatch.setattr(ma_report, "search_creatives", fake_search)
+    status, data = call("/?action=ma_search&token=O3HI21")
+    assert status == 200
+    assert got["client"] == "Paramount" and got["campaign_name"] == "MobLand"
+    assert [e["line"] for e in got["lines"]] == ["HYPR_MOBLAND_PARAMOUNT_CAROUSEL"]
+    ctx = data["context"]
+    assert ctx["client"] == "Paramount" and ctx["terms"] == ["mobland", "paramount"]
+    assert ctx["lines"][0]["impressions"] == 15 and len(ctx["dsp_creative_names"]) == 2
+
+
 def test_attach_max_attention_nunca_derruba_o_report(monkeypatch):
     def boom(tokens):
         raise RuntimeError("bq fora")
