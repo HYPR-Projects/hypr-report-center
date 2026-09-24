@@ -1,16 +1,19 @@
 // src/v2/components/ma/MaLinksModalV2.jsx
 //
-// Admin: vincular peças Max Attention à campanha. Nada vincula sozinho — a
-// Platform sugere (tag AdBolt, token no nome, nome parecido com o criativo da
-// DSP, mesmo cliente) e o admin confirma. Para cada peça vinculada o admin
-// marca quais criativos da DSP são ela: é daí que sai a impressão da DSP da
-// peça (camada Mídia). Em report agrupado, escolhe o mês (token) que recebe.
+// Admin: vincular peças Max Attention à campanha. Nada vincula sozinho — o
+// backend sugere (AdBolt, token no nome, nome casado com a linha criativa da
+// DSP, nome da campanha, mesmo cliente) e o admin confirma. O ponto de
+// partida são as LINHAS CRIATIVAS da DSP: cada uma mostra a peça vinculada
+// ou a sugerida, e vincular a sugestão já marca todos os tamanhos da linha
+// (é daí que sai a impressão da DSP da peça, camada Mídia). Em report
+// agrupado, escolhe o mês (token) que recebe.
 
 import { useEffect, useMemo, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Popover from "@radix-ui/react-popover";
 import { getMaLinks, saveMaLinks, searchMaCreatives } from "../../../lib/api";
 import { formatLabel } from "../../../shared/maMetrics";
+import { lineCoverage, lineSearchQuery, namesToLink, strongSuggestions } from "../../../shared/maLinking";
 import { Button } from "../../../ui/Button";
 import { Input } from "../../../ui/Input";
 import { cn } from "../../../ui/cn";
@@ -18,10 +21,12 @@ import { cn } from "../../../ui/cn";
 const REASONS = {
   adbolt: "Tag da DSP (AdBolt)",
   token: "Token no nome",
-  name: "Nome parecido com criativo da DSP",
+  name: "Casa com criativo da DSP",
+  campaign: "Nome da campanha",
   client: "Mesmo cliente",
   query: "Busca",
 };
+const compact = new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 });
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX = 20;
 
@@ -33,7 +38,7 @@ function toLink(item) {
     public_slug: item.public_slug || "",
     size: item.size || "",
     client_name: item.client_name || "",
-    dsp_creative_names: item.dsp_creative_names || (item.match_name ? [item.match_name] : []),
+    dsp_creative_names: Array.isArray(item.dsp_creative_names) ? item.dsp_creative_names : item.match_name ? [item.match_name] : [],
     status: item.status || "",
   };
 }
@@ -89,12 +94,16 @@ export function MaLinksModalV2({ open, onOpenChange, targets, defaultTarget, adm
 
   const linkedIds = useMemo(() => new Set(links.map((l) => l.creative_id)), [links]);
   const dirty = JSON.stringify(links) !== initial;
-  const dspNames = search.context?.dsp_creative_names || [];
+  const dspLines = useMemo(() => search.context?.lines || [], [search.context]);
+  const terms = search.context?.terms || [];
 
   const add = (item) => {
-    if (links.length >= MAX || linkedIds.has(String(item.creative_id).toLowerCase())) return;
-    setLinks((ls) => [...ls, toLink(item)]);
+    setLinks((ls) => {
+      if (ls.length >= MAX || ls.some((l) => l.creative_id === String(item.creative_id).toLowerCase())) return ls;
+      return [...ls, { ...toLink(item), dsp_creative_names: namesToLink(item, ls) }];
+    });
   };
+  const addMany = (items) => items.forEach(add);
   const remove = (id) => setLinks((ls) => ls.filter((l) => l.creative_id !== id));
   const move = (i, dir) =>
     setLinks((ls) => {
@@ -142,6 +151,14 @@ export function MaLinksModalV2({ open, onOpenChange, targets, defaultTarget, adm
   };
 
   const suggestions = (search.items || []).filter((it) => !linkedIds.has(String(it.creative_id).toLowerCase()));
+  const coverage = useMemo(() => lineCoverage(dspLines, links, search.items || []), [dspLines, links, search.items]);
+  const strong = strongSuggestions(coverage, suggestions);
+  const uncovered = coverage.filter((r) => !r.linked.length).length;
+  const searchLine = (line) => {
+    const query = lineSearchQuery(line, terms);
+    setQ(query);
+    runSearch(query);
+  };
 
   return (
     <Dialog.Root open={open} onOpenChange={(o) => { if (!saving) onOpenChange(o); }}>
@@ -160,7 +177,7 @@ export function MaLinksModalV2({ open, onOpenChange, targets, defaultTarget, adm
                 Max Attention · vínculo de peças
               </Dialog.Title>
               <Dialog.Description className="mt-1 text-[13px] text-fg-muted leading-snug">
-                A Platform sugere, você confirma. Marque em cada peça quais criativos da DSP são ela: a impressão da DSP da peça sai daí.
+                Partimos dos criativos que rodaram na DSP e sugerimos a peça de cada um. Você confirma; os tamanhos da linha já vêm marcados.
               </Dialog.Description>
             </div>
             <Dialog.Close aria-label="Fechar" className="inline-flex size-8 items-center justify-center rounded-md text-fg-muted hover:text-fg hover:bg-surface cursor-pointer">
@@ -187,6 +204,61 @@ export function MaLinksModalV2({ open, onOpenChange, targets, defaultTarget, adm
             )}
 
             <section>
+              <div className="flex flex-wrap items-end justify-between gap-2 mb-2">
+                <div className="min-w-0">
+                  <h3 className="text-[11px] font-bold uppercase tracking-widest text-fg-muted">Criativos da DSP nesta campanha</h3>
+                  <p className="mt-0.5 text-[11px] text-fg-subtle">
+                    {search.context?.client ? `Cliente ${search.context.client}` : "Cliente não identificado"}
+                    {dspLines.length ? ` · ${dspLines.length} ${dspLines.length === 1 ? "linha criativa" : "linhas criativas"}` : ""}
+                    {dspLines.length ? ` · ${uncovered} sem peça` : ""}
+                  </p>
+                </div>
+                {strong.length > 0 && (
+                  <Button size="sm" variant="secondary" onClick={() => addMany(strong)} disabled={links.length >= MAX}>
+                    Vincular {strong.length === 1 ? "a sugestão" : `as ${strong.length} sugestões`}
+                  </Button>
+                )}
+              </div>
+              {search.loading && !dspLines.length ? (
+                <p className="text-[12px] text-fg-subtle">Lendo os criativos da campanha…</p>
+              ) : !dspLines.length ? (
+                <p className="text-[12px] text-fg-subtle">Nenhum criativo da DSP no report desta campanha ainda. Busque a peça pelo nome abaixo.</p>
+              ) : (
+                <ul className="divide-y divide-border rounded-lg border border-border">
+                  {coverage.map((row) => {
+                    const best = row.suggested[0];
+                    return (
+                      <li key={row.line} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2">
+                        <div className="min-w-0 flex-1 basis-[260px]">
+                          <div className="text-[12px] font-semibold text-fg break-all">{row.line}</div>
+                          <div className="text-[11px] text-fg-subtle">
+                            {compact.format(row.impressions || 0)} imp. · {row.names.length} {row.names.length === 1 ? "tamanho" : "tamanhos"}
+                          </div>
+                        </div>
+                        {row.linked.length ? (
+                          <span className="inline-flex max-w-[280px] items-center gap-1.5 truncate rounded-md border border-success/30 bg-success-soft px-2 py-1 text-[11px] font-semibold text-success" title={row.linked.map((l) => l.name).join(", ")}>
+                            ✓ {row.linked.map((l) => l.name || l.creative_id).join(", ")}
+                          </span>
+                        ) : best ? (
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="max-w-[220px] truncate text-[12px] text-fg" title={best.name}>{best.name}</span>
+                            {best.template_slug && <span className="text-[10px] text-fg-subtle">{formatLabel(best.template_slug)}</span>}
+                            <Button size="sm" variant="secondary" onClick={() => add(best)} disabled={links.length >= MAX}>Vincular</Button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] text-fg-subtle">Sem peça sugerida</span>
+                            <Button size="sm" variant="ghost" onClick={() => searchLine(row.line)} disabled={search.loading}>Buscar</Button>
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+
+            <section>
               <div className="flex items-baseline justify-between gap-2 mb-2">
                 <h3 className="text-[11px] font-bold uppercase tracking-widest text-fg-muted">Vinculadas ({links.length}/{MAX})</h3>
                 {dirty && <span className="text-[11px] text-warning">Alterações não salvas</span>}
@@ -206,7 +278,7 @@ export function MaLinksModalV2({ open, onOpenChange, targets, defaultTarget, adm
                           {l.status === "archived" ? " · arquivada" : ""}
                         </div>
                       </div>
-                      <DspNamesPicker value={l.dsp_creative_names} options={dspNames} onChange={(names) => setNames(l.creative_id, names)} />
+                      <DspNamesPicker value={l.dsp_creative_names} lines={dspLines} onChange={(names) => setNames(l.creative_id, names)} />
                       <div className="flex items-center gap-1">
                         <IconBtn label="Subir" onClick={() => move(i, -1)} disabled={i === 0}>↑</IconBtn>
                         <IconBtn label="Descer" onClick={() => move(i, 1)} disabled={i === links.length - 1}>↓</IconBtn>
@@ -220,9 +292,9 @@ export function MaLinksModalV2({ open, onOpenChange, targets, defaultTarget, adm
 
             <section>
               <div className="flex flex-wrap items-end justify-between gap-2 mb-2">
-                <h3 className="text-[11px] font-bold uppercase tracking-widest text-fg-muted">Sugestões da Platform</h3>
-                {search.context?.client && (
-                  <span className="text-[11px] text-fg-subtle">Contexto: cliente {search.context.client} · {dspNames.length} criativos da DSP na campanha</span>
+                <h3 className="text-[11px] font-bold uppercase tracking-widest text-fg-muted">Todas as sugestões da Platform</h3>
+                {terms.length > 0 && (
+                  <span className="text-[11px] text-fg-subtle">Busca automática por: {terms.join(", ")}</span>
                 )}
               </div>
               <form
@@ -247,7 +319,27 @@ export function MaLinksModalV2({ open, onOpenChange, targets, defaultTarget, adm
               ) : search.loading ? (
                 <p className="text-[12px] text-fg-subtle">Buscando…</p>
               ) : suggestions.length === 0 ? (
-                <p className="text-[12px] text-fg-subtle">Nenhuma sugestão nova. Tente buscar pelo nome da peça.</p>
+                <div className="text-[12px] text-fg-subtle space-y-2">
+                  <p>
+                    {q.trim()
+                      ? `Nenhuma peça da Platform com "${q.trim()}" no nome.`
+                      : `Nenhuma peça da Platform casou com ${[
+                          search.context?.client && `o cliente ${search.context.client}`,
+                          terms.length && `os termos ${terms.join(", ")}`,
+                          dspLines.length && `${dspLines.length} linhas criativas da DSP`,
+                        ].filter(Boolean).join(", ") || "o contexto da campanha"}.`}
+                    {" "}Confira se a peça foi criada na Platform com o nome do criativo, ou busque por outra palavra.
+                  </p>
+                  {terms.length > 0 && q.trim() && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {terms.map((t) => (
+                        <button key={t} type="button" onClick={() => { setQ(t); runSearch(t); }} className="rounded-full border border-border px-2 py-0.5 text-[11px] text-fg-muted hover:text-fg hover:border-border-strong cursor-pointer">
+                          {t}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               ) : (
                 <ul className="divide-y divide-border rounded-lg border border-border">
                   {suggestions.map((it) => (
@@ -260,8 +352,13 @@ export function MaLinksModalV2({ open, onOpenChange, targets, defaultTarget, adm
                         </div>
                         <div className="mt-1 flex flex-wrap gap-1">
                           {(it.reasons || []).map((r) => (
-                            <span key={r} className="rounded border border-border px-1.5 py-0.5 text-[10px] text-fg-muted" title={r === "name" && it.match_name ? `Parecido com "${it.match_name}"` : undefined}>
-                              {REASONS[r] || r}{r === "name" && it.match_name ? `: ${it.match_name}` : ""}
+                            <span key={r} className="rounded border border-border px-1.5 py-0.5 text-[10px] text-fg-muted">
+                              {REASONS[r] || r}
+                            </span>
+                          ))}
+                          {(it.dsp_lines || []).map((line) => (
+                            <span key={line} className="rounded border border-signature/30 bg-signature-soft px-1.5 py-0.5 text-[10px] text-signature break-all" title="Linha criativa da DSP que esta peça é">
+                              {line}
                             </span>
                           ))}
                         </div>
@@ -314,17 +411,33 @@ function IconBtn({ label, onClick, disabled, children }) {
   );
 }
 
-function DspNamesPicker({ value = [], options = [], onChange }) {
-  const all = [...new Set([...options, ...value])];
-  const label = value.length === 0 ? "Sem criativo da DSP" : value.length === 1 ? value[0] : `${value.length} criativos da DSP`;
+function DspNamesPicker({ value = [], lines = [], onChange }) {
+  const norm = (n) => String(n || "").trim().toUpperCase();
+  const chosen = new Set(value.map(norm));
+  const known = new Set(lines.flatMap((e) => e.names.map(norm)));
+  // Nome salvo que não está mais no report (período mudou, criativo pausado):
+  // continua aparecendo pra poder desmarcar.
+  const orphans = value.filter((n) => !known.has(norm(n)));
+  const linesOn = lines.filter((e) => e.names.some((n) => chosen.has(norm(n))));
+  const label =
+    value.length === 0
+      ? "Sem criativo da DSP"
+      : linesOn.length === 1 && !orphans.length
+        ? linesOn[0].line
+        : `${linesOn.length + orphans.length} criativos da DSP`;
+  const toggleLine = (e) => {
+    const all = e.names.every((n) => chosen.has(norm(n)));
+    const names = new Set(e.names.map(norm));
+    onChange(all ? value.filter((n) => !names.has(norm(n))) : [...value, ...e.names.filter((n) => !chosen.has(norm(n)))]);
+  };
   return (
     <Popover.Root>
       <Popover.Trigger asChild>
         <button
           type="button"
           className={cn(
-            "max-w-[220px] truncate h-7 px-2.5 rounded-md border text-[11px] font-semibold cursor-pointer",
-            value.length ? "border-signature/40 bg-signature-soft text-signature" : "border-border text-fg-muted hover:text-fg",
+            "max-w-[240px] truncate h-7 px-2.5 rounded-md border text-[11px] font-semibold cursor-pointer",
+            value.length ? "border-signature/40 bg-signature-soft text-signature" : "border-warning/40 text-warning hover:text-fg",
           )}
           title="Criativos da DSP que são esta peça (origem da impressão da DSP)"
         >
@@ -332,28 +445,47 @@ function DspNamesPicker({ value = [], options = [], onChange }) {
         </button>
       </Popover.Trigger>
       <Popover.Portal>
-        <Popover.Content align="end" sideOffset={6} collisionPadding={16} className="z-[60] w-[320px] max-h-[320px] overflow-y-auto rounded-xl border border-border bg-surface-2 p-3 shadow-2xl">
-          <div className="text-[10.5px] font-bold uppercase tracking-widest text-fg-muted mb-2">Criativos da DSP nesta campanha</div>
-          {all.length === 0 ? (
+        <Popover.Content align="end" sideOffset={6} collisionPadding={16} className="z-[60] w-[360px] max-h-[340px] overflow-y-auto rounded-xl border border-border bg-surface-2 p-3 shadow-2xl">
+          <div className="text-[10.5px] font-bold uppercase tracking-widest text-fg-muted mb-2">Linhas criativas da DSP</div>
+          {lines.length === 0 && orphans.length === 0 ? (
             <p className="text-[12px] text-fg-subtle">Nenhum criativo da DSP encontrado no período da campanha.</p>
           ) : (
             <ul className="space-y-1">
-              {all.map((n) => {
-                const checked = value.includes(n);
+              {lines.map((e) => {
+                const n = e.names.filter((x) => chosen.has(norm(x))).length;
                 return (
-                  <li key={n}>
+                  <li key={e.line}>
                     <label className="flex items-start gap-2 rounded px-1.5 py-1 text-[12px] text-fg hover:bg-surface cursor-pointer">
                       <input
                         type="checkbox"
                         className="mt-0.5 size-3.5 accent-signature"
-                        checked={checked}
-                        onChange={() => onChange(checked ? value.filter((x) => x !== n) : [...value, n])}
+                        checked={n > 0 && n === e.names.length}
+                        ref={(el) => { if (el) el.indeterminate = n > 0 && n < e.names.length; }}
+                        onChange={() => toggleLine(e)}
                       />
-                      <span className="break-all">{n}</span>
+                      <span className="min-w-0">
+                        <span className="block break-all">{e.line}</span>
+                        <span className="block text-[10.5px] text-fg-subtle">
+                          {compact.format(e.impressions || 0)} imp. · {e.names.length} {e.names.length === 1 ? "tamanho" : "tamanhos"}
+                        </span>
+                      </span>
                     </label>
                   </li>
                 );
               })}
+              {orphans.map((name) => (
+                <li key={name}>
+                  <label className="flex items-start gap-2 rounded px-1.5 py-1 text-[12px] text-fg-muted hover:bg-surface cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 size-3.5 accent-signature"
+                      checked
+                      onChange={() => onChange(value.filter((x) => x !== name))}
+                    />
+                    <span className="break-all">{name} <span className="text-[10.5px] text-fg-subtle">(fora do período)</span></span>
+                  </label>
+                </li>
+              ))}
             </ul>
           )}
         </Popover.Content>
