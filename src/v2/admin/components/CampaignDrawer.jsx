@@ -21,6 +21,7 @@ import { cn } from "../../../ui/cn";
 import { Avatar } from "../../../ui/Avatar";
 import { AbsToggle } from "./AbsToggle";
 import { AllowedCountriesField } from "./AllowedCountriesField";
+import { GeoExclusionToggle } from "./GeoExclusionToggle";
 import { AgencyField } from "./AgencyField";
 import { CoreProductsOverride } from "./CoreProductsOverride";
 import { TokenChip } from "./TokenChip";
@@ -748,6 +749,11 @@ export function CampaignDrawer({
               shortToken={short_token}
               onChange={onCountriesChange}
             />
+            {/* Ajuste excepcional: tira do report do cliente a entrega DV360
+                fora do BR (e fora dos países liberados acima). */}
+            <div className="mt-2">
+              <GeoExclusionToggle shortToken={short_token} onChange={onAbsChange} />
+            </div>
           </div>
 
           {/* Core products no report — curadoria de quais frentes aparecem.

@@ -961,6 +961,45 @@ export async function saveCountryOverride({ short_token, countries }) {
   return Array.isArray(d?.countries) ? d.countries : countries;
 }
 
+// ── Exclusão de entrega fora do BR no report (admin) ────────────────────────
+
+/**
+ * Config + status do último recálculo de cada campanha com a entrega fora do
+ * BR retirada do report. Linha: { short_token, date_from, date_to, reason,
+ * status: "ok" | "blocked" | "no_data", recon_diff_pct, unified_imps,
+ * removed_imps, removed_viewable, estimated_imps, no_geo_imps, refreshed_at, ... }.
+ */
+export async function getGeoExclusions() {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await fetch(
+    `${API_URL}?action=geo_exclusions`,
+    { headers: adminAuthHeaders(jwt), signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS) },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json().catch(() => ({}));
+  return Array.isArray(d?.exclusions) ? d.exclusions : [];
+}
+
+async function _postGeoExclusion(action, body) {
+  const jwt = await getOrIssueAdminJwt();
+  // Sem timeout de propósito: o backend recalcula as frações na hora (~1 min)
+  // e abortar mostraria erro de algo que vai dar certo.
+  const r = await postJson(`${API_URL}?action=${action}`, body, adminAuthHeaders(jwt));
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  return { status: Array.isArray(d?.status) ? d.status : [], warning: d?.warning || null };
+}
+
+/** Liga o ajuste pra campanha. Devolve { status (todas as campanhas), warning }. */
+export function saveGeoExclusion({ short_token, reason, date_from = null, date_to = null }) {
+  return _postGeoExclusion("save_geo_exclusion", { short_token, reason, date_from, date_to });
+}
+
+/** Desliga o ajuste: o report volta a mostrar a entrega fora do BR. */
+export function deleteGeoExclusion({ short_token }) {
+  return _postGeoExclusion("delete_geo_exclusion", { short_token });
+}
+
 // ── Agência do cliente (admin) ───────────────────────────────────────────────
 
 /**

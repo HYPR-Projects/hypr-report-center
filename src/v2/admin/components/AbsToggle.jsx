@@ -159,7 +159,7 @@ export function AbsToggle({ shortToken, autoDetected, onChange }) {
   );
 }
 
-function Switch({ checked, disabled, loading, onClick }) {
+export function Switch({ checked, disabled, loading, onClick }) {
   return (
     <button
       type="button"
