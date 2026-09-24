@@ -454,10 +454,31 @@ def _get_token_lock(short_token):
 # Barato: __TABLES__ é metadata (não escaneia) e a leitura é cacheada 60s.
 # Defensivo: se a leitura de uma tabela falha, aquele componente é ignorado
 # (carrega o último valor conhecido) — nunca fura à toa nem trava no outro.
+#
+# checklist_info versiona por CONTEÚDO, não por last_modified
+# ───────────────────────────────────────────────────────────
+# O job que materializa o checklist_info regrava a tabela TODA HORA, 24h por
+# dia, mesmo sem nada ter mudado. Cada regravação mexia no last_modified e
+# furava lista+clientes+todos os reports em todas as instâncias; o próximo a
+# abrir o menu pagava a lista fria (30s+ com o enriquecimento), o skeleton
+# ficava parado e o watchdog da barra de progresso disparava no console.
+# Auditoria 24/09/2026 (time travel no BQ): entre -24h e -4h a tabela foi
+# regravada ~20 vezes e o fingerprint do conteúdo não mudou nenhuma.
+#
+# Então o last_modified do checklist_info virou só GATILHO: quando muda,
+# calculamos o fingerprint do conteúdo (~1,5 MB lidos) e é ELE que entra na
+# versão. Regravação idêntica → mesma versão → nada fura. Se o fingerprint
+# falhar, cai no last_modified: fura como antes (conservador, nunca serve
+# contrato velho por causa de uma checagem que falhou).
+# campaign_results fica no last_modified: é grande demais pra escanear 1x/min
+# e só é regravada no ciclo da manhã, quando o conteúdo muda de verdade.
 # ─────────────────────────────────────────────────────────────────────────────
 _BASE_VERSION_CACHE_TTL = 60           # relê o last_modified da base no máx 1x/min
-_base_version_cache = {}               # "v" -> (ts, (cr_ms, ck_ms))
+_base_version_cache = {}               # "v" -> (ts, (cr_ms, ck_version))
 _last_seen_base_version = {"v": None}  # última versão vista (tuple); muda → bust
+# last_modified do checklist_info → fingerprint já calculado pra ele. Só
+# refaz o scan quando a tabela é regravada.
+_checklist_fp_memo = {"lm": None, "fp": None}
 
 
 def _table_last_modified(dataset, table, location=None):
@@ -479,15 +500,52 @@ def _table_last_modified(dataset, table, location=None):
         return None
 
 
+def _table_content_fingerprint(dataset, table, location=None):
+    """Fingerprint do conteúdo inteiro de uma tabela pequena: hash das linhas
+    serializadas, em ordem determinística (independe da ordem física, pega
+    linha duplicada). None se a query falhar."""
+    try:
+        sql = ("SELECT FARM_FINGERPRINT(STRING_AGG(j, '\\n' ORDER BY j)) AS fp "
+               f"FROM (SELECT TO_JSON_STRING(t) AS j FROM `{PROJECT_ID}.{dataset}.{table}` t)")
+        rows = list(bq.query(sql, location=location).result())
+        return int(rows[0][0]) if rows and rows[0][0] is not None else 0
+    except Exception as e:
+        logger.warning(f"[cache] fingerprint de {dataset}.{table} falhou ({e}); "
+                       "usando last_modified")
+        return None
+
+
+def _checklist_content_version():
+    """Versão do checklist_info por conteúdo (ver bloco acima). O last_modified
+    só decide QUANDO recalcular o fingerprint. None se nem o last_modified deu
+    pra ler (componente ignorado, como antes)."""
+    lm = _table_last_modified(DATASET_ASSETS, "checklist_info", "US")
+    if lm is None:
+        return None
+    memo = _checklist_fp_memo
+    if memo["lm"] == lm and memo["fp"] is not None:
+        return memo["fp"]
+    fp = _table_content_fingerprint(DATASET_ASSETS, "checklist_info", "US")
+    if fp is None:
+        # Sem fingerprint: versão = last_modified. Difere de qualquer fp já
+        # visto, então fura — é o comportamento de antes, nunca serve velho.
+        return f"lm:{lm}"
+    if memo["fp"] is not None and memo["fp"] == fp:
+        logger.info("[cache] checklist_info regravado sem mudança de conteúdo; "
+                    "caches mantidos")
+    memo.update(lm=lm, fp=fp)
+    return fp
+
+
 def _base_version():
-    """Assinatura de versão da base: (campaign_results_ms, checklist_info_ms).
+    """Assinatura de versão da base: (campaign_results_ms, checklist_info_fp).
     Cacheado 60s. Componente None quando aquela tabela falhou na checagem."""
     cached = _cache_get(_base_version_cache, "v", _BASE_VERSION_CACHE_TTL)
     if cached is not None:
         return cached
     ver = (
         _table_last_modified(DATASET_HUB, TABLE),                     # default loc
-        _table_last_modified(DATASET_ASSETS, "checklist_info", "US"),
+        _checklist_content_version(),
     )
     _cache_set(_base_version_cache, "v", ver)
     return ver
