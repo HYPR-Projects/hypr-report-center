@@ -74,6 +74,7 @@ import RmndV2 from "./RmndV2";
 import PdoohV2 from "./PdoohV2";
 import SurveyV2 from "./SurveyV2";
 import MaxAttentionV2 from "./MaxAttentionV2";
+import { prefetchMaReport } from "../hooks/useMaReport";
 import DspHealthV2 from "./DspHealthV2";
 
 // ─── Helpers de URL ────────────────────────────────────────────────────
@@ -715,6 +716,13 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
       formats: [...fmt].sort((a, b) => a.localeCompare(b)),
     };
   }, [data?.detail]);
+
+  // Max Attention: a Platform leva segundos pra montar as peças, então a
+  // busca começa com o report (qualquer aba), não quando clicam na aba.
+  const maPrefetch = (data?.max_attention?.links?.length || 0) > 0 && !!data?.max_attention?.configured;
+  useEffect(() => {
+    if (maPrefetch) prefetchMaReport({ token, view, range: mainRange });
+  }, [maPrefetch, token, view, mainRange]);
 
   const aggregates = useMemo(
     () => (data ? computeAggregates(data, mainRange, "ALL", creativeFilters) : null),

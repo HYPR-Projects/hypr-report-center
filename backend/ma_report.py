@@ -66,10 +66,22 @@ PLATFORM_URL_DEFAULT = "https://platform.hypr.mobi"
 # chamada; uma campanha com mais que isso é caso a revisar, não a paginar.
 MAX_PIECES = 20
 
-# Cache das métricas por (ids, período). 10 min: os números principais da
+# Cache das métricas POR PEÇA e período. 10 min: os números principais da
 # Platform são recalculados a cada ~15 min, então um cache menor que isso não
 # deixaria o dado mais novo — só multiplicaria chamadas (e queries no lake).
+# Por peça (não pelo conjunto): vincular uma peça nova, ou abrir a visão
+# agregada de um grupo, só busca o que falta.
 PIECES_TTL = 600
+# Passado o TTL, o report ainda serve o número guardado (até 3h, a cadência
+# do warmup) e atualiza por trás. Esperar a Platform de novo a cada 10 min
+# era o que fazia a aba "demorar" em toda segunda visita. O selo "Atualizado
+# há X" mostra a idade real.
+PIECES_STALE_TTL = 3 * 3600
+# A Platform monta cada peça com ~7 consultas ao Postgres num pool de UMA
+# conexão: 9 peças numa chamada só = ~60 idas em fila (15–25 s). Em lotes
+# paralelos, cada lote cai numa função própria da Vercel, com pool próprio.
+PIECES_CHUNK = 3
+PIECES_PARALLEL = 5
 # Cache da tabela de vínculos inteira (pequena). Curto: o admin vincula e
 # recarrega o report, possivelmente em outra instância.
 LINKS_TTL = 60
@@ -91,6 +103,7 @@ _lock = threading.Lock()
 _pieces_cache = {}   # key -> (ts, value)
 _links_cache = {}    # "all" -> (ts, dict)
 _search_cache = {}   # key -> (ts, value)
+_revalidating = set()  # chaves de peça com atualização em voo
 
 
 class NotConfigured(RuntimeError):
@@ -157,6 +170,7 @@ def clear_caches():
         _pieces_cache.clear()
         _links_cache.clear()
         _search_cache.clear()
+        _revalidating.clear()
 
 
 # ─── Validação ─────────────────────────────────────────────────────────────
@@ -403,9 +417,9 @@ def save_links(short_token: str, links: list, linked_by: str | None = None) -> l
     else:
         sql = f"DELETE FROM `{links_table_id()}` WHERE short_token = @token"
     _bq().query(sql, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
+    # Métrica é por peça: mudar o vínculo não invalida o número de ninguém.
     with _lock:
         _links_cache.clear()
-        _pieces_cache.clear()
     return [dict(l, linked_by=linked_by or "", linked_at=datetime.now(timezone.utc).isoformat()) for l in clean]
 
 
@@ -765,30 +779,112 @@ def normalize_piece(item: dict, link: dict) -> dict:
     }
 
 
-def fetch_pieces(links: list, date_from: str | None = None, date_to: str | None = None) -> dict:
-    """Métricas das peças vinculadas, normalizadas. Cacheado por (ids, período)."""
+# Folhas (uma ida HTTP cada). Quem espera por elas é a request ou uma task
+# do _revalidate_pool — nunca outra task deste pool.
+_pieces_pool = ThreadPoolExecutor(max_workers=PIECES_PARALLEL * 2, thread_name_prefix="ma-pieces")
+_revalidate_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ma-revalidate")
+
+
+def _piece_key(cid, date_from, date_to):
+    return f"{cid}|{date_from or ''}|{date_to or ''}"
+
+
+def _fetch_chunk(ids, date_from, date_to) -> dict:
+    """Uma chamada à Platform para um lote de peças; grava cada uma no cache.
+    Folha: nunca espera outra task do pool."""
+    raw = _http_get_json("/api/v1/service/report-center/creatives", {
+        "ids": ",".join(ids),
+        "from": date_from,
+        "to": date_to,
+    }, timeout=PIECES_HTTP_TIMEOUT_S)
+    at = datetime.now(timezone.utc).isoformat()
+    got = {it.get("id"): it for it in (raw or {}).get("items") or [] if isinstance(it, dict)}
+    out = {}
+    for cid in ids:
+        it = got.get(cid) or {"id": cid, "ok": False, "error": "missing"}
+        entry = {"item": it, "fetched_at": at}
+        out[cid] = entry
+        # Erro interno da Platform é transitório: não fica guardado, a
+        # próxima abertura tenta de novo.
+        if it.get("ok") or it.get("error") == "not_found":
+            _cset(_pieces_cache, _piece_key(cid, date_from, date_to), entry)
+    return out
+
+
+def _fetch_many(ids, date_from, date_to) -> tuple:
+    """Lotes em paralelo. Devolve ({id: entry}, [erros de lote])."""
+    chunks = [ids[i:i + PIECES_CHUNK] for i in range(0, len(ids), PIECES_CHUNK)]
+    futures = [_pieces_pool.submit(_fetch_chunk, c, date_from, date_to) for c in chunks]
+    got, failures = {}, []
+    for chunk, fut in zip(chunks, futures):
+        try:
+            got.update(fut.result(timeout=PIECES_HTTP_TIMEOUT_S + 5))
+        except Exception as e:  # noqa: BLE001 — um lote caído não derruba os outros
+            failures.append((chunk, e))
+            logger.warning(f"[ma_report] lote {len(chunk)} peça(s) falhou: {e}")
+    return got, failures
+
+
+def _revalidate(ids, date_from, date_to):
+    """Atualiza por trás as peças servidas do cache vencido (uma vez por
+    chave em voo)."""
+    keys = [_piece_key(c, date_from, date_to) for c in ids]
+    with _lock:
+        todo = [c for c, k in zip(ids, keys) if k not in _revalidating]
+        _revalidating.update(_piece_key(c, date_from, date_to) for c in todo)
+    if not todo:
+        return
+
+    def run():
+        try:
+            _fetch_many(todo, date_from, date_to)
+        finally:
+            with _lock:
+                for c in todo:
+                    _revalidating.discard(_piece_key(c, date_from, date_to))
+    _revalidate_pool.submit(run)
+
+
+def fetch_pieces(links: list, date_from: str | None = None, date_to: str | None = None,
+                 refresh: bool = False) -> dict:
+    """Métricas das peças vinculadas, normalizadas.
+
+    Cache por peça e período: fresco (10 min) serve direto; vencido (até 3h)
+    serve e atualiza por trás; ausente (ou `refresh`) busca agora, em lotes
+    paralelos. Lote que falha vira erro só das peças dele — as outras
+    aparecem. Se nada deu pra mostrar e a Platform caiu, sobe PlatformError."""
     links = [l for l in (links or []) if valid_creative_id(l.get("creative_id") or "")][:MAX_PIECES]
     if not links:
         return {"pieces": [], "errors": [], "fetched_at": None}
     date_from = date_from if valid_date(date_from or "") else None
     date_to = date_to if valid_date(date_to or "") else None
-    ids = [l["creative_id"] for l in links]
-    key = f"{','.join(sorted(ids))}|{date_from or ''}|{date_to or ''}"
-    cached = _cget(_pieces_cache, key, PIECES_TTL)
-    if cached is None:
-        raw = _http_get_json("/api/v1/service/report-center/creatives", {
-            "ids": ",".join(ids),
-            "from": date_from,
-            "to": date_to,
-        }, timeout=PIECES_HTTP_TIMEOUT_S)
-        cached = {
-            "items": {it.get("id"): it for it in (raw or {}).get("items") or [] if isinstance(it, dict)},
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-        }
-        _cset(_pieces_cache, key, cached)
+    ids = list(dict.fromkeys(l["creative_id"] for l in links))
+
+    entries, missing, stale = {}, [], []
+    now = time.time()
+    for cid in ids:
+        with _lock:
+            hit = None if refresh else _pieces_cache.get(_piece_key(cid, date_from, date_to))
+        if hit and now - hit[0] < PIECES_STALE_TTL:
+            entries[cid] = hit[1]
+            if now - hit[0] >= PIECES_TTL:
+                stale.append(cid)
+        else:
+            missing.append(cid)
+
+    failures = []
+    if missing:
+        got, failures = _fetch_many(missing, date_from, date_to)
+        entries.update(got)
+    if stale:
+        _revalidate(stale, date_from, date_to)
+    if failures and not entries:
+        raise failures[0][1] if isinstance(failures[0][1], PlatformError) else PlatformError(str(failures[0][1]))
+
     pieces, errors = [], []
     for link in links:
-        it = cached["items"].get(link["creative_id"])
+        entry = entries.get(link["creative_id"])
+        it = (entry or {}).get("item")
         if not it or not it.get("ok"):
             errors.append({
                 "creative_id": link["creative_id"],
@@ -801,4 +897,6 @@ def fetch_pieces(links: list, date_from: str | None = None, date_to: str | None 
         except Exception as e:  # peça malformada não derruba as outras
             logger.warning(f"[ma_report] normalize {link['creative_id']}: {e}")
             errors.append({"creative_id": link["creative_id"], "name": link.get("name") or "", "error": "internal"})
-    return {"pieces": pieces, "errors": errors, "fetched_at": cached["fetched_at"]}
+    # Idade honesta: a da peça mais antiga que está na tela.
+    stamps = [e["fetched_at"] for e in entries.values() if e and e.get("fetched_at")]
+    return {"pieces": pieces, "errors": errors, "fetched_at": min(stamps) if stamps else None}
