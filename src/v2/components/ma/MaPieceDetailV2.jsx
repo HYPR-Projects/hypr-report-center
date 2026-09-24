@@ -157,18 +157,32 @@ export function MaPieceDetailV2({
               </div>
             )}
 
-            <MaCard layer="midia" title="Entrega" subtitle="Mesma régua da aba Display">
+            <MaCard layer="midia" title="Entrega" subtitle={media.deliverySource === "dsp" ? "Pela DSP, mesma régua da aba Display" : "Medida pela peça"}>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-y-3 divide-border/60 sm:divide-x">
                 <Stat label={SOURCE_LABEL[media.impressionsSource] || "Impressões"} value={fmt(media.impressions)} />
-                <Stat label="Medidas pela peça" value={fmt(media.measured)} className="sm:pl-4" />
+                <Stat label={media.deliverySource === "dsp" ? "Imp. visíveis (DSP)" : "Imp. visíveis"} value={fmt(media.viewable)} className="sm:pl-4" />
                 <Stat label="Viewability" value={pct(media.viewability, 1)} className="sm:pl-4" />
-                <Stat label={`Cliques em CTA · CTR ${pct(media.ctr)}`} value={fmt(media.ctaClicks)} className="sm:pl-4" />
+                {media.deliverySource === "dsp" ? (
+                  <Stat label={`Cliques (DSP) · CTR ${pct(media.ctr)}`} value={fmt(media.clicks)} className="sm:pl-4" />
+                ) : (
+                  <Stat label={`Cliques em CTA · CTR ${pct(media.ctaCtr)}`} value={fmt(media.ctaClicks)} className="sm:pl-4" />
+                )}
               </div>
+              {media.deliverySource === "dsp" && (
+                <div className="mt-4 pt-3 border-t border-border/60">
+                  <div className="text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted mb-2">Medido pela própria peça</div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-y-3 divide-border/60 sm:divide-x">
+                    <Stat label="Carregamentos medidos" value={fmt(media.measured)} />
+                    <Stat label="Visíveis" value={fmt(media.pieceViewable)} className="sm:pl-4" />
+                    <Stat label="Viewability da peça" value={pct(media.pieceViewability, 1)} className="sm:pl-4" />
+                    <Stat label={`Cliques no CTA · CTR ${pct(media.ctaCtr)}`} value={fmt(media.ctaClicks)} className="sm:pl-4" />
+                  </div>
+                </div>
+              )}
               <p className="mt-3 text-[11px] leading-snug text-fg-subtle">
-                {media.impressionsSource === "dsp"
-                  ? "Impressões da DSP dos criativos ligados a esta peça, no período. "
-                  : "Sem criativo da DSP ligado a esta peça: o número principal é a contagem de carregamentos da peça. "}
-                Viewability e CTR usam as impressões medidas pela peça.
+                {media.deliverySource === "dsp"
+                  ? "Em cima, a entrega da DSP dos criativos ligados a esta peça (CTR = cliques ÷ visíveis, como na aba Display). Embaixo, o que a peça mediu: ela conta todo carregamento e todo toque no CTA com a mesma regra em qualquer DSP (visível = 50% da peça na tela por 1 segundo), enquanto cada DSP mede e filtra do seu jeito — por isso os números não são iguais."
+                  : "Sem criativo da DSP ligado a esta peça: os números são os que a própria peça mediu (visível = 50% da peça na tela por 1 segundo). Ligue a peça ao criativo da DSP em \"Gerenciar peças\" para usar a régua da aba Display."}
               </p>
             </MaCard>
 

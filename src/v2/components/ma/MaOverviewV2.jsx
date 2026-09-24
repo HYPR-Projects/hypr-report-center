@@ -26,7 +26,7 @@ import { MaThumbV2 } from "./MaThumbV2";
 
 
 const SOURCE_NOTE = {
-  dsp: "Entrega da DSP, mesma base da aba Display",
+  dsp: "Entrega da DSP, só dos criativos Max Attention",
   served: "Carregamentos contados pela peça",
   measured: "Medidas pela peça",
   mixed: "DSP nas peças ligadas a criativos; nas demais, carregamentos da peça",
@@ -51,11 +51,21 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campai
   const csv = () =>
     downloadCsv(
       `${campaignName} - max attention - comparativo`.replace(/[\\/:*?"<>|]+/g, " "),
-      ["Formato", "Peça", "Tamanho", "Impressões", "Imp. medidas pela peça", "Viewability (%)", "Sessões", "Sessões engajadas", "Engajamento (%)", "Cliques em CTA", "CTR da peça (%)", "Destaque do formato", "Valor do destaque"],
+      [
+        "Formato", "Peça", "Tamanho", "Fonte da entrega",
+        "Impressões", "Imp. visíveis", "Viewability (%)", "Cliques", "CTR (%)",
+        "Imp. medidas pela peça", "Visíveis medidas pela peça", "Viewability da peça (%)", "Cliques em CTA", "CTR da peça (%)",
+        "Sessões", "Sessões engajadas", "Engajamento (%)", "Destaque do formato", "Valor do destaque",
+      ],
       list.map(({ p, m, km }) =>
         isWaiting(p)
-          ? [formatLabel(p.format), p.name, p.size || "", "", "", "", "", "", "", "", "", km?.label || "", ""]
-          : [formatLabel(p.format), p.name, p.size || "", m.impressions, m.measured, rate(m.viewability), m.sessions, m.engaged, rate(m.engagement), m.ctaClicks, rate(m.ctr), km?.label || "", km?.value == null ? "" : km.kind === "count" ? km.value : rate(km.value)],
+          ? [formatLabel(p.format), p.name, p.size || "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", km?.label || "", ""]
+          : [
+              formatLabel(p.format), p.name, p.size || "", m.deliverySource === "dsp" ? "DSP" : "Peça",
+              m.impressions, m.viewable, rate(m.viewability), m.clicks ?? "", rate(m.ctr),
+              m.measured, m.pieceViewable, rate(m.pieceViewability), m.ctaClicks, rate(m.ctaCtr),
+              m.sessions, m.engaged, rate(m.engagement), km?.label || "", km?.value == null ? "" : km.kind === "count" ? km.value : rate(km.value),
+            ],
       ),
     );
 
@@ -65,14 +75,14 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campai
         <KpiCardV2
           label="Impressões"
           value={fmt(total.impressions)}
-          hint="Entrega das peças vinculadas. Quando a peça está ligada ao criativo da DSP, é a impressão da DSP; senão, os carregamentos contados pela própria peça. As taxas ao lado usam as impressões medidas pela peça."
-          note={<Note>{SOURCE_NOTE[total.impressionsSource]}. Medidas pela peça: <b className="text-fg tabular-nums">{fmt(total.measured)}</b></Note>}
+          hint="Entrega da DSP dos criativos ligados às peças Max Attention — mesma régua da aba Display. A aba Display soma todos os criativos da campanha (inclusive os que não são Max Attention), por isso pode ser maior. Peça sem criativo da DSP ligado entra com os carregamentos contados por ela."
+          note={<Note>{SOURCE_NOTE[total.impressionsSource]}. Carregadas pela peça: <b className="text-fg tabular-nums">{fmt(total.measured)}</b></Note>}
         />
         <KpiCardV2
           label="Viewability"
           value={pct(total.viewability, 1)}
-          hint="Impressões visíveis ÷ impressões medidas. Visível = ao menos 50% da peça na tela por 1 segundo contínuo, medido pela própria peça."
-          note={<Note>Visíveis ÷ medidas pela peça</Note>}
+          hint="Impressões visíveis ÷ impressões, pela DSP (mesma conta da aba Display). Cada DSP mede do seu jeito: a DV360 e a Yahoo não usam a mesma régua. A medição da própria peça (50% dela na tela por 1 segundo, igual em todas as DSPs) fica ao lado e é a base justa pra comparar peças."
+          note={<Note>Medida pela peça: <b className="text-fg tabular-nums">{pct(total.pieceViewability, 1)}</b></Note>}
         />
         <KpiCardV2
           label="Sessões"
@@ -93,30 +103,41 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campai
           hint="Pessoas que fizeram ao menos uma interação ativa com a peça."
           note={<Note>Pessoas que interagiram</Note>}
         />
-        <KpiCardV2
-          label="Cliques em CTA"
-          value={fmt(total.ctaClicks)}
-          hint="Cliques que levam ao destino do anunciante. CTR da peça = cliques em CTA ÷ impressões medidas pela peça (outra base que o CTR da aba Display, que divide pelas imp. visíveis da DSP). Toques em widget não entram."
-          note={<Note>CTR da peça <b className="text-fg tabular-nums">{pct(total.ctr)}</b></Note>}
-        />
+        {total.clicks != null ? (
+          <KpiCardV2
+            label="Cliques"
+            value={fmt(total.clicks)}
+            hint="Cliques registrados pela DSP. CTR = cliques ÷ impressões visíveis, a mesma conta da aba Display. Os cliques no CTA contados pela própria peça ficam ao lado: a peça conta todo toque no botão, a DSP descarta clique inválido e só conta o que passa pelo rastreador dela."
+            note={<Note>CTR <b className="text-fg tabular-nums">{pct(total.ctr)}</b> · CTA da peça: <b className="text-fg tabular-nums">{fmt(total.ctaClicks)}</b></Note>}
+          />
+        ) : (
+          <KpiCardV2
+            label="Cliques em CTA"
+            value={fmt(total.ctaClicks)}
+            hint="Sem criativo da DSP ligado: cliques no CTA contados pela própria peça. CTR da peça = cliques em CTA ÷ impressões medidas pela peça."
+            note={<Note>CTR da peça <b className="text-fg tabular-nums">{pct(total.ctaCtr)}</b></Note>}
+          />
+        )}
       </div>
 
       <MaCard
         title="Comparativo das peças"
-        subtitle={list.length > 1 ? "Mesmas métricas para todos os formatos · ★ maior engajamento" : "Métricas comparáveis da peça"}
+        subtitle={list.length > 1 ? "Entrega pela DSP; viewability da peça é a base pra comparar peças · ★ maior engajamento" : "Métricas comparáveis da peça"}
         actions={<CsvButton onClick={csv} />}
       >
         <div className="overflow-x-auto -mx-4 md:-mx-5">
-          <table className="w-full text-xs min-w-[860px]">
+          <table className="w-full text-xs min-w-[1040px]">
             <thead>
               <tr className="border-b border-border text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
                 <th className="px-4 md:px-5 py-2.5 text-left">Formato</th>
                 <th className="px-3 py-2.5 text-left">Peça</th>
-                <th className="px-3 py-2.5 text-right">Impressões</th>
-                <th className="px-3 py-2.5 text-right">Viewability</th>
+                <th className="px-3 py-2.5 text-right" title="Entrega da DSP (ou carregamentos da peça, sem criativo ligado)">Impressões</th>
+                <th className="px-3 py-2.5 text-right" title="Visíveis ÷ impressões, pela DSP — mesma conta da aba Display">Viewab. DSP</th>
+                <th className="px-3 py-2.5 text-right" title="Medida pela própria peça, mesma regra em todas as DSPs — a base pra comparar peças">Viewab. peça</th>
                 <th className="px-3 py-2.5 text-right">Engajamento</th>
-                <th className="px-3 py-2.5 text-right">Cliques em CTA</th>
-                <th className="px-3 py-2.5 text-right">CTR</th>
+                <th className="px-3 py-2.5 text-right" title="Cliques da DSP">Cliques</th>
+                <th className="px-3 py-2.5 text-right" title="Cliques da DSP ÷ impressões visíveis da DSP">CTR</th>
+                <th className="px-3 py-2.5 text-right" title="Cliques no CTA contados pela própria peça">CTA da peça</th>
                 <th className="px-4 md:px-5 py-2.5 text-left">Destaque do formato</th>
               </tr>
             </thead>
@@ -145,17 +166,22 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campai
                       </button>
                     </td>
                     {waiting ? (
-                      <td colSpan={6} className="px-3 py-2.5 text-fg-subtle italic">Aguardando a primeira impressão</td>
+                      <td colSpan={8} className="px-3 py-2.5 text-fg-subtle italic">Aguardando a primeira impressão</td>
                     ) : (
                       <>
-                        <td className="px-3 py-2.5 text-right tabular-nums text-fg">{fmt(m.impressions)}</td>
-                        <td className="px-3 py-2.5 text-right tabular-nums text-fg">{pct(m.viewability, 1)}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-fg">
+                          {fmt(m.impressions)}
+                          {m.deliverySource !== "dsp" && <span className="ml-1 text-fg-subtle" title="Sem criativo da DSP ligado: carregamentos contados pela peça">*</span>}
+                        </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-fg">{m.deliverySource === "dsp" ? pct(m.viewability, 1) : "—"}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-fg">{pct(m.pieceViewability, 1)}</td>
                         <td className="px-3 py-2.5 text-right tabular-nums text-fg whitespace-nowrap">
                           {best != null && m.engagement === best && <span className="text-warning mr-1" title="Maior engajamento">★</span>}
                           {pct(m.engagement)}
                         </td>
-                        <td className="px-3 py-2.5 text-right tabular-nums text-fg">{fmt(m.ctaClicks)}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-fg">{m.clicks == null ? "—" : fmt(m.clicks)}</td>
                         <td className="px-3 py-2.5 text-right tabular-nums text-fg">{pct(m.ctr)}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-fg-muted">{fmt(m.ctaClicks)}</td>
                         <td className="px-4 md:px-5 py-2.5 text-fg-muted whitespace-nowrap">
                           {km.label}: <b className="text-fg tabular-nums">{keyMetricText(km)}</b>
                         </td>
@@ -171,10 +197,12 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campai
                   <td className="px-4 md:px-5 py-2.5">Total</td>
                   <td className="px-3 py-2.5 text-fg-muted">{list.length} peças</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{fmt(total.impressions)}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{pct(total.viewability, 1)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{total.dspPieces ? pct(total.viewability, 1) : "—"}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{pct(total.pieceViewability, 1)}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{pct(total.engagement)}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{fmt(total.ctaClicks)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{total.clicks == null ? "—" : fmt(total.clicks)}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{pct(total.ctr)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{fmt(total.ctaClicks)}</td>
                   <td className="px-4 md:px-5 py-2.5" />
                 </tr>
               </tfoot>

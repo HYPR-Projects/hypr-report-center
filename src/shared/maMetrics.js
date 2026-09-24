@@ -116,8 +116,22 @@ export function dspDeliveryByPiece(links, detail, range = null) {
 // ─── Camada Mídia (comparável entre formatos) ───────────────────────────
 
 /**
- * Métricas comparáveis de uma peça. `dsp` = entrega da DSP casada (ou null).
- * impressionsSource diz de onde veio o número principal:
+ * Métricas comparáveis de uma peça, em DUAS réguas:
+ *
+ *   Entrega (régua da DSP, a mesma da aba Display) — impressões, visíveis,
+ *   viewability (visíveis ÷ impressões), cliques e CTR (cliques ÷ visíveis).
+ *   É o que o cliente compara com a aba Display e com o relatório da agência.
+ *
+ *   Medição da peça — carregamentos medidos, visíveis (50% da peça por 1 s),
+ *   cliques no CTA. A mesma regra em todas as DSPs: é a base justa pra
+ *   comparar peças entre si (a viewability da DSP mistura réguas — a DV360 e
+ *   a Yahoo medem diferente).
+ *
+ * `dsp` = entrega da DSP casada (dspDeliveryByPiece) ou null. Peça sem
+ * criativo da DSP ligado cai na medição da peça também na régua de entrega
+ * (`deliverySource: "piece"`), e fica sem cliques/CTR da DSP.
+ *
+ * impressionsSource diz de onde veio o número de impressões:
  *   "dsp"      → entrega da DSP do criativo vinculado
  *   "served"   → carregamentos contados pela peça (≈ DSP)
  *   "measured" → impressões medidas (peça sem contagem de carregamento)
@@ -133,45 +147,79 @@ export function pieceMedia(piece, dsp = null) {
   const clickSessions = s ? num(s.click) : num(t.clickSessions);
   const measured = num(t.impression);
   const served = num(t.impressionServed);
+  const pieceViewable = num(t.viewable);
+  const ctaClicks = num(t.ctaClick);
+  const hasDsp = !!(dsp && dsp.impressions > 0);
+
   let impressions = measured;
   let impressionsSource = "measured";
-  if (dsp && dsp.impressions > 0) {
+  if (hasDsp) {
     impressions = dsp.impressions;
     impressionsSource = "dsp";
   } else if (served > 0) {
     impressions = served;
     impressionsSource = "served";
   }
+  // Viewability de entrega: DSP quando ligada; senão a da peça, sobre a
+  // própria base medida (servidos ÷ medidos não é taxa de nada).
+  const viewable = hasDsp ? num(dsp.viewable) : pieceViewable;
+  const viewBase = hasDsp ? dsp.impressions : measured;
+  const clicks = hasDsp ? num(dsp.clicks) : null;
+
   return {
+    // Entrega
     impressions,
     impressionsSource,
+    deliverySource: hasDsp ? "dsp" : "piece",
+    viewable,
+    viewBase,
+    viewability: ratio(viewable, viewBase),
+    clicks,
+    ctr: hasDsp ? ratio(clicks, viewable) : null,
+    // Medição da peça
     measured,
-    viewable: num(t.viewable),
-    viewability: ratio(t.viewable, measured),
+    pieceViewable,
+    pieceViewability: ratio(pieceViewable, measured),
+    ctaClicks,
+    ctaCtr: ratio(ctaClicks, measured),
+    // Comportamento
     sessions,
     engaged,
     engagement: ratio(engaged, sessions),
-    ctaClicks: num(t.ctaClick),
-    ctr: ratio(t.ctaClick, measured),
     clickSessions,
     exactPeople: !!s,
   };
 }
 
-/** Soma da camada Mídia de várias peças (taxas recalculadas das somas). */
+/** Soma da camada Mídia de várias peças (taxas recalculadas das somas).
+ *  Cliques e CTR da DSP somam só as peças ligadas à DSP. */
 export function sumMedia(medias) {
-  const acc = { impressions: 0, measured: 0, viewable: 0, sessions: 0, engaged: 0, ctaClicks: 0, clickSessions: 0 };
+  const keys = ["impressions", "viewable", "viewBase", "measured", "pieceViewable", "ctaClicks", "sessions", "engaged", "clickSessions"];
+  const acc = Object.fromEntries(keys.map((k) => [k, 0]));
+  let dspClicks = 0;
+  let dspViewable = 0;
+  let dspPieces = 0;
   const sources = new Set();
   for (const m of medias || []) {
-    for (const k of Object.keys(acc)) acc[k] += num(m?.[k]);
-    if (m?.impressionsSource) sources.add(m.impressionsSource);
+    if (!m) continue;
+    for (const k of keys) acc[k] += num(m[k]);
+    if (m.impressionsSource) sources.add(m.impressionsSource);
+    if (m.deliverySource === "dsp") {
+      dspPieces += 1;
+      dspClicks += num(m.clicks);
+      dspViewable += num(m.viewable);
+    }
   }
   return {
     ...acc,
-    viewability: ratio(acc.viewable, acc.measured),
+    viewability: ratio(acc.viewable, acc.viewBase),
+    clicks: dspPieces ? dspClicks : null,
+    ctr: dspPieces ? ratio(dspClicks, dspViewable) : null,
+    pieceViewability: ratio(acc.pieceViewable, acc.measured),
+    ctaCtr: ratio(acc.ctaClicks, acc.measured),
     engagement: ratio(acc.engaged, acc.sessions),
-    ctr: ratio(acc.ctaClicks, acc.measured),
     impressionsSource: sources.size === 1 ? [...sources][0] : sources.size ? "mixed" : "measured",
+    dspPieces,
   };
 }
 
