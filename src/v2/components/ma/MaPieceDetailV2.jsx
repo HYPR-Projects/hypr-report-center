@@ -32,15 +32,9 @@ import { MaFunnelV2 } from "./MaFunnelV2";
 import { MaPreviewV2 } from "./MaPreviewV2";
 import { MaStackBarV2 } from "./MaStackBarV2";
 import { MaThumbV2 } from "./MaThumbV2";
-import { CsvButton, LayerBadge, MaCard } from "./maUi";
+import { CsvButton, HyprOnlyBadge, LayerBadge, MaCard } from "./maUi";
 import { downloadCsv, keyMetricText, pct, resolveChartVar, secondsText } from "./maFormat";
 import { useThemeColors } from "../../hooks/useThemeColors";
-
-const SOURCE_LABEL = {
-  dsp: "Impressões (DSP)",
-  served: "Impressões servidas",
-  measured: "Impressões medidas",
-};
 
 export function MaPieceDetailV2({
   piece,
@@ -54,6 +48,7 @@ export function MaPieceDetailV2({
   isDemo = false,
   campaignName = "campanha",
   heroId = null,
+  hypr = false,
 }) {
   const idx = pieces.findIndex((p) => p.creative_id === piece.creative_id);
   const prev = pieces[(idx - 1 + pieces.length) % pieces.length];
@@ -187,33 +182,41 @@ export function MaPieceDetailV2({
               </div>
             )}
 
-            <MaCard layer="midia" title="Entrega" subtitle={media.deliverySource === "dsp" ? "Pela DSP, mesma régua da aba Display" : "Medida pela peça"}>
+            <MaCard layer="midia" title="Entrega" subtitle={media.deliverySource === "dsp" ? "Pela DSP, mesma base da aba Display" : "Medida pela peça"}>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-y-3 divide-border/60 sm:divide-x">
-                <Stat label={SOURCE_LABEL[media.impressionsSource] || "Impressões"} value={fmt(media.impressions)} />
-                <Stat label={media.deliverySource === "dsp" ? "Imp. visíveis (DSP)" : "Imp. visíveis"} value={fmt(media.viewable)} className="sm:pl-4" />
+                <Stat label="Impressões" value={fmt(media.impressions)} />
+                <Stat label="Imp. visíveis" value={fmt(media.viewable)} className="sm:pl-4" />
                 <Stat label="Viewability" value={pct(media.viewability, 1)} className="sm:pl-4" />
                 {media.deliverySource === "dsp" ? (
-                  <Stat label={`Cliques (DSP) · CTR ${pct(media.ctr)}`} value={fmt(media.clicks)} className="sm:pl-4" />
+                  <Stat label={`Cliques · CTR ${pct(media.ctr)}`} value={fmt(media.clicks)} className="sm:pl-4" />
                 ) : (
-                  <Stat label={`Cliques em CTA · CTR ${pct(media.ctaCtr)}`} value={fmt(media.ctaClicks)} className="sm:pl-4" />
+                  <Stat label={`Cliques · CTR ${pct(media.ctaCtr)}`} value={fmt(media.ctaClicks)} className="sm:pl-4" />
                 )}
               </div>
-              {media.deliverySource === "dsp" && (
+              {hypr && media.deliverySource === "dsp" && (
                 <div className="mt-4 pt-3 border-t border-border/60">
-                  <div className="text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted mb-2">Medido pela própria peça</div>
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <span className="text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted">Medido pela própria peça</span>
+                    <HyprOnlyBadge />
+                  </div>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-y-3 divide-border/60 sm:divide-x">
                     <Stat label="Carregamentos medidos" value={fmt(media.measured)} />
                     <Stat label="Visíveis" value={fmt(media.pieceViewable)} className="sm:pl-4" />
                     <Stat label="Viewability da peça" value={pct(media.pieceViewability, 1)} className="sm:pl-4" />
                     <Stat label={`Cliques no CTA · CTR ${pct(media.ctaCtr)}`} value={fmt(media.ctaClicks)} className="sm:pl-4" />
                   </div>
+                  <p className="mt-2 text-[11px] leading-snug text-fg-subtle">
+                    A peça conta todo carregamento e todo toque no CTA, com a mesma regra em qualquer DSP; a DSP filtra tráfego inválido e mede do seu jeito. O cliente não vê este bloco.
+                  </p>
                 </div>
               )}
-              <p className="mt-3 text-[11px] leading-snug text-fg-subtle">
-                {media.deliverySource === "dsp"
-                  ? "Em cima, a entrega da DSP dos criativos ligados a esta peça (CTR = cliques ÷ visíveis, como na aba Display). Embaixo, o que a peça mediu: ela conta todo carregamento e todo toque no CTA com a mesma regra em qualquer DSP (visível = 50% da peça na tela por 1 segundo), enquanto cada DSP mede e filtra do seu jeito — por isso os números não são iguais."
-                  : "Sem criativo da DSP ligado a esta peça: os números são os que a própria peça mediu (visível = 50% da peça na tela por 1 segundo). Ligue a peça ao criativo da DSP em \"Gerenciar peças\" para usar a régua da aba Display."}
-              </p>
+              {media.deliverySource !== "dsp" && (
+                <p className="mt-3 text-[11px] leading-snug text-fg-subtle">
+                  {hypr
+                    ? "Sem criativo da DSP ligado: o cliente vê a medição da própria peça. Ligue a peça ao criativo da DSP em \"Gerenciar peças\" para usar a base da aba Display."
+                    : "Medido pela própria peça."}
+                </p>
+              )}
             </MaCard>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -221,7 +224,9 @@ export function MaPieceDetailV2({
                 label="Taxa de engajamento"
                 value={pct(media.engagement)}
                 accent
-                note={`${fmt(media.engaged)} de ${fmt(media.sessions)} ${media.exactPeople ? "pessoas" : "sessões (estimado)"}`}
+                note={hypr
+                  ? `${fmt(media.engaged)} de ${fmt(media.sessions)} ${media.exactPeople ? "pessoas" : "sessões (estimado)"}`
+                  : `${fmt(media.engaged)} pessoas interagiram`}
               />
               <SmallKpi label={km.label} value={keyMetricText(km)} note="Métrica-chave do formato" />
               {delta != null ? (
@@ -246,7 +251,7 @@ export function MaPieceDetailV2({
                 O funil em pessoas está indisponível no momento para esta peça. As demais métricas seguem valendo; tente de novo em alguns minutos.
               </p>
             ) : (
-              <MaFunnelV2 steps={funnel.steps} subs={funnel.subs} />
+              <MaFunnelV2 steps={funnel.steps} subs={funnel.subs} baseAsPercent={!hypr} />
             )}
           </MaCard>
         )}
@@ -260,7 +265,7 @@ export function MaPieceDetailV2({
                 subtitle={b.subtitle}
                 className={breakdowns.length > 1 && breakdowns.length % 2 === 1 && i === breakdowns.length - 1 ? "md:col-span-2" : undefined}
               >
-                <MaStackBarV2 parts={b.parts} unit={b.unit} list={b.list} />
+                <MaStackBarV2 parts={b.parts} unit={b.unit} list={b.list} percentOnly={!hypr && b.unit === "cliques"} />
               </MaCard>
             ))}
           </div>
@@ -271,7 +276,7 @@ export function MaPieceDetailV2({
         {/* Camada Widget */}
         {!waiting && widgets.map((w) => <WidgetBlock key={w.id || w.type} w={w} fileBase={fileBase} />)}
 
-        {!waiting && piece.daily?.length > 0 && <PieceTrend piece={piece} color={color} />}
+        {!waiting && piece.daily?.length > 0 && <PieceTrend piece={piece} color={color} hypr={hypr} />}
         </div>
       </div>
     </div>
@@ -674,17 +679,19 @@ function CloseToBlock({ w, fileBase }) {
 
 // ─── Série diária da peça ──────────────────────────────────────────────
 
+// `hyprOnly`: série da medição da peça que competiria com a entrega da DSP
+// (impressões, cliques no CTA) — fora do report do cliente.
 const PIECE_METRICS = {
-  engaged_sessions: { label: "Sessões engajadas" },
-  cta_clicks: { label: "Cliques em CTA" },
-  impressions: { label: "Impressões medidas" },
+  engaged_sessions: { label: "Pessoas que interagiram" },
   pin_clicks: { label: "Cliques em pin" },
+  cta_clicks: { label: "Cliques em CTA", hyprOnly: true },
+  impressions: { label: "Impressões medidas", hyprOnly: true },
 };
 
-function PieceTrend({ piece, color }) {
+function PieceTrend({ piece, color, hypr: hyprView = false }) {
   const hypr = useThemeColors();
   const available = Object.keys(PIECE_METRICS).filter(
-    (k) => k !== "pin_clicks" || piece.format === "tap-to-map",
+    (k) => (k !== "pin_clicks" || piece.format === "tap-to-map") && (hyprView || !PIECE_METRICS[k].hyprOnly),
   );
   const [metric, setMetric] = useState("engaged_sessions");
   const m = available.includes(metric) ? metric : available[0];

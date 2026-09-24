@@ -18,7 +18,10 @@ const COLORS = [
 ];
 const colorAt = (i) => COLORS[i] || "var(--color-fg-subtle)";
 
-export function MaStackBarV2({ parts = [], unit = "", list = false }) {
+// `percentOnly`: legenda só com a participação (%). No report do cliente os
+// cliques no CTA contados pela peça não aparecem em número absoluto — somados,
+// competiriam com os cliques da DSP.
+export function MaStackBarV2({ parts = [], unit = "", list = false, percentOnly = false }) {
   const total = parts.reduce((s, p) => s + (p.value || 0), 0);
   if (!parts.length || total <= 0) {
     return <p className="text-[12px] text-fg-subtle">Sem registros no período.</p>;
@@ -52,7 +55,7 @@ export function MaStackBarV2({ parts = [], unit = "", list = false }) {
               key={p.label}
               className="h-full first:rounded-l-full last:rounded-r-full"
               style={{ width: `${(p.value / total) * 100}%`, background: colorAt(i), minWidth: 3 }}
-              title={`${p.label}: ${fmt(p.value)}`}
+              title={percentOnly ? `${p.label}: ${fmt((p.value / total) * 100, 1)}%` : `${p.label}: ${fmt(p.value)}`}
             />
           ) : null,
         )}
@@ -62,12 +65,18 @@ export function MaStackBarV2({ parts = [], unit = "", list = false }) {
           <span key={p.label} className="inline-flex items-center gap-1.5 text-[11px] text-fg-muted">
             <span className="size-2 rounded-full shrink-0" style={{ background: colorAt(i) }} aria-hidden />
             {p.label}
-            <span className="font-semibold text-fg tabular-nums">{fmt(p.value)}</span>
-            <span className="text-fg-subtle tabular-nums">{fmt((p.value / total) * 100, 1)}%</span>
+            {percentOnly ? (
+              <span className="font-semibold text-fg tabular-nums">{fmt((p.value / total) * 100, 1)}%</span>
+            ) : (
+              <>
+                <span className="font-semibold text-fg tabular-nums">{fmt(p.value)}</span>
+                <span className="text-fg-subtle tabular-nums">{fmt((p.value / total) * 100, 1)}%</span>
+              </>
+            )}
           </span>
         ))}
       </div>
-      {unit && <p className="mt-2 text-[11px] text-fg-subtle">Em {unit}, no período.</p>}
+      {unit && <p className="mt-2 text-[11px] text-fg-subtle">{percentOnly ? `Participação no total de ${unit}, no período.` : `Em ${unit}, no período.`}</p>}
     </div>
   );
 }

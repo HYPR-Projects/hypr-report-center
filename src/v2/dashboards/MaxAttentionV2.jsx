@@ -311,6 +311,7 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
           campaignStart={data?.campaign?.start_date || null}
           isDemo={isDemoToken(token)}
           campaignName={data?.campaign?.campaign_name || "campanha"}
+          hypr={isAdmin}
         />
         {isAdmin && (
           <div className="flex justify-end">
@@ -344,6 +345,7 @@ export default function MaxAttentionV2({ token, view = null, data, range = null,
         onOpenPiece={openPiece}
         heroId={heroId}
         campaignName={data?.campaign?.campaign_name || "campanha"}
+        hypr={isAdmin}
       />
       {modal}
     </div>
