@@ -13,7 +13,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as Popover from "@radix-ui/react-popover";
 import { getMaLinks, saveMaLinks, searchMaCreatives } from "../../../lib/api";
 import { formatLabel } from "../../../shared/maMetrics";
-import { lineCoverage, lineSearchQuery, namesToLink, strongSuggestions } from "../../../shared/maLinking";
+import { lineCoverage, lineSearchQuery, namesToLink, rowPicks, strongSuggestions } from "../../../shared/maLinking";
 import { Button } from "../../../ui/Button";
 import { Input } from "../../../ui/Input";
 import { cn } from "../../../ui/cn";
@@ -153,7 +153,7 @@ export function MaLinksModalV2({ open, onOpenChange, targets, defaultTarget, adm
   const suggestions = (search.items || []).filter((it) => !linkedIds.has(String(it.creative_id).toLowerCase()));
   const coverage = useMemo(() => lineCoverage(dspLines, links, search.items || []), [dspLines, links, search.items]);
   const strong = strongSuggestions(coverage, suggestions);
-  const uncovered = coverage.filter((r) => !r.linked.length).length;
+  const uncovered = coverage.filter((r) => r.covered < r.names.length).length;
   const searchLine = (line) => {
     const query = lineSearchQuery(line, terms);
     setQ(query);
@@ -226,31 +226,46 @@ export function MaLinksModalV2({ open, onOpenChange, targets, defaultTarget, adm
               ) : (
                 <ul className="divide-y divide-border rounded-lg border border-border">
                   {coverage.map((row) => {
-                    const best = row.suggested[0];
+                    const picks = rowPicks(row);
+                    const full = row.covered >= row.names.length;
                     return (
                       <li key={row.line} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2">
                         <div className="min-w-0 flex-1 basis-[260px]">
                           <div className="text-[12px] font-semibold text-fg break-all">{row.line}</div>
                           <div className="text-[11px] text-fg-subtle">
                             {compact.format(row.impressions || 0)} imp. · {row.names.length} {row.names.length === 1 ? "tamanho" : "tamanhos"}
+                            {row.covered > 0 && !full ? ` · ${row.covered} com peça` : ""}
                           </div>
                         </div>
-                        {row.linked.length ? (
-                          <span className="inline-flex max-w-[280px] items-center gap-1.5 truncate rounded-md border border-success/30 bg-success-soft px-2 py-1 text-[11px] font-semibold text-success" title={row.linked.map((l) => l.name).join(", ")}>
-                            ✓ {row.linked.map((l) => l.name || l.creative_id).join(", ")}
-                          </span>
-                        ) : best ? (
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="max-w-[220px] truncate text-[12px] text-fg" title={best.name}>{best.name}</span>
-                            {best.template_slug && <span className="text-[10px] text-fg-subtle">{formatLabel(best.template_slug)}</span>}
-                            <Button size="sm" variant="secondary" onClick={() => add(best)} disabled={links.length >= MAX}>Vincular</Button>
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-2">
-                            <span className="text-[11px] text-fg-subtle">Sem peça sugerida</span>
-                            <Button size="sm" variant="ghost" onClick={() => searchLine(row.line)} disabled={search.loading}>Buscar</Button>
-                          </div>
-                        )}
+                        <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
+                          {row.linked.length > 0 && (
+                            <span
+                              className={cn(
+                                "inline-flex max-w-[280px] items-center gap-1.5 truncate rounded-md border px-2 py-1 text-[11px] font-semibold",
+                                full ? "border-success/30 bg-success-soft text-success" : "border-border text-fg-muted",
+                              )}
+                              title={row.linked.map((l) => l.name).join(", ")}
+                            >
+                              ✓ {row.linked.length === 1 ? row.linked[0].name || row.linked[0].creative_id : `${row.linked.length} peças`}
+                            </span>
+                          )}
+                          {!full && picks.length > 0 && (
+                            <>
+                              <span className="max-w-[240px] truncate text-[12px] text-fg" title={picks.map((p) => p.name).join("\n")}>
+                                {picks.length === 1 ? picks[0].name : `${picks.length} peças, uma por tamanho`}
+                              </span>
+                              <Button size="sm" variant="secondary" onClick={() => addMany(picks)} disabled={links.length >= MAX}>
+                                {picks.length === 1 ? "Vincular" : `Vincular ${picks.length}`}
+                              </Button>
+                            </>
+                          )}
+                          {!full && picks.length === 0 && (
+                            <>
+                              <span className="text-[11px] text-fg-subtle">{row.covered ? "Resto sem peça sugerida" : "Sem peça sugerida"}</span>
+                              <Button size="sm" variant="ghost" onClick={() => searchLine(row.line)} disabled={search.loading}>Buscar</Button>
+                            </>
+                          )}
+                        </div>
                       </li>
                     );
                   })}

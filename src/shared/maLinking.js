@@ -19,20 +19,26 @@ export function takenNames(links, exceptId = null) {
 
 /**
  * Situação de cada linha criativa da DSP:
- *   { line, names, impressions, linked: [peça], suggested: [sugestão] }
- * `linked` = peças vinculadas que usam algum nome da linha; `suggested` =
- * sugestões (ainda não vinculadas) cujo casamento inclui a linha, melhor
- * primeiro. Mesma ordem das linhas (impressão desc, vinda do backend).
+ *   { line, names, impressions, linked: [peça], covered, suggested: [sugestão] }
+ * `linked` = peças vinculadas que usam algum nome da linha; `covered` =
+ * quantos nomes (tamanhos) da linha já têm peça; `suggested` = sugestões
+ * ainda não vinculadas que casaram com a linha e trazem algum tamanho
+ * descoberto, melhor primeiro. Na Platform é comum uma peça por tamanho,
+ * então uma linha pode ter várias sugestões, cada uma com o seu nome.
  */
 export function lineCoverage(lines, links, suggestions) {
   const linkedIds = new Set((links || []).map((l) => l.creative_id));
+  const taken = takenNames(links);
   return (lines || []).map((e) => {
     const names = new Set((e.names || []).map(normName));
     const linked = (links || []).filter((l) => (l.dsp_creative_names || []).some((n) => names.has(normName(n))));
-    const suggested = (suggestions || []).filter(
-      (s) => !linkedIds.has(String(s.creative_id).toLowerCase()) && (s.dsp_lines || []).includes(e.line),
-    );
-    return { ...e, linked, suggested };
+    const covered = [...names].filter((n) => taken.has(n)).length;
+    const suggested = (suggestions || []).filter((s) => {
+      if (linkedIds.has(String(s.creative_id).toLowerCase()) || !(s.dsp_lines || []).includes(e.line)) return false;
+      const own = (s.dsp_creative_names || []).map(normName).filter((n) => names.has(n));
+      return own.length === 0 ? covered === 0 : own.some((n) => !taken.has(n));
+    });
+    return { ...e, linked, covered, suggested };
   });
 }
 
@@ -50,18 +56,34 @@ export function namesToLink(item, links) {
   return base.filter((n) => !taken.has(normName(n)));
 }
 
-/** Sugestões que dá para vincular de uma vez: casaram com linha da DSP que
- *  ainda está sem peça (ou por AdBolt/token, sinais fortes). Uma por linha. */
+/** Sugestões de uma linha que dá para vincular juntas: a melhor de cada
+ *  tamanho descoberto, sem duas peças disputando o mesmo nome da DSP. */
+export function rowPicks(row, used = new Set()) {
+  const picks = [];
+  const mine = new Set((row.names || []).map(normName));
+  for (const s of row.suggested || []) {
+    const own = (s.dsp_creative_names || []).map(normName).filter((n) => mine.has(n));
+    if (own.some((n) => used.has(n))) continue;
+    if (!own.length && picks.length) continue; // sem tamanho próprio: só se for a única
+    own.forEach((n) => used.add(n));
+    picks.push(s);
+    if (!own.length) break;
+  }
+  return picks;
+}
+
+/** Tudo que dá para vincular de uma vez: as escolhas de cada linha com
+ *  tamanho descoberto, mais o que casou pela tag da DSP (AdBolt). Token no
+ *  nome sozinho fica de fora — pega a survey da campanha, que tem aba própria. */
 export function strongSuggestions(coverage, suggestions) {
+  const used = new Set();
   const picked = new Map();
   for (const row of coverage || []) {
-    if (row.linked.length || !row.suggested.length) continue;
-    const best = row.suggested[0];
-    picked.set(String(best.creative_id).toLowerCase(), best);
+    if (row.covered >= (row.names || []).length) continue;
+    for (const s of rowPicks(row, used)) picked.set(String(s.creative_id).toLowerCase(), s);
   }
   for (const s of suggestions || []) {
-    const r = s.reasons || [];
-    if (r.includes("adbolt") || r.includes("token")) picked.set(String(s.creative_id).toLowerCase(), s);
+    if ((s.reasons || []).includes("adbolt")) picked.set(String(s.creative_id).toLowerCase(), s);
   }
   return [...picked.values()];
 }

@@ -101,3 +101,49 @@ def test_query_matches_palavras_em_qualquer_ordem():
     assert m.query_matches("MobLand - Carrossel", "carrossel mobland")
     assert m.query_matches("MobLand - Carrossel", "mobland")
     assert not m.query_matches("MobLand - Carrossel", "reveal")
+
+
+# Dados reais da O3HI21 (MobLand, set/26): na Platform é uma peça POR
+# TAMANHO, com o mesmo nome do criativo da DSP (só a caixa muda).
+REAL_DSP = [
+    ("HYPR_MOBLAND_PARAMOUNT_CAROUSEL_300X250", "300x250", 3124427),
+    ("HYPR_MOBLAND_PARAMOUNT_CAROUSEL_300X600", "300x600", 2569311),
+    ("HYPR_MOBLAND_PARAMOUNT_CAROUSEL_970X250", "970x250", 843234),
+    ("HYPR_MOBLAND_PARAMOUNT_REVEAL_TIROS_300X250", "300x250", 1623312),
+    ("HYPR_MOBLAND_PARAMOUNT_REVEAL_GRAFITE_300X250", "300x250", 1789839),
+    ("P+_KA_SAFE_MOBLAND_S2_FF_320X50_BR_HERO", "320x50", 337369),
+    ("P+_KA_SAFE_MOBLAND_S2_FF_728X90_BR_HERO", "728x90", 138892),
+]
+
+
+def _real_rank(pieces):
+    lines = m.dsp_lines([{"creative_name": n, "creative_size": z, "impressions": i} for n, z, i in REAL_DSP])
+    ctx = m.campaign_tokens(lines, client="PARAMOUNT", campaign_name="MobLand")
+    cands = [{"creative_id": str(i), "name": n, "client_name": "Paramount", "platform_reasons": r}
+             for i, (n, r) in enumerate(pieces)]
+    return {it["name"]: it for it in m.rank(cands, lines=lines, ctx=ctx, client="PARAMOUNT")}
+
+
+def test_peca_por_tamanho_leva_so_o_criativo_do_mesmo_tamanho():
+    got = _real_rank([
+        ("HYPR_Mobland_Paramount_Carousel_300x250", []),
+        ("HYPR_Mobland_Paramount_Carousel_300x600", []),
+        ("HYPR_Mobland_Paramount_Carousel_970x250", []),
+        ("HYPR_Mobland_Paramount_Reveal_Tiros_300x250", []),
+    ])
+    assert got["HYPR_Mobland_Paramount_Carousel_300x250"]["dsp_creative_names"] == ["HYPR_MOBLAND_PARAMOUNT_CAROUSEL_300X250"]
+    assert got["HYPR_Mobland_Paramount_Carousel_970x250"]["dsp_creative_names"] == ["HYPR_MOBLAND_PARAMOUNT_CAROUSEL_970X250"]
+    assert got["HYPR_Mobland_Paramount_Reveal_Tiros_300x250"]["dsp_creative_names"] == ["HYPR_MOBLAND_PARAMOUNT_REVEAL_TIROS_300X250"]
+    assert got["HYPR_Mobland_Paramount_Carousel_300x600"]["reasons"] == ["name", "campaign", "client"]
+
+
+def test_tamanho_que_nao_rodou_nao_casa_a_linha():
+    got = _real_rank([("HYPR_Teste_Paramount_Carousel_300x2500 (cópia)", [])])
+    it = got["HYPR_Teste_Paramount_Carousel_300x2500 (cópia)"]
+    assert it["dsp_creative_names"] == [] and "name" not in it["reasons"]
+
+
+def test_survey_da_campanha_nao_ganha_criativo_da_dsp():
+    got = _real_rank([("HYPR_O3HI21_Survey_Paramount_Mobland_Controle_Awareness_Set-26", ["token"])])
+    it = got["HYPR_O3HI21_Survey_Paramount_Mobland_Controle_Awareness_Set-26"]
+    assert "token" in it["reasons"] and it["dsp_creative_names"] == []

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lineCoverage, namesToLink, strongSuggestions, lineSearchQuery, takenNames } from "./maLinking.js";
+import { lineCoverage, namesToLink, strongSuggestions, lineSearchQuery, takenNames, rowPicks } from "./maLinking.js";
 
 const LINES = [
   { line: "HYPR_MOBLAND_PARAMOUNT_CAROUSEL", names: ["HYPR_MOBLAND_PARAMOUNT_CAROUSEL_300x600", "HYPR_MOBLAND_PARAMOUNT_CAROUSEL_300x250"], impressions: 10 },
@@ -33,10 +33,24 @@ test("namesToLink: todos os tamanhos, menos o que outra peça já usa", () => {
   assert.deepEqual(namesToLink({ creative_id: "m" }, []), []);
 });
 
-test("strongSuggestions: uma por linha livre + AdBolt/token", () => {
-  const tok = { creative_id: "t", name: "ID-O3HI21_x", reasons: ["token"], dsp_lines: [] };
-  const cov = lineCoverage(LINES, [], [CAR, TIROS, tok]);
-  assert.deepEqual(strongSuggestions(cov, [CAR, TIROS, tok]).map((s) => s.creative_id).sort(), ["a", "b", "t"]);
+test("strongSuggestions: uma por linha livre + AdBolt, sem token sozinho", () => {
+  const tok = { creative_id: "t", name: "ID-O3HI21_Survey", reasons: ["token"], dsp_lines: [] };
+  const ad = { creative_id: "d", name: "Tag", reasons: ["adbolt"], dsp_lines: [] };
+  const cov = lineCoverage(LINES, [], [CAR, TIROS, tok, ad]);
+  assert.deepEqual(strongSuggestions(cov, [CAR, TIROS, tok, ad]).map((s) => s.creative_id).sort(), ["a", "b", "d"]);
+});
+
+test("uma peça por tamanho: todas entram, cada uma com o seu nome", () => {
+  const [n250, n600] = ["HYPR_MOBLAND_PARAMOUNT_CAROUSEL_300X250", "HYPR_MOBLAND_PARAMOUNT_CAROUSEL_300X600"];
+  const line = { line: "HYPR_MOBLAND_PARAMOUNT_CAROUSEL", names: [n250, n600], impressions: 10 };
+  const p250 = { creative_id: "p250", reasons: ["name"], dsp_lines: [line.line], dsp_creative_names: [n250] };
+  const p600 = { creative_id: "p600", reasons: ["name"], dsp_lines: [line.line], dsp_creative_names: [n600] };
+  const cov = lineCoverage([line], [], [p250, p600]);
+  assert.deepEqual(rowPicks(cov[0]).map((s) => s.creative_id), ["p250", "p600"]);
+  // Com o 300x250 vinculado, a linha fica parcial e só o 300x600 é sugerido.
+  const partial = lineCoverage([line], [{ creative_id: "p250", dsp_creative_names: [n250] }], [p250, p600]);
+  assert.equal(partial[0].covered, 1);
+  assert.deepEqual(partial[0].suggested.map((s) => s.creative_id), ["p600"]);
 });
 
 test("lineSearchQuery: o que distingue a linha", () => {

@@ -3165,10 +3165,13 @@ def report_data(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         token = (request.args.get("token") or "").strip()
         q = (request.args.get("q") or "").strip()
+        ctx = _ma_search_context(token) if ma_report.valid_token(token) else {}
         if not ma_report.is_configured():
-            return (jsonify({"error": ma_report.not_configured_message(), "configured": False}), 501, headers)
+            # Sem a chave não há candidatos, mas as linhas da DSP saem do
+            # próprio report: o admin já vê o que falta vincular.
+            return (jsonify({"error": ma_report.not_configured_message(), "configured": False,
+                             "context": _ma_context_payload(ctx)}), 501, headers)
         try:
-            ctx = _ma_search_context(token) if ma_report.valid_token(token) else {}
             lines = ctx.get("lines") or []
             items = ma_report.search_creatives(
                 q=q or None,
@@ -3177,16 +3180,7 @@ def report_data(request):
                 lines=lines,
                 campaign_name=ctx.get("campaign_name"),
             )
-            names = []
-            for e in lines:
-                names.extend(n for n in e["names"] if n not in names)
-            return (jsonify({"items": items, "configured": True, "context": {
-                "client": ctx.get("client"),
-                "campaign_name": ctx.get("campaign_name"),
-                "lines": lines,
-                "terms": ma_report.search_terms(lines, ctx.get("client"), ctx.get("campaign_name")),
-                "dsp_creative_names": names[:300],
-            }}), 200, headers)
+            return (jsonify({"items": items, "configured": True, "context": _ma_context_payload(ctx)}), 200, headers)
         except ma_report.PlatformError as e:
             logger.error(f"[ERROR ma_search] {token}: {e}")
             return (jsonify({"error": f"Busca na Platform falhou: {e}"}), 502, headers)
@@ -5489,6 +5483,21 @@ def _ma_tokens_for_view(token: str, view: str) -> list:
     if view and ma_report.valid_token(view):
         return [view]
     return [token]
+
+
+def _ma_context_payload(ctx: dict) -> dict:
+    """`context` da resposta do ma_search (a UI monta as linhas da DSP daqui)."""
+    lines = ctx.get("lines") or []
+    names = []
+    for e in lines:
+        names.extend(n for n in e["names"] if n not in names)
+    return {
+        "client": ctx.get("client"),
+        "campaign_name": ctx.get("campaign_name"),
+        "lines": lines,
+        "terms": ma_report.search_terms(lines, ctx.get("client"), ctx.get("campaign_name")),
+        "dsp_creative_names": names[:300],
+    }
 
 
 def _ma_search_context(token: str) -> dict:
