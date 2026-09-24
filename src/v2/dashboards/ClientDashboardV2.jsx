@@ -370,6 +370,24 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     setTabState(t);
     writeTabToUrl(t);
   };
+  // Troca pela barra de abas com a página rolada além do começo delas: sem
+  // isso a aba nova abria no meio da rolagem da anterior. Volta ao início
+  // do conteúdo (barra fixa grudada no TopBar, h-16) sem animar a rolagem,
+  // que competiria com a entrada da aba. Rolado acima disso, não mexe.
+  const tabsTopRef = useRef(null);
+  const onTabChange = (t) => {
+    setTab(t);
+    const el = tabsTopRef.current;
+    if (!el || typeof window === "undefined") return;
+    const top = el.getBoundingClientRect().top + window.scrollY - 64;
+    if (window.scrollY > top + 1) {
+      try {
+        window.scrollTo({ top, behavior: "instant" });
+      } catch {
+        window.scrollTo(0, top);
+      }
+    }
+  };
   // Atalhos de dentro do conteúdo ("Ver Display →"): troca a aba e volta ao
   // topo, senão a aba nova abre no meio da rolagem da anterior.
   const navigateToTab = (t) => {
@@ -889,7 +907,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
           }
         />
 
-        <div className="page-shell py-6 md:py-8 space-y-6">
+        <div className="page-shell py-6 md:py-8 space-y-6 content-fade-in">
           <CampaignHeaderV2
             campaignName={camp.campaign_name}
             clientName={camp.client_name}
@@ -925,8 +943,9 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
               switchingView ? "opacity-40 pointer-events-none select-none" : "",
             ].join(" ")}
             aria-busy={switchingView || undefined}
+            ref={tabsTopRef}
           >
-          <Tabs value={effectiveTab} onValueChange={setTab}>
+          <Tabs value={effectiveTab} onValueChange={onTabChange}>
             {/* ─── Barra de controles fixa ────────────────────────────────
                 Gruda logo abaixo do TopBar (h-16). Full-bleed pelo mesmo
                 padding do page-shell (4/6/8) pra o fundo fosco cobrir a
@@ -1176,29 +1195,74 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
 }
 
 // ─── Loading state ────────────────────────────────────────────────────
+// Espelha a estrutura real (header, barra de abas + filtros, KPIs, ritmo,
+// resumo por mídia, tendência) pra que a troca skeleton → conteúdo não
+// empurre nada de lugar. O conteúdo real entra com `content-fade-in`.
 function DashboardSkeleton() {
   return (
     <div className="min-h-screen bg-canvas text-fg font-sans">
       <TopBarV2 updatedAtLabel="Carregando..." />
-      <div className="page-shell py-6 md:py-8 space-y-6">
-        <div className="rounded-2xl border border-border-strong bg-surface-2 p-8 space-y-3">
-          <Skeleton className="h-3 w-24" />
-          <Skeleton className="h-9 w-96" />
-          <Skeleton className="h-4 w-64" />
+      <div className="page-shell py-6 md:py-8 space-y-6" aria-busy="true">
+        {/* Header da campanha */}
+        <div className="rounded-2xl border border-border-strong bg-surface-2 p-6 md:p-8">
+          <div className="flex items-center gap-4">
+            <Skeleton rounded="lg" className="size-14 shrink-0" />
+            <div className="flex-1 space-y-2.5 min-w-0">
+              <Skeleton className="h-3 w-28" />
+              <Skeleton className="h-8 w-full max-w-md" />
+              <Skeleton className="h-3.5 w-full max-w-xs" />
+            </div>
+          </div>
         </div>
-        <div className="border-b border-border flex gap-2">
-          <Skeleton className="h-10 w-32" />
-          <Skeleton className="h-10 w-24" />
-          <Skeleton className="h-10 w-24" />
+        {/* Barra de abas + filtros */}
+        <div className="border-b border-border">
+          <div className="flex gap-2 h-11 items-center">
+            <Skeleton className="h-5 w-28" />
+            <Skeleton className="h-5 w-20" />
+            <Skeleton className="h-5 w-20" />
+            <Skeleton className="h-5 w-28 hidden sm:block" />
+          </div>
+          <div className="flex gap-2 py-2.5">
+            <Skeleton rounded="lg" className="h-8 w-40" />
+            <Skeleton rounded="lg" className="h-8 w-28" />
+            <Skeleton rounded="lg" className="h-8 w-24 hidden sm:block" />
+          </div>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="rounded-xl border border-border bg-surface-2 p-4">
-              <Skeleton className="h-3 w-20 mb-3" />
-              <Skeleton className="h-7 w-28" />
+        {/* KPIs */}
+        <div className="grid grid-cols-2 xl:grid-cols-6 gap-3 pt-6">
+          <div className="col-span-2 rounded-xl border border-border-strong bg-surface-2 p-5 sm:p-6 space-y-3">
+            <Skeleton className="h-3 w-32" />
+            <Skeleton className="h-9 w-44" />
+            <Skeleton rounded="full" className="h-1.5 w-full" />
+          </div>
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="rounded-xl border border-border bg-surface-2 p-4 space-y-3">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-7 w-24" />
             </div>
           ))}
         </div>
+        {/* Ritmo de entrega */}
+        <div className="rounded-xl border border-border bg-surface-2 p-5 space-y-4">
+          <Skeleton className="h-3 w-36" />
+          <Skeleton rounded="full" className="h-2.5 w-full" />
+          <Skeleton className="h-3 w-2/3" />
+        </div>
+        {/* Resumo por mídia */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {Array.from({ length: 2 }).map((_, i) => (
+            <div key={i} className="rounded-xl border border-border bg-surface-2 p-5 space-y-4">
+              <Skeleton className="h-4 w-24" />
+              <Skeleton className="h-8 w-32" />
+              <div className="grid grid-cols-2 gap-3">
+                <Skeleton className="h-10" />
+                <Skeleton className="h-10" />
+              </div>
+            </div>
+          ))}
+        </div>
+        {/* Tendência */}
+        <Skeleton rounded="lg" className="h-[272px] w-full" />
       </div>
     </div>
   );

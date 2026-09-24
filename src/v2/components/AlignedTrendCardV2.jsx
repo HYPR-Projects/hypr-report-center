@@ -56,6 +56,7 @@ export function AlignedTrendCardV2({
         percent
         height={130}
         syncId={syncId}
+        animationDelay={120}
       />
     </Card>
   );

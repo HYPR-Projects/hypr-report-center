@@ -22,7 +22,7 @@ export function PairedBarsV2({ rows, groupKey, volumeKey, volumeLabel, rateKey, 
         <span />
         <span className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">{volumeLabel}</span>
         <span className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">{rateLabel}</span>
-        {data.map((r) => {
+        {data.map((r, i) => {
           const v = Number(r[volumeKey]) || 0;
           const t = Number(r[rateKey]) || 0;
           return (
@@ -30,13 +30,13 @@ export function PairedBarsV2({ rows, groupKey, volumeKey, volumeLabel, rateKey, 
               <span className="text-[12px] text-fg truncate" title={r[groupKey]}>{r[groupKey] || "—"}</span>
               <div className="flex items-center gap-2 min-w-0">
                 <div className="h-3 flex-1 rounded-r-[4px] bg-track overflow-hidden">
-                  <div className="h-full rounded-r-[4px] bg-chart-s1" style={{ width: `${Math.max(1, (v / maxV) * 100)}%` }} />
+                  <div className="bar-grow-x h-full rounded-r-[4px] bg-chart-s1" style={{ width: `${Math.max(1, (v / maxV) * 100)}%`, "--i": i }} />
                 </div>
                 <span className="w-[3.75rem] sm:w-[4.5rem] shrink-0 text-right text-[11px] font-semibold text-fg tabular-nums">{fmt(v)}</span>
               </div>
               <div className="flex items-center gap-2 min-w-0">
                 <div className="h-3 flex-1 rounded-r-[4px] bg-track overflow-hidden">
-                  <div className="h-full rounded-r-[4px] bg-chart-s2" style={{ width: `${Math.max(1, (t / maxR) * 100)}%` }} />
+                  <div className="bar-grow-x h-full rounded-r-[4px] bg-chart-s2" style={{ width: `${Math.max(1, (t / maxR) * 100)}%`, "--i": i + 1 }} />
                 </div>
                 <span className="w-[3.25rem] sm:w-[3.75rem] shrink-0 text-right text-[11px] font-semibold text-fg tabular-nums">{fmt(t, rateDecimals)}%</span>
               </div>

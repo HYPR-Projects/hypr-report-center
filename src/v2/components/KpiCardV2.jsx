@@ -18,6 +18,7 @@ import {
   TooltipContent,
 } from "../../ui/Tooltip";
 import { cn } from "../../ui/cn";
+import { TweenedValueV2 } from "./TweenedValueV2";
 
 export function KpiCardV2({
   label,
@@ -73,7 +74,7 @@ export function KpiCardV2({
             )}
             title={typeof value === "string" ? value : undefined}
           >
-            {value}
+            <TweenedValueV2 value={value} />
           </span>
         )}
 

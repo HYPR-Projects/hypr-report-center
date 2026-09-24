@@ -49,8 +49,8 @@ export function MaFunnelV2({ steps, subs = [], note = null, unitLabel = "pessoas
               </span>
               <div role="cell" className={cn("h-2.5 rounded-full bg-track overflow-hidden", BAR)}>
                 <div
-                  className={cn("h-full rounded-full", i === 0 ? "bg-fg-subtle/40" : "bg-signature")}
-                  style={{ width: `${width(r.value, i)}%` }}
+                  className={cn("bar-grow-x h-full rounded-full", i === 0 ? "bg-fg-subtle/40" : "bg-signature")}
+                  style={{ width: `${width(r.value, i)}%`, "--i": i * 2 }}
                 />
               </div>
               <span role="cell" className="text-[12px] font-semibold text-fg tabular-nums text-right">
@@ -69,7 +69,7 @@ export function MaFunnelV2({ steps, subs = [], note = null, unitLabel = "pessoas
             </div>
           );
         })}
-        {subs.map((s) => (
+        {subs.map((s, j) => (
           <div
             key={s.key || s.label}
             role="row"
@@ -77,7 +77,7 @@ export function MaFunnelV2({ steps, subs = [], note = null, unitLabel = "pessoas
           >
             <span role="cell" className="text-[11px] text-fg-subtle truncate pl-3">↳ {s.label}</span>
             <div role="cell" className={cn("h-1.5 rounded-full bg-track overflow-hidden", BAR)}>
-              <div className="h-full rounded-full bg-signature/55" style={{ width: `${width(s.value, 1)}%` }} />
+              <div className="bar-grow-x h-full rounded-full bg-signature/55" style={{ width: `${width(s.value, 1)}%`, "--i": rows.length * 2 + j }} />
             </div>
             <span role="cell" className="text-[11px] text-fg tabular-nums text-right">{fmt(s.value)}</span>
             <span role="cell" className="text-[11px] text-fg-subtle tabular-nums text-right" title="Parcela de quem chegou à última etapa">

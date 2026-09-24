@@ -264,7 +264,9 @@ export function DailyAggregateTableV2({
                 ))}
               </tr>
             </thead>
-            <tbody>
+            {/* key por mídia: trocar Agregado/Display/Vídeo faz fade nas linhas
+                em vez de trocar os números no lugar sem aviso. */}
+            <tbody key={media} className="content-swap-in">
               {visibleRows.map((r) => (
                 <tr
                   key={r.date}

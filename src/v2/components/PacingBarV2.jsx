@@ -159,34 +159,36 @@ export function PacingBarV2({
             <>
               {/* Contrato (pago) — verde se entregue, senão severidade */}
               <div
-                className="absolute inset-y-0 left-0 rounded-l-full transition-[width] duration-500 ease-out"
+                className="absolute inset-y-0 left-0 rounded-l-full bar-grow-x"
                 style={{ width: `${contractFillW}%`, background: contractColor }}
               />
               {/* Bônus (cortesia) — tom claro pra diferenciar do pago */}
               {bonusFillW > 0 && (
                 <div
-                  className="absolute inset-y-0 transition-[width] duration-500 ease-out"
+                  className="absolute inset-y-0 bar-grow-x"
                   style={{
                     left: `${contractedShare}%`,
                     width: `${bonusFillW}%`,
                     background: palette.signatureLight,
+                    "--i": 8,
                   }}
                 />
               )}
             </>
           ) : (
             <div
-              className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-500 ease-out"
+              className="absolute inset-y-0 left-0 rounded-full bar-grow-x"
               style={{ width: `${fillBase}%`, background: barColor }}
             />
           )}
           {fillOver > 0 && (
             <div
-              className="absolute inset-y-0 rounded-r-full transition-[width] duration-500 ease-out"
+              className="absolute inset-y-0 rounded-r-full bar-grow-x"
               style={{
                 left: `${fillBase}%`,
                 width: `${Math.min(fillOver, 50)}%`,
                 background: palette.signature,
+                "--i": 8,
               }}
             />
           )}
@@ -303,16 +305,17 @@ function PacingSubBarRow({ label, pacing }) {
       </span>
       <div className="relative h-1.5 rounded-full bg-track flex-1 overflow-hidden">
         <div
-          className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-500 ease-out"
+          className="absolute inset-y-0 left-0 rounded-full bar-grow-x"
           style={{ width: `${baseWidth}%`, background: barColor }}
         />
         {overPct > 0 && (
           <div
-            className="absolute inset-y-0 rounded-r-full transition-[width] duration-500 ease-out"
+            className="absolute inset-y-0 rounded-r-full bar-grow-x"
             style={{
               left: `${baseWidth}%`,
               width: `${Math.min(overPct, 50)}%`,
               background: palette.signature,
+              "--i": 8,
             }}
           />
         )}

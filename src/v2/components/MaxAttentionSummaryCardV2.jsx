@@ -12,6 +12,7 @@ import { Card, CardBody } from "../../ui/Card";
 import { Skeleton } from "../../ui/Skeleton";
 import { cn } from "../../ui/cn";
 import { useMaReport } from "../hooks/useMaReport";
+import { TweenedValueV2 } from "./TweenedValueV2";
 
 const pct = (v, d = 2) => (v == null ? "—" : `${fmt(v, d)}%`);
 
@@ -79,7 +80,7 @@ export function MaxAttentionSummaryCardV2({
           <>
             <div className="px-5 pt-4 pb-3">
               <span className="text-[26px] font-semibold tabular-nums leading-none text-signature">
-                {pct(total.engagement)}
+                <TweenedValueV2 value={pct(total.engagement)} />
               </span>
               <div className="text-[11px] text-fg-muted mt-1.5">Taxa de engajamento</div>
             </div>
@@ -94,7 +95,7 @@ export function MaxAttentionSummaryCardV2({
                   )}
                 >
                   <div className={cn("text-[18px] font-semibold tabular-nums leading-tight truncate", c.accent ? "text-signature" : "text-fg")}>
-                    {c.value}
+                    <TweenedValueV2 value={c.value} />
                   </div>
                   <div className="text-[11px] text-fg-muted mt-1.5 truncate">{c.label}</div>
                 </div>
@@ -106,7 +107,7 @@ export function MaxAttentionSummaryCardV2({
             {[{ label: "Taxa de engajamento", value: pct(total.engagement), accent: true }, ...cells].map((c) => (
               <div key={c.label} className="px-5 py-4 min-w-0">
                 <div className={cn("text-[22px] font-semibold tabular-nums leading-tight truncate", c.accent ? "text-signature" : "text-fg")}>
-                  {c.value}
+                  <TweenedValueV2 value={c.value} />
                 </div>
                 <div className="text-[11px] text-fg-muted mt-1.5 truncate">{c.label}</div>
               </div>

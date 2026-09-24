@@ -40,6 +40,8 @@
 //   Qualquer elemento com `data-export-ignore` (ex.: o próprio botão de
 //   baixar) é removido do clone antes de rasterizar.
 
+import { setExporting } from "./motion";
+
 // html-to-image é importado dinamicamente no momento do export — só é
 // necessário quando o usuário clica em "baixar PNG", então não precisa
 // entrar no chunk do dashboard que todo cliente baixa no boot.
@@ -243,7 +245,17 @@ export async function exportElementToPng(
   } = {},
 ) {
   if (!node) return;
+  // Congela a animação dos gráficos enquanto o card é estreitado e
+  // capturado (ver setExporting em motion.js).
+  setExporting(true);
+  try {
+    await exportToPng(node, { filename, background, pixelRatio, maxWidth, fitContent });
+  } finally {
+    setExporting(false);
+  }
+}
 
+async function exportToPng(node, { filename, background, pixelRatio, maxWidth, fitContent }) {
   const ratio =
     pixelRatio ||
     Math.min(3, Math.max(2, Math.round(window.devicePixelRatio || 1) || 1));

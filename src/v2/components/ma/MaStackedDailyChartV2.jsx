@@ -17,6 +17,7 @@ import { fmt, fmtCompactTick } from "../../../shared/format";
 import { formatLabel } from "../../../shared/maMetrics";
 import { resolveChartVar } from "./maFormat";
 import { useChartNeutral, useThemeColors } from "../../hooks/useThemeColors";
+import { CHART_ANIMATION_MS, seriesSignature, useAnimationWindow } from "../../lib/motion";
 
 const WEEKDAY_PT = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 const ddmm = (ymd) => {
@@ -55,6 +56,7 @@ function StackTooltip({ active, payload, label, colorFor }) {
 export function MaStackedDailyChartV2({ rows, formats, colors, height = 210 }) {
   const neutral = useChartNeutral();
   const hypr = useThemeColors();
+  const animate = useAnimationWindow(seriesSignature(rows, formats || []));
   if (!rows?.length || !formats?.length) return null;
   // Recharts precisa da cor resolvida (var() não entra no fill do SVG em
   // todos os navegadores): traduz var(--color-chart-sN) pelo tema atual.
@@ -96,7 +98,9 @@ export function MaStackedDailyChartV2({ rows, formats, colors, height = 210 }) {
               strokeWidth={formats.length > 1 ? 1 : 0}
               radius={i === formats.length - 1 ? (n > 40 ? [2, 2, 0, 0] : [4, 4, 0, 0]) : 0}
               maxBarSize={28}
-              isAnimationActive={false}
+              isAnimationActive={animate}
+              animationDuration={CHART_ANIMATION_MS}
+              animationEasing="ease-out"
             />
           ))}
         </BarChart>

@@ -35,7 +35,7 @@ export function RetentionCurveV2({ detail, downloadable = false, filename }) {
           return (
             <div key={p.key} className="flex h-full flex-col items-center justify-end gap-1.5 min-w-0">
               <span className="text-[12px] font-semibold text-fg tabular-nums">{fmt(pct, pct < 10 ? 1 : 0)}%</span>
-              <div className="w-full max-w-[72px] rounded-t-[4px] bg-chart-s1" style={{ height: `${Math.max(2, Math.min(100, pct)) * 1.2}px` }} />
+              <div className="bar-grow-y w-full max-w-[72px] rounded-t-[4px] bg-chart-s1" style={{ height: `${Math.max(2, Math.min(100, pct)) * 1.2}px`, "--i": i }} />
               <span className="text-[11px] text-fg-muted">{p.label}</span>
               <span className="text-[10px] text-fg-subtle tabular-nums h-3">{drop != null && drop > 0 ? `↓ ${fmt(drop, 1)}%` : ""}</span>
             </div>

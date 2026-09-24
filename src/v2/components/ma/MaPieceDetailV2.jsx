@@ -11,6 +11,7 @@
 // Fecha com o engajamento da peça por dia.
 
 import { useState } from "react";
+import { useSlidingThumb } from "../../../ui/useSlidingThumb";
 import { fmt } from "../../../shared/format";
 import {
   MA_FORMATS,
@@ -52,10 +53,26 @@ export function MaPieceDetailV2({
   campaignStart = null,
   isDemo = false,
   campaignName = "campanha",
+  heroId = null,
 }) {
   const idx = pieces.findIndex((p) => p.creative_id === piece.creative_id);
   const prev = pieces[(idx - 1 + pieces.length) % pieces.length];
   const next = pieces[(idx + 1) % pieces.length];
+  // Sentido da última troca de peça: o conteúdo desliza de onde o clique
+  // "veio". null na montagem (entrada da grade é a View Transition).
+  const [dir, setDir] = useState(null);
+  const select = (id, d) => {
+    if (id === piece.creative_id) return;
+    const to = pieces.findIndex((p) => p.creative_id === id);
+    setDir(d || (to < idx ? "prev" : "next"));
+    onSelect(id);
+  };
+  // Destaque do trilho desliza entre as peças (lista vertical: twoAxis).
+  const {
+    containerRef: railRef,
+    setItemRef: setRailItemRef,
+    thumbStyle: railThumbStyle,
+  } = useSlidingThumb(idx, pieces.length, { twoAxis: true });
   const color = formatColors[piece.format];
   const km = keyMetric(piece);
   const waiting = isWaiting(piece);
@@ -71,7 +88,12 @@ export function MaPieceDetailV2({
     <div className="grid gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
       {/* Trilho de peças (desktop) */}
       <nav aria-label="Peças da campanha" className="hidden lg:block">
-        <div className="sticky top-[168px] space-y-1">
+        <div ref={railRef} className="sticky top-[168px] space-y-1">
+          <span
+            aria-hidden
+            className="absolute top-0 left-0 rounded-md bg-signature-soft pointer-events-none motion-reduce:!transition-none"
+            style={railThumbStyle}
+          />
           <div className="px-2 pb-1 text-[10px] font-bold uppercase tracking-widest text-fg-subtle">Peças da campanha</div>
           <button
             type="button"
@@ -80,15 +102,16 @@ export function MaPieceDetailV2({
           >
             ← Todas as peças
           </button>
-          {pieces.map((p) => (
+          {pieces.map((p, i) => (
             <button
               key={p.creative_id}
+              ref={setRailItemRef(i)}
               type="button"
-              onClick={() => onSelect(p.creative_id)}
+              onClick={() => select(p.creative_id)}
               aria-current={p.creative_id === piece.creative_id ? "true" : undefined}
               className={cn(
-                "w-full grid grid-cols-[40px_minmax(0,1fr)] items-center gap-2 px-2 py-1.5 rounded-md text-left cursor-pointer",
-                p.creative_id === piece.creative_id ? "bg-signature-soft" : "hover:bg-surface",
+                "relative w-full grid grid-cols-[40px_minmax(0,1fr)] items-center gap-2 px-2 py-1.5 rounded-md text-left cursor-pointer transition-colors",
+                p.creative_id !== piece.creative_id && "hover:bg-surface",
               )}
             >
               <MaThumbV2 format={p.format} color={formatColors[p.format]} className="h-8 [&_svg]:size-4" />
@@ -119,26 +142,33 @@ export function MaPieceDetailV2({
               <select
                 id="ma-piece-select"
                 value={piece.creative_id}
-                onChange={(e) => onSelect(e.target.value)}
+                onChange={(e) => select(e.target.value)}
                 className="lg:hidden h-8 max-w-[52vw] rounded-md border border-border bg-canvas-deeper px-2 text-xs text-fg"
               >
                 {pieces.map((p) => (
                   <option key={p.creative_id} value={p.creative_id}>{p.name}</option>
                 ))}
               </select>
-              <button type="button" onClick={() => onSelect(prev.creative_id)} className="h-8 px-2.5 rounded-md border border-border text-fg-muted hover:text-fg cursor-pointer" aria-label="Peça anterior">
+              <button type="button" onClick={() => select(prev.creative_id, "prev")} className="h-8 px-2.5 rounded-md border border-border text-fg-muted hover:text-fg cursor-pointer" aria-label="Peça anterior">
                 ←<span className="hidden sm:inline"> anterior</span>
               </button>
-              <button type="button" onClick={() => onSelect(next.creative_id)} className="h-8 px-2.5 rounded-md border border-border text-fg-muted hover:text-fg cursor-pointer" aria-label="Próxima peça">
+              <button type="button" onClick={() => select(next.creative_id, "next")} className="h-8 px-2.5 rounded-md border border-border text-fg-muted hover:text-fg cursor-pointer" aria-label="Próxima peça">
                 <span className="hidden sm:inline">próxima </span>→
               </button>
             </span>
           )}
         </div>
 
+        {/* Tudo abaixo das migalhas troca junto com a peça: remonta pela key e
+            desliza no sentido do clique. As migalhas e os botões ficam fora
+            pra não perderem o foco de quem navega com "próxima" repetido. */}
+        <div
+          key={piece.creative_id}
+          className={cn("space-y-5", dir === "prev" && "slide-in-prev", dir === "next" && "slide-in-next")}
+        >
         {/* Preview + camada Mídia */}
         <div className="grid gap-4 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
-          <MaPreviewV2 piece={piece} color={color} campaignStart={campaignStart} isDemo={isDemo} />
+          <MaPreviewV2 piece={piece} color={color} campaignStart={campaignStart} isDemo={isDemo} hero={heroId === piece.creative_id} />
           <div className="space-y-4 min-w-0">
             <div>
               <h2 className="text-lg font-bold text-fg leading-tight">{piece.name}{piece.size ? ` · ${piece.size}` : ""}</h2>
@@ -228,6 +258,7 @@ export function MaPieceDetailV2({
         {!waiting && widgets.map((w) => <WidgetBlock key={w.id || w.type} w={w} fileBase={fileBase} />)}
 
         {!waiting && piece.daily?.length > 0 && <PieceTrend piece={piece} color={color} />}
+        </div>
       </div>
     </div>
   );
@@ -368,7 +399,7 @@ function Slides({ piece }) {
     >
       {slides.length ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3">
-          {slides.map((s) => (
+          {slides.map((s, i) => (
             <div key={s.index} className="rounded-lg border border-border p-3 min-w-0">
               <div className="text-[10.5px] font-semibold uppercase tracking-wider text-fg-subtle">Slide {s.index + 1}</div>
               <div className="text-[12px] font-semibold text-fg truncate mt-0.5" title={s.label}>{s.label || "Sem nome"}</div>
@@ -377,7 +408,7 @@ function Slides({ piece }) {
               {s.index > 0 && navSessions > 0 && (
                 <>
                   <div className="mt-2 h-1.5 rounded-full bg-track overflow-hidden">
-                    <div className="h-full bg-signature rounded-full" style={{ width: `${Math.min(100, (s.views / navSessions) * 100)}%` }} />
+                    <div className="bar-grow-x h-full bg-signature rounded-full" style={{ width: `${Math.min(100, (s.views / navSessions) * 100)}%`, "--i": i }} />
                   </div>
                   <div className="mt-1 text-[10.5px] text-fg-subtle tabular-nums">{pct((s.views / navSessions) * 100, 1)} de quem navegou</div>
                 </>
@@ -448,11 +479,11 @@ function Survey({ piece, fileBase }) {
     >
       {opts.length ? (
         <div className="grid gap-2">
-          {opts.map((o) => (
+          {opts.map((o, i) => (
             <div key={o.label} className="grid grid-cols-[minmax(0,1fr)_auto_4.5rem] sm:grid-cols-[minmax(0,14rem)_minmax(0,1fr)_5rem_4.5rem] items-center gap-x-3 gap-y-1">
               <span className="text-[12px] text-fg truncate" title={o.label}>{o.label || "Sem rótulo"}</span>
               <div className="h-2.5 rounded-full bg-track overflow-hidden order-last col-span-3 sm:order-none sm:col-span-1">
-                <div className="h-full rounded-full bg-signature" style={{ width: `${total ? (o.answers / total) * 100 : 0}%` }} />
+                <div className="bar-grow-x h-full rounded-full bg-signature" style={{ width: `${total ? (o.answers / total) * 100 : 0}%`, "--i": i }} />
               </div>
               <span className="text-[12px] font-semibold text-fg tabular-nums text-right">{pct(total ? (o.answers / total) * 100 : null, 1)}</span>
               <span className="text-[11px] text-fg-subtle tabular-nums text-right" title="Cliques a partir desta resposta">{fmt(o.clicks)} cliq.</span>
