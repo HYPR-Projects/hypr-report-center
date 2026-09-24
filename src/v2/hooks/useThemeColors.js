@@ -51,6 +51,10 @@ const COLOR_KEYS = [
   "surface-3",
   "chart-bar",
   "chart-line",
+  "chart-s1",
+  "chart-s2",
+  "chart-s3",
+  "chart-s4",
 ];
 
 function readColors() {

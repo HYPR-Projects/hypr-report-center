@@ -3,6 +3,8 @@
 // Top bar fina com branding "Report Center" + ações no canto direito:
 //   - Pill "atualizado há X" (informação, não interativa)
 //   - Botão "Falar com CS" (abre WhatsApp/Slack/email — TODO Fase 4)
+//   - Comentários (abre o painel de conversa cliente ↔ HYPR, com contador
+//     de mensagens não lidas da outra parte)
 //   - Share (copiar link do report)
 //   - Toggle dark/light (PR-18 — botão icon-only, sol quando dark, lua
 //     quando light, persiste em localStorage)
@@ -79,9 +81,15 @@ function ChatIcon({ className }) {
 
 export function TopBarV2({
   updatedAtLabel,
+  // Versão curta do selo pra telas estreitas ("até 22/09") e tooltip com a
+  // explicação da defasagem D-1. Ver src/shared/freshness.js.
+  updatedAtShort,
+  updatedAtTitle,
   onShare,
   shareState = "idle",
   onContactCS,
+  onOpenComments,
+  commentsUnread = 0,
   className,
 }) {
   // Mapeia estado do share pro tooltip + ícone do botão. O ClientDashboard
@@ -104,23 +112,27 @@ export function TopBarV2({
       )}
     >
       {/* Branding: wordmark HYPR°REPORT CENTER tematizado */}
-      <div className="flex items-center text-fg">
-        <HyprReportCenterLogo height={32} />
+      {/* No celular o wordmark encolhe (proporção mantida pelo viewBox) pra
+          caber ao lado do selo de frescor, do compartilhar e do tema. */}
+      <div className="flex items-center text-fg min-w-0">
+        <HyprReportCenterLogo height={32} className="max-w-[42vw] sm:max-w-none" />
       </div>
 
       {/* Ações */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 shrink-0">
         {updatedAtLabel && (
           <span
+            title={updatedAtTitle || undefined}
             className={cn(
-              "hidden sm:inline-flex items-center gap-1.5",
+              "inline-flex items-center gap-1.5",
               "px-3 py-1 rounded-full",
               "bg-surface border border-border",
-              "text-[11px] font-medium text-fg-muted",
+              "text-[11px] font-medium text-fg-muted whitespace-nowrap",
             )}
           >
-            <span className="size-1.5 rounded-full bg-signature" aria-hidden />
-            {updatedAtLabel}
+            <span className="size-1.5 rounded-full bg-success" aria-hidden />
+            <span className="hidden sm:inline">{updatedAtLabel}</span>
+            <span className="sm:hidden">{updatedAtShort || updatedAtLabel}</span>
           </span>
         )}
 
@@ -141,6 +153,20 @@ export function TopBarV2({
           </button>
         )}
 
+        {onOpenComments && (
+          <IconButton
+            onClick={onOpenComments}
+            title={
+              commentsUnread > 0
+                ? `Comentários · ${commentsUnread} ${commentsUnread === 1 ? "mensagem nova" : "mensagens novas"}`
+                : "Comentários"
+            }
+            badge={commentsUnread > 0 ? (commentsUnread > 9 ? "9+" : String(commentsUnread)) : null}
+          >
+            <ChatIcon className="size-4" />
+          </IconButton>
+        )}
+
         {onShare && (
           <IconButton onClick={onShare} title={shareConfig.title} tone={shareConfig.tone}>
             <shareConfig.Icon className="size-4" />
@@ -155,7 +181,7 @@ export function TopBarV2({
 
 // ─── Subcomponentes ───────────────────────────────────────────────────
 
-function IconButton({ children, onClick, title, tone = "default" }) {
+function IconButton({ children, onClick, title, tone = "default", badge = null }) {
   // tone visual: "default" (neutro), "success" (verde — copy ok),
   // "danger" (vermelho — falha). Transição 200ms cobre o flash do feedback.
   const toneClass = {
@@ -170,7 +196,7 @@ function IconButton({ children, onClick, title, tone = "default" }) {
       title={title}
       aria-label={title}
       className={cn(
-        "inline-flex items-center justify-center size-9 rounded-lg",
+        "relative inline-flex items-center justify-center size-9 rounded-lg",
         "bg-transparent border cursor-pointer",
         toneClass,
         "transition-colors duration-200",
@@ -178,6 +204,14 @@ function IconButton({ children, onClick, title, tone = "default" }) {
       )}
     >
       {children}
+      {badge && (
+        <span
+          aria-hidden="true"
+          className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-signature-fill text-on-signature text-[10px] font-bold leading-[18px] text-center tabular-nums ring-2 ring-canvas"
+        >
+          {badge}
+        </span>
+      )}
     </button>
   );
 }

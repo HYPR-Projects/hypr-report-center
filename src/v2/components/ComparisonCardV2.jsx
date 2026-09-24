@@ -73,6 +73,12 @@ export function ComparisonCardV2({
   efetivoIsProjection = false,
   formatValue,
   decimalsForDelta = 1,
+  // "CPM" | "CPCV" — nomeia a célula de tabela no layout com bônus (antes
+  // dizia "CPM Tabela HYPR" também na aba de Vídeo).
+  unit = "CPM",
+  // Faixa de contrato no rodapé: [{ label, value }]. Substitui a seção
+  // "Contratual" que repetia os mesmos números em 4 cards.
+  contract = null,
   className,
 }) {
   const hasValues =
@@ -128,14 +134,21 @@ export function ComparisonCardV2({
           coluna única com dividers horizontais em mobile.
           items-stretch + h-full nas cells garantem altura consistente
           do border-l mesmo se conteúdo quebrar linha. */}
-      <div className="grid grid-cols-1 md:grid-cols-3 items-stretch divide-y md:divide-y-0 md:divide-x divide-border/60">
+      <div
+        className={cn(
+          "grid grid-cols-1 items-stretch divide-y md:divide-y-0 md:divide-x divide-border/60",
+          hasBonus ? "md:grid-cols-4" : "md:grid-cols-3",
+        )}
+      >
         {hasBonus ? (
           <>
             {/* Trajetória pra campanhas com bonus negociado. Tabela
                 HYPR = CPM contratual cru; Ajustado = mesmo budget
-                contra (contracted + bonus); Efetivo = entrega real. */}
+                contra (contracted + bonus); Efetivo = entrega real.
+                A economia segue visível, contra a tabela (mesma conta
+                da Rentabilidade). */}
             <ComparisonCell
-              label="CPM Tabela HYPR"
+              label={`${unit} Tabela HYPR`}
               value={formatValue(negociado)}
               tone="muted"
             />
@@ -152,6 +165,12 @@ export function ComparisonCardV2({
               tooltip={efetivoIsProjection
                 ? "Projeção mantendo o ritmo atual de entrega até o fim da campanha. Conforme o pacing oscila, o valor se ajusta. Se o pacing chegar a 100%, este número converge para o Negociado Ajustado."
                 : null}
+            />
+            <ComparisonCell
+              label={economyLabel}
+              value={economyDisplay}
+              tone={isEconomy ? "success" : isLoss ? "danger" : "muted"}
+              tooltip={`Diferença entre o ${unit} de tabela e o efetivo${efetivoIsProjection ? " projetado" : ""}.`}
             />
           </>
         ) : (
@@ -174,6 +193,17 @@ export function ComparisonCardV2({
           </>
         )}
       </div>
+
+      {contract?.length > 0 && (
+        <div className="px-5 py-2.5 border-t border-border bg-surface/60 flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-fg-subtle">
+          <span className="font-semibold uppercase tracking-wider text-[10px] text-fg-muted">Contrato</span>
+          {contract.map((c) => (
+            <span key={c.label} className="whitespace-nowrap" title={c.hint || undefined}>
+              {c.label} <span className="font-semibold text-fg tabular-nums">{c.value}</span>
+            </span>
+          ))}
+        </div>
+      )}
     </Card>
   );
 }

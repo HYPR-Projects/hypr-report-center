@@ -48,6 +48,10 @@ export function GlobalDataFilterBarV2({
   // Visibilidade do filtro Formato — true só quando campanha tem
   // Display E Video. Mono-mídia esconde.
   showFormatFilter = false,
+  // `inline`: renderiza dentro da barra de controles fixa do dashboard
+  // (mesma linha do período), sem o padding vertical próprio e sem quebrar
+  // linha no celular — lá a linha inteira rola na horizontal.
+  inline = false,
 }) {
   // Se NENHUMA option tem entrada, a barra inteira fica vazia — não
   // renderiza. Acontece em campanhas que ainda não começaram a entregar
@@ -57,7 +61,13 @@ export function GlobalDataFilterBarV2({
   if (totalOptions === 0) return null;
 
   return (
-    <div className="flex items-center gap-2 flex-wrap pt-3 pb-1">
+    <div
+      className={
+        inline
+          ? "flex items-center gap-2 md:flex-wrap [&>*]:shrink-0"
+          : "flex items-center gap-2 flex-wrap pt-3 pb-1"
+      }
+    >
       {audienceOptions.length > 0 && (
         <TableMultiSelectFilter
           label="Audiência"

@@ -43,6 +43,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { fmt, fmtR } from "../../shared/format";
+import { downloadCsvText } from "../../shared/download";
 import { Card } from "../../ui/Card";
 import { cn } from "../../ui/cn";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../../ui/Tooltip";
@@ -79,8 +80,15 @@ export function FormatBreakdownTableV2({
   onResetGroup = null,
   isRowOverridden = null,
   busyAudience = null,
+  // Sem Card nem título: para morar dentro do Explorador de entrega, que já
+  // tem moldura e seletor de dimensão. A barra fina de contagem/CSV/PNG fica.
+  bare = false,
+  // Linhas visíveis antes do "Mostrar todos". Antes cortava em 10 sem avisar.
+  initialRows = ROW_LIMIT,
 }) {
   const cardRef = useRef(null);
+  const [sort, setSort] = useState({ key: "share", dir: "desc" });
+  const [expanded, setExpanded] = useState(false);
   // Junta cost / impressions brutas / clicks por chave de agrupamento se
   // extraRows foi passado. groupBySize/groupByDuration só trazem 2 campos
   // (numeratorKey + denomKey). Aqui derivamos campos extra que precisamos
@@ -134,21 +142,59 @@ export function FormatBreakdownTableV2({
           ctr_extra: ctrFromExtra,
         };
       })
-      .sort((a, b) => b.share - a.share)
-      .slice(0, ROW_LIMIT);
+      .sort((a, b) => b.share - a.share);
   }, [rows, groupKey, denomKey, extraRows, getDetailGroupKey]);
+
+  const sorted = useMemo(() => {
+    const out = [...enriched];
+    const dir = sort.dir === "asc" ? 1 : -1;
+    out.sort((a, b) => {
+      if (sort.key === groupKey) return dir * String(a[groupKey] || "").localeCompare(String(b[groupKey] || ""), "pt-BR");
+      return dir * ((Number(a[sort.key]) || 0) - (Number(b[sort.key]) || 0));
+    });
+    return out;
+  }, [enriched, sort, groupKey]);
 
   if (!enriched.length) {
     return (
-      <Card className={cn("p-6 text-center text-sm text-fg-subtle", className)}>
+      <Card className={cn("p-6 text-center text-sm text-fg-subtle", bare && "border-0 bg-transparent", className)}>
         Sem dados para o período selecionado.
       </Card>
     );
   }
 
+  const canExpand = sorted.length > initialRows;
+  const visible = expanded || !canExpand ? sorted : sorted.slice(0, initialRows);
+  const lastKey = mediaType === "DISPLAY" ? "viewability" : "ctr_extra";
+  const lastLabel = mediaType === "DISPLAY" ? "Viewability" : "CTR";
+  const toggleSort = (key) =>
+    setSort((cur) => (cur.key === key ? { key, dir: cur.dir === "desc" ? "asc" : "desc" } : { key, dir: key === groupKey ? "asc" : "desc" }));
+  const sortProps = (key) => ({
+    sortKey: key,
+    activeSort: sort,
+    onSort: toggleSort,
+  });
+
+  const downloadCsv = () => {
+    const header = [groupLabel, "Share (%)", denomLabel, numeratorLabel, rateLabel, lastLabel, "Custo Ef."];
+    const lines = sorted.map((r) => [
+      r[groupKey] || "",
+      (r.share || 0).toFixed(1),
+      r[denomKey] || 0,
+      r[numeratorKey] || 0,
+      (Number(r[rateKey]) || 0).toFixed(2),
+      (Number(r[lastKey]) || 0).toFixed(mediaType === "DISPLAY" ? 1 : 2),
+      (r.cost || 0).toFixed(2),
+    ]);
+    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const csv = [header, ...lines].map((l) => l.map(esc).join(",")).join("\n");
+    downloadCsvText(csv, filename || `distribuicao por ${groupLabel}`);
+  };
+  const countLabel = `${sorted.length} ${sorted.length === 1 ? itemNoun : (itemNounPlural || `${itemNoun}s`)}`;
+
   // Largura da bar relativa ao maior share (visual mais punchy que
   // relativo ao 100% — formato top sempre cheia, demais proporcionais).
-  const maxShare = enriched[0]?.share || 100;
+  const maxShare = Math.max(...enriched.map((r) => r.share || 0), 0) || 100;
 
   // Estrelinha de "melhor taxa" (CTR no Display, VTR no Video): marca a linha
   // com o maior valor da coluna de taxa. Só quando há comparação (2+ linhas) e
@@ -157,16 +203,28 @@ export function FormatBreakdownTableV2({
     ? Math.max(...enriched.map((r) => Number(r[rateKey]) || 0))
     : 0;
 
+  const Wrapper = bare ? "div" : Card;
   return (
-    <Card ref={cardRef} className={cn("overflow-hidden", className)}>
-      <div className="px-5 pt-4 pb-3 border-b border-border flex items-center justify-between gap-3">
-        <div className="text-[11px] font-bold uppercase tracking-widest text-fg-muted">
-          Distribuição por {groupLabel}
-        </div>
-        <div className="flex items-center gap-2.5 shrink-0">
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">
-            {enriched.length} {enriched.length === 1 ? itemNoun : (itemNounPlural || `${itemNoun}s`)}
+    <Wrapper ref={cardRef} className={cn(bare ? "" : "overflow-hidden", className)}>
+      <div className={cn("flex items-center justify-between gap-3", bare ? "px-4 md:px-5 py-2 border-b border-border" : "px-5 pt-4 pb-3 border-b border-border")}>
+        {bare ? (
+          <div className="text-[11px] text-fg-subtle tabular-nums">{countLabel}</div>
+        ) : (
+          <div className="text-[11px] font-bold uppercase tracking-widest text-fg-muted">
+            Distribuição por {groupLabel}
           </div>
+        )}
+        <div className="flex items-center gap-2.5 shrink-0">
+          {!bare && (
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">{countLabel}</div>
+          )}
+          <button
+            type="button"
+            onClick={downloadCsv}
+            className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md border border-border text-[11px] font-semibold text-fg-muted hover:text-fg hover:border-border-strong cursor-pointer"
+          >
+            CSV
+          </button>
           {downloadable && (
             <DownloadPngButtonV2 targetRef={cardRef} filename={filename} exportFitContent />
           )}
@@ -177,33 +235,24 @@ export function FormatBreakdownTableV2({
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-border">
-              <Th align="left">{groupLabel}</Th>
+              <Th align="left" {...sortProps(groupKey)}>{groupLabel}</Th>
               <Th align="left" className="w-[180px]">Share</Th>
-              <Th>Share %</Th>
-              <Th>{denomLabel}</Th>
-              <Th>{numeratorLabel}</Th>
-              <Th>{rateLabel}</Th>
+              <Th {...sortProps("share")}>Share %</Th>
+              <Th {...sortProps(denomKey)}>{denomLabel}</Th>
+              <Th {...sortProps(numeratorKey)}>{numeratorLabel}</Th>
+              <Th {...sortProps(rateKey)}>{rateLabel}</Th>
               {/* Última fileira: por mídia.
                   - Display: Viewability + Custo Ef.
                   - Video:   CTR + Custo Ef.
                   Ambas terminam em Custo Efetivo pra fechar com a métrica
                   financeira mais relevante (substitui o antigo CPM/CPCV
                   efetivo, que misturava preço com performance). */}
-              {mediaType === "DISPLAY" ? (
-                <>
-                  <Th>Viewability</Th>
-                  <Th>Custo Ef.</Th>
-                </>
-              ) : (
-                <>
-                  <Th>CTR</Th>
-                  <Th>Custo Ef.</Th>
-                </>
-              )}
+              <Th {...sortProps(lastKey)}>{lastLabel}</Th>
+              <Th {...sortProps("cost")}>Custo Ef.</Th>
             </tr>
           </thead>
           <tbody>
-            {enriched.map((r) => (
+            {visible.map((r) => (
               <tr
                 key={r[groupKey]}
                 className="border-b border-border/50 last:border-b-0 hover:bg-surface transition-colors"
@@ -253,7 +302,19 @@ export function FormatBreakdownTableV2({
           </tbody>
         </table>
       </div>
-    </Card>
+      {canExpand && (
+        <div className="px-4 md:px-5 py-2.5 border-t border-border">
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            className="text-xs font-semibold text-signature hover:underline underline-offset-4 cursor-pointer"
+          >
+            {expanded ? `Mostrar só os ${initialRows} primeiros` : `Mostrar todos (${sorted.length})`}
+          </button>
+        </div>
+      )}
+    </Wrapper>
   );
 }
 
@@ -279,16 +340,32 @@ function ShareBar({ pct, maxShare }) {
   );
 }
 
-function Th({ children, align = "right", className }) {
+function Th({ children, align = "right", className, sortKey = null, activeSort = null, onSort = null }) {
+  const active = sortKey && activeSort?.key === sortKey;
   return (
     <th
+      aria-sort={active ? (activeSort.dir === "asc" ? "ascending" : "descending") : undefined}
       className={cn(
         "px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider text-fg-subtle whitespace-nowrap",
         align === "right" ? "text-right" : "text-left",
         className,
       )}
     >
-      {children}
+      {sortKey && onSort ? (
+        <button
+          type="button"
+          onClick={() => onSort(sortKey)}
+          className={cn(
+            "inline-flex items-center gap-1 uppercase tracking-wider cursor-pointer hover:text-fg",
+            active && "text-fg",
+          )}
+        >
+          {children}
+          <span aria-hidden className="text-[9px]">{active ? (activeSort.dir === "asc" ? "▲" : "▼") : "↕"}</span>
+        </button>
+      ) : (
+        children
+      )}
     </th>
   );
 }

@@ -67,6 +67,7 @@ import pmp_sync_runs
 import audience_normalize
 import audience_ai
 import maxattention
+import ma_report
 import out_of_country
 import bq_client
 
@@ -3084,6 +3085,104 @@ def report_data(request):
             logger.error(f"[ERROR maxattention_results] {creative_id}: {e}")
             return (jsonify({"error": "Erro ao buscar respostas do Max Attention"}), 502, headers)
 
+    # ── Endpoints: aba Max Attention do report ───────────────────────────────
+    # Vínculo peça → campanha (admin), busca de peças na Platform (admin) e as
+    # métricas das peças vinculadas (público, como o resto do report: o
+    # short_token é o ticket, e só saem peças vinculadas àquele token). A
+    # normalização em ma_report é lista de permissão — métrica interna da
+    # Platform não chega no navegador do cliente.
+    if request.method == "GET" and request.args.get("action") == "ma_report":
+        token = (request.args.get("token") or "").strip()
+        if not ma_report.valid_token(token):
+            return (jsonify({"error": "token inválido"}), 400, headers)
+        view = (request.args.get("view") or "").strip()
+        date_from = (request.args.get("date_from") or "").strip() or None
+        date_to = (request.args.get("date_to") or "").strip() or None
+        if (date_from and not ma_report.valid_date(date_from)) or (date_to and not ma_report.valid_date(date_to)):
+            return (jsonify({"error": "período inválido"}), 400, headers)
+        try:
+            tokens = _ma_tokens_for_view(token, view)
+            links = ma_report.links_for_tokens(tokens)
+            payload = {
+                "configured": ma_report.is_configured(),
+                "links": [ma_report.public_link(l) for l in links],
+                "pieces": [],
+                "errors": [],
+                "fetched_at": None,
+            }
+            if links and ma_report.is_configured():
+                if request.args.get("refresh") == "true" and authenticate_admin(request):
+                    ma_report.clear_caches()
+                res = ma_report.fetch_pieces(links, date_from, date_to)
+                payload.update(res)
+            resp_headers = {**headers, "Cache-Control": "private, max-age=60"}
+            return (jsonify(payload), 200, resp_headers)
+        except ma_report.PlatformError as e:
+            logger.error(f"[ERROR ma_report] {token}: {e}")
+            return (jsonify({"error": "Métricas do Max Attention indisponíveis no momento"}), 502, headers)
+        except Exception as e:
+            logger.error(f"[ERROR ma_report] {token}: {type(e).__name__}: {e}")
+            return (jsonify({"error": "Erro ao buscar o Max Attention"}), 500, headers)
+
+    if request.method == "GET" and request.args.get("action") == "ma_links":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        token = (request.args.get("token") or "").strip()
+        if not ma_report.valid_token(token):
+            return (jsonify({"error": "token inválido"}), 400, headers)
+        try:
+            links = ma_report.links_for_tokens([token])
+            return (jsonify({"links": links, "configured": ma_report.is_configured()}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR ma_links] {token}: {e}")
+            return (jsonify({"error": f"Erro ao ler vínculos: {e}"}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "ma_links_save":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        body = request.get_json(silent=True) or {}
+        token = (body.get("short_token") or "").strip()
+        try:
+            saved = ma_report.save_links(token, body.get("links") or [], linked_by=admin.get("email") or "admin")
+        except ValueError as e:
+            return (jsonify({"error": str(e)}), 400, headers)
+        except Exception as e:
+            logger.error(f"[ERROR ma_links_save] {token}: {e}")
+            return (jsonify({"error": f"Erro ao salvar vínculos: {e}"}), 500, headers)
+        audit_log.safe_write_event(
+            short_token=token.upper(),
+            event_type="ma_links_saved",
+            actor_email=admin.get("email"),
+            message=f"vinculou {len(saved)} peça(s) Max Attention" if saved else "removeu os vínculos Max Attention",
+            payload={"creative_ids": [l["creative_id"] for l in saved]},
+        )
+        return (jsonify({"links": saved}), 200, headers)
+
+    if request.method == "GET" and request.args.get("action") == "ma_search":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        token = (request.args.get("token") or "").strip()
+        q = (request.args.get("q") or "").strip()
+        if not ma_report.is_configured():
+            return (jsonify({"error": ma_report.not_configured_message(), "configured": False}), 501, headers)
+        try:
+            client_name = _client_name_for_token(token) if ma_report.valid_token(token) else None
+            names = _dsp_creative_names_for_token(token) if ma_report.valid_token(token) else []
+            items = ma_report.search_creatives(
+                q=q or None,
+                client=client_name,
+                token=token if ma_report.valid_token(token) else None,
+                names=names,
+            )
+            return (jsonify({"items": items, "configured": True, "context": {"client": client_name, "dsp_creative_names": names}}), 200, headers)
+        except ma_report.PlatformError as e:
+            logger.error(f"[ERROR ma_search] {token}: {e}")
+            return (jsonify({"error": f"Busca na Platform falhou: {e}"}), 502, headers)
+        except Exception as e:
+            logger.error(f"[ERROR ma_search] {token}: {e}")
+            return (jsonify({"error": f"Erro na busca de peças: {e}"}), 500, headers)
+
     # ── Endpoint: proxy Typeform API (evita CORS) ────────────────────────────
     # Aceita `form_url` (URL pública do form, modo preferido) ou `form_id`
     # (legado). Resposta é unificada em dois formatos possíveis:
@@ -5236,6 +5335,12 @@ def report_data(request):
                 logger.warning(f"[WARN attach pos_venda to merged view] {e}")
             data = _attach_audience_overrides(data)
             data = _attach_label_overrides(data)
+            member_tokens = [
+                m.get("short_token") for m in ((data.get("merge_meta") or {}).get("members") or [])
+                if m.get("short_token")
+            ]
+            data = _attach_max_attention(data, member_tokens or [short_token])
+            data = _attach_data_freshness(data)
             total_ms = int((time.time() - t0) * 1000)
             resp_headers = {
                 **headers,
@@ -5309,6 +5414,8 @@ def report_data(request):
 
         data = _attach_audience_overrides(data)
         data = _attach_label_overrides(data)
+        data = _attach_max_attention(data, [target_token])
+        data = _attach_data_freshness(data)
 
         total_ms = int((time.time() - t0) * 1000)
         resp_headers = {
@@ -5322,6 +5429,68 @@ def report_data(request):
     except Exception as e:
         logger.error(f"[ERROR] {e}")
         return (jsonify({"error": "Erro interno ao buscar dados"}), 500, headers)
+
+
+def _attach_max_attention(data: dict, tokens) -> dict:
+    """Anexa os vínculos Max Attention dos tokens exibidos (camada de serving,
+    como os overrides: o payload cacheado/congelado não precisa ser refeito
+    quando o admin vincula uma peça). Falha aqui nunca derruba o report."""
+    try:
+        links = ma_report.links_for_tokens(tokens)
+        return {**data, "max_attention": {
+            "links": [ma_report.public_link(l) for l in links],
+            "configured": ma_report.is_configured(),
+        }}
+    except Exception as e:
+        logger.warning(f"[WARN attach max_attention] {e}")
+        return data
+
+
+def _attach_data_freshness(data: dict) -> dict:
+    """`data_updated_at` (ms) = última modificação da base consolidada
+    (campaign_results). Alimenta o selo "Dados até · atualizado às" do topo,
+    que antes dizia "Atualizado agora" fixo. Reusa o _base_version (cacheado
+    60s), então não custa query nova no caminho do report."""
+    try:
+        cr_ms = _base_version()[0]
+        if cr_ms:
+            return {**data, "data_updated_at": int(cr_ms)}
+    except Exception as e:
+        logger.warning(f"[WARN attach data_updated_at] {e}")
+    return data
+
+
+def _ma_tokens_for_view(token: str, view: str) -> list:
+    """Tokens cujos vínculos Max Attention valem pra visão pedida — espelha a
+    resolução do payload do report: visão agregada de um grupo = todos os
+    membros; drill-down (ou token avulso) = o próprio token."""
+    view_l = (view or "").lower()
+    if view_l in ("aggregated", "all"):
+        try:
+            info = (_safe_get_merges() or {}).get(token) or (_safe_get_merges() or {}).get(token.upper())
+            if info:
+                group = merges.get_merge_group(info["merge_id"]) or {}
+                members = [m.get("short_token") for m in group.get("members") or [] if m.get("short_token")]
+                if members:
+                    return members
+        except Exception as e:
+            logger.warning(f"[WARN ma tokens for view] {e}")
+    if view and ma_report.valid_token(view):
+        return [view]
+    return [token]
+
+
+def _dsp_creative_names_for_token(token: str) -> list:
+    """Nomes de criativo da DSP nesta campanha (contexto da busca de peças:
+    peça Max Attention ativada por AdBolt costuma ter o mesmo nome na DSP).
+    Lê do report cacheado — não custa query quando o report já foi aberto."""
+    try:
+        data, _ = _get_report_cached(token, force_refresh=False)
+        names = sorted({(r.get("creative_name") or "").strip() for r in (data or {}).get("detail") or []} - {""})
+        return names[:50]
+    except Exception as e:
+        logger.warning(f"[WARN dsp creative names {token}] {e}")
+        return []
 
 
 def _emit_contract_consistency(campaign_info):

@@ -228,6 +228,22 @@ DAGSTER_JOB_NAME=$(extract_env "DAGSTER_JOB_NAME")
 ANTHROPIC_API_KEY=$(extract_env "ANTHROPIC_API_KEY")
 ANTHROPIC_API_KEY=$(read_secret_if_missing "ANTHROPIC_API_KEY" "$ANTHROPIC_API_KEY")
 
+# MA_SERVICE_KEY — chave de serviço da aba Max Attention do report (ma_report.py
+# chama os endpoints /api/v1/service/report-center/* do o2o-platform com ela no
+# header x-service-key). Tem que ser IGUAL à REPORT_CENTER_SERVICE_KEY do
+# projeto da Platform na Vercel. É credencial compartilhada entre dois sistemas,
+# então pode rotacionar: Secret Manager ganha da revisão ativa (read_secret_first).
+# Primeira vez: crie o secret MA_SERVICE_KEY no Secret Manager com o mesmo valor
+# da Vercel e rode este script. Sem ela, a aba responde "não configurado".
+MA_SERVICE_KEY=$(extract_env "MA_SERVICE_KEY")
+MA_SERVICE_KEY=$(read_secret_first "MA_SERVICE_KEY" "$MA_SERVICE_KEY")
+# MA_PLATFORM_URL — opcional (default no código: https://platform.hypr.mobi).
+# Só existe pra apontar pra um preview da Platform em teste. Semeadura na
+# primeira vez igual ao MA_SURVEY_VIEW:
+#   MA_PLATFORM_URL_INIT=https://<preview>.vercel.app bash deploy.sh
+MA_PLATFORM_URL=$(extract_env "MA_PLATFORM_URL")
+MA_PLATFORM_URL="${MA_PLATFORM_URL:-${MA_PLATFORM_URL_INIT:-}}"
+
 if [ -z "$JWT_SECRET" ]; then
   echo "✗ JWT_SECRET não encontrado na revisão $ACTIVE_REV. Abortando."
   echo "  (sem ele o login admin quebra em loop)"
@@ -312,6 +328,16 @@ if [ -n "$ANTHROPIC_API_KEY" ]; then
   echo "  ✓ ANTHROPIC_API_KEY capturado (IA da unificação de audiências habilitada)"
 else
   echo "  ⚠ ANTHROPIC_API_KEY ausente — unificação de audiências roda só na heurística"
+fi
+if [ -n "$MA_SERVICE_KEY" ]; then
+  echo "  ✓ MA_SERVICE_KEY capturado (aba Max Attention do report habilitada)"
+else
+  echo "  ⚠ MA_SERVICE_KEY ausente — aba Max Attention do report responde \"não configurado\""
+  echo "    Crie o secret MA_SERVICE_KEY no Secret Manager com o mesmo valor da"
+  echo "    REPORT_CENTER_SERVICE_KEY da Platform (Vercel) e rode este script de novo."
+fi
+if [ -n "$MA_PLATFORM_URL" ]; then
+  echo "  ✓ MA_PLATFORM_URL capturado ($MA_PLATFORM_URL)"
 fi
 
 # ── 2. Montar arquivo YAML com todas as envvars ──────────────────────────────
@@ -403,6 +429,12 @@ if [ -n "$DAGSTER_JOB_NAME" ]; then
 fi
 if [ -n "$ANTHROPIC_API_KEY" ]; then
   echo "ANTHROPIC_API_KEY: '${ANTHROPIC_API_KEY}'" >> "$ENV_FILE"
+fi
+if [ -n "$MA_SERVICE_KEY" ]; then
+  echo "MA_SERVICE_KEY: '${MA_SERVICE_KEY}'" >> "$ENV_FILE"
+fi
+if [ -n "$MA_PLATFORM_URL" ]; then
+  echo "MA_PLATFORM_URL: '${MA_PLATFORM_URL}'" >> "$ENV_FILE"
 fi
 
 # ── 3. Deploy ────────────────────────────────────────────────────────────────

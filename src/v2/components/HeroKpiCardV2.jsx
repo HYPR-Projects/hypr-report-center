@@ -39,6 +39,12 @@ export function HeroKpiCardV2({
   sparklineColor = "var(--color-signature)",
   caption, // texto pequeno opcional sob o valor (ex: "Volume entregue como cortesia")
   variant = "default", // "default" | "bonus" — bonus troca glow/label pra dourado
+  // Barra de progresso sob o valor (ex.: % do budget investido). `pct` é
+  // capado em 100 na largura; `label` vira o aria-label da barra.
+  meter = null, // { pct: number, label: string } | null
+  // Linhas de contexto sob a barra (ReactNode). Com `footer`, a sparkline
+  // sobe para a linha do valor, à direita, e o card fica mais baixo.
+  footer = null,
   className,
 }) {
   const hasDelta = typeof deltaPercent === "number" && !Number.isNaN(deltaPercent);
@@ -87,10 +93,29 @@ export function HeroKpiCardV2({
               md    (768px+)  — text-5xl (48px) — mockup desktop
             break-words evita overflow horizontal quando o número é maior
             que o card (ex: "R$ 1.184.220" em mobile estreito). */}
-        <div className="font-bold text-fg leading-none tabular-nums text-3xl sm:text-4xl md:text-5xl break-words">
-          {value}
-          {cents && (
-            <span className="text-xl sm:text-2xl md:text-3xl font-bold opacity-70">{cents}</span>
+        <div className={cn(footer && "flex items-end justify-between gap-4")}>
+          <div
+            className={cn(
+              "font-bold text-fg leading-none tabular-nums break-words min-w-0",
+              footer ? "text-3xl sm:text-4xl" : "text-3xl sm:text-4xl md:text-5xl",
+            )}
+          >
+            {value}
+            {cents && (
+              <span className={cn("font-bold opacity-70", footer ? "text-xl sm:text-2xl" : "text-xl sm:text-2xl md:text-3xl")}>
+                {cents}
+              </span>
+            )}
+          </div>
+          {footer && sparklineValues && sparklineValues.length >= 2 && (
+            <SparklineV2
+              values={sparklineValues}
+              stroke={sparklineColor}
+              width={140}
+              height={32}
+              className="hidden sm:block shrink-0 w-[120px] lg:w-[140px] opacity-80"
+              ariaLabel={`Tendência ${label}`}
+            />
           )}
         </div>
 
@@ -98,39 +123,58 @@ export function HeroKpiCardV2({
           <div className="text-xs text-fg-muted -mt-1">{caption}</div>
         )}
 
+        {meter && (
+          <div
+            className="h-1.5 rounded-full bg-track overflow-hidden"
+            role="img"
+            aria-label={meter.label}
+          >
+            <div
+              className="h-full rounded-full bg-signature transition-[width] duration-500 ease-out"
+              style={{ width: `${Math.max(0, Math.min(100, Number(meter.pct) || 0))}%` }}
+            />
+          </div>
+        )}
+
+        {footer && (
+          <div className="text-[12px] leading-snug text-fg-muted space-y-1">{footer}</div>
+        )}
+
         {/* Delta + sparkline. Em mobile estreito o sparkline pode ficar
             apertado entre delta e borda — flex-wrap deixa quebrar pra
             linha de baixo se necessário, sem cortar nenhum dos dois. */}
-        <div className="flex items-center gap-3 mt-1 flex-wrap">
-          {hasDelta && (
-            <span
-              className={cn(
-                "inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold tabular-nums",
-                isPositiveDelta && "bg-success-soft text-success",
-                isNegativeDelta && "bg-danger-soft text-danger",
-                !isPositiveDelta && !isNegativeDelta && "bg-surface text-fg-muted",
-              )}
-            >
-              <ArrowIcon
-                direction={isPositiveDelta ? "up-right" : isNegativeDelta ? "down-right" : "right"}
-                className="size-2.5"
-              />
-              {deltaPercent > 0 ? "+" : ""}
-              {fmt(deltaPercent, 1)}% {deltaLabel}
-            </span>
-          )}
+        {(hasDelta || (!footer && sparklineValues && sparklineValues.length >= 2)) && (
+          <div className="flex items-center gap-3 mt-1 flex-wrap">
+            {hasDelta && (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold tabular-nums",
+                  isPositiveDelta && "bg-success-soft text-success",
+                  isNegativeDelta && "bg-danger-soft text-danger",
+                  !isPositiveDelta && !isNegativeDelta && "bg-surface text-fg-muted",
+                )}
+              >
+                <ArrowIcon
+                  direction={isPositiveDelta ? "up-right" : isNegativeDelta ? "down-right" : "right"}
+                  className="size-2.5"
+                />
+                {deltaPercent > 0 ? "+" : ""}
+                {fmt(deltaPercent, 1)}% {deltaLabel}
+              </span>
+            )}
 
-          {sparklineValues && sparklineValues.length >= 2 && (
-            <SparklineV2
-              values={sparklineValues}
-              stroke={sparklineColor}
-              width={200}
-              height={28}
-              className="flex-1 min-w-[120px] max-w-[260px] opacity-80"
-              ariaLabel={`Tendência ${label}`}
-            />
-          )}
-        </div>
+            {!footer && sparklineValues && sparklineValues.length >= 2 && (
+              <SparklineV2
+                values={sparklineValues}
+                stroke={sparklineColor}
+                width={200}
+                height={28}
+                className="flex-1 min-w-[120px] max-w-[260px] opacity-80"
+                ariaLabel={`Tendência ${label}`}
+              />
+            )}
+          </div>
+        )}
       </CardBody>
     </Card>
   );

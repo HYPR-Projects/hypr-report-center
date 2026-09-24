@@ -78,7 +78,9 @@ const PdoohSiteTable = ({ sites, theme, onSiteClick }) => {
       </div>
 
       <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        {/* minWidth: no celular a tabela rola na horizontal em vez de espremer
+            o nome do local palavra por palavra. */}
+        <table style={{ width: "100%", minWidth: 640, borderCollapse: "collapse" }}>
           <thead><tr>
             {th("Local", "name")}
             <th style={{ color: muted, fontWeight: 600, fontSize: 12, textAlign: "left", padding: "0 8px 8px 0", whiteSpace: "nowrap" }}>Cidade</th>

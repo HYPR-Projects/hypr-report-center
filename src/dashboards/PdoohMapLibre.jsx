@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { C } from "../shared/theme";
 import { fmt } from "../shared/format";
-import { useMapLibre } from "../shared/useMapLibre";
+import { useMapLibreStatus } from "../shared/useMapLibre";
 
 // Basemaps GL gratuitos da CARTO (mesmo fornecedor dos tiles raster antigos).
 const STYLE_DARK  = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
@@ -68,7 +68,9 @@ const PdoohMapLibre = ({ sites, metric, mode, isDark = true, focus }) => {
   const popupRef = useRef(null);
   const readyRef = useRef(false);
   const [failed, setFailed] = useState(false);
-  const ml = useMapLibre();
+  // CDN bloqueada ou lenta demais (rede corporativa): desiste em ~6 s e
+  // mostra o aviso em vez de "Carregando mapa..." para sempre.
+  const { lib: ml, failed: cdnFailed } = useMapLibreStatus();
 
   // Refs com os valores correntes — o handler de load do mapa (assíncrono)
   // e os callbacks de clique sempre leem o estado mais recente por aqui.
@@ -218,6 +220,7 @@ const PdoohMapLibre = ({ sites, metric, mode, isDark = true, focus }) => {
   }, [focus]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (failed) return <div style={{height:400,display:"flex",alignItems:"center",justifyContent:"center",color:C.muted,fontSize:13}}>Não foi possível carregar o mapa neste navegador.</div>;
+  if (cdnFailed) return <div style={{height:400,display:"flex",alignItems:"center",justifyContent:"center",textAlign:"center",padding:"0 24px",color:C.muted,fontSize:13}}>Não foi possível carregar o mapa nesta rede. Os endereços e os números estão na tabela abaixo.</div>;
   if (!ml) return <div style={{height:400,display:"flex",alignItems:"center",justifyContent:"center",color:C.muted,fontSize:13}}>Carregando mapa...</div>;
 
   return <div ref={containerRef} style={{height:400,borderRadius:8,overflow:"hidden"}}/>;

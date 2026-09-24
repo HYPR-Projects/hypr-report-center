@@ -14,7 +14,7 @@
 //   2. Hero KPI Vendas + 3 KPIs (Compras, Unidades, ATC) com sparklines
 //   3. Funil ATC → Compras  (escondido quando ATC === 0 — sem
 //      adições não dá pra falar em conversão de carrinho)
-//   4. Tendência diária (Vendas/dia + linha de Compras)
+//   4. Tendência diária (uma métrica por vez nos chips, um eixo só)
 //   5. Top Produtos (tabela com ASIN + nome truncado)
 //   6. Tabela agregada por dia
 //
@@ -27,11 +27,7 @@
 // pra fazer upload do novo formato.
 
 import { useMemo, useState } from "react";
-import {
-  ResponsiveContainer, Tooltip,
-  ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Legend,
-} from "recharts";
-import { fmt, fmtR, fmtCompact, fmtP2, fmtDateTimeBR } from "../shared/format";
+import { fmt, fmtR, fmtCompactTick, fmtP2, fmtDateTimeBR } from "../shared/format";
 import {
   readRangeFromUrl, writeRangeToUrl, parseYmd, daysInRange, ymd,
 } from "../shared/dateFilter";
@@ -41,6 +37,8 @@ import { KpiCardV2 } from "../v2/components/KpiCardV2";
 import { HeroKpiCardV2 } from "../v2/components/HeroKpiCardV2";
 import { SparklineV2 } from "../v2/components/SparklineV2";
 import { Card, CardHeader, CardBody } from "../ui/Card";
+import { ChipGroupV2 } from "../v2/components/ChipGroupV2";
+import { TrendChartV2 } from "../v2/components/TrendChartV2";
 
 const CH_COLORS = {
   signature: "var(--color-signature)",
@@ -52,14 +50,14 @@ const CH_COLORS = {
   border: "var(--color-border)",
 };
 
-const RmndDashboard = ({ data, onClear, onEdit }) => {
+const RmndDashboard = ({ data, onClear, onEdit, externalRange }) => {
   const isV2Format = data?.format === "amazon-ads-2026";
 
   if (!isV2Format) {
     return <LegacyBaseBanner data={data} onEdit={onEdit} onClear={onClear} />;
   }
 
-  return <RmndV2Dashboard data={data} onClear={onClear} onEdit={onEdit} />;
+  return <RmndV2Dashboard data={data} onClear={onClear} onEdit={onEdit} externalRange={externalRange} />;
 };
 
 export default RmndDashboard;
@@ -108,7 +106,7 @@ function LegacyBaseBanner({ data, onEdit, onClear }) {
 }
 
 // ─── Dashboard V2 ────────────────────────────────────────────────────────────
-function RmndV2Dashboard({ data, onClear, onEdit }) {
+function RmndV2Dashboard({ data, onClear, onEdit, externalRange }) {
   const allRows = data.rows || [];
 
   // Datas disponíveis
@@ -123,7 +121,11 @@ function RmndV2Dashboard({ data, onClear, onEdit }) {
     };
   }, [allRows]);
 
-  const [range, setRangeState] = useState(() => readRangeFromUrl("rmnd"));
+  // Período global do report quando existe (externalRange !== undefined);
+  // o filtro próprio (?rmnd_from/to) só vale fora dele.
+  const controlled = externalRange !== undefined;
+  const [innerRange, setRangeState] = useState(() => (controlled ? null : readRangeFromUrl("rmnd")));
+  const range = controlled ? externalRange : innerRange;
   const setRange = (r) => {
     setRangeState(r);
     writeRangeToUrl(r, "rmnd");
@@ -214,14 +216,16 @@ function RmndV2Dashboard({ data, onClear, onEdit }) {
               {fmt(rows.length)} de {fmt(allRows.length)} linhas · {daysInRange(range)}d
             </span>
           )}
-          <DateRangeFilter
-            value={range}
-            onChange={setRange}
-            minDate={dateInfo.min}
-            maxDate={dateInfo.max}
-            availableDates={dateInfo.available}
-            isDark
-          />
+          {!controlled && (
+            <DateRangeFilter
+              value={range}
+              onChange={setRange}
+              minDate={dateInfo.min}
+              maxDate={dateInfo.max}
+              availableDates={dateInfo.available}
+              isDark
+            />
+          )}
           {onEdit && (
             <button
               type="button"
@@ -245,7 +249,9 @@ function RmndV2Dashboard({ data, onClear, onEdit }) {
 
       {rows.length === 0 ? (
         <div className="rounded-xl border border-border bg-surface p-12 text-center text-fg-muted">
-          Nenhuma linha encontrada no período selecionado.
+          {controlled
+            ? "Sem dados de RMND no período selecionado. Ajuste o período na barra do report."
+            : "Nenhuma linha encontrada no período selecionado."}
         </div>
       ) : (
         <>
@@ -359,14 +365,12 @@ function FunnelCard({ atc, purchases, units, avgTicket }) {
             label="Adições ao Carrinho"
             value={fmt(atc)}
             sub="ATC"
-            color="signature-light"
           />
           <FunnelArrow rate={conv} />
           <FunnelStage
             label="Compras Concluídas"
             value={fmt(purchases)}
             sub={`${fmt(units)} unidades`}
-            color="signature"
             primary
           />
         </div>
@@ -385,7 +389,7 @@ function FunnelCard({ atc, purchases, units, avgTicket }) {
   );
 }
 
-function FunnelStage({ label, value, sub, color, primary = false }) {
+function FunnelStage({ label, value, sub, primary = false }) {
   return (
     <div
       className={`flex-1 rounded-xl border p-4 ${
@@ -423,65 +427,43 @@ function FunnelArrow({ rate }) {
 }
 
 // ─── Tendência diária ───────────────────────────────────────────────────────
+// Uma métrica por vez (chips), sempre no mesmo eixo, como na Visão Geral.
+// Antes: barras de vendas + linha de compras em dois eixos Y.
+const RMND_TREND = [
+  { key: "sales", label: "Vendas", formatValue: (v) => fmtR(v), formatTick: (v) => `R$\u00A0${fmtCompactTick(v)}` },
+  { key: "purchases", label: "Compras", formatValue: (v) => fmt(v), formatTick: (v) => fmtCompactTick(v) },
+  { key: "units", label: "Unidades", formatValue: (v) => fmt(v), formatTick: (v) => fmtCompactTick(v) },
+  { key: "atc", label: "Adições ao carrinho", formatValue: (v) => fmt(v), formatTick: (v) => fmtCompactTick(v) },
+];
+
 function DailyTrendCard({ daily }) {
-  const pretty = (d) => d.slice(5).split("-").reverse().join("/");
-  const chartData = daily.map((d) => ({
-    date: pretty(d.date),
-    rawDate: d.date,
-    Vendas: d.sales,
-    Compras: d.purchases,
-  }));
+  const [picked, setPicked] = useState("sales");
+  // Sem ATC na base, o chip some (série toda zerada não informa nada).
+  const options = RMND_TREND.filter((m) => m.key !== "atc" || daily.some((d) => d.atc > 0));
+  const metric = options.find((m) => m.key === picked) || options[0];
+  if (!daily.length) return null;
   return (
-    <Card>
-      <CardHeader title="Tendência diária" subtitle="Vendas (R$) e compras por dia" />
-      <CardBody className="pl-2">
-        <div className="w-full" style={{ height: 280 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={CH_COLORS.border} vertical={false} />
-              <XAxis
-                dataKey="date"
-                tick={{ fill: CH_COLORS.fgMuted, fontSize: 10 }}
-                tickLine={false}
-                interval="preserveStartEnd"
-              />
-              <YAxis
-                yAxisId="left"
-                tick={{ fill: CH_COLORS.fgMuted, fontSize: 10 }}
-                tickLine={false}
-                axisLine={false}
-                tickFormatter={(v) => fmtCompact(v)}
-                width={56}
-              />
-              <YAxis
-                yAxisId="right"
-                orientation="right"
-                tick={{ fill: CH_COLORS.fgMuted, fontSize: 10 }}
-                tickLine={false}
-                axisLine={false}
-                tickFormatter={(v) => fmtCompact(v)}
-                width={40}
-              />
-              <Tooltip
-                contentStyle={{
-                  background: "var(--color-surface-2)",
-                  border: "1px solid var(--color-border-strong)",
-                  borderRadius: 8,
-                  fontSize: 12,
-                  color: CH_COLORS.fg,
-                }}
-                formatter={(value, name) => name === "Compras" ? [fmt(value), name] : [fmtR(value), name]}
-              />
-              <Legend
-                wrapperStyle={{ fontSize: 11, paddingTop: 8 }}
-                iconType="square"
-              />
-              <Bar yAxisId="left" dataKey="Vendas" fill={CH_COLORS.signature} radius={[3, 3, 0, 0]} />
-              <Line yAxisId="right" dataKey="Compras" type="monotone" stroke={CH_COLORS.warning} strokeWidth={2} dot={false} />
-            </ComposedChart>
-          </ResponsiveContainer>
-        </div>
-      </CardBody>
+    <Card className="p-4 md:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <h3 className="text-[11px] font-bold uppercase tracking-widest text-fg-muted">
+          Tendência diária
+        </h3>
+        <ChipGroupV2
+          label="Métrica do gráfico"
+          options={options.map((m) => ({ value: m.key, label: m.label }))}
+          value={metric.key}
+          onChange={setPicked}
+        />
+      </div>
+      <TrendChartV2
+        data={daily}
+        dataKey={metric.key}
+        label={metric.label}
+        kind="bar"
+        formatValue={metric.formatValue}
+        formatTick={metric.formatTick}
+        height={240}
+      />
     </Card>
   );
 }

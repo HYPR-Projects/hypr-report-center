@@ -2,7 +2,7 @@
 //
 // Ponte entre o tema V2 (data-theme="dark"|"light") e os componentes
 // Legacy que recebem objeto theme com schema próprio (bg/bg2/bg3/bdr/
-// text/muted) — SurveyTab e TabChat principalmente.
+// text/muted), hoje só o SurveyTab.
 //
 // Por que existir
 //   Os Legacy usam paletas hardcoded (C/CL de src/shared/theme.js) que
@@ -15,7 +15,7 @@
 // continua correto.
 //
 // O objeto retornado bate exatamente com o schema esperado por
-// SurveyTab.jsx (linhas 82-86) e TabChat.jsx (linhas 63-68):
+// SurveyTab.jsx:
 //   { bg, bg2, bg3, bdr, text, muted }
 
 const LIGHT_LEGACY = {

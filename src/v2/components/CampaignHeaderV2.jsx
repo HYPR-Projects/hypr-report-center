@@ -36,6 +36,9 @@ const PosVendaModal = lazyWithPreload(() =>
 const ReportAnalyticsModal = lazyWithPreload(() =>
   import("../admin/components/ReportAnalyticsModal").then((m) => ({ default: m.ReportAnalyticsModal })),
 );
+const LoomModal = lazyWithPreload(() =>
+  import("./LoomModal").then((m) => ({ default: m.LoomModal })),
+);
 
 const fmtDateShort = (ymd) => {
   if (!ymd) return null;
@@ -121,6 +124,13 @@ export function CampaignHeaderV2({
   // extra_mode}. Quando presente, o chip "Pós-venda" entra na meta line
   // (ao lado de Negociado) e abre modal com o Google Slides embutido.
   posVenda = null,
+  // ── Vídeo explicativo (Loom) ─────────────────────────────────────────
+  // Era uma aba própria; virou o chip "Assistir resumo" na meta line.
+  // `autoOpenLoom` cobre links antigos com ?tab=loom: o dashboard pede pra
+  // abrir o modal na carga em vez de cair numa aba que não existe mais.
+  loomUrl = null,
+  autoOpenLoom = false,
+  onLoomOpen,
 }) {
   // State do modal de analytics. Local ao header — não precisa subir, o
   // header já é admin-aware via isAdmin e o modal é self-contained.
@@ -131,6 +141,9 @@ export function CampaignHeaderV2({
   const [analyticsMounted, setAnalyticsMounted] = useState(false);
   const [posVendaMounted, setPosVendaMounted] = useState(false);
   const [negoMounted, setNegoMounted] = useState(false);
+  const hasLoom = !!loomUrl;
+  const [loomOpen, setLoomOpen] = useState(() => hasLoom && autoOpenLoom);
+  const [loomMounted, setLoomMounted] = useState(() => hasLoom && autoOpenLoom);
   const hasPosVenda = !!(posVenda && (posVenda.url || posVenda.extra_url));
   const baseStatus = deriveStatus(startDate, endDate);
   // Encerramento antecipado pinta o status de danger (vermelho) — espelha
@@ -190,11 +203,12 @@ export function CampaignHeaderV2({
     const wanted = [
       hasAnyNegotiation && NegotiationModal,
       hasPosVenda && PosVendaModal,
+      hasLoom && LoomModal,
       isAdmin && ReportAnalyticsModal,
     ].filter(Boolean);
     if (!wanted.length) return;
     return preloadWhenIdle(...wanted);
-  }, [hasAnyNegotiation, hasPosVenda, isAdmin]);
+  }, [hasAnyNegotiation, hasPosVenda, hasLoom, isAdmin]);
 
   // Agência exibida no eyebrow: override do admin (prop) vence; senão a
   // primeira agency não-vazia entre as negociações do Sales Center (em
@@ -329,6 +343,18 @@ export function CampaignHeaderV2({
                 </span>
               </>
             )}
+            {hasLoom && (
+              <>
+                <span className="text-fg-subtle">·</span>
+                <LoomButton
+                  onClick={() => {
+                    setLoomMounted(true);
+                    setLoomOpen(true);
+                    onLoomOpen?.();
+                  }}
+                />
+              </>
+            )}
             {hasAnyNegotiation && (
               <>
                 <span className="text-fg-subtle">·</span>
@@ -457,6 +483,18 @@ export function CampaignHeaderV2({
           </Suspense>
         </LazyModalBoundary>
       )}
+      {hasLoom && loomMounted && (
+        <LazyModalBoundary onFail={() => { setLoomOpen(false); setLoomMounted(false); }}>
+          <Suspense fallback={null}>
+            <LoomModal
+              open={loomOpen}
+              onOpenChange={setLoomOpen}
+              loomUrl={loomUrl}
+              campaignName={campaignName}
+            />
+          </Suspense>
+        </LazyModalBoundary>
+      )}
       {isAdmin && analyticsMounted && (
         <LazyModalBoundary onFail={() => { setAnalyticsOpen(false); setAnalyticsMounted(false); }}>
           <Suspense fallback={null}>
@@ -479,6 +517,31 @@ export function CampaignHeaderV2({
 // Chip "Pós-venda" — mesma família visual do NegotiationButton (signature
 // soft, mesma altura na meta line), com ícone de apresentação. Abre o modal
 // com o Google Slides embutido — o cliente vê o deck sem sair do report.
+// "Assistir resumo" — vídeo explicativo gravado pelo time (Loom). Chip
+// preenchido (signature-fill) de propósito: é o único item da meta line que
+// é uma ação de consumo imediato, e o cliente precisa achá-lo sem procurar.
+function LoomButton({ onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md cursor-pointer",
+        "bg-signature-fill border border-signature-fill text-on-signature",
+        "text-[11px] font-bold uppercase tracking-wider",
+        "hover:brightness-110 transition-[filter]",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-surface-2",
+      ].join(" ")}
+      aria-label="Assistir o resumo da campanha em vídeo"
+    >
+      <svg className="size-2.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <polygon points="6 4 20 12 6 20 6 4" />
+      </svg>
+      Assistir resumo
+    </button>
+  );
+}
+
 function PosVendaButton({ onClick }) {
   return (
     <button

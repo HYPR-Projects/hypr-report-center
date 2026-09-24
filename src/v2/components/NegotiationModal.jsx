@@ -629,7 +629,7 @@ function VolumeCard({ tactic, active, displayContracted, displayBonus, videoCont
           <VolumeLine label="Display" contracted={displayContracted} bonus={displayBonus} unit="imp." />
         )}
         {hasVideo && (
-          <VolumeLine label="Video" contracted={videoContracted} bonus={videoBonus} unit="completions" />
+          <VolumeLine label="Vídeo" contracted={videoContracted} bonus={videoBonus} unit="completions" />
         )}
       </div>
     </div>

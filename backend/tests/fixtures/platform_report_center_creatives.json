@@ -1,0 +1,2752 @@
+{
+ "generatedAt": "2026-09-23T12:00:00.000Z",
+ "items": [
+  {
+   "id": "a1111111-1111-4111-8111-111111111111",
+   "ok": true,
+   "creative": {
+    "status": "published",
+    "publicSlug": "tap-to-map-a11111",
+    "clientName": "Cliente Demo",
+    "size": {
+     "width": 300,
+     "height": 250,
+     "preset": "300x250",
+     "label": "300x250"
+    },
+    "ctaText": "Ver lojas",
+    "widgets": [
+     {
+      "id": "w-close",
+      "type": "close_to",
+      "enabled": true
+     },
+     {
+      "id": "w-cal",
+      "type": "add_to_calendar",
+      "enabled": true
+     },
+     {
+      "id": "w-count",
+      "type": "countdown",
+      "enabled": true
+     },
+     {
+      "id": "w-off",
+      "type": "amazon_products",
+      "enabled": false
+     }
+    ],
+    "hasOverlay": true,
+    "mechanic": null,
+    "surveyMode": null,
+    "game": null,
+    "createdAt": "2026-08-20T12:00:00.000Z",
+    "updatedAt": "2026-08-28T12:00:00.000Z",
+    "id": "a1111111-1111-4111-8111-111111111111",
+    "name": "Lojas Verão SP",
+    "templateSlug": "tap-to-map"
+   },
+   "analytics": {
+    "totals": {
+     "impressionServed": 212000,
+     "impression": 198000,
+     "viewable": 151000,
+     "overlayDismissed": 12000,
+     "mapInteraction": 9800,
+     "pinClick": 7400,
+     "ctaClick": 3900,
+     "overlayClick": 600,
+     "splitCreativeClick": 0,
+     "uniqueSessions": 176000,
+     "engagedSessions": 14100,
+     "clicksTotal": 11300,
+     "clickSessions": 9040
+    },
+    "rates": {
+     "viewability": 0.7626262626262627,
+     "engagement": 0.08011363636363636,
+     "ctr": 0.019696969696969695,
+     "pinClickRate": 0.03737373737373737,
+     "measurementRate": 0.9339622641509434
+    },
+    "avgDwellMs": 4200,
+    "timeseries": [
+     {
+      "bucket": "2026-09-01T00:00:00.000Z",
+      "impression": 7200,
+      "viewable": 5491,
+      "pinClick": 269,
+      "ctaClick": 142,
+      "engagedSessions": 513
+     },
+     {
+      "bucket": "2026-09-02T00:00:00.000Z",
+      "impression": 8640,
+      "viewable": 6589,
+      "pinClick": 323,
+      "ctaClick": 170,
+      "engagedSessions": 615
+     },
+     {
+      "bucket": "2026-09-03T00:00:00.000Z",
+      "impression": 10080,
+      "viewable": 7687,
+      "pinClick": 377,
+      "ctaClick": 199,
+      "engagedSessions": 718
+     },
+     {
+      "bucket": "2026-09-04T00:00:00.000Z",
+      "impression": 7560,
+      "viewable": 5765,
+      "pinClick": 283,
+      "ctaClick": 149,
+      "engagedSessions": 538
+     },
+     {
+      "bucket": "2026-09-05T00:00:00.000Z",
+      "impression": 9000,
+      "viewable": 6864,
+      "pinClick": 336,
+      "ctaClick": 177,
+      "engagedSessions": 641
+     },
+     {
+      "bucket": "2026-09-06T00:00:00.000Z",
+      "impression": 10440,
+      "viewable": 7962,
+      "pinClick": 390,
+      "ctaClick": 206,
+      "engagedSessions": 743
+     },
+     {
+      "bucket": "2026-09-07T00:00:00.000Z",
+      "impression": 7920,
+      "viewable": 6040,
+      "pinClick": 296,
+      "ctaClick": 156,
+      "engagedSessions": 564
+     },
+     {
+      "bucket": "2026-09-08T00:00:00.000Z",
+      "impression": 9360,
+      "viewable": 7138,
+      "pinClick": 350,
+      "ctaClick": 184,
+      "engagedSessions": 667
+     },
+     {
+      "bucket": "2026-09-09T00:00:00.000Z",
+      "impression": 10800,
+      "viewable": 8236,
+      "pinClick": 404,
+      "ctaClick": 213,
+      "engagedSessions": 769
+     },
+     {
+      "bucket": "2026-09-10T00:00:00.000Z",
+      "impression": 8280,
+      "viewable": 6315,
+      "pinClick": 309,
+      "ctaClick": 163,
+      "engagedSessions": 590
+     },
+     {
+      "bucket": "2026-09-11T00:00:00.000Z",
+      "impression": 9720,
+      "viewable": 7413,
+      "pinClick": 363,
+      "ctaClick": 191,
+      "engagedSessions": 692
+     },
+     {
+      "bucket": "2026-09-12T00:00:00.000Z",
+      "impression": 7200,
+      "viewable": 5491,
+      "pinClick": 269,
+      "ctaClick": 142,
+      "engagedSessions": 513
+     },
+     {
+      "bucket": "2026-09-13T00:00:00.000Z",
+      "impression": 8640,
+      "viewable": 6589,
+      "pinClick": 323,
+      "ctaClick": 170,
+      "engagedSessions": 615
+     },
+     {
+      "bucket": "2026-09-14T00:00:00.000Z",
+      "impression": 10080,
+      "viewable": 7687,
+      "pinClick": 377,
+      "ctaClick": 199,
+      "engagedSessions": 718
+     },
+     {
+      "bucket": "2026-09-15T00:00:00.000Z",
+      "impression": 7560,
+      "viewable": 5765,
+      "pinClick": 283,
+      "ctaClick": 149,
+      "engagedSessions": 538
+     },
+     {
+      "bucket": "2026-09-16T00:00:00.000Z",
+      "impression": 9000,
+      "viewable": 6864,
+      "pinClick": 336,
+      "ctaClick": 177,
+      "engagedSessions": 641
+     },
+     {
+      "bucket": "2026-09-17T00:00:00.000Z",
+      "impression": 10440,
+      "viewable": 7962,
+      "pinClick": 390,
+      "ctaClick": 206,
+      "engagedSessions": 743
+     },
+     {
+      "bucket": "2026-09-18T00:00:00.000Z",
+      "impression": 7920,
+      "viewable": 6040,
+      "pinClick": 296,
+      "ctaClick": 156,
+      "engagedSessions": 564
+     },
+     {
+      "bucket": "2026-09-19T00:00:00.000Z",
+      "impression": 9360,
+      "viewable": 7138,
+      "pinClick": 350,
+      "ctaClick": 184,
+      "engagedSessions": 667
+     },
+     {
+      "bucket": "2026-09-20T00:00:00.000Z",
+      "impression": 10800,
+      "viewable": 8236,
+      "pinClick": 404,
+      "ctaClick": 213,
+      "engagedSessions": 769
+     },
+     {
+      "bucket": "2026-09-21T00:00:00.000Z",
+      "impression": 8280,
+      "viewable": 6315,
+      "pinClick": 309,
+      "ctaClick": 163,
+      "engagedSessions": 590
+     },
+     {
+      "bucket": "2026-09-22T00:00:00.000Z",
+      "impression": 9720,
+      "viewable": 7413,
+      "pinClick": 363,
+      "ctaClick": 191,
+      "engagedSessions": 692
+     }
+    ],
+    "granularity": "day",
+    "ctaByButton": {
+     "directions": 1450,
+     "whatsapp": 610,
+     "website": 1240
+    },
+    "ctaBySurface": {
+     "pin_card": 2100,
+     "nearest_card": 700,
+     "header": 500,
+     "overlay": 600,
+     "split_creative": 0
+    },
+    "topPins": [
+     {
+      "pinId": "p1",
+      "pinName": "Loja Moema",
+      "latitude": -23.6009,
+      "longitude": -46.6623,
+      "pinClicks": 412,
+      "ctaClicks": 198,
+      "views": 5200,
+      "ctaByButton": {
+       "directions": 120,
+       "whatsapp": 48,
+       "website": 30
+      }
+     },
+     {
+      "pinId": "p2",
+      "pinName": "Loja Pinheiros",
+      "latitude": -23.5662,
+      "longitude": -46.6917,
+      "pinClicks": 356,
+      "ctaClicks": 171,
+      "views": 4700,
+      "ctaByButton": {
+       "directions": 99,
+       "whatsapp": 41,
+       "website": 31
+      }
+     },
+     {
+      "pinId": "p3",
+      "pinName": "Loja Tatuapé",
+      "latitude": -23.5401,
+      "longitude": -46.5763,
+      "pinClicks": 289,
+      "ctaClicks": 120,
+      "views": 3900,
+      "ctaByButton": {
+       "directions": 70,
+       "whatsapp": 30,
+       "website": 20
+      }
+     },
+     {
+      "pinId": "p4",
+      "pinName": null,
+      "latitude": null,
+      "longitude": null,
+      "pinClicks": 12,
+      "ctaClicks": 3,
+      "views": 90,
+      "ctaByButton": {
+       "directions": 3,
+       "whatsapp": 0,
+       "website": 0
+      }
+     }
+    ],
+    "scratch": {
+     "scratchedSessions": 0,
+     "revealedSessions": 0,
+     "avgTimeToCompleteMs": null,
+     "ctaImage": 0,
+     "ctaButton": 0,
+     "ctaCover": 0,
+     "tiltActivatedSessions": 0,
+     "gyroPrompted": 0,
+     "gyroGranted": 0,
+     "gyroDenied": 0,
+     "gyroOk": 0,
+     "blockedPolicy": 0,
+     "blockedDeniedIos": 0,
+     "blockedNoData": 0,
+     "blockedUnsupported": 0,
+     "revealGyro": 0,
+     "revealDrag": 0
+    },
+    "carrossel": {
+     "slideChanges": 0,
+     "swipes": 0,
+     "navSessions": 0,
+     "navBySurface": {
+      "swipe": 0,
+      "arrow": 0,
+      "dot": 0
+     },
+     "ctaSlide": 0,
+     "ctaBackground": 0,
+     "ctaButton": 0,
+     "topSlides": []
+    },
+    "freeform": {
+     "ctaMedia": 0,
+     "ctaButton": 0,
+     "videoStart": 0,
+     "videoFirstQuartile": 0,
+     "videoMidpoint": 0,
+     "videoThirdQuartile": 0,
+     "videoComplete": 0,
+     "videoUnmute": 0
+    },
+    "survey": {
+     "answeredSessions": 0,
+     "avgTimeToAnswerMs": null,
+     "ctaPayoff": 0,
+     "ctaButton": 0,
+     "ctaQuestion": 0,
+     "ctaOption": 0,
+     "completedSessions": 0,
+     "avgTimeToCompleteMs": null,
+     "topOptions": []
+    },
+    "play": {
+     "playedSessions": 0,
+     "completedSessions": 0,
+     "avgScore": null,
+     "avgHits": null,
+     "avgAttempts": null,
+     "avgPlayTimeMs": null,
+     "revealSessions": 0,
+     "replays": 0,
+     "challengeWonSessions": 0,
+     "challengePlayed": 0,
+     "ctaPostGame": 0,
+     "ctaButton": 0
+    },
+    "calendar": {
+     "adds": 830,
+     "opens": 610
+    },
+    "widgets": {
+     "items": [
+      {
+       "widgetId": "w-close",
+       "widgetType": "close_to",
+       "enabled": true,
+       "views": 180000,
+       "taps": 5200,
+       "tapSessions": 4800,
+       "conversions": 1900
+      },
+      {
+       "widgetId": "w-cal",
+       "widgetType": "add_to_calendar",
+       "enabled": true,
+       "views": 175000,
+       "taps": 830,
+       "tapSessions": 790,
+       "conversions": 610
+      },
+      {
+       "widgetId": "w-count",
+       "widgetType": "countdown",
+       "enabled": true,
+       "views": 178000,
+       "taps": 0,
+       "tapSessions": 0,
+       "conversions": 0
+      },
+      {
+       "widgetId": "w-off",
+       "widgetType": "amazon_products",
+       "enabled": false,
+       "views": 0,
+       "taps": 0,
+       "tapSessions": 0,
+       "conversions": 0
+      }
+     ],
+     "closeTo": {
+      "views": 180000,
+      "locate": 5200,
+      "locateSessions": 4800,
+      "gpsGranted": 1700,
+      "gpsDenied": 900,
+      "foundPrecise": 1600,
+      "foundApprox": 2900,
+      "foundSessions": 4300,
+      "redirects": 1900,
+      "redirectMap": 1300,
+      "redirectUrl": 600,
+      "redirectSessions": 1750,
+      "addresses": [
+       {
+        "pinId": "p1",
+        "name": "Loja Moema",
+        "address": "Av. Ibirapuera, 3103",
+        "latitude": -23.6009,
+        "longitude": -46.6623,
+        "identified": 1500,
+        "clicks": 640,
+        "directions": 450,
+        "website": 190
+       },
+       {
+        "pinId": "p2",
+        "name": "Loja Pinheiros",
+        "address": "R. dos Pinheiros, 1200",
+        "latitude": -23.5662,
+        "longitude": -46.6917,
+        "identified": 1300,
+        "clicks": 560,
+        "directions": 390,
+        "website": 170
+       },
+       {
+        "pinId": "p3",
+        "name": "Loja Tatuapé",
+        "address": "R. Tuiuti, 2000",
+        "latitude": -23.5401,
+        "longitude": -46.5763,
+        "identified": 1100,
+        "clicks": 420,
+        "directions": 300,
+        "website": 120
+       }
+      ],
+      "unresolvedIdentified": 400,
+      "unresolvedClicks": 280
+     }
+    }
+   },
+   "sessionSteps": {
+    "impression": 176000,
+    "viewable": 138000,
+    "engaged": 14100,
+    "click": 6900,
+    "overlay_click": 560,
+    "overlay_dismissed": 11000,
+    "split_creative_click": 0,
+    "map_interaction": 8900,
+    "pin_click": 6100,
+    "cta_click": 3500,
+    "cta_location": 2600,
+    "cta_header": 450,
+    "cta_directions": 1300,
+    "cta_whatsapp": 560,
+    "cta_website": 1100,
+    "scratch_cover_click": 0,
+    "scratch_started": 0,
+    "scratch_completed": 0,
+    "scratch_reveal_click": 0,
+    "tilt_activated": 0,
+    "nav": 0,
+    "survey_answer": 0,
+    "survey_complete": 0,
+    "game_started": 0,
+    "game_ended": 0,
+    "game_challenge_played": 0,
+    "game_challenge_won": 0,
+    "brand_reveal_viewed": 0,
+    "game_restarted": 0,
+    "video_start": 0,
+    "video_first_quartile": 0,
+    "video_midpoint": 0,
+    "video_third_quartile": 0,
+    "video_complete": 0,
+    "video_unmute": 0,
+    "widget_view": 160000,
+    "close_to_view": 160000,
+    "close_to_locate": 4800,
+    "close_to_found": 4300,
+    "close_to_redirect": 1750,
+    "calendar_add": 790,
+    "calendar_open": 600
+   }
+  },
+  {
+   "id": "a2222222-2222-4222-8222-222222222222",
+   "ok": true,
+   "creative": {
+    "status": "published",
+    "publicSlug": "slider-a22222",
+    "clientName": "Cliente Demo",
+    "size": {
+     "width": 300,
+     "height": 600,
+     "preset": "300x600",
+     "label": "300x600"
+    },
+    "ctaText": "Saiba mais",
+    "widgets": [],
+    "hasOverlay": null,
+    "mechanic": null,
+    "surveyMode": null,
+    "game": null,
+    "createdAt": "2026-08-20T12:00:00.000Z",
+    "updatedAt": "2026-08-28T12:00:00.000Z",
+    "id": "a2222222-2222-4222-8222-222222222222",
+    "name": "Vitrine Linha Solar (slider antigo)",
+    "templateSlug": "slider"
+   },
+   "analytics": {
+    "totals": {
+     "impressionServed": 98000,
+     "impression": 91000,
+     "viewable": 70000,
+     "overlayDismissed": 0,
+     "mapInteraction": 0,
+     "pinClick": 0,
+     "ctaClick": 1400,
+     "overlayClick": 0,
+     "splitCreativeClick": 200,
+     "uniqueSessions": 83000,
+     "engagedSessions": 9100,
+     "clicksTotal": 1400,
+     "clickSessions": 1120
+    },
+    "rates": {
+     "viewability": 0.7692307692307693,
+     "engagement": 0.10963855421686747,
+     "ctr": 0.015384615384615385,
+     "pinClickRate": 0,
+     "measurementRate": 0.9285714285714286
+    },
+    "avgDwellMs": 4200,
+    "timeseries": [
+     {
+      "bucket": "2026-09-01T00:00:00.000Z",
+      "impression": 3309,
+      "viewable": 2545,
+      "pinClick": 0,
+      "ctaClick": 51,
+      "engagedSessions": 331
+     },
+     {
+      "bucket": "2026-09-02T00:00:00.000Z",
+      "impression": 3971,
+      "viewable": 3055,
+      "pinClick": 0,
+      "ctaClick": 61,
+      "engagedSessions": 397
+     },
+     {
+      "bucket": "2026-09-03T00:00:00.000Z",
+      "impression": 4633,
+      "viewable": 3564,
+      "pinClick": 0,
+      "ctaClick": 71,
+      "engagedSessions": 463
+     },
+     {
+      "bucket": "2026-09-04T00:00:00.000Z",
+      "impression": 3475,
+      "viewable": 2673,
+      "pinClick": 0,
+      "ctaClick": 53,
+      "engagedSessions": 347
+     },
+     {
+      "bucket": "2026-09-05T00:00:00.000Z",
+      "impression": 4136,
+      "viewable": 3182,
+      "pinClick": 0,
+      "ctaClick": 64,
+      "engagedSessions": 414
+     },
+     {
+      "bucket": "2026-09-06T00:00:00.000Z",
+      "impression": 4798,
+      "viewable": 3691,
+      "pinClick": 0,
+      "ctaClick": 74,
+      "engagedSessions": 480
+     },
+     {
+      "bucket": "2026-09-07T00:00:00.000Z",
+      "impression": 3640,
+      "viewable": 2800,
+      "pinClick": 0,
+      "ctaClick": 56,
+      "engagedSessions": 364
+     },
+     {
+      "bucket": "2026-09-08T00:00:00.000Z",
+      "impression": 4302,
+      "viewable": 3309,
+      "pinClick": 0,
+      "ctaClick": 66,
+      "engagedSessions": 430
+     },
+     {
+      "bucket": "2026-09-09T00:00:00.000Z",
+      "impression": 4964,
+      "viewable": 3818,
+      "pinClick": 0,
+      "ctaClick": 76,
+      "engagedSessions": 496
+     },
+     {
+      "bucket": "2026-09-10T00:00:00.000Z",
+      "impression": 3805,
+      "viewable": 2927,
+      "pinClick": 0,
+      "ctaClick": 59,
+      "engagedSessions": 381
+     },
+     {
+      "bucket": "2026-09-11T00:00:00.000Z",
+      "impression": 4467,
+      "viewable": 3436,
+      "pinClick": 0,
+      "ctaClick": 69,
+      "engagedSessions": 447
+     },
+     {
+      "bucket": "2026-09-12T00:00:00.000Z",
+      "impression": 3309,
+      "viewable": 2545,
+      "pinClick": 0,
+      "ctaClick": 51,
+      "engagedSessions": 331
+     },
+     {
+      "bucket": "2026-09-13T00:00:00.000Z",
+      "impression": 3971,
+      "viewable": 3055,
+      "pinClick": 0,
+      "ctaClick": 61,
+      "engagedSessions": 397
+     },
+     {
+      "bucket": "2026-09-14T00:00:00.000Z",
+      "impression": 4633,
+      "viewable": 3564,
+      "pinClick": 0,
+      "ctaClick": 71,
+      "engagedSessions": 463
+     },
+     {
+      "bucket": "2026-09-15T00:00:00.000Z",
+      "impression": 3475,
+      "viewable": 2673,
+      "pinClick": 0,
+      "ctaClick": 53,
+      "engagedSessions": 347
+     },
+     {
+      "bucket": "2026-09-16T00:00:00.000Z",
+      "impression": 4136,
+      "viewable": 3182,
+      "pinClick": 0,
+      "ctaClick": 64,
+      "engagedSessions": 414
+     },
+     {
+      "bucket": "2026-09-17T00:00:00.000Z",
+      "impression": 4798,
+      "viewable": 3691,
+      "pinClick": 0,
+      "ctaClick": 74,
+      "engagedSessions": 480
+     },
+     {
+      "bucket": "2026-09-18T00:00:00.000Z",
+      "impression": 3640,
+      "viewable": 2800,
+      "pinClick": 0,
+      "ctaClick": 56,
+      "engagedSessions": 364
+     },
+     {
+      "bucket": "2026-09-19T00:00:00.000Z",
+      "impression": 4302,
+      "viewable": 3309,
+      "pinClick": 0,
+      "ctaClick": 66,
+      "engagedSessions": 430
+     },
+     {
+      "bucket": "2026-09-20T00:00:00.000Z",
+      "impression": 4964,
+      "viewable": 3818,
+      "pinClick": 0,
+      "ctaClick": 76,
+      "engagedSessions": 496
+     },
+     {
+      "bucket": "2026-09-21T00:00:00.000Z",
+      "impression": 3805,
+      "viewable": 2927,
+      "pinClick": 0,
+      "ctaClick": 59,
+      "engagedSessions": 381
+     },
+     {
+      "bucket": "2026-09-22T00:00:00.000Z",
+      "impression": 4467,
+      "viewable": 3436,
+      "pinClick": 0,
+      "ctaClick": 69,
+      "engagedSessions": 447
+     }
+    ],
+    "granularity": "day",
+    "ctaByButton": {
+     "directions": 0,
+     "whatsapp": 0,
+     "website": 0
+    },
+    "ctaBySurface": {
+     "pin_card": 0,
+     "nearest_card": 0,
+     "header": 0,
+     "overlay": 0,
+     "split_creative": 200
+    },
+    "topPins": [],
+    "scratch": {
+     "scratchedSessions": 0,
+     "revealedSessions": 0,
+     "avgTimeToCompleteMs": null,
+     "ctaImage": 0,
+     "ctaButton": 0,
+     "ctaCover": 0,
+     "tiltActivatedSessions": 0,
+     "gyroPrompted": 0,
+     "gyroGranted": 0,
+     "gyroDenied": 0,
+     "gyroOk": 0,
+     "blockedPolicy": 0,
+     "blockedDeniedIos": 0,
+     "blockedNoData": 0,
+     "blockedUnsupported": 0,
+     "revealGyro": 0,
+     "revealDrag": 0
+    },
+    "freeform": {
+     "ctaMedia": 0,
+     "ctaButton": 0,
+     "videoStart": 0,
+     "videoFirstQuartile": 0,
+     "videoMidpoint": 0,
+     "videoThirdQuartile": 0,
+     "videoComplete": 0,
+     "videoUnmute": 0
+    },
+    "survey": {
+     "answeredSessions": 0,
+     "avgTimeToAnswerMs": null,
+     "ctaPayoff": 0,
+     "ctaButton": 0,
+     "ctaQuestion": 0,
+     "ctaOption": 0,
+     "completedSessions": 0,
+     "avgTimeToCompleteMs": null,
+     "topOptions": []
+    },
+    "play": {
+     "playedSessions": 0,
+     "completedSessions": 0,
+     "avgScore": null,
+     "avgHits": null,
+     "avgAttempts": null,
+     "avgPlayTimeMs": null,
+     "revealSessions": 0,
+     "replays": 0,
+     "challengeWonSessions": 0,
+     "challengePlayed": 0,
+     "ctaPostGame": 0,
+     "ctaButton": 0
+    },
+    "calendar": {
+     "adds": 0,
+     "opens": 0
+    },
+    "carrossel": {
+     "slideChanges": 21000,
+     "swipes": 17000,
+     "navSessions": 8700,
+     "navBySurface": {
+      "swipe": 14000,
+      "arrow": 5000,
+      "dot": 2000
+     },
+     "ctaSlide": 900,
+     "ctaBackground": 200,
+     "ctaButton": 300,
+     "topSlides": [
+      {
+       "slideIndex": 1,
+       "slideLabel": "Protetor FPS 50",
+       "views": 7800,
+       "ctaClicks": 420
+      },
+      {
+       "slideIndex": 2,
+       "slideLabel": "Sérum Vitamina C",
+       "views": 6100,
+       "ctaClicks": 300
+      },
+      {
+       "slideIndex": 0,
+       "slideLabel": null,
+       "views": 2100,
+       "ctaClicks": 150
+      },
+      {
+       "slideIndex": 3,
+       "slideLabel": "Pós-sol",
+       "views": 4900,
+       "ctaClicks": 230
+      }
+     ]
+    },
+    "widgets": {
+     "items": [],
+     "closeTo": null
+    }
+   },
+   "sessionSteps": {
+    "impression": 83000,
+    "viewable": 64000,
+    "engaged": 9100,
+    "click": 1300,
+    "overlay_click": 0,
+    "overlay_dismissed": 0,
+    "split_creative_click": 190,
+    "map_interaction": 0,
+    "pin_click": 0,
+    "cta_click": 1300,
+    "cta_location": 0,
+    "cta_header": 0,
+    "cta_directions": 0,
+    "cta_whatsapp": 0,
+    "cta_website": 0,
+    "scratch_cover_click": 0,
+    "scratch_started": 0,
+    "scratch_completed": 0,
+    "scratch_reveal_click": 0,
+    "tilt_activated": 0,
+    "nav": 8700,
+    "survey_answer": 0,
+    "survey_complete": 0,
+    "game_started": 0,
+    "game_ended": 0,
+    "game_challenge_played": 0,
+    "game_challenge_won": 0,
+    "brand_reveal_viewed": 0,
+    "game_restarted": 0,
+    "video_start": 0,
+    "video_first_quartile": 0,
+    "video_midpoint": 0,
+    "video_third_quartile": 0,
+    "video_complete": 0,
+    "video_unmute": 0,
+    "widget_view": 0,
+    "close_to_view": 0,
+    "close_to_locate": 0,
+    "close_to_found": 0,
+    "close_to_redirect": 0,
+    "calendar_add": 0,
+    "calendar_open": 0
+   }
+  },
+  {
+   "id": "a3333333-3333-4333-8333-333333333333",
+   "ok": true,
+   "creative": {
+    "status": "published",
+    "publicSlug": "scratch-a33333",
+    "clientName": "Cliente Demo",
+    "size": {
+     "width": 320,
+     "height": 480,
+     "preset": "320x480",
+     "label": "320x480"
+    },
+    "ctaText": "Saiba mais",
+    "widgets": [],
+    "hasOverlay": null,
+    "mechanic": "tilt",
+    "surveyMode": null,
+    "game": null,
+    "createdAt": "2026-08-20T12:00:00.000Z",
+    "updatedAt": "2026-08-28T12:00:00.000Z",
+    "id": "a3333333-3333-4333-8333-333333333333",
+    "name": "Incline e descubra",
+    "templateSlug": "scratch"
+   },
+   "analytics": {
+    "totals": {
+     "impressionServed": 64000,
+     "impression": 60000,
+     "viewable": 47000,
+     "overlayDismissed": 0,
+     "mapInteraction": 0,
+     "pinClick": 0,
+     "ctaClick": 2100,
+     "overlayClick": 0,
+     "splitCreativeClick": 0,
+     "uniqueSessions": 55000,
+     "engagedSessions": 11200,
+     "clicksTotal": 2100,
+     "clickSessions": 1680
+    },
+    "rates": {
+     "viewability": 0.7833333333333333,
+     "engagement": 0.20363636363636364,
+     "ctr": 0.035,
+     "pinClickRate": 0,
+     "measurementRate": 0.9375
+    },
+    "avgDwellMs": 4200,
+    "timeseries": [
+     {
+      "bucket": "2026-09-01T00:00:00.000Z",
+      "impression": 2182,
+      "viewable": 1709,
+      "pinClick": 0,
+      "ctaClick": 76,
+      "engagedSessions": 407
+     },
+     {
+      "bucket": "2026-09-02T00:00:00.000Z",
+      "impression": 2618,
+      "viewable": 2051,
+      "pinClick": 0,
+      "ctaClick": 92,
+      "engagedSessions": 489
+     },
+     {
+      "bucket": "2026-09-03T00:00:00.000Z",
+      "impression": 3055,
+      "viewable": 2393,
+      "pinClick": 0,
+      "ctaClick": 107,
+      "engagedSessions": 570
+     },
+     {
+      "bucket": "2026-09-04T00:00:00.000Z",
+      "impression": 2291,
+      "viewable": 1795,
+      "pinClick": 0,
+      "ctaClick": 80,
+      "engagedSessions": 428
+     },
+     {
+      "bucket": "2026-09-05T00:00:00.000Z",
+      "impression": 2727,
+      "viewable": 2136,
+      "pinClick": 0,
+      "ctaClick": 95,
+      "engagedSessions": 509
+     },
+     {
+      "bucket": "2026-09-06T00:00:00.000Z",
+      "impression": 3164,
+      "viewable": 2478,
+      "pinClick": 0,
+      "ctaClick": 111,
+      "engagedSessions": 591
+     },
+     {
+      "bucket": "2026-09-07T00:00:00.000Z",
+      "impression": 2400,
+      "viewable": 1880,
+      "pinClick": 0,
+      "ctaClick": 84,
+      "engagedSessions": 448
+     },
+     {
+      "bucket": "2026-09-08T00:00:00.000Z",
+      "impression": 2836,
+      "viewable": 2222,
+      "pinClick": 0,
+      "ctaClick": 99,
+      "engagedSessions": 529
+     },
+     {
+      "bucket": "2026-09-09T00:00:00.000Z",
+      "impression": 3273,
+      "viewable": 2564,
+      "pinClick": 0,
+      "ctaClick": 115,
+      "engagedSessions": 611
+     },
+     {
+      "bucket": "2026-09-10T00:00:00.000Z",
+      "impression": 2509,
+      "viewable": 1965,
+      "pinClick": 0,
+      "ctaClick": 88,
+      "engagedSessions": 468
+     },
+     {
+      "bucket": "2026-09-11T00:00:00.000Z",
+      "impression": 2945,
+      "viewable": 2307,
+      "pinClick": 0,
+      "ctaClick": 103,
+      "engagedSessions": 550
+     },
+     {
+      "bucket": "2026-09-12T00:00:00.000Z",
+      "impression": 2182,
+      "viewable": 1709,
+      "pinClick": 0,
+      "ctaClick": 76,
+      "engagedSessions": 407
+     },
+     {
+      "bucket": "2026-09-13T00:00:00.000Z",
+      "impression": 2618,
+      "viewable": 2051,
+      "pinClick": 0,
+      "ctaClick": 92,
+      "engagedSessions": 489
+     },
+     {
+      "bucket": "2026-09-14T00:00:00.000Z",
+      "impression": 3055,
+      "viewable": 2393,
+      "pinClick": 0,
+      "ctaClick": 107,
+      "engagedSessions": 570
+     },
+     {
+      "bucket": "2026-09-15T00:00:00.000Z",
+      "impression": 2291,
+      "viewable": 1795,
+      "pinClick": 0,
+      "ctaClick": 80,
+      "engagedSessions": 428
+     },
+     {
+      "bucket": "2026-09-16T00:00:00.000Z",
+      "impression": 2727,
+      "viewable": 2136,
+      "pinClick": 0,
+      "ctaClick": 95,
+      "engagedSessions": 509
+     },
+     {
+      "bucket": "2026-09-17T00:00:00.000Z",
+      "impression": 3164,
+      "viewable": 2478,
+      "pinClick": 0,
+      "ctaClick": 111,
+      "engagedSessions": 591
+     },
+     {
+      "bucket": "2026-09-18T00:00:00.000Z",
+      "impression": 2400,
+      "viewable": 1880,
+      "pinClick": 0,
+      "ctaClick": 84,
+      "engagedSessions": 448
+     },
+     {
+      "bucket": "2026-09-19T00:00:00.000Z",
+      "impression": 2836,
+      "viewable": 2222,
+      "pinClick": 0,
+      "ctaClick": 99,
+      "engagedSessions": 529
+     },
+     {
+      "bucket": "2026-09-20T00:00:00.000Z",
+      "impression": 3273,
+      "viewable": 2564,
+      "pinClick": 0,
+      "ctaClick": 115,
+      "engagedSessions": 611
+     },
+     {
+      "bucket": "2026-09-21T00:00:00.000Z",
+      "impression": 2509,
+      "viewable": 1965,
+      "pinClick": 0,
+      "ctaClick": 88,
+      "engagedSessions": 468
+     },
+     {
+      "bucket": "2026-09-22T00:00:00.000Z",
+      "impression": 2945,
+      "viewable": 2307,
+      "pinClick": 0,
+      "ctaClick": 103,
+      "engagedSessions": 550
+     }
+    ],
+    "granularity": "day",
+    "ctaByButton": {
+     "directions": 0,
+     "whatsapp": 0,
+     "website": 0
+    },
+    "ctaBySurface": {
+     "pin_card": 0,
+     "nearest_card": 0,
+     "header": 0,
+     "overlay": 0,
+     "split_creative": 0
+    },
+    "topPins": [],
+    "carrossel": {
+     "slideChanges": 0,
+     "swipes": 0,
+     "navSessions": 0,
+     "navBySurface": {
+      "swipe": 0,
+      "arrow": 0,
+      "dot": 0
+     },
+     "ctaSlide": 0,
+     "ctaBackground": 0,
+     "ctaButton": 0,
+     "topSlides": []
+    },
+    "freeform": {
+     "ctaMedia": 0,
+     "ctaButton": 0,
+     "videoStart": 0,
+     "videoFirstQuartile": 0,
+     "videoMidpoint": 0,
+     "videoThirdQuartile": 0,
+     "videoComplete": 0,
+     "videoUnmute": 0
+    },
+    "survey": {
+     "answeredSessions": 0,
+     "avgTimeToAnswerMs": null,
+     "ctaPayoff": 0,
+     "ctaButton": 0,
+     "ctaQuestion": 0,
+     "ctaOption": 0,
+     "completedSessions": 0,
+     "avgTimeToCompleteMs": null,
+     "topOptions": []
+    },
+    "play": {
+     "playedSessions": 0,
+     "completedSessions": 0,
+     "avgScore": null,
+     "avgHits": null,
+     "avgAttempts": null,
+     "avgPlayTimeMs": null,
+     "revealSessions": 0,
+     "replays": 0,
+     "challengeWonSessions": 0,
+     "challengePlayed": 0,
+     "ctaPostGame": 0,
+     "ctaButton": 0
+    },
+    "calendar": {
+     "adds": 0,
+     "opens": 0
+    },
+    "scratch": {
+     "scratchedSessions": 10400,
+     "revealedSessions": 7300,
+     "avgTimeToCompleteMs": 5400,
+     "ctaImage": 1200,
+     "ctaButton": 700,
+     "ctaCover": 200,
+     "tiltActivatedSessions": 9800,
+     "gyroPrompted": 3100,
+     "gyroGranted": 2500,
+     "gyroDenied": 600,
+     "gyroOk": 8900,
+     "blockedPolicy": 120,
+     "blockedDeniedIos": 480,
+     "blockedNoData": 150,
+     "blockedUnsupported": 90,
+     "revealGyro": 5200,
+     "revealDrag": 2100
+    },
+    "widgets": {
+     "items": [],
+     "closeTo": null
+    }
+   },
+   "sessionSteps": {
+    "impression": 55000,
+    "viewable": 43000,
+    "engaged": 11200,
+    "click": 1900,
+    "overlay_click": 0,
+    "overlay_dismissed": 0,
+    "split_creative_click": 0,
+    "map_interaction": 0,
+    "pin_click": 0,
+    "cta_click": 1900,
+    "cta_location": 0,
+    "cta_header": 0,
+    "cta_directions": 0,
+    "cta_whatsapp": 0,
+    "cta_website": 0,
+    "scratch_cover_click": 180,
+    "scratch_started": 10400,
+    "scratch_completed": 7300,
+    "scratch_reveal_click": 1750,
+    "tilt_activated": 9800,
+    "nav": 0,
+    "survey_answer": 0,
+    "survey_complete": 0,
+    "game_started": 0,
+    "game_ended": 0,
+    "game_challenge_played": 0,
+    "game_challenge_won": 0,
+    "brand_reveal_viewed": 0,
+    "game_restarted": 0,
+    "video_start": 0,
+    "video_first_quartile": 0,
+    "video_midpoint": 0,
+    "video_third_quartile": 0,
+    "video_complete": 0,
+    "video_unmute": 0,
+    "widget_view": 0,
+    "close_to_view": 0,
+    "close_to_locate": 0,
+    "close_to_found": 0,
+    "close_to_redirect": 0,
+    "calendar_add": 0,
+    "calendar_open": 0
+   }
+  },
+  {
+   "id": "a4444444-4444-4444-8444-444444444444",
+   "ok": true,
+   "creative": {
+    "status": "published",
+    "publicSlug": "survey-a44444",
+    "clientName": "Cliente Demo",
+    "size": {
+     "width": 300,
+     "height": 250,
+     "preset": "300x250",
+     "label": "300x250"
+    },
+    "ctaText": "Saiba mais",
+    "widgets": [],
+    "hasOverlay": null,
+    "mechanic": null,
+    "surveyMode": "poll",
+    "game": null,
+    "createdAt": "2026-08-20T12:00:00.000Z",
+    "updatedAt": "2026-08-28T12:00:00.000Z",
+    "id": "a4444444-4444-4444-8444-444444444444",
+    "name": "Qual seu protetor?",
+    "templateSlug": "survey"
+   },
+   "analytics": {
+    "totals": {
+     "impressionServed": 51000,
+     "impression": 48000,
+     "viewable": 36000,
+     "overlayDismissed": 0,
+     "mapInteraction": 0,
+     "pinClick": 0,
+     "ctaClick": 700,
+     "overlayClick": 0,
+     "splitCreativeClick": 0,
+     "uniqueSessions": 44000,
+     "engagedSessions": 6100,
+     "clicksTotal": 700,
+     "clickSessions": 560
+    },
+    "rates": {
+     "viewability": 0.75,
+     "engagement": 0.13863636363636364,
+     "ctr": 0.014583333333333334,
+     "pinClickRate": 0,
+     "measurementRate": 0.9411764705882353
+    },
+    "avgDwellMs": 4200,
+    "timeseries": [
+     {
+      "bucket": "2026-09-01T00:00:00.000Z",
+      "impression": 1745,
+      "viewable": 1309,
+      "pinClick": 0,
+      "ctaClick": 25,
+      "engagedSessions": 222
+     },
+     {
+      "bucket": "2026-09-02T00:00:00.000Z",
+      "impression": 2095,
+      "viewable": 1571,
+      "pinClick": 0,
+      "ctaClick": 31,
+      "engagedSessions": 266
+     },
+     {
+      "bucket": "2026-09-03T00:00:00.000Z",
+      "impression": 2444,
+      "viewable": 1833,
+      "pinClick": 0,
+      "ctaClick": 36,
+      "engagedSessions": 311
+     },
+     {
+      "bucket": "2026-09-04T00:00:00.000Z",
+      "impression": 1833,
+      "viewable": 1375,
+      "pinClick": 0,
+      "ctaClick": 27,
+      "engagedSessions": 233
+     },
+     {
+      "bucket": "2026-09-05T00:00:00.000Z",
+      "impression": 2182,
+      "viewable": 1636,
+      "pinClick": 0,
+      "ctaClick": 32,
+      "engagedSessions": 277
+     },
+     {
+      "bucket": "2026-09-06T00:00:00.000Z",
+      "impression": 2531,
+      "viewable": 1898,
+      "pinClick": 0,
+      "ctaClick": 37,
+      "engagedSessions": 322
+     },
+     {
+      "bucket": "2026-09-07T00:00:00.000Z",
+      "impression": 1920,
+      "viewable": 1440,
+      "pinClick": 0,
+      "ctaClick": 28,
+      "engagedSessions": 244
+     },
+     {
+      "bucket": "2026-09-08T00:00:00.000Z",
+      "impression": 2269,
+      "viewable": 1702,
+      "pinClick": 0,
+      "ctaClick": 33,
+      "engagedSessions": 288
+     },
+     {
+      "bucket": "2026-09-09T00:00:00.000Z",
+      "impression": 2618,
+      "viewable": 1964,
+      "pinClick": 0,
+      "ctaClick": 38,
+      "engagedSessions": 333
+     },
+     {
+      "bucket": "2026-09-10T00:00:00.000Z",
+      "impression": 2007,
+      "viewable": 1505,
+      "pinClick": 0,
+      "ctaClick": 29,
+      "engagedSessions": 255
+     },
+     {
+      "bucket": "2026-09-11T00:00:00.000Z",
+      "impression": 2356,
+      "viewable": 1767,
+      "pinClick": 0,
+      "ctaClick": 34,
+      "engagedSessions": 299
+     },
+     {
+      "bucket": "2026-09-12T00:00:00.000Z",
+      "impression": 1745,
+      "viewable": 1309,
+      "pinClick": 0,
+      "ctaClick": 25,
+      "engagedSessions": 222
+     },
+     {
+      "bucket": "2026-09-13T00:00:00.000Z",
+      "impression": 2095,
+      "viewable": 1571,
+      "pinClick": 0,
+      "ctaClick": 31,
+      "engagedSessions": 266
+     },
+     {
+      "bucket": "2026-09-14T00:00:00.000Z",
+      "impression": 2444,
+      "viewable": 1833,
+      "pinClick": 0,
+      "ctaClick": 36,
+      "engagedSessions": 311
+     },
+     {
+      "bucket": "2026-09-15T00:00:00.000Z",
+      "impression": 1833,
+      "viewable": 1375,
+      "pinClick": 0,
+      "ctaClick": 27,
+      "engagedSessions": 233
+     },
+     {
+      "bucket": "2026-09-16T00:00:00.000Z",
+      "impression": 2182,
+      "viewable": 1636,
+      "pinClick": 0,
+      "ctaClick": 32,
+      "engagedSessions": 277
+     },
+     {
+      "bucket": "2026-09-17T00:00:00.000Z",
+      "impression": 2531,
+      "viewable": 1898,
+      "pinClick": 0,
+      "ctaClick": 37,
+      "engagedSessions": 322
+     },
+     {
+      "bucket": "2026-09-18T00:00:00.000Z",
+      "impression": 1920,
+      "viewable": 1440,
+      "pinClick": 0,
+      "ctaClick": 28,
+      "engagedSessions": 244
+     },
+     {
+      "bucket": "2026-09-19T00:00:00.000Z",
+      "impression": 2269,
+      "viewable": 1702,
+      "pinClick": 0,
+      "ctaClick": 33,
+      "engagedSessions": 288
+     },
+     {
+      "bucket": "2026-09-20T00:00:00.000Z",
+      "impression": 2618,
+      "viewable": 1964,
+      "pinClick": 0,
+      "ctaClick": 38,
+      "engagedSessions": 333
+     },
+     {
+      "bucket": "2026-09-21T00:00:00.000Z",
+      "impression": 2007,
+      "viewable": 1505,
+      "pinClick": 0,
+      "ctaClick": 29,
+      "engagedSessions": 255
+     },
+     {
+      "bucket": "2026-09-22T00:00:00.000Z",
+      "impression": 2356,
+      "viewable": 1767,
+      "pinClick": 0,
+      "ctaClick": 34,
+      "engagedSessions": 299
+     }
+    ],
+    "granularity": "day",
+    "ctaByButton": {
+     "directions": 0,
+     "whatsapp": 0,
+     "website": 0
+    },
+    "ctaBySurface": {
+     "pin_card": 0,
+     "nearest_card": 0,
+     "header": 0,
+     "overlay": 0,
+     "split_creative": 0
+    },
+    "topPins": [],
+    "scratch": {
+     "scratchedSessions": 0,
+     "revealedSessions": 0,
+     "avgTimeToCompleteMs": null,
+     "ctaImage": 0,
+     "ctaButton": 0,
+     "ctaCover": 0,
+     "tiltActivatedSessions": 0,
+     "gyroPrompted": 0,
+     "gyroGranted": 0,
+     "gyroDenied": 0,
+     "gyroOk": 0,
+     "blockedPolicy": 0,
+     "blockedDeniedIos": 0,
+     "blockedNoData": 0,
+     "blockedUnsupported": 0,
+     "revealGyro": 0,
+     "revealDrag": 0
+    },
+    "carrossel": {
+     "slideChanges": 0,
+     "swipes": 0,
+     "navSessions": 0,
+     "navBySurface": {
+      "swipe": 0,
+      "arrow": 0,
+      "dot": 0
+     },
+     "ctaSlide": 0,
+     "ctaBackground": 0,
+     "ctaButton": 0,
+     "topSlides": []
+    },
+    "freeform": {
+     "ctaMedia": 0,
+     "ctaButton": 0,
+     "videoStart": 0,
+     "videoFirstQuartile": 0,
+     "videoMidpoint": 0,
+     "videoThirdQuartile": 0,
+     "videoComplete": 0,
+     "videoUnmute": 0
+    },
+    "play": {
+     "playedSessions": 0,
+     "completedSessions": 0,
+     "avgScore": null,
+     "avgHits": null,
+     "avgAttempts": null,
+     "avgPlayTimeMs": null,
+     "revealSessions": 0,
+     "replays": 0,
+     "challengeWonSessions": 0,
+     "challengePlayed": 0,
+     "ctaPostGame": 0,
+     "ctaButton": 0
+    },
+    "calendar": {
+     "adds": 0,
+     "opens": 0
+    },
+    "survey": {
+     "answeredSessions": 5900,
+     "avgTimeToAnswerMs": 3100,
+     "ctaPayoff": 400,
+     "ctaButton": 200,
+     "ctaQuestion": 60,
+     "ctaOption": 40,
+     "completedSessions": 4700,
+     "avgTimeToCompleteMs": 8200,
+     "topOptions": [
+      {
+       "optionId": "o1",
+       "optionLabel": "FPS 30",
+       "answers": 1400,
+       "ctaClicks": 80
+      },
+      {
+       "optionId": "o2",
+       "optionLabel": "FPS 50",
+       "answers": 3100,
+       "ctaClicks": 210
+      },
+      {
+       "optionId": "o3",
+       "optionLabel": "FPS 70 ou mais",
+       "answers": 1200,
+       "ctaClicks": 90
+      },
+      {
+       "optionId": "o4",
+       "optionLabel": null,
+       "answers": 200,
+       "ctaClicks": 0
+      }
+     ]
+    },
+    "widgets": {
+     "items": [],
+     "closeTo": null
+    }
+   },
+   "sessionSteps": {
+    "impression": 44000,
+    "viewable": 33000,
+    "engaged": 6100,
+    "click": 650,
+    "overlay_click": 0,
+    "overlay_dismissed": 0,
+    "split_creative_click": 0,
+    "map_interaction": 0,
+    "pin_click": 0,
+    "cta_click": 650,
+    "cta_location": 0,
+    "cta_header": 0,
+    "cta_directions": 0,
+    "cta_whatsapp": 0,
+    "cta_website": 0,
+    "scratch_cover_click": 0,
+    "scratch_started": 0,
+    "scratch_completed": 0,
+    "scratch_reveal_click": 0,
+    "tilt_activated": 0,
+    "nav": 0,
+    "survey_answer": 5900,
+    "survey_complete": 4700,
+    "game_started": 0,
+    "game_ended": 0,
+    "game_challenge_played": 0,
+    "game_challenge_won": 0,
+    "brand_reveal_viewed": 0,
+    "game_restarted": 0,
+    "video_start": 0,
+    "video_first_quartile": 0,
+    "video_midpoint": 0,
+    "video_third_quartile": 0,
+    "video_complete": 0,
+    "video_unmute": 0,
+    "widget_view": 0,
+    "close_to_view": 0,
+    "close_to_locate": 0,
+    "close_to_found": 0,
+    "close_to_redirect": 0,
+    "calendar_add": 0,
+    "calendar_open": 0
+   }
+  },
+  {
+   "id": "a5555555-5555-4555-8555-555555555555",
+   "ok": true,
+   "creative": {
+    "status": "published",
+    "publicSlug": "play-a55555",
+    "clientName": "Cliente Demo",
+    "size": {
+     "width": 320,
+     "height": 480,
+     "preset": "320x480",
+     "label": "320x480"
+    },
+    "ctaText": "Saiba mais",
+    "widgets": [],
+    "hasOverlay": null,
+    "mechanic": null,
+    "surveyMode": null,
+    "game": "basquete",
+    "createdAt": "2026-08-20T12:00:00.000Z",
+    "updatedAt": "2026-08-28T12:00:00.000Z",
+    "id": "a5555555-5555-4555-8555-555555555555",
+    "name": "Cesta do Verão",
+    "templateSlug": "play"
+   },
+   "analytics": {
+    "totals": {
+     "impressionServed": 43000,
+     "impression": 40000,
+     "viewable": 31000,
+     "overlayDismissed": 0,
+     "mapInteraction": 0,
+     "pinClick": 0,
+     "ctaClick": 900,
+     "overlayClick": 0,
+     "splitCreativeClick": 0,
+     "uniqueSessions": 37000,
+     "engagedSessions": 8800,
+     "clicksTotal": 900,
+     "clickSessions": 720
+    },
+    "rates": {
+     "viewability": 0.775,
+     "engagement": 0.23783783783783785,
+     "ctr": 0.0225,
+     "pinClickRate": 0,
+     "measurementRate": 0.9302325581395349
+    },
+    "avgDwellMs": 4200,
+    "timeseries": [
+     {
+      "bucket": "2026-09-01T00:00:00.000Z",
+      "impression": 1455,
+      "viewable": 1127,
+      "pinClick": 0,
+      "ctaClick": 33,
+      "engagedSessions": 320
+     },
+     {
+      "bucket": "2026-09-02T00:00:00.000Z",
+      "impression": 1745,
+      "viewable": 1353,
+      "pinClick": 0,
+      "ctaClick": 39,
+      "engagedSessions": 384
+     },
+     {
+      "bucket": "2026-09-03T00:00:00.000Z",
+      "impression": 2036,
+      "viewable": 1578,
+      "pinClick": 0,
+      "ctaClick": 46,
+      "engagedSessions": 448
+     },
+     {
+      "bucket": "2026-09-04T00:00:00.000Z",
+      "impression": 1527,
+      "viewable": 1184,
+      "pinClick": 0,
+      "ctaClick": 34,
+      "engagedSessions": 336
+     },
+     {
+      "bucket": "2026-09-05T00:00:00.000Z",
+      "impression": 1818,
+      "viewable": 1409,
+      "pinClick": 0,
+      "ctaClick": 41,
+      "engagedSessions": 400
+     },
+     {
+      "bucket": "2026-09-06T00:00:00.000Z",
+      "impression": 2109,
+      "viewable": 1635,
+      "pinClick": 0,
+      "ctaClick": 47,
+      "engagedSessions": 464
+     },
+     {
+      "bucket": "2026-09-07T00:00:00.000Z",
+      "impression": 1600,
+      "viewable": 1240,
+      "pinClick": 0,
+      "ctaClick": 36,
+      "engagedSessions": 352
+     },
+     {
+      "bucket": "2026-09-08T00:00:00.000Z",
+      "impression": 1891,
+      "viewable": 1465,
+      "pinClick": 0,
+      "ctaClick": 43,
+      "engagedSessions": 416
+     },
+     {
+      "bucket": "2026-09-09T00:00:00.000Z",
+      "impression": 2182,
+      "viewable": 1691,
+      "pinClick": 0,
+      "ctaClick": 49,
+      "engagedSessions": 480
+     },
+     {
+      "bucket": "2026-09-10T00:00:00.000Z",
+      "impression": 1673,
+      "viewable": 1296,
+      "pinClick": 0,
+      "ctaClick": 38,
+      "engagedSessions": 368
+     },
+     {
+      "bucket": "2026-09-11T00:00:00.000Z",
+      "impression": 1964,
+      "viewable": 1522,
+      "pinClick": 0,
+      "ctaClick": 44,
+      "engagedSessions": 432
+     },
+     {
+      "bucket": "2026-09-12T00:00:00.000Z",
+      "impression": 1455,
+      "viewable": 1127,
+      "pinClick": 0,
+      "ctaClick": 33,
+      "engagedSessions": 320
+     },
+     {
+      "bucket": "2026-09-13T00:00:00.000Z",
+      "impression": 1745,
+      "viewable": 1353,
+      "pinClick": 0,
+      "ctaClick": 39,
+      "engagedSessions": 384
+     },
+     {
+      "bucket": "2026-09-14T00:00:00.000Z",
+      "impression": 2036,
+      "viewable": 1578,
+      "pinClick": 0,
+      "ctaClick": 46,
+      "engagedSessions": 448
+     },
+     {
+      "bucket": "2026-09-15T00:00:00.000Z",
+      "impression": 1527,
+      "viewable": 1184,
+      "pinClick": 0,
+      "ctaClick": 34,
+      "engagedSessions": 336
+     },
+     {
+      "bucket": "2026-09-16T00:00:00.000Z",
+      "impression": 1818,
+      "viewable": 1409,
+      "pinClick": 0,
+      "ctaClick": 41,
+      "engagedSessions": 400
+     },
+     {
+      "bucket": "2026-09-17T00:00:00.000Z",
+      "impression": 2109,
+      "viewable": 1635,
+      "pinClick": 0,
+      "ctaClick": 47,
+      "engagedSessions": 464
+     },
+     {
+      "bucket": "2026-09-18T00:00:00.000Z",
+      "impression": 1600,
+      "viewable": 1240,
+      "pinClick": 0,
+      "ctaClick": 36,
+      "engagedSessions": 352
+     },
+     {
+      "bucket": "2026-09-19T00:00:00.000Z",
+      "impression": 1891,
+      "viewable": 1465,
+      "pinClick": 0,
+      "ctaClick": 43,
+      "engagedSessions": 416
+     },
+     {
+      "bucket": "2026-09-20T00:00:00.000Z",
+      "impression": 2182,
+      "viewable": 1691,
+      "pinClick": 0,
+      "ctaClick": 49,
+      "engagedSessions": 480
+     },
+     {
+      "bucket": "2026-09-21T00:00:00.000Z",
+      "impression": 1673,
+      "viewable": 1296,
+      "pinClick": 0,
+      "ctaClick": 38,
+      "engagedSessions": 368
+     },
+     {
+      "bucket": "2026-09-22T00:00:00.000Z",
+      "impression": 1964,
+      "viewable": 1522,
+      "pinClick": 0,
+      "ctaClick": 44,
+      "engagedSessions": 432
+     }
+    ],
+    "granularity": "day",
+    "ctaByButton": {
+     "directions": 0,
+     "whatsapp": 0,
+     "website": 0
+    },
+    "ctaBySurface": {
+     "pin_card": 0,
+     "nearest_card": 0,
+     "header": 0,
+     "overlay": 0,
+     "split_creative": 0
+    },
+    "topPins": [],
+    "scratch": {
+     "scratchedSessions": 0,
+     "revealedSessions": 0,
+     "avgTimeToCompleteMs": null,
+     "ctaImage": 0,
+     "ctaButton": 0,
+     "ctaCover": 0,
+     "tiltActivatedSessions": 0,
+     "gyroPrompted": 0,
+     "gyroGranted": 0,
+     "gyroDenied": 0,
+     "gyroOk": 0,
+     "blockedPolicy": 0,
+     "blockedDeniedIos": 0,
+     "blockedNoData": 0,
+     "blockedUnsupported": 0,
+     "revealGyro": 0,
+     "revealDrag": 0
+    },
+    "carrossel": {
+     "slideChanges": 0,
+     "swipes": 0,
+     "navSessions": 0,
+     "navBySurface": {
+      "swipe": 0,
+      "arrow": 0,
+      "dot": 0
+     },
+     "ctaSlide": 0,
+     "ctaBackground": 0,
+     "ctaButton": 0,
+     "topSlides": []
+    },
+    "freeform": {
+     "ctaMedia": 0,
+     "ctaButton": 0,
+     "videoStart": 0,
+     "videoFirstQuartile": 0,
+     "videoMidpoint": 0,
+     "videoThirdQuartile": 0,
+     "videoComplete": 0,
+     "videoUnmute": 0
+    },
+    "survey": {
+     "answeredSessions": 0,
+     "avgTimeToAnswerMs": null,
+     "ctaPayoff": 0,
+     "ctaButton": 0,
+     "ctaQuestion": 0,
+     "ctaOption": 0,
+     "completedSessions": 0,
+     "avgTimeToCompleteMs": null,
+     "topOptions": []
+    },
+    "calendar": {
+     "adds": 0,
+     "opens": 0
+    },
+    "play": {
+     "playedSessions": 8600,
+     "completedSessions": 6900,
+     "avgScore": 7.4,
+     "avgHits": 7.4,
+     "avgAttempts": 12.1,
+     "avgPlayTimeMs": 28000,
+     "revealSessions": 6500,
+     "replays": 3100,
+     "challengeWonSessions": 2100,
+     "challengePlayed": 6900,
+     "ctaPostGame": 650,
+     "ctaButton": 250
+    },
+    "widgets": {
+     "items": [],
+     "closeTo": null
+    }
+   },
+   "sessionSteps": {
+    "impression": 37000,
+    "viewable": 29000,
+    "engaged": 8800,
+    "click": 820,
+    "overlay_click": 0,
+    "overlay_dismissed": 0,
+    "split_creative_click": 0,
+    "map_interaction": 0,
+    "pin_click": 0,
+    "cta_click": 820,
+    "cta_location": 0,
+    "cta_header": 0,
+    "cta_directions": 0,
+    "cta_whatsapp": 0,
+    "cta_website": 0,
+    "scratch_cover_click": 0,
+    "scratch_started": 0,
+    "scratch_completed": 0,
+    "scratch_reveal_click": 0,
+    "tilt_activated": 0,
+    "nav": 0,
+    "survey_answer": 0,
+    "survey_complete": 0,
+    "game_started": 8600,
+    "game_ended": 6900,
+    "game_challenge_played": 6900,
+    "game_challenge_won": 2100,
+    "brand_reveal_viewed": 6500,
+    "game_restarted": 2400,
+    "video_start": 0,
+    "video_first_quartile": 0,
+    "video_midpoint": 0,
+    "video_third_quartile": 0,
+    "video_complete": 0,
+    "video_unmute": 0,
+    "widget_view": 0,
+    "close_to_view": 0,
+    "close_to_locate": 0,
+    "close_to_found": 0,
+    "close_to_redirect": 0,
+    "calendar_add": 0,
+    "calendar_open": 0
+   }
+  },
+  {
+   "id": "a6666666-6666-4666-8666-666666666666",
+   "ok": true,
+   "creative": {
+    "status": "published",
+    "publicSlug": "freeform-a66666",
+    "clientName": "Cliente Demo",
+    "size": {
+     "width": 300,
+     "height": 600,
+     "preset": "300x600",
+     "label": "300x600"
+    },
+    "ctaText": "Saiba mais",
+    "widgets": [],
+    "hasOverlay": null,
+    "mechanic": null,
+    "surveyMode": null,
+    "game": null,
+    "createdAt": "2026-08-20T12:00:00.000Z",
+    "updatedAt": "2026-08-28T12:00:00.000Z",
+    "id": "a6666666-6666-4666-8666-666666666666",
+    "name": "Filme Verão 15s (Free Form)",
+    "templateSlug": "freeform"
+   },
+   "analytics": {
+    "totals": {
+     "impressionServed": 72000,
+     "impression": 69000,
+     "viewable": 55000,
+     "overlayDismissed": 0,
+     "mapInteraction": 0,
+     "pinClick": 0,
+     "ctaClick": 800,
+     "overlayClick": 0,
+     "splitCreativeClick": 0,
+     "uniqueSessions": 63000,
+     "engagedSessions": 5200,
+     "clicksTotal": 800,
+     "clickSessions": 640
+    },
+    "rates": {
+     "viewability": 0.7971014492753623,
+     "engagement": 0.08253968253968254,
+     "ctr": 0.011594202898550725,
+     "pinClickRate": 0,
+     "measurementRate": 0.9583333333333334
+    },
+    "avgDwellMs": 4200,
+    "timeseries": [
+     {
+      "bucket": "2026-09-01T00:00:00.000Z",
+      "impression": 2509,
+      "viewable": 2000,
+      "pinClick": 0,
+      "ctaClick": 29,
+      "engagedSessions": 189
+     },
+     {
+      "bucket": "2026-09-02T00:00:00.000Z",
+      "impression": 3011,
+      "viewable": 2400,
+      "pinClick": 0,
+      "ctaClick": 35,
+      "engagedSessions": 227
+     },
+     {
+      "bucket": "2026-09-03T00:00:00.000Z",
+      "impression": 3513,
+      "viewable": 2800,
+      "pinClick": 0,
+      "ctaClick": 41,
+      "engagedSessions": 265
+     },
+     {
+      "bucket": "2026-09-04T00:00:00.000Z",
+      "impression": 2635,
+      "viewable": 2100,
+      "pinClick": 0,
+      "ctaClick": 31,
+      "engagedSessions": 199
+     },
+     {
+      "bucket": "2026-09-05T00:00:00.000Z",
+      "impression": 3136,
+      "viewable": 2500,
+      "pinClick": 0,
+      "ctaClick": 36,
+      "engagedSessions": 236
+     },
+     {
+      "bucket": "2026-09-06T00:00:00.000Z",
+      "impression": 3638,
+      "viewable": 2900,
+      "pinClick": 0,
+      "ctaClick": 42,
+      "engagedSessions": 274
+     },
+     {
+      "bucket": "2026-09-07T00:00:00.000Z",
+      "impression": 2760,
+      "viewable": 2200,
+      "pinClick": 0,
+      "ctaClick": 32,
+      "engagedSessions": 208
+     },
+     {
+      "bucket": "2026-09-08T00:00:00.000Z",
+      "impression": 3262,
+      "viewable": 2600,
+      "pinClick": 0,
+      "ctaClick": 38,
+      "engagedSessions": 246
+     },
+     {
+      "bucket": "2026-09-09T00:00:00.000Z",
+      "impression": 3764,
+      "viewable": 3000,
+      "pinClick": 0,
+      "ctaClick": 44,
+      "engagedSessions": 284
+     },
+     {
+      "bucket": "2026-09-10T00:00:00.000Z",
+      "impression": 2885,
+      "viewable": 2300,
+      "pinClick": 0,
+      "ctaClick": 33,
+      "engagedSessions": 217
+     },
+     {
+      "bucket": "2026-09-11T00:00:00.000Z",
+      "impression": 3387,
+      "viewable": 2700,
+      "pinClick": 0,
+      "ctaClick": 39,
+      "engagedSessions": 255
+     },
+     {
+      "bucket": "2026-09-12T00:00:00.000Z",
+      "impression": 2509,
+      "viewable": 2000,
+      "pinClick": 0,
+      "ctaClick": 29,
+      "engagedSessions": 189
+     },
+     {
+      "bucket": "2026-09-13T00:00:00.000Z",
+      "impression": 3011,
+      "viewable": 2400,
+      "pinClick": 0,
+      "ctaClick": 35,
+      "engagedSessions": 227
+     },
+     {
+      "bucket": "2026-09-14T00:00:00.000Z",
+      "impression": 3513,
+      "viewable": 2800,
+      "pinClick": 0,
+      "ctaClick": 41,
+      "engagedSessions": 265
+     },
+     {
+      "bucket": "2026-09-15T00:00:00.000Z",
+      "impression": 2635,
+      "viewable": 2100,
+      "pinClick": 0,
+      "ctaClick": 31,
+      "engagedSessions": 199
+     },
+     {
+      "bucket": "2026-09-16T00:00:00.000Z",
+      "impression": 3136,
+      "viewable": 2500,
+      "pinClick": 0,
+      "ctaClick": 36,
+      "engagedSessions": 236
+     },
+     {
+      "bucket": "2026-09-17T00:00:00.000Z",
+      "impression": 3638,
+      "viewable": 2900,
+      "pinClick": 0,
+      "ctaClick": 42,
+      "engagedSessions": 274
+     },
+     {
+      "bucket": "2026-09-18T00:00:00.000Z",
+      "impression": 2760,
+      "viewable": 2200,
+      "pinClick": 0,
+      "ctaClick": 32,
+      "engagedSessions": 208
+     },
+     {
+      "bucket": "2026-09-19T00:00:00.000Z",
+      "impression": 3262,
+      "viewable": 2600,
+      "pinClick": 0,
+      "ctaClick": 38,
+      "engagedSessions": 246
+     },
+     {
+      "bucket": "2026-09-20T00:00:00.000Z",
+      "impression": 3764,
+      "viewable": 3000,
+      "pinClick": 0,
+      "ctaClick": 44,
+      "engagedSessions": 284
+     },
+     {
+      "bucket": "2026-09-21T00:00:00.000Z",
+      "impression": 2885,
+      "viewable": 2300,
+      "pinClick": 0,
+      "ctaClick": 33,
+      "engagedSessions": 217
+     },
+     {
+      "bucket": "2026-09-22T00:00:00.000Z",
+      "impression": 3387,
+      "viewable": 2700,
+      "pinClick": 0,
+      "ctaClick": 39,
+      "engagedSessions": 255
+     }
+    ],
+    "granularity": "day",
+    "ctaByButton": {
+     "directions": 0,
+     "whatsapp": 0,
+     "website": 0
+    },
+    "ctaBySurface": {
+     "pin_card": 0,
+     "nearest_card": 0,
+     "header": 0,
+     "overlay": 0,
+     "split_creative": 0
+    },
+    "topPins": [],
+    "scratch": {
+     "scratchedSessions": 0,
+     "revealedSessions": 0,
+     "avgTimeToCompleteMs": null,
+     "ctaImage": 0,
+     "ctaButton": 0,
+     "ctaCover": 0,
+     "tiltActivatedSessions": 0,
+     "gyroPrompted": 0,
+     "gyroGranted": 0,
+     "gyroDenied": 0,
+     "gyroOk": 0,
+     "blockedPolicy": 0,
+     "blockedDeniedIos": 0,
+     "blockedNoData": 0,
+     "blockedUnsupported": 0,
+     "revealGyro": 0,
+     "revealDrag": 0
+    },
+    "carrossel": {
+     "slideChanges": 0,
+     "swipes": 0,
+     "navSessions": 0,
+     "navBySurface": {
+      "swipe": 0,
+      "arrow": 0,
+      "dot": 0
+     },
+     "ctaSlide": 0,
+     "ctaBackground": 0,
+     "ctaButton": 0,
+     "topSlides": []
+    },
+    "survey": {
+     "answeredSessions": 0,
+     "avgTimeToAnswerMs": null,
+     "ctaPayoff": 0,
+     "ctaButton": 0,
+     "ctaQuestion": 0,
+     "ctaOption": 0,
+     "completedSessions": 0,
+     "avgTimeToCompleteMs": null,
+     "topOptions": []
+    },
+    "play": {
+     "playedSessions": 0,
+     "completedSessions": 0,
+     "avgScore": null,
+     "avgHits": null,
+     "avgAttempts": null,
+     "avgPlayTimeMs": null,
+     "revealSessions": 0,
+     "replays": 0,
+     "challengeWonSessions": 0,
+     "challengePlayed": 0,
+     "ctaPostGame": 0,
+     "ctaButton": 0
+    },
+    "calendar": {
+     "adds": 0,
+     "opens": 0
+    },
+    "freeform": {
+     "ctaMedia": 500,
+     "ctaButton": 300,
+     "videoStart": 41000,
+     "videoFirstQuartile": 33000,
+     "videoMidpoint": 26000,
+     "videoThirdQuartile": 21000,
+     "videoComplete": 17000,
+     "videoUnmute": 2600
+    },
+    "widgets": {
+     "items": [],
+     "closeTo": null
+    }
+   },
+   "sessionSteps": {
+    "impression": 63000,
+    "viewable": 51000,
+    "engaged": 5200,
+    "click": 760,
+    "overlay_click": 0,
+    "overlay_dismissed": 0,
+    "split_creative_click": 0,
+    "map_interaction": 0,
+    "pin_click": 0,
+    "cta_click": 760,
+    "cta_location": 0,
+    "cta_header": 0,
+    "cta_directions": 0,
+    "cta_whatsapp": 0,
+    "cta_website": 0,
+    "scratch_cover_click": 0,
+    "scratch_started": 0,
+    "scratch_completed": 0,
+    "scratch_reveal_click": 0,
+    "tilt_activated": 0,
+    "nav": 0,
+    "survey_answer": 0,
+    "survey_complete": 0,
+    "game_started": 0,
+    "game_ended": 0,
+    "game_challenge_played": 0,
+    "game_challenge_won": 0,
+    "brand_reveal_viewed": 0,
+    "game_restarted": 0,
+    "video_start": 38000,
+    "video_first_quartile": 31000,
+    "video_midpoint": 24500,
+    "video_third_quartile": 19800,
+    "video_complete": 16100,
+    "video_unmute": 2400,
+    "widget_view": 0,
+    "close_to_view": 0,
+    "close_to_locate": 0,
+    "close_to_found": 0,
+    "close_to_redirect": 0,
+    "calendar_add": 0,
+    "calendar_open": 0
+   }
+  },
+  {
+   "id": "a7777777-7777-4777-8777-777777777777",
+   "ok": true,
+   "creative": {
+    "status": "published",
+    "publicSlug": "tap-to-map-a77777",
+    "clientName": "Cliente Demo",
+    "size": {
+     "width": 728,
+     "height": 90,
+     "preset": "728x90",
+     "label": "728x90"
+    },
+    "ctaText": "Saiba mais",
+    "widgets": [],
+    "hasOverlay": null,
+    "mechanic": null,
+    "surveyMode": null,
+    "game": null,
+    "createdAt": "2026-08-20T12:00:00.000Z",
+    "updatedAt": "2026-08-28T12:00:00.000Z",
+    "id": "a7777777-7777-4777-8777-777777777777",
+    "name": "Mapa sem lake (funil indisponível)",
+    "templateSlug": "tap-to-map"
+   },
+   "analytics": {
+    "totals": {
+     "impressionServed": 30000,
+     "impression": 28000,
+     "viewable": 20000,
+     "overlayDismissed": 0,
+     "mapInteraction": 700,
+     "pinClick": 500,
+     "ctaClick": 300,
+     "overlayClick": 0,
+     "splitCreativeClick": 0,
+     "uniqueSessions": 26000,
+     "engagedSessions": 1300,
+     "clicksTotal": 800,
+     "clickSessions": 640
+    },
+    "rates": {
+     "viewability": 0.7142857142857143,
+     "engagement": 0.05,
+     "ctr": 0.010714285714285714,
+     "pinClickRate": 0.017857142857142856,
+     "measurementRate": 0.9333333333333333
+    },
+    "avgDwellMs": 4200,
+    "timeseries": [
+     {
+      "bucket": "2026-09-01T00:00:00.000Z",
+      "impression": 1018,
+      "viewable": 727,
+      "pinClick": 18,
+      "ctaClick": 11,
+      "engagedSessions": 47
+     },
+     {
+      "bucket": "2026-09-02T00:00:00.000Z",
+      "impression": 1222,
+      "viewable": 873,
+      "pinClick": 22,
+      "ctaClick": 13,
+      "engagedSessions": 57
+     },
+     {
+      "bucket": "2026-09-03T00:00:00.000Z",
+      "impression": 1425,
+      "viewable": 1018,
+      "pinClick": 25,
+      "ctaClick": 15,
+      "engagedSessions": 66
+     },
+     {
+      "bucket": "2026-09-04T00:00:00.000Z",
+      "impression": 1069,
+      "viewable": 764,
+      "pinClick": 19,
+      "ctaClick": 11,
+      "engagedSessions": 50
+     },
+     {
+      "bucket": "2026-09-05T00:00:00.000Z",
+      "impression": 1273,
+      "viewable": 909,
+      "pinClick": 23,
+      "ctaClick": 14,
+      "engagedSessions": 59
+     },
+     {
+      "bucket": "2026-09-06T00:00:00.000Z",
+      "impression": 1476,
+      "viewable": 1055,
+      "pinClick": 26,
+      "ctaClick": 16,
+      "engagedSessions": 69
+     },
+     {
+      "bucket": "2026-09-07T00:00:00.000Z",
+      "impression": 1120,
+      "viewable": 800,
+      "pinClick": 20,
+      "ctaClick": 12,
+      "engagedSessions": 52
+     },
+     {
+      "bucket": "2026-09-08T00:00:00.000Z",
+      "impression": 1324,
+      "viewable": 945,
+      "pinClick": 24,
+      "ctaClick": 14,
+      "engagedSessions": 61
+     },
+     {
+      "bucket": "2026-09-09T00:00:00.000Z",
+      "impression": 1527,
+      "viewable": 1091,
+      "pinClick": 27,
+      "ctaClick": 16,
+      "engagedSessions": 71
+     },
+     {
+      "bucket": "2026-09-10T00:00:00.000Z",
+      "impression": 1171,
+      "viewable": 836,
+      "pinClick": 21,
+      "ctaClick": 13,
+      "engagedSessions": 54
+     },
+     {
+      "bucket": "2026-09-11T00:00:00.000Z",
+      "impression": 1375,
+      "viewable": 982,
+      "pinClick": 25,
+      "ctaClick": 15,
+      "engagedSessions": 64
+     },
+     {
+      "bucket": "2026-09-12T00:00:00.000Z",
+      "impression": 1018,
+      "viewable": 727,
+      "pinClick": 18,
+      "ctaClick": 11,
+      "engagedSessions": 47
+     },
+     {
+      "bucket": "2026-09-13T00:00:00.000Z",
+      "impression": 1222,
+      "viewable": 873,
+      "pinClick": 22,
+      "ctaClick": 13,
+      "engagedSessions": 57
+     },
+     {
+      "bucket": "2026-09-14T00:00:00.000Z",
+      "impression": 1425,
+      "viewable": 1018,
+      "pinClick": 25,
+      "ctaClick": 15,
+      "engagedSessions": 66
+     },
+     {
+      "bucket": "2026-09-15T00:00:00.000Z",
+      "impression": 1069,
+      "viewable": 764,
+      "pinClick": 19,
+      "ctaClick": 11,
+      "engagedSessions": 50
+     },
+     {
+      "bucket": "2026-09-16T00:00:00.000Z",
+      "impression": 1273,
+      "viewable": 909,
+      "pinClick": 23,
+      "ctaClick": 14,
+      "engagedSessions": 59
+     },
+     {
+      "bucket": "2026-09-17T00:00:00.000Z",
+      "impression": 1476,
+      "viewable": 1055,
+      "pinClick": 26,
+      "ctaClick": 16,
+      "engagedSessions": 69
+     },
+     {
+      "bucket": "2026-09-18T00:00:00.000Z",
+      "impression": 1120,
+      "viewable": 800,
+      "pinClick": 20,
+      "ctaClick": 12,
+      "engagedSessions": 52
+     },
+     {
+      "bucket": "2026-09-19T00:00:00.000Z",
+      "impression": 1324,
+      "viewable": 945,
+      "pinClick": 24,
+      "ctaClick": 14,
+      "engagedSessions": 61
+     },
+     {
+      "bucket": "2026-09-20T00:00:00.000Z",
+      "impression": 1527,
+      "viewable": 1091,
+      "pinClick": 27,
+      "ctaClick": 16,
+      "engagedSessions": 71
+     },
+     {
+      "bucket": "2026-09-21T00:00:00.000Z",
+      "impression": 1171,
+      "viewable": 836,
+      "pinClick": 21,
+      "ctaClick": 13,
+      "engagedSessions": 54
+     },
+     {
+      "bucket": "2026-09-22T00:00:00.000Z",
+      "impression": 1375,
+      "viewable": 982,
+      "pinClick": 25,
+      "ctaClick": 15,
+      "engagedSessions": 64
+     }
+    ],
+    "granularity": "day",
+    "ctaByButton": {
+     "directions": 150,
+     "whatsapp": 50,
+     "website": 100
+    },
+    "ctaBySurface": {
+     "pin_card": 200,
+     "nearest_card": 50,
+     "header": 50,
+     "overlay": 0,
+     "split_creative": 0
+    },
+    "topPins": [
+     {
+      "pinId": "p1",
+      "pinName": "Loja Moema",
+      "latitude": -23.6009,
+      "longitude": -46.6623,
+      "pinClicks": 412,
+      "ctaClicks": 198,
+      "views": 5200,
+      "ctaByButton": {
+       "directions": 120,
+       "whatsapp": 48,
+       "website": 30
+      }
+     },
+     {
+      "pinId": "p2",
+      "pinName": "Loja Pinheiros",
+      "latitude": -23.5662,
+      "longitude": -46.6917,
+      "pinClicks": 356,
+      "ctaClicks": 171,
+      "views": 4700,
+      "ctaByButton": {
+       "directions": 99,
+       "whatsapp": 41,
+       "website": 31
+      }
+     }
+    ],
+    "scratch": {
+     "scratchedSessions": 0,
+     "revealedSessions": 0,
+     "avgTimeToCompleteMs": null,
+     "ctaImage": 0,
+     "ctaButton": 0,
+     "ctaCover": 0,
+     "tiltActivatedSessions": 0,
+     "gyroPrompted": 0,
+     "gyroGranted": 0,
+     "gyroDenied": 0,
+     "gyroOk": 0,
+     "blockedPolicy": 0,
+     "blockedDeniedIos": 0,
+     "blockedNoData": 0,
+     "blockedUnsupported": 0,
+     "revealGyro": 0,
+     "revealDrag": 0
+    },
+    "carrossel": {
+     "slideChanges": 0,
+     "swipes": 0,
+     "navSessions": 0,
+     "navBySurface": {
+      "swipe": 0,
+      "arrow": 0,
+      "dot": 0
+     },
+     "ctaSlide": 0,
+     "ctaBackground": 0,
+     "ctaButton": 0,
+     "topSlides": []
+    },
+    "freeform": {
+     "ctaMedia": 0,
+     "ctaButton": 0,
+     "videoStart": 0,
+     "videoFirstQuartile": 0,
+     "videoMidpoint": 0,
+     "videoThirdQuartile": 0,
+     "videoComplete": 0,
+     "videoUnmute": 0
+    },
+    "survey": {
+     "answeredSessions": 0,
+     "avgTimeToAnswerMs": null,
+     "ctaPayoff": 0,
+     "ctaButton": 0,
+     "ctaQuestion": 0,
+     "ctaOption": 0,
+     "completedSessions": 0,
+     "avgTimeToCompleteMs": null,
+     "topOptions": []
+    },
+    "play": {
+     "playedSessions": 0,
+     "completedSessions": 0,
+     "avgScore": null,
+     "avgHits": null,
+     "avgAttempts": null,
+     "avgPlayTimeMs": null,
+     "revealSessions": 0,
+     "replays": 0,
+     "challengeWonSessions": 0,
+     "challengePlayed": 0,
+     "ctaPostGame": 0,
+     "ctaButton": 0
+    },
+    "calendar": {
+     "adds": 0,
+     "opens": 0
+    },
+    "widgets": {
+     "items": [],
+     "closeTo": null
+    }
+   },
+   "sessionSteps": null
+  },
+  {
+   "id": "a8888888-8888-4888-8888-888888888888",
+   "ok": false,
+   "error": "not_found"
+  }
+ ]
+}

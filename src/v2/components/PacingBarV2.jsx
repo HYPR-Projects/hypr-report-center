@@ -72,6 +72,10 @@ export function PacingBarV2({
   // campanha encerrada os dois eixos coincidem (esperado = total prometido) —
   // por isso o caso de referência do PR #152 (Amazon 4WA4TV) parecia correto.
   delivered = null,
+  // Com bônus, o rodapé mostra contrato × bônus. As abas Display/Vídeo
+  // pedem também a linha do investido (custo efetivo × budget), que antes
+  // vivia num card próprio.
+  showCost = false,
 }) {
   if (pacing == null) return null;
 
@@ -234,7 +238,7 @@ export function PacingBarV2({
         ) : (
           <>
             <span>
-              Investido: <span className="text-fg font-semibold">{fmtR(cost)}</span>
+              Custo efetivo: <span className="text-fg font-semibold">{fmtR(cost)}</span>
             </span>
             <span>
               Budget: <span className="text-fg font-semibold">{fmtR(budget)}</span>
@@ -242,6 +246,17 @@ export function PacingBarV2({
           </>
         )}
       </div>
+
+      {showCost && hasBonus && !bonusFooter && (
+        <div className="flex justify-between mt-1.5 text-[11px] text-fg-muted tabular-nums">
+          <span>
+            Custo efetivo: <span className="text-fg font-semibold">{fmtR(cost)}</span>
+          </span>
+          <span>
+            Budget: <span className="text-fg font-semibold">{fmtR(budget)}</span>
+          </span>
+        </div>
+      )}
 
       {/* Breakdown por tactic (O2O/OOH) — só renderiza quando há mais de
           uma frente. Cada sub-row é um PacingSubBarRow inline: label

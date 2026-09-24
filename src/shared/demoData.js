@@ -81,6 +81,48 @@ function noise(date, key, low = 0.85, high = 1.15) {
   return low + r * (high - low);
 }
 
+// ─── Max Attention do demo ─────────────────────────────────────────────
+//
+// Quatro peças, uma por formato, no shape público do vínculo (o mesmo que o
+// backend anexa em `max_attention.links`). Duas estão ligadas aos criativos
+// de Display do demo (a impressão principal vem da DSP); as outras duas não
+// têm criativo correspondente e usam a contagem de carregamento da peça.
+// As métricas saem de shared/demoMa.js, derivadas do detail do demo.
+export const DEMO_MA_LINKS = [
+  {
+    creative_id: "d30a0a7e-0000-4000-8000-000000000001",
+    name: "Lojas Verão",
+    format: "tap-to-map",
+    size: "300x250",
+    public_slug: "",
+    dsp_creative_names: ["300x250_Verao_v1"],
+  },
+  {
+    creative_id: "d30a0a7e-0000-4000-8000-000000000002",
+    name: "Linha Solar",
+    format: "carrossel",
+    size: "300x600",
+    public_slug: "",
+    dsp_creative_names: [],
+  },
+  {
+    creative_id: "d30a0a7e-0000-4000-8000-000000000003",
+    name: "Revele o desconto",
+    format: "scratch",
+    size: "728x90",
+    public_slug: "",
+    dsp_creative_names: ["728x90_Verao_v1"],
+  },
+  {
+    creative_id: "d30a0a7e-0000-4000-8000-000000000004",
+    name: "Oferta Verão",
+    format: "freeform",
+    size: "320x480",
+    public_slug: "",
+    dsp_creative_names: [],
+  },
+];
+
 // ─── Configuração da campanha demo ─────────────────────────────────────
 //
 // Datas relativas a "hoje" — campanha fica sempre mid-flight. Hoje
@@ -387,10 +429,12 @@ function buildDailyAndDetail({ totals, dates, today }) {
           const completions          = Math.max(0, Math.round(t.completions          * overall));
           const videoStarts          = Math.max(0, Math.round(t.video_starts         * overall));
 
-          // Funil de video: 25/50/75/100 com retenção decrescente realista.
-          const v25 = isVideo ? Math.round(completions * 1.45) : 0;
-          const v50 = isVideo ? Math.round(completions * 1.25) : 0;
-          const v75 = isVideo ? Math.round(completions * 1.10) : 0;
+          // Funil de video: início ≥ 25% ≥ 50% ≥ 75% ≥ 100%. As views
+          // iniciadas são completions / 0,92 (≈ 1,087×), então os quartis
+          // ficam entre elas e as completas.
+          const v25 = isVideo ? Math.round(completions * 1.07) : 0;
+          const v50 = isVideo ? Math.round(completions * 1.045) : 0;
+          const v75 = isVideo ? Math.round(completions * 1.02) : 0;
 
           const denomTotal = isVideo ? t.completions : t.viewable_impressions;
           const denomCre   = isVideo ? completions   : viewable;
@@ -567,6 +611,10 @@ function buildPdooh(today) {
   ];
   const owners = ["EletroMidia", "Clear Channel", "Otima"];
   const formats = ["DOOH Indoor", "DOOH Street", "DOOH Mall"];
+  // Um ponto por cidade × media owner. SITE é o que liga a linha ao mapa e
+  // à tabela de endereços (pdoohSites.aggregateSites); sem ele o demo não
+  // mostrava mapa nem "Performance por endereço".
+  const siteKinds = ["Shopping", "Avenida", "Metrô"];
 
   const rows = [];
   for (const date of dates) {
@@ -579,12 +627,16 @@ function buildPdooh(today) {
         rows.push({
           DATE: date,
           CITY: c.city,
+          SITE: `${c.city} · ${siteKinds[oi]}`,
+          SCREEN: `${c.city.normalize("NFD").replace(/[\u0300-\u036f]/g, "").slice(0, 3).toUpperCase()}-${oi + 1}`,
           MEDIA_OWNER: owners[oi],
           MEDIA_FORMAT: formats[oi % formats.length],
           IMPRESSIONS: impressions,
           PLAYS: plays,
-          LATITUDE: c.lat + (seededRand(hashStr(seed)) - 0.5) * 0.04,
-          LONGITUDE: c.lng + (seededRand(hashStr(seed + "x")) - 0.5) * 0.04,
+          // Posição fixa por ponto (não por dia), senão o mesmo SITE
+          // "anda" no mapa conforme o dia da primeira linha.
+          LATITUDE: c.lat + (seededRand(hashStr(`${c.city}|${oi}`)) - 0.5) * 0.04,
+          LONGITUDE: c.lng + (seededRand(hashStr(`${c.city}|${oi}|x`)) - 0.5) * 0.04,
         });
       }
     }
@@ -716,5 +768,8 @@ export function buildDemoPayload(today = new Date()) {
     frequencia:         "",
     auto_alcance:       false,
     alcance_updated_at: new Date(today.getTime() - 2 * 86400000).toISOString(),
+    // Aba Max Attention: vínculos das peças (as métricas vêm por período,
+    // via getMaReport → buildDemoMaReport).
+    max_attention: { links: DEMO_MA_LINKS, configured: true },
   };
 }

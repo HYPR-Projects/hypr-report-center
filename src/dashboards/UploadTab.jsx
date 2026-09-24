@@ -5,7 +5,10 @@ import PdoohDashboard from "./PdoohDashboard";
 import RmndUploadModal from "../components/modals/RmndUploadModal";
 import PdoohUploadModal from "../components/modals/PdoohUploadModal";
 
-const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true, onUploaded }) => {
+// `range`: período global do report (barra fixa). Quando vem (inclusive null
+// = todo o período), os dashboards obedecem a ele e escondem o filtro de
+// datas próprio — antes a aba tinha dois filtros de período ao mesmo tempo.
+const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true, onUploaded, range }) => {
   const [data, setData]           = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const storageKey                = `hypr_${type.toLowerCase()}_${token}`;
@@ -139,6 +142,7 @@ const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true,
           data={data}
           onClear={readOnly ? null : clear}
           onEdit={readOnly ? null : () => setModalOpen(true)}
+          externalRange={range}
         />
         {renderModal()}
       </>
@@ -151,6 +155,8 @@ const UploadTab = ({ type, token, serverData, readOnly, adminJwt, isDark = true,
         data={data}
         onClear={readOnly ? null : clear}
         isDark={isDark}
+        isAdmin={!readOnly}
+        externalRange={range}
       />
       {renderModal()}
     </>
