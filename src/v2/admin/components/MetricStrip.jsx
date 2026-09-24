@@ -317,6 +317,16 @@ const TREND_DAYS = 7;
 const TREND_H = 92;
 const TREND_PAD = { top: 20, bottom: 18, x: 18 };
 const TREND_FLAT_PP = 0.5;
+// Dia com menos da metade do volume mediano da janela: taxa pouco confiável
+// (domingo fraco, campanha grande pausada ou export do DV360 ainda parcial).
+const TREND_LOW_VOLUME = 0.5;
+
+function lowVolumeFlags(points) {
+  const vols = points.map((p) => p.impressions || 0).sort((a, b) => a - b);
+  const mid = vols.length >> 1;
+  const median = vols.length % 2 ? vols[mid] : (vols[mid - 1] + vols[mid]) / 2;
+  return points.map((p) => median > 0 && (p.impressions || 0) < median * TREND_LOW_VOLUME);
+}
 
 function useElementWidth() {
   const ref = useRef(null);
@@ -334,7 +344,7 @@ function useElementWidth() {
 // Último dia vs taxa ponderada dos dias anteriores da janela. Comparar só com
 // o primeiro dia seria refém de um dia atípico; a média dos anteriores é a
 // mesma lógica do alerta de base no backend.
-function trendSummary(points) {
+function trendSummary(points, lastLowVolume) {
   const last = points[points.length - 1];
   const before = points.slice(0, -1);
   const tot = before.reduce((s, p) => s + (p.impressions || 0), 0);
@@ -343,17 +353,23 @@ function trendSummary(points) {
   const baseRate = (unx / tot) * 100;
   const delta = last.rate - baseRate;
   const dir = Math.abs(delta) < TREND_FLAT_PP ? "flat" : delta > 0 ? "up" : "down";
-  return { delta, dir, baseRate, from: before[0].date, to: before[before.length - 1].date, last };
+  return { delta, dir, baseRate, from: before[0].date, to: before[before.length - 1].date, last, lastLowVolume };
 }
 
 function TrendBadge({ summary }) {
   if (!summary) return null;
-  const { delta, dir, baseRate, from, to, last } = summary;
+  const { delta, dir, baseRate, from, to, last, lastLowVolume } = summary;
   const cfg = {
     up:   { arrow: "▲", text: "piorando",   cls: "text-danger" },
     down: { arrow: "▼", text: "melhorando", cls: "text-success" },
     flat: { arrow: "•", text: "estável",    cls: "text-fg-subtle" },
   }[dir];
+  // Último dia magro (export parcial, fim de semana): mostra a diferença mas
+  // não crava veredito nem pinta de vermelho/verde.
+  if (lastLowVolume && dir !== "flat") {
+    cfg.text = "volume baixo no dia";
+    cfg.cls = "text-fg-muted";
+  }
   const pp = `${formatPctBR(Math.abs(delta), 1).replace("%", "")} pp`;
   return (
     <span
@@ -378,7 +394,8 @@ function OutOfCountryTrend({ daily, alert }) {
   const n = points.length;
   const lastIdx = n - 1;
   const focus = active ?? lastIdx;
-  const summary = trendSummary(points);
+  const lowVol = lowVolumeFlags(points);
+  const summary = trendSummary(points, lowVol[lastIdx]);
 
   const W = Math.max(width, 0);
   const plotH = TREND_H - TREND_PAD.top - TREND_PAD.bottom;
@@ -448,17 +465,30 @@ function OutOfCountryTrend({ daily, alert }) {
 
             <line x1={fx} x2={fx} y1={TREND_PAD.top - 4} y2={baseY} stroke="var(--color-border-strong)" strokeWidth={1} />
 
+            {/* Dia de volume baixo: dot vazado, pra taxa dele não pesar no olho
+                igual à de um dia cheio. */}
             {xy.map(([px, py], i) => (
-              <circle
-                key={points[i].date}
-                cx={px}
-                cy={py}
-                r={i === focus ? 4.5 : 3}
-                fill={i === focus && alertDot ? "var(--color-danger)" : "var(--color-signature)"}
-                stroke="var(--color-canvas-elevated)"
-                strokeWidth={2}
-                style={{ transition: "r 120ms ease-out" }}
-              />
+              <g key={points[i].date}>
+                <circle
+                  cx={px}
+                  cy={py}
+                  r={i === focus ? 4.5 : 3}
+                  fill={lowVol[i] ? "var(--color-canvas-elevated)" : i === focus && alertDot ? "var(--color-danger)" : "var(--color-signature)"}
+                  stroke="var(--color-canvas-elevated)"
+                  strokeWidth={2}
+                  style={{ transition: "r 120ms ease-out" }}
+                />
+                {lowVol[i] && (
+                  <circle
+                    cx={px}
+                    cy={py}
+                    r={i === focus ? 3.5 : 2.5}
+                    fill="none"
+                    stroke={i === focus && alertDot ? "var(--color-danger)" : "var(--color-signature)"}
+                    strokeWidth={1.5}
+                  />
+                )}
+              </g>
             ))}
 
             <text
@@ -489,6 +519,7 @@ function OutOfCountryTrend({ daily, alert }) {
 
       <div className="text-[10px] text-fg-subtle tabular-nums text-right">
         {formatDayMonth(fp.date)}: {formatImps(fp.unexpected_impressions)} fora de {formatImps(fp.impressions)} imps
+        {lowVol[focus] && <span className="text-warning font-semibold"> · volume baixo</span>}
       </div>
     </div>
   );
