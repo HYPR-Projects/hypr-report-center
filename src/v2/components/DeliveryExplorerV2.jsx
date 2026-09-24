@@ -85,6 +85,9 @@ export function DeliveryExplorerV2({
         />
       </div>
 
+      {/* key por visão + dimensão: cada troca remonta o miolo com um fade
+          curto (e, no gráfico, as barras crescem de novo). */}
+      <div key={`${isDay ? "day" : viewMode}:${current.key}`} className="content-swap-in">
       {isDay ? (
         <DailyAggregateTableV2
           bare
@@ -133,6 +136,7 @@ export function DeliveryExplorerV2({
           className={cn("border-0")}
         />
       )}
+      </div>
     </Card>
   );
 }

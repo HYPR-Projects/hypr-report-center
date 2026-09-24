@@ -24,6 +24,7 @@ import {
 } from "recharts";
 import { fmt, fmtCompactTick } from "../../shared/format";
 import { useChartNeutral, useThemeColors } from "../hooks/useThemeColors";
+import { CHART_ANIMATION_MS, seriesSignature, useAnimationWindow } from "../lib/motion";
 
 const WEEKDAY_PT = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 
@@ -72,9 +73,15 @@ export function TrendChartV2({
   // Taxa em %: o eixo escolhe as casas decimais pelo intervalo visível (com
   // CTR entre 0,60% e 0,62%, duas casas repetiriam "0,61%" em todo tick).
   percent = false,
+  // Atraso da animação (ms). No par volume + taxa, a linha entra um pouco
+  // depois das barras.
+  animationDelay = 0,
 }) {
   const hypr = useThemeColors();
   const neutral = useChartNeutral();
+  // Anima na montagem e quando a série muda de verdade (métrica, período,
+  // filtro); fica desligada em resize, re-render e export PNG.
+  const animate = useAnimationWindow(`${kind}|${seriesSignature(data, dataKey)}`, CHART_ANIMATION_MS + animationDelay + 380);
 
   if (!Array.isArray(data) || data.length === 0) return null;
 
@@ -123,7 +130,10 @@ export function TrendChartV2({
   return (
     <figure aria-label={ariaLabel || `Tendência diária: ${label}`} className="m-0">
       <ResponsiveContainer width="100%" height={height}>
-        <Chart {...common} {...barProps}>
+        {/* key por métrica: trocar Imp. visíveis → CTR remonta o gráfico e
+            ele entra do zero (barras crescendo, linha se desenhando). Troca
+            de período na mesma métrica interpola do valor antigo pro novo. */}
+        <Chart key={`${kind}:${dataKey}`} {...common} {...barProps}>
           <CartesianGrid vertical={false} stroke={neutral.grid} />
           <XAxis
             dataKey="date"
@@ -164,7 +174,10 @@ export function TrendChartV2({
               strokeWidth={2}
               dot={n <= 14 ? { r: 4, fill: stroke, stroke: surface, strokeWidth: 2 } : false}
               activeDot={{ r: 5, fill: stroke, stroke: surface, strokeWidth: 2 }}
-              isAnimationActive={false}
+              isAnimationActive={animate}
+              animationBegin={animationDelay}
+              animationDuration={CHART_ANIMATION_MS}
+              animationEasing="ease-out"
             />
           ) : (
             <Bar
@@ -173,7 +186,10 @@ export function TrendChartV2({
               fill={stroke}
               radius={n > 40 ? [2, 2, 0, 0] : [4, 4, 0, 0]}
               maxBarSize={28}
-              isAnimationActive={false}
+              isAnimationActive={animate}
+              animationBegin={animationDelay}
+              animationDuration={CHART_ANIMATION_MS}
+              animationEasing="ease-out"
             />
           )}
         </Chart>

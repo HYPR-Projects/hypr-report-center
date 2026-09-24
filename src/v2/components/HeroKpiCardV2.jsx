@@ -27,6 +27,7 @@ import { SparklineV2 } from "./SparklineV2";
 import { fmt } from "../../shared/format";
 import { Card, CardBody } from "../../ui/Card";
 import { cn } from "../../ui/cn";
+import { TweenedValueV2 } from "./TweenedValueV2";
 
 export function HeroKpiCardV2({
   icon,
@@ -100,7 +101,7 @@ export function HeroKpiCardV2({
               footer ? "text-3xl sm:text-4xl" : "text-3xl sm:text-4xl md:text-5xl",
             )}
           >
-            {value}
+            <TweenedValueV2 value={value} />
             {cents && (
               <span className={cn("font-bold opacity-70", footer ? "text-xl sm:text-2xl" : "text-xl sm:text-2xl md:text-3xl")}>
                 {cents}
@@ -130,7 +131,7 @@ export function HeroKpiCardV2({
             aria-label={meter.label}
           >
             <div
-              className="h-full rounded-full bg-signature transition-[width] duration-500 ease-out"
+              className="bar-grow-x h-full rounded-full bg-signature"
               style={{ width: `${Math.max(0, Math.min(100, Number(meter.pct) || 0))}%` }}
             />
           </div>

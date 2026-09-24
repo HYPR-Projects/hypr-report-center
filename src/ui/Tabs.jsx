@@ -153,10 +153,10 @@ export const TabsContent = forwardRef(function TabsContent(
     <RadixTabs.Content
       ref={ref}
       className={cn(
-        // `tabs-content` (v2.css) anima fade-in 180ms quando data-state=active,
-        // suavizando troca de aba (antes era hard-cut). Saída fica instantânea
-        // porque Radix unmount o conteúdo inativo — animar saída exigiria
-        // forceMount + state tracking, custo não vale o ganho.
+        // `tabs-content` (v2.css): fade do painel + seções do root subindo em
+        // cascata quando data-state=active. Saída fica instantânea porque
+        // Radix desmonta o conteúdo inativo; animar saída exigiria
+        // forceMount (todas as abas montadas), custo que não vale o ganho.
         "tabs-content mt-6",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
         className,

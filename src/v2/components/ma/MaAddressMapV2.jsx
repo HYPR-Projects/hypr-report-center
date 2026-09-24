@@ -59,8 +59,8 @@ export function MaAddressMapV2({ points = [], focusKey = null, onFocus, height =
     return failed ? (
       <SchematicMap points={geo} focusKey={focusKey} onFocus={onFocus} height={height} />
     ) : (
-      <div className="grid place-items-center rounded-lg bg-canvas-deeper text-[12px] text-fg-subtle" style={{ height }}>
-        Carregando mapa…
+      <div className="relative overflow-hidden skeleton-shimmer grid place-items-center rounded-lg bg-canvas-deeper text-[12px] text-fg-subtle" style={{ height }} aria-busy="true">
+        <span className="relative">Carregando mapa…</span>
       </div>
     );
   }

@@ -1,7 +1,7 @@
 // src/ui/Skeleton.jsx
 //
-// Skeleton loader com shimmer. Usa keyframe inline (Tailwind v4 não
-// tem `animate-shimmer` default) via style + CSS custom no theme.
+// Skeleton loader com shimmer. O keyframe mora em v2.css
+// (`.skeleton-shimmer`), que respeita prefers-reduced-motion.
 //
 // API:
 //   <Skeleton className="h-8 w-32" />
@@ -14,10 +14,9 @@ const skeletonStyles = cva(
   [
     "relative overflow-hidden",
     "bg-surface-strong",
-    // shimmer via pseudo-elemento inline (animate-pulse simples evita
-    // precisar registrar keyframe customizado — fica sutil e suficiente
-    // pra indicar loading)
-    "animate-pulse",
+    // Faixa de luz atravessando o bloco (`.skeleton-shimmer` em v2.css).
+    // Só transform no ::after, então não repinta o layout.
+    "skeleton-shimmer",
   ],
   {
     variants: {

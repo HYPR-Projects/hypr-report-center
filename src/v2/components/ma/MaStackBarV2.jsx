@@ -28,11 +28,11 @@ export function MaStackBarV2({ parts = [], unit = "", list = false }) {
     const max = Math.max(...parts.map((p) => p.value || 0), 1);
     return (
       <div className="grid gap-2">
-        {parts.map((p) => (
+        {parts.map((p, i) => (
           <div key={p.label} className="grid grid-cols-[minmax(0,10rem)_minmax(0,1fr)_4.5rem] items-center gap-3">
             <span className="text-[12px] text-fg-muted truncate">{p.label}</span>
             <div className="h-2 rounded-full bg-track overflow-hidden">
-              <div className="h-full rounded-full bg-signature" style={{ width: `${Math.max(1, (p.value / max) * 100)}%` }} />
+              <div className="bar-grow-x h-full rounded-full bg-signature" style={{ width: `${Math.max(1, (p.value / max) * 100)}%`, "--i": i }} />
             </div>
             <span className="text-[12px] font-semibold text-fg tabular-nums text-right">{fmt(p.value)}</span>
           </div>
@@ -45,7 +45,7 @@ export function MaStackBarV2({ parts = [], unit = "", list = false }) {
   const label = parts.map((p) => `${p.label} ${fmt((p.value / total) * 100, 1)}%`).join(", ");
   return (
     <div>
-      <div className="flex h-3 w-full gap-[2px] overflow-hidden rounded-full" role="img" aria-label={label}>
+      <div className="bar-grow-x flex h-3 w-full gap-[2px] overflow-hidden rounded-full" role="img" aria-label={label}>
         {parts.map((p, i) =>
           p.value > 0 ? (
             <div

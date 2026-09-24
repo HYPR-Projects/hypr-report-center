@@ -24,10 +24,17 @@ function nativeSize(piece) {
   return null; // fluida
 }
 
-export function MaPreviewV2({ piece, color, campaignStart = null, isDemo = false }) {
+// `hero`: a miniatura do card clicado na grade vira este preview numa View
+// Transition (MaxAttentionV2.openPiece). O nome só existe durante a troca.
+export function MaPreviewV2({ piece, color, campaignStart = null, isDemo = false, hero = false }) {
   const boxRef = useRef(null);
   const [boxW, setBoxW] = useState(0);
   const [nonce, setNonce] = useState(0);
+  // Qual iframe (src + recarga) já terminou de carregar. Comparar com a
+  // chave atual reseta sozinho ao trocar de peça ou recarregar, sem efeito.
+  const [loadedKey, setLoadedKey] = useState(null);
+  const frameKey = `${piece?.preview_url || ""}#${nonce}`;
+  const frameLoaded = loadedKey === frameKey;
   const size = nativeSize(piece);
 
   useEffect(() => {
@@ -60,9 +67,27 @@ export function MaPreviewV2({ piece, color, campaignStart = null, isDemo = false
         style={{ minHeight: Math.min(MAX_H, h * scale) + 24 }}
       >
         {piece?.preview_url ? (
-          <div style={{ width: w * scale, height: h * scale }} className="relative">
+          <div
+            style={{ width: w * scale, height: h * scale, viewTransitionName: hero ? "ma-hero" : undefined }}
+            className="relative"
+          >
+            {/* Quadro do formato com shimmer até a peça pintar; o iframe entra
+                em fade por cima (sem o flash do fundo branco no tema escuro).
+                É o mesmo quadro da miniatura do card, então a transição da
+                grade pra cá não troca de visual no meio. */}
+            {!frameLoaded && (
+              <MaThumbV2
+                format={piece?.format}
+                size={piece?.size}
+                color={color}
+                large
+                className="absolute inset-0 rounded-md skeleton-shimmer"
+              />
+            )}
             <iframe
               key={nonce}
+              onLoad={() => setLoadedKey(frameKey)}
+              data-loaded={frameLoaded ? "true" : "false"}
               title={`Preview da peça ${piece.name}`}
               src={piece.preview_url}
               width={w}
@@ -70,7 +95,7 @@ export function MaPreviewV2({ piece, color, campaignStart = null, isDemo = false
               loading="lazy"
               sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
               referrerPolicy="no-referrer"
-              className="absolute left-0 top-0 border-0 bg-white rounded-md shadow-lg origin-top-left"
+              className="ma-preview-frame absolute left-0 top-0 border-0 bg-white rounded-md shadow-lg origin-top-left"
               style={{ transform: `scale(${scale})` }}
             />
           </div>
@@ -81,7 +106,7 @@ export function MaPreviewV2({ piece, color, campaignStart = null, isDemo = false
             color={color}
             large
             className="shadow-lg"
-            style={{ width: Math.max(120, w * scale), height: Math.max(80, h * scale) }}
+            style={{ width: Math.max(120, w * scale), height: Math.max(80, h * scale), viewTransitionName: hero ? "ma-hero" : undefined }}
             label={`Quadro do formato ${piece?.name || ""}`}
           />
         )}

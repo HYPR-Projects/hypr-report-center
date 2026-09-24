@@ -36,7 +36,9 @@ function Note({ children }) {
   return <span className="text-[11px] text-fg-subtle leading-snug">{children}</span>;
 }
 
-export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campaignName = "campanha" }) {
+// `heroId`: peça sendo aberta pelo card; a miniatura dela ganha o
+// view-transition-name que vira o preview no detalhe (MaxAttentionV2).
+export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campaignName = "campanha", heroId = null }) {
   const list = pieces.map((p) => ({ p, m: medias.get(p.creative_id), km: keyMetric(p) }));
   const total = sumMedia(list.map((x) => x.m));
   const best = list.length > 1
@@ -204,7 +206,8 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campai
                 piece={g.items[0]}
                 media={medias.get(g.items[0].creative_id)}
                 color={formatColors[g.format]}
-                onOpen={() => onOpenPiece(g.items[0].creative_id)}
+                onOpen={() => onOpenPiece(g.items[0].creative_id, { fromCard: true })}
+                hero={heroId === g.items[0].creative_id}
                 showFormatDesc
               />
             ))}
@@ -230,7 +233,8 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campai
                     piece={p}
                     media={medias.get(p.creative_id)}
                     color={formatColors[p.format]}
-                    onOpen={() => onOpenPiece(p.creative_id)}
+                    onOpen={() => onOpenPiece(p.creative_id, { fromCard: true })}
+                    hero={heroId === p.creative_id}
                   />
                 ))}
               </div>
@@ -243,7 +247,7 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campai
   );
 }
 
-function PieceCard({ piece, media, color, onOpen, showFormatDesc = false }) {
+function PieceCard({ piece, media, color, onOpen, showFormatDesc = false, hero = false }) {
   const waiting = isWaiting(piece);
   const km = keyMetric(piece);
   const widgets = piece.widgets || [];
@@ -254,11 +258,18 @@ function PieceCard({ piece, media, color, onOpen, showFormatDesc = false }) {
       aria-label={`Abrir ${piece.name}`}
       className={cn(
         "group grid grid-cols-[96px_minmax(0,1fr)] gap-3 rounded-xl border border-border bg-surface-2 p-3 text-left",
-        "hover:border-border-strong hover:bg-surface cursor-pointer transition-colors",
+        "hover:border-border-strong hover:bg-surface hover:-translate-y-px hover:shadow-md cursor-pointer",
+        "transition-[background-color,border-color,box-shadow,translate] duration-200",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
       )}
     >
-      <MaThumbV2 format={piece.format} size={piece.size} color={color} className={cn("h-[96px]", waiting && "opacity-60")} />
+      <MaThumbV2
+        format={piece.format}
+        size={piece.size}
+        color={color}
+        className={cn("h-[96px]", waiting && "opacity-60")}
+        style={hero ? { viewTransitionName: "ma-hero" } : undefined}
+      />
       <div className="min-w-0">
         <div className="text-[13px] font-semibold text-fg truncate group-hover:text-signature">
           {piece.name}{piece.size ? ` · ${piece.size}` : ""}

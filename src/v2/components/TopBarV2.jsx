@@ -105,7 +105,7 @@ export function TopBarV2({
   return (
     <header
       className={cn(
-        "sticky top-0 z-30",
+        "sticky top-0 z-30 [view-transition-name:report-topbar]",
         "h-16 px-4 md:px-6 lg:px-8 flex items-center justify-between gap-3",
         "bg-canvas/70 backdrop-blur-md border-b border-border",
         className,
