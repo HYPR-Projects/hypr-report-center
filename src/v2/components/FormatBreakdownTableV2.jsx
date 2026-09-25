@@ -11,9 +11,9 @@
 //
 // LAYOUT
 //   ┌────────────────────────────────────────────────────────────────────────┐
-//   │ FORMATO        ▮▮▮▮▮▮▮▮ SHARE  IMP. VIS.  CTR/VTR  VIEW/CTR  CUSTO EF. │
-//   │ 320x480        ▮▮▮▮▮▮   45.2%  1.2M       0.85%    72.1%     R$ 850,12 │
-//   │ 1024x768       ▮▮▮▮     32.1%  856K       0.62%    68.4%     R$ 612,34 │
+//   │ FORMATO     ▮▮▮▮▮▮ SHARE  IMPR.  IMP. VIS.  CTR/VTR  VIEW/CTR  CUSTO EF. │
+//   │ 320x480     ▮▮▮▮▮  45.2%  1.6M   1.2M       0.85%    72.1%     R$ 850,12 │
+//   │ 1024x768    ▮▮▮    32.1%  1.2M   856K       0.62%    68.4%     R$ 612,34 │
 //   │ ...                                                                     │
 //   └────────────────────────────────────────────────────────────────────────┘
 //
@@ -137,6 +137,8 @@ export function FormatBreakdownTableV2({
         return {
           ...r,
           share: totalDenom > 0 ? (viewable / totalDenom) * 100 : 0,
+          // Impressões totais (medidas) do grupo, ao lado das visíveis.
+          impressions: extra.impressions,
           cost: extra.cost,
           viewability,
           ctr_extra: ctrFromExtra,
@@ -176,10 +178,11 @@ export function FormatBreakdownTableV2({
   });
 
   const downloadCsv = () => {
-    const header = [groupLabel, "Share (%)", denomLabel, numeratorLabel, rateLabel, lastLabel, "Custo Ef."];
+    const header = [groupLabel, "Share (%)", "Impressões", denomLabel, numeratorLabel, rateLabel, lastLabel, "Custo Ef."];
     const lines = sorted.map((r) => [
       r[groupKey] || "",
       (r.share || 0).toFixed(1),
+      r.impressions || 0,
       r[denomKey] || 0,
       r[numeratorKey] || 0,
       (Number(r[rateKey]) || 0).toFixed(2),
@@ -238,6 +241,7 @@ export function FormatBreakdownTableV2({
               <Th align="left" {...sortProps(groupKey)}>{groupLabel}</Th>
               <Th align="left" className="w-[180px]">Share</Th>
               <Th {...sortProps("share")}>Share %</Th>
+              <Th {...sortProps("impressions")}>Impressões</Th>
               <Th {...sortProps(denomKey)}>{denomLabel}</Th>
               <Th {...sortProps(numeratorKey)}>{numeratorLabel}</Th>
               <Th {...sortProps(rateKey)}>{rateLabel}</Th>
@@ -278,6 +282,7 @@ export function FormatBreakdownTableV2({
                     {fmt(r.share, 1)}%
                   </span>
                 </Td>
+                <Td>{r.impressions > 0 ? fmt(r.impressions) : "—"}</Td>
                 <Td>{fmt(r[denomKey])}</Td>
                 <Td>{fmt(r[numeratorKey])}</Td>
                 <Td>
