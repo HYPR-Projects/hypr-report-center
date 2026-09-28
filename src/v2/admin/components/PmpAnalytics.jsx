@@ -32,6 +32,8 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
 import { CountBadge } from "../../../ui/CountBadge";
 import { useThemeColors, useChartNeutral } from "../../hooks/useThemeColors";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { useUniformTicks } from "../../hooks/useUniformTicks";
+import { fillDailyGaps, MONTH_STEPS } from "../../lib/dateTicks";
 import { ChartCardV2 } from "../../components/ChartCardV2";
 import { DateRangeFilterV2 } from "../../components/DateRangeFilterV2";
 import { ymd, buildPresets } from "../../../shared/dateFilter";
@@ -176,11 +178,18 @@ export default function PmpAnalytics({
   const delta = (cur, base) => (base != null && base > 0 ? (cur - base) / base : null);
 
   // ── Séries temporais (dia ou mês) ─────────────────────────────────────────
+  // No diário, dia sem entrega entra zerado em vez de sumir do eixo.
   const series = useMemo(
-    () => buildSeries(tsFiltered, granularity).map((e) => ({
-      ...e,
-      label: granularity === "month" ? formatMonthLabel(e.key, "short") : dayLabel(e.key),
-    })),
+    () => {
+      const rows = buildSeries(tsFiltered, granularity);
+      const full = granularity === "month"
+        ? rows
+        : fillDailyGaps(rows, "key").map((e) => ({ revenue: 0, margin: 0, cost: 0, imps: 0, clicks: 0, ...e }));
+      return full.map((e) => ({
+        ...e,
+        label: granularity === "month" ? formatMonthLabel(e.key, "short") : dayLabel(e.key),
+      }));
+    },
     [tsFiltered, granularity],
   );
 
@@ -483,52 +492,62 @@ function EvolutionChart({ data, accent, mode }) {
   const neutral = useChartNeutral();
   const hypr = useThemeColors();
   const isMobile = useIsMobile();
-  if (!data.length) return <EmptyChart />;
-  const barSize = Math.min(isMobile ? 18 : 34, Math.max(4, Math.floor((isMobile ? 320 : 600) / data.length)));
   const money = mode === "money";
   // Cliques só ganham eixo/linha quando existem no período — deals de display
   // PMP costumam ter 0 clique, e uma linha achatada em zero é peso morto.
   const hasClicks = !money && data.some((d) => num(d.clicks) > 0);
+  // Passo fixo entre os labels do eixo (ver lib/dateTicks). Reservado:
+  // eixo(s) Y + margem direita 8 + padding 10 + 10.
+  const monthly = String(data[0]?.key || "").length === 7;
+  const [plotRef, xTicks] = useUniformTicks(data.map((d) => d.label), {
+    reservedPx: (money ? 66 : 44 + (hasClicks ? 40 : 0)) + 8 + 20,
+    slotPx: monthly ? 48 : 52,
+    steps: monthly ? MONTH_STEPS : undefined,
+  });
+  if (!data.length) return <EmptyChart />;
+  const barSize = Math.min(isMobile ? 18 : 34, Math.max(4, Math.floor((isMobile ? 320 : 600) / data.length)));
 
   return (
-    <ResponsiveContainer width="100%" height={252}>
-      <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke={neutral.grid} vertical={false} />
-        <XAxis dataKey="label" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false}
-               axisLine={{ stroke: neutral.grid }} minTickGap={20} padding={{ left: 10, right: 10 }} />
-        {money ? (
-          <YAxis tick={<MoneyAxisTick fill={neutral.label} />} tickLine={false} axisLine={false} width={66} padding={{ top: 8 }} />
-        ) : (
-          <>
-            <YAxis yAxisId="left" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false}
-                   width={44} tickFormatter={formatIntCompact} padding={{ top: 8 }} />
-            {hasClicks && (
-              <YAxis yAxisId="right" orientation="right" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false}
-                     axisLine={false} width={40} tickFormatter={formatIntCompact} padding={{ top: 8 }} />
-            )}
-          </>
-        )}
-        <RTooltip cursor={{ fill: hypr.surfaceStrong }} content={(p) => (
-          <ChartTooltip {...p} rows={(pl) => pl.map((x) => {
-            if (money) return { name: x.dataKey === "revenue" ? "Receita" : "Margem", value: formatBRL(x.value), color: x.dataKey === "revenue" ? accent : hypr.fg };
-            return { name: x.dataKey === "imps" ? "Impressões" : "Cliques", value: formatInt(x.value), color: x.dataKey === "imps" ? accent : hypr.fg };
-          })} />
-        )} />
-        {money ? (
-          <>
-            <Bar dataKey="revenue" fill={accent} radius={[3, 3, 0, 0]} opacity={0.9} barSize={barSize} isAnimationActive={false} />
-            <Line dataKey="margin" type="monotone" stroke={hypr.fg} strokeWidth={2} dot={false} activeDot={{ r: 4 }} isAnimationActive={false} />
-          </>
-        ) : (
-          <>
-            <Bar yAxisId="left" dataKey="imps" fill={accent} radius={[3, 3, 0, 0]} opacity={0.9} barSize={barSize} isAnimationActive={false} />
-            {hasClicks && (
-              <Line yAxisId="right" dataKey="clicks" type="monotone" stroke={hypr.fg} strokeWidth={2} dot={false} activeDot={{ r: 4 }} isAnimationActive={false} />
-            )}
-          </>
-        )}
-      </ComposedChart>
-    </ResponsiveContainer>
+    <div ref={plotRef}>
+      <ResponsiveContainer width="100%" height={252}>
+        <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={neutral.grid} vertical={false} />
+          <XAxis dataKey="label" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false}
+                 axisLine={{ stroke: neutral.grid }} ticks={xTicks} interval={0} padding={{ left: 10, right: 10 }} />
+          {money ? (
+            <YAxis tick={<MoneyAxisTick fill={neutral.label} />} tickLine={false} axisLine={false} width={66} padding={{ top: 8 }} />
+          ) : (
+            <>
+              <YAxis yAxisId="left" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false}
+                     width={44} tickFormatter={formatIntCompact} padding={{ top: 8 }} />
+              {hasClicks && (
+                <YAxis yAxisId="right" orientation="right" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false}
+                       axisLine={false} width={40} tickFormatter={formatIntCompact} padding={{ top: 8 }} />
+              )}
+            </>
+          )}
+          <RTooltip cursor={{ fill: hypr.surfaceStrong }} content={(p) => (
+            <ChartTooltip {...p} rows={(pl) => pl.map((x) => {
+              if (money) return { name: x.dataKey === "revenue" ? "Receita" : "Margem", value: formatBRL(x.value), color: x.dataKey === "revenue" ? accent : hypr.fg };
+              return { name: x.dataKey === "imps" ? "Impressões" : "Cliques", value: formatInt(x.value), color: x.dataKey === "imps" ? accent : hypr.fg };
+            })} />
+          )} />
+          {money ? (
+            <>
+              <Bar dataKey="revenue" fill={accent} radius={[3, 3, 0, 0]} opacity={0.9} barSize={barSize} isAnimationActive={false} />
+              <Line dataKey="margin" type="monotone" stroke={hypr.fg} strokeWidth={2} dot={false} activeDot={{ r: 4 }} isAnimationActive={false} />
+            </>
+          ) : (
+            <>
+              <Bar yAxisId="left" dataKey="imps" fill={accent} radius={[3, 3, 0, 0]} opacity={0.9} barSize={barSize} isAnimationActive={false} />
+              {hasClicks && (
+                <Line yAxisId="right" dataKey="clicks" type="monotone" stroke={hypr.fg} strokeWidth={2} dot={false} activeDot={{ r: 4 }} isAnimationActive={false} />
+              )}
+            </>
+          )}
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 

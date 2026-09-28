@@ -17,7 +17,9 @@ import { fmt, fmtCompactTick } from "../../../shared/format";
 import { formatLabel } from "../../../shared/maMetrics";
 import { resolveChartVar } from "./maFormat";
 import { useChartNeutral, useThemeColors } from "../../hooks/useThemeColors";
+import { useUniformTicks } from "../../hooks/useUniformTicks";
 import { CHART_ANIMATION_MS, seriesSignature, useAnimationWindow } from "../../lib/motion";
+import { fillDailyGaps } from "../../lib/dateTicks";
 
 const WEEKDAY_PT = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 const ddmm = (ymd) => {
@@ -53,10 +55,17 @@ function StackTooltip({ active, payload, label, colorFor }) {
   );
 }
 
-export function MaStackedDailyChartV2({ rows, formats, colors, height = 210 }) {
+export function MaStackedDailyChartV2({ rows: rawRows, formats, colors, height = 210 }) {
   const neutral = useChartNeutral();
   const hypr = useThemeColors();
+  // Dia sem sessão vira buraco no eixo em vez de sumir (ver fillDailyGaps).
+  const rows = fillDailyGaps(rawRows);
   const animate = useAnimationWindow(seriesSignature(rows, formats || []));
+  // Passo fixo entre as datas do eixo (ver lib/dateTicks). 48 = YAxis, 8 = margem.
+  const [wrapRef, xTicks] = useUniformTicks(
+    Array.isArray(rows) ? rows.map((r) => r.date) : [],
+    { reservedPx: 48 + 8 },
+  );
   if (!rows?.length || !formats?.length) return null;
   // Recharts precisa da cor resolvida (var() não entra no fill do SVG em
   // todos os navegadores): traduz var(--color-chart-sN) pelo tema atual.
@@ -66,7 +75,7 @@ export function MaStackedDailyChartV2({ rows, formats, colors, height = 210 }) {
   };
   const n = rows.length;
   return (
-    <div>
+    <div ref={wrapRef}>
       <ResponsiveContainer width="100%" height={height}>
         <BarChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} barCategoryGap={n > 40 ? 2 : "22%"}>
           <CartesianGrid vertical={false} stroke={neutral.grid} />
@@ -76,8 +85,8 @@ export function MaStackedDailyChartV2({ rows, formats, colors, height = 210 }) {
             tick={{ fill: neutral.label, fontSize: 10 }}
             tickLine={false}
             axisLine={{ stroke: neutral.grid }}
-            minTickGap={24}
-            interval="preserveStartEnd"
+            ticks={xTicks}
+            interval={0}
           />
           <YAxis
             width={48}
