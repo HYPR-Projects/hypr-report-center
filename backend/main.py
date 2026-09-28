@@ -60,6 +60,7 @@ import pmp_deals
 import pmp_lines
 import pmp_groups
 import compplan_sheet
+import pmp_client_sheet
 import xandr_curate
 import pubmatic_curate
 import pmp_alerts
@@ -5097,6 +5098,13 @@ def report_data(request):
             except Exception as ce:
                 logger.warning(f"[pmp_sync_v2 compplan push] {ce}")
                 compplan_res = {"error": str(ce)}
+            # Planilhas de cliente dos deals (pmp_client_sheet.py). Mesmo
+            # contrato do compplan: best-effort, com teto de tempo próprio.
+            try:
+                client_sheets_res = pmp_client_sheet.sync_all_connected()
+            except Exception as pe:
+                logger.warning(f"[pmp_sync_v2 client sheets push] {pe}")
+                client_sheets_res = {"error": str(pe)}
             payload = {
                 "actor": actor,
                 "insertion_orders": io_res,
@@ -5106,6 +5114,7 @@ def report_data(request):
                 "checklists_mirror": mirror_res,
                 "view_refreshed":   True,
                 "compplan_sheet":   compplan_res,
+                "client_sheets":    client_sheets_res,
             }
             if xandr_error is not None:
                 # 502 mesmo com o resto tendo rodado: a Xandr é o caminho
@@ -5192,6 +5201,16 @@ def report_data(request):
                     logger.warning(f"[pmp_sync_pubmatic compplan push] {ce}")
                     compplan_res = {"error": str(ce)}
                 _lap("compplan_push")
+            # Planilhas de cliente: mesma regra do compplan (só quando a fonte
+            # avançou — o cliente não precisa de 19 reescritas iguais por dia).
+            client_sheets_res = None
+            if advanced:
+                try:
+                    client_sheets_res = pmp_client_sheet.sync_all_connected()
+                except Exception as pe:
+                    logger.warning(f"[pmp_sync_pubmatic client sheets push] {pe}")
+                    client_sheets_res = {"error": str(pe)}
+                _lap("client_sheets_push")
             logger.info("[pmp_sync_pubmatic] actor=%s api_last_day %s→%s advanced=%s timings=%s",
                         actor, prev_api_day, api_day, advanced, timings)
             return (jsonify({
@@ -5207,6 +5226,7 @@ def report_data(request):
                 "api_last_day_after":  api_day,
                 "advanced":            advanced,
                 "compplan_sheet":      compplan_res,
+                "client_sheets":       client_sheets_res,
             }), 200, headers)
         except Exception as e:
             logger.exception(f"[ERROR pmp_sync_pubmatic] {e}")
@@ -5393,6 +5413,115 @@ def report_data(request):
             return (jsonify({"ok": True, **result}), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR compplan_sheet_delete] {e}")
+            return (jsonify({"error": f"Erro ao excluir: {e}"}), 500, headers)
+
+    # ── Endpoints: Planilha de cliente PMP (admin) ───────────────────────────
+    # 1 Google Sheet por card do PMP (line solta ou grupo) com a entrega
+    # diária no recorte que pode ir pro cliente: Dia, Line, ID do Seat,
+    # Receita Bruta e Impressões. Push automático no fim de cada sync do PMP.
+    # Ver pmp_client_sheet.py. `unit_key` = line:<source>:<line_id> | group:<id>.
+    if request.method == "POST" and request.args.get("action") == "pmp_client_sheet_connect":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            body = request.get_json(silent=True) or {}
+            unit_key     = (body.get("unit_key") or "").strip()
+            code         = (body.get("code") or "").strip()
+            redirect_uri = (body.get("redirect_uri") or "postmessage").strip()
+            if not code:
+                return (jsonify({"error": "code é obrigatório"}), 400, headers)
+            try:
+                pmp_client_sheet.parse_unit_key(unit_key)
+            except ValueError as ve:
+                return (jsonify({"error": str(ve)}), 400, headers)
+            tokens = sheets_integration.exchange_code_for_tokens(code, redirect_uri)
+            refresh_token = tokens.get("refresh_token")
+            if not refresh_token:
+                return (
+                    jsonify({"error": "refresh_token ausente. Tente novamente — pode ser preciso revogar e reautorizar o app."}),
+                    400, headers,
+                )
+            result = pmp_client_sheet.connect(
+                unit_key,
+                refresh_token=refresh_token,
+                member_email=admin.get("email") or "unknown",
+                seat_id=body.get("seat_id"),
+            )
+            status = sheets_integration.status_for_response(
+                unit_key, is_admin=True, target_type=sheets_integration.TARGET_PMP_LINE,
+            )
+            return (jsonify({**result, "integration": status}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR pmp_client_sheet_connect] {e}")
+            return (jsonify({"error": f"Erro ao criar a planilha do cliente: {e}"}), 500, headers)
+
+    if request.method == "GET" and request.args.get("action") == "pmp_client_sheet_status":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        unit_key = (request.args.get("unit_key") or "").strip()
+        try:
+            pmp_client_sheet.parse_unit_key(unit_key)
+        except ValueError as ve:
+            return (jsonify({"error": str(ve)}), 400, headers)
+        try:
+            status = sheets_integration.status_for_response(
+                unit_key, is_admin=True, target_type=sheets_integration.TARGET_PMP_LINE,
+            )
+            return (jsonify({"integration": status}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR pmp_client_sheet_status] {e}")
+            return (jsonify({"error": "Erro ao buscar status"}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") in (
+        "pmp_client_sheet_sync_now", "pmp_client_sheet_config",
+    ):
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        body = request.get_json(silent=True) or {}
+        unit_key = (body.get("unit_key") or "").strip()
+        try:
+            pmp_client_sheet.parse_unit_key(unit_key)
+        except ValueError as ve:
+            return (jsonify({"error": str(ve)}), 400, headers)
+        try:
+            if request.args.get("action") == "pmp_client_sheet_config":
+                # Só o override do seat por enquanto. Vazio = volta pro Deal ID.
+                if not sheets_integration.get_integration(
+                    unit_key, target_type=sheets_integration.TARGET_PMP_LINE,
+                ):
+                    return (jsonify({"error": "Integração não encontrada"}), 404, headers)
+                seat_id = (body.get("seat_id") or "").strip() or None
+                sheets_integration.set_integration_config(
+                    unit_key, sheets_integration.TARGET_PMP_LINE, {"seat_id": seat_id},
+                )
+            pmp_client_sheet.sync(unit_key)
+            status = sheets_integration.status_for_response(
+                unit_key, is_admin=True, target_type=sheets_integration.TARGET_PMP_LINE,
+            )
+            return (jsonify({"ok": True, "integration": status}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR {request.args.get('action')}] {e}")
+            return (jsonify({"error": f"Erro ao sincronizar: {e}"}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "pmp_client_sheet_delete":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        body = request.get_json(silent=True) or {}
+        unit_key = (body.get("unit_key") or "").strip()
+        try:
+            pmp_client_sheet.parse_unit_key(unit_key)
+        except ValueError as ve:
+            return (jsonify({"error": str(ve)}), 400, headers)
+        try:
+            result = sheets_integration.delete_integration(
+                unit_key,
+                delete_sheet=bool(body.get("delete_sheet")),
+                target_type=sheets_integration.TARGET_PMP_LINE,
+            )
+            return (jsonify({"ok": True, **result}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR pmp_client_sheet_delete] {e}")
             return (jsonify({"error": f"Erro ao excluir: {e}"}), 500, headers)
 
     # ── Endpoint: lista de clientes agregada (admin) ─────────────────────────

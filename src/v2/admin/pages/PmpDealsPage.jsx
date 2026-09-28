@@ -95,6 +95,7 @@ import {
 } from "../lib/pmpTokens";
 import { buildCompplanRows, applyCompplanFormats } from "../lib/compplanExport";
 import CompplanSheetCard from "../components/CompplanSheetCard";
+import { PmpClientSheetBlock } from "../components/PmpClientSheetBlock";
 import { PmpFreshnessIndicator } from "../components/PmpFreshnessIndicator";
 import { isFeatureAdmin } from "../../../shared/auth";
 
@@ -2514,6 +2515,11 @@ function PmpLineDrawer({ open, onOpenChange, line, onSave, onSetTokens, onGroupC
 
             {/* Grupo (PI compartilhado) — sempre visível, ação contextual */}
             <GroupBlock line={line} onGroupClick={onGroupClick} canEdit={canEdit} />
+
+            {/* Planilha do cliente — entrega diária (Dia, Line, Seat, Receita
+                Bruta, Impressões) numa Google Sheet com link pro cliente.
+                Depois do grupo porque a planilha segue a unidade do card. */}
+            <PmpClientSheetBlock line={line} canEdit={canEdit} />
 
             {/* Detalhes da line — colapsado por padrão. Informação de
                 referência (IO, deal IDs, bid type, datas) que o operador

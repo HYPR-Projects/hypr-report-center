@@ -76,6 +76,10 @@ Schema da tabela
                                           dados (cache do happy path: evita um
                                           spreadsheets().get por sync). NULL em
                                           rows legacy → assume 'Base de Dados'.
+    config_json        STRING           -- config específica do target_type, em
+                                          JSON. Hoje só a planilha de cliente
+                                          PMP usa (override do ID do seat — ver
+                                          pmp_client_sheet.py). NULL = sem config.
 
 Chave lógica: (target_type, short_token). A coluna `short_token` mantém o
 nome por compat — funcionalmente é o "target_id". Pra um cliente, podem
@@ -237,7 +241,8 @@ def ensure_table_exists() -> None:
             status             STRING,
             last_error         STRING,
             base_sheet_gid     INT64,
-            base_tab_title     STRING
+            base_tab_title     STRING,
+            config_json        STRING
         )
         """
         _bq_client().query(sql).result()
@@ -269,7 +274,9 @@ def ensure_table_exists() -> None:
         # Migration: adiciona base_sheet_gid / base_tab_title
         # (PR-sheets-follow-renamed-tab). Rows legacy ficam NULL e são
         # curadas no primeiro sync (ver `_write_base_de_dados`).
-        for col, typ in (("base_sheet_gid", "INT64"), ("base_tab_title", "STRING")):
+        # config_json (PR-pmp-client-sheet): config por target_type.
+        for col, typ in (("base_sheet_gid", "INT64"), ("base_tab_title", "STRING"),
+                         ("config_json", "STRING")):
             try:
                 _bq_client().query(
                     f"ALTER TABLE `{_table_id()}` ADD COLUMN IF NOT EXISTS {col} {typ}"
@@ -414,13 +421,20 @@ TARGET_MERGE = "merge"
 # cron sheets_sync_all — sync_until fica NULL de propósito pra ficar de
 # fora de list_active_integrations/list_expired_integrations.
 TARGET_COMPPLAN = "compplan"
-_VALID_TARGETS = (TARGET_TOKEN, TARGET_MERGE, TARGET_COMPPLAN)
+# Planilha de cliente de um deal PMP (1 por line solta ou por grupo de lines).
+# Sync disparado pelo pmp_sync_v2/pmp_sync_pubmatic, não pelo cron genérico
+# (ver pmp_client_sheet.py). Tem sync_until — só pra régua do alerta de stale.
+TARGET_PMP_LINE = "pmp_line"
+_VALID_TARGETS = (TARGET_TOKEN, TARGET_MERGE, TARGET_COMPPLAN, TARGET_PMP_LINE)
+# Tipos que o cron genérico `sheets_sync_all` sincroniza. Os demais têm ciclo
+# próprio e ficam fora de `list_active_integrations` mesmo com sync_until.
+_CRON_TARGETS = (TARGET_TOKEN, TARGET_MERGE)
 
 
 def _validate_target_type(target_type: str) -> str:
     if target_type not in _VALID_TARGETS:
         raise ValueError(
-            f"target_type inválido: {target_type!r}. Use 'token', 'merge' ou 'compplan'."
+            f"target_type inválido: {target_type!r}. Use um de {_VALID_TARGETS}."
         )
     return target_type
 
@@ -448,7 +462,8 @@ def get_integration(target_id: str, target_type: str = TARGET_TOKEN) -> Optional
         status,
         last_error,
         base_sheet_gid,
-        base_tab_title
+        base_tab_title,
+        config_json
     FROM `{_table_id()}`
     WHERE short_token = @target_id
       AND COALESCE(target_type, 'token') = @target_type
@@ -487,7 +502,38 @@ def get_integration(target_id: str, target_type: str = TARGET_TOKEN) -> Optional
         "last_error":       r["last_error"],
         "base_sheet_gid":   r["base_sheet_gid"],
         "base_tab_title":   r["base_tab_title"],
+        "config":           _parse_config(r.get("config_json")),
     }
+
+
+def _parse_config(raw) -> Dict:
+    """config_json → dict. Vazio/inválido vira {} (config é opcional)."""
+    if not raw:
+        return {}
+    try:
+        cfg = json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning(f"[sheets config_json inválido] {raw!r:.200}")
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def set_integration_config(target_id: str, target_type: str, config: Dict) -> None:
+    """Grava o config_json da integração. Fica fora do MERGE de
+    `_upsert_integration` de propósito: reconectar não apaga a config."""
+    _validate_target_type(target_type)
+    ensure_table_exists()
+    _bq_client().query(
+        f"UPDATE `{_table_id()}` SET config_json = @config "
+        f"WHERE short_token = @target_id "
+        f"  AND COALESCE(target_type, 'token') = @target_type",
+        job_config=bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("config", "STRING",
+                                          json.dumps(config or {}, ensure_ascii=False)),
+            bigquery.ScalarQueryParameter("target_id", "STRING", target_id),
+            bigquery.ScalarQueryParameter("target_type", "STRING", target_type),
+        ]),
+    ).result()
 
 
 def _upsert_integration(row: Dict) -> None:
@@ -751,8 +797,14 @@ def list_active_integrations() -> List[Dict]:
     FROM `{_table_id()}`
     WHERE status IN ('active', 'error', 'revoked')
       AND sync_until >= CURRENT_DATE("America/Sao_Paulo")
+      AND COALESCE(target_type, 'token') IN UNNEST(@cron_targets)
     """
-    rows = list(_bq_client().query(sql).result())
+    rows = list(_bq_client().query(
+        sql,
+        job_config=bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ArrayQueryParameter("cron_targets", "STRING", list(_CRON_TARGETS)),
+        ]),
+    ).result())
     return [
         {
             "target_id":         r["short_token"],
@@ -780,8 +832,14 @@ def count_out_of_window() -> int:
     FROM `{_table_id()}`
     WHERE status = 'active'
       AND sync_until < CURRENT_DATE("America/Sao_Paulo")
+      AND COALESCE(target_type, 'token') IN UNNEST(@cron_targets)
     """
-    rows = list(_bq_client().query(sql).result())
+    rows = list(_bq_client().query(
+        sql,
+        job_config=bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ArrayQueryParameter("cron_targets", "STRING", list(_CRON_TARGETS)),
+        ]),
+    ).result())
     return int(rows[0]["n"]) if rows else 0
 
 
@@ -1337,12 +1395,19 @@ def _create_spreadsheet_with_payload(
     title: str,
     payload: List[List],
     access_token: str,
+    readme_text: Optional[List[List]] = None,
+    extra_format_requests=None,
 ) -> Tuple[str, str, int]:
     """Cria spreadsheet com 2 abas (README + Base de Dados), popula, formata
     header bold + frozen row, move pra pasta HYPR (best-effort) e seta
     permissão de link público (best-effort).
     Retorna (id, url, gid_da_aba_de_dados) — o gid é a âncora estável da aba
     (sobrevive a rename), persistida na integração.
+
+    `readme_text` troca o texto da aba README (default: o das sheets de
+    campanha). `extra_format_requests(base_sheet_id) -> list` acrescenta
+    requests ao batchUpdate de formatação (ex.: numberFormat por coluna) —
+    roda no mesmo passo crítico: se falhar, a sheet é apagada.
 
     Em caso de falha pós-criação, deleta a sheet pra não deixar órfã.
     """
@@ -1381,7 +1446,7 @@ def _create_spreadsheet_with_payload(
             body={
                 "valueInputOption": "RAW",
                 "data": [
-                    {"range": f"'{README_TAB_TITLE}'!A1",  "values": README_TEXT},
+                    {"range": f"'{README_TAB_TITLE}'!A1",  "values": readme_text or README_TEXT},
                     {"range": f"'{BASE_TAB_TITLE}'!A1",    "values": payload},
                 ],
             },
@@ -1411,6 +1476,7 @@ def _create_spreadsheet_with_payload(
                             "fields": "gridProperties.frozenRowCount",
                         }
                     },
+                    *(extra_format_requests(base_sheet_id) if extra_format_requests else []),
                 ],
             },
         ).execute(num_retries=_SHEETS_NUM_RETRIES)
@@ -2068,4 +2134,5 @@ def status_for_response(
         "last_attempt_at":  integ["last_attempt_at"].isoformat() if integ.get("last_attempt_at") else None,
         "sync_until":       integ["sync_until"].isoformat() if integ["sync_until"] else None,
         "last_error":       integ["last_error"],
+        "config":           integ.get("config") or {},
     }
