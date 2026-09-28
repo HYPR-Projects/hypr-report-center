@@ -19,6 +19,7 @@
 // ── Contrato de rotas ────────────────────────────────────────────────────
 //   /admin/reports/:slug   → CampaignMenuV2 na view correspondente
 //   /admin/pmp/:slug       → PmpDealsPage na view correspondente
+//   /admin/dv/:slug        → DoubleVerifyPage (KQIs do Pinnacle)
 //   /admin/client/:slug    → ClientDetailPage (drilldown, sem view interna)
 //
 // Rotas legadas continuam válidas e são normalizadas por `parseAdminPath`:
@@ -27,11 +28,12 @@
 
 import {
   CalendarIcon, UsersIcon, ListIcon, TrophyIcon, PulseIcon,
-  LiveDotIcon, ArchiveIcon, ChartIcon,
+  LiveDotIcon, ArchiveIcon, ChartIcon, ShieldIcon,
 } from "./navIcons";
 
 export const SECTION_REPORTS = "reports";
 export const SECTION_PMP     = "pmp";
+export const SECTION_DV      = "dv";
 export const SECTION_CLIENT  = "client";
 
 // ── Views de Reports ─────────────────────────────────────────────────────
@@ -57,9 +59,18 @@ export const PMP_VIEWS = [
   { layout: "analytics", slug: "analytics", label: "Analytics", icon: ChartIcon,                          wide: true },
 ];
 
+// ── Views de DoubleVerify ────────────────────────────────────────────────
+// Uma view por enquanto (os KQIs do Pinnacle). Fica como grupo próprio e não
+// dentro de Reports porque a fonte é outra (DV, não DSP) e o recorte também
+// (Brand/Campaign da DV, que não casam 1:1 com as campanhas do report).
+export const DV_VIEWS = [
+  { layout: "quality", slug: "qualidade", label: "Qualidade de mídia", icon: ShieldIcon, wide: true },
+];
+
 export const NAV_GROUPS = [
-  { id: SECTION_REPORTS, label: "Reports",   base: "/admin/reports", views: REPORT_VIEWS },
-  { id: SECTION_PMP,     label: "PMP Deals", base: "/admin/pmp",     views: PMP_VIEWS    },
+  { id: SECTION_REPORTS, label: "Reports",      base: "/admin/reports", views: REPORT_VIEWS },
+  { id: SECTION_PMP,     label: "PMP Deals",    base: "/admin/pmp",     views: PMP_VIEWS    },
+  { id: SECTION_DV,      label: "DoubleVerify", base: "/admin/dv",      views: DV_VIEWS     },
 ];
 
 // Defaults por seção — usados quando a URL não nomeia a view (ex: bookmark
@@ -67,6 +78,7 @@ export const NAV_GROUPS = [
 export const DEFAULT_VIEW = {
   [SECTION_REPORTS]: "month",
   [SECTION_PMP]:     "list",
+  [SECTION_DV]:      "quality",
 };
 
 // ── localStorage ─────────────────────────────────────────────────────────
@@ -77,14 +89,20 @@ export const DEFAULT_VIEW = {
 // preferência de entrada quando nenhuma view foi pedida.
 const LS_REPORTS_VIEW = "hypr.admin.layout";
 const LS_PMP_VIEW     = "hypr.admin.pmpLayout";
+const LS_DV_VIEW      = "hypr.admin.dvLayout";
 
 const LS_KEY_BY_SECTION = {
   [SECTION_REPORTS]: LS_REPORTS_VIEW,
   [SECTION_PMP]:     LS_PMP_VIEW,
+  [SECTION_DV]:      LS_DV_VIEW,
 };
 
+function groupOf(section) {
+  return NAV_GROUPS.find((g) => g.id === section) || NAV_GROUPS[0];
+}
+
 function viewsOf(section) {
-  return section === SECTION_PMP ? PMP_VIEWS : REPORT_VIEWS;
+  return groupOf(section).views;
 }
 
 /** Um layout é válido para a seção? Protege contra valor stale no storage. */
@@ -125,8 +143,7 @@ export function viewMeta(section, layout) {
 export function pathFor(section, layout) {
   const slug = slugFromLayout(section, layout);
   if (!slug) return "/";
-  const base = section === SECTION_PMP ? "/admin/pmp" : "/admin/reports";
-  return `${base}/${slug}`;
+  return `${groupOf(section).base}/${slug}`;
 }
 
 // ── Parsing da URL ───────────────────────────────────────────────────────
@@ -161,6 +178,9 @@ export function parseAdminPath(pathname) {
 
   const pmpMatch = path.match(/^\/admin\/pmp(?:\/([a-z0-9-]+))?$/i);
   if (pmpMatch) return sectionResult(SECTION_PMP, pmpMatch[1]);
+
+  const dvMatch = path.match(/^\/admin\/dv(?:\/([a-z0-9-]+))?$/i);
+  if (dvMatch) return sectionResult(SECTION_DV, dvMatch[1]);
 
   return null;
 }

@@ -23,7 +23,7 @@ import { lookupShare } from "./lib/api";
 import { isDemoToken } from "./shared/demoData";
 import {
   parseAdminPath, pathFor, writeStoredView,
-  SECTION_PMP, SECTION_CLIENT,
+  SECTION_PMP, SECTION_DV, SECTION_CLIENT,
 } from "./v2/admin/shell/navConfig";
 
 // ── Code-splitting ──────────────────────────────────────────────────────
@@ -44,6 +44,7 @@ const CampaignMenu         = lazy(() => import("./v2/admin/pages/CampaignMenuV2"
 const ClientDetailPage     = lazy(() => import("./v2/admin/pages/ClientDetailPage"));
 const ClientDashboard      = lazy(() => import("./v2/dashboards/ClientDashboardV2"));
 const PmpDealsPage         = lazy(() => import("./v2/admin/pages/PmpDealsPage"));
+const DoubleVerifyPage     = lazy(() => import("./v2/admin/pages/DoubleVerifyPage"));
 const ClientPortalPage     = lazy(() => import("./v2/portal/ClientPortalPage"));
 
 /**
@@ -502,6 +503,20 @@ function AppRoutes() {
     return (
       <Suspense fallback={<RouteSuspense />}>
         <PmpDealsPage
+          user={user}
+          onLogout={onLogout}
+          layout={adminRoute.layout}
+          onNavigateView={goToView}
+        />
+      </Suspense>
+    );
+  }
+
+  // Rota /admin/dv/:view — KQIs do DoubleVerify Pinnacle (somente leitura).
+  if (adminRoute?.section === SECTION_DV) {
+    return (
+      <Suspense fallback={<RouteSuspense />}>
+        <DoubleVerifyPage
           user={user}
           onLogout={onLogout}
           layout={adminRoute.layout}
