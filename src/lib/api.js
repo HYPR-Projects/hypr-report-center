@@ -2027,6 +2027,54 @@ export async function compplanSheetDelete({ deleteSheet = false } = {}) {
   return r.json();
 }
 
+// ── Planilha de cliente PMP (admin) ──────────────────────────────────────────
+// 1 Google Sheet por card do PMP (line solta ou grupo) com a entrega diária no
+// recorte do cliente: Dia, Line, ID do Seat, Receita Bruta e Impressões.
+// `unitKey` vem de unitKeyFor (src/v2/admin/lib/pmpClientSheet.js).
+
+async function pmpClientSheetPost(action, body) {
+  const jwt = await getOrIssueAdminJwt();
+  const r = await postJson(`${API_URL}?action=${action}`, body, adminAuthHeaders(jwt));
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch { /* sem corpo útil */ }
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+/** Status da planilha de cliente da unidade (null se nunca conectada). */
+export async function pmpClientSheetStatus(unitKey) {
+  const jwt = await getOrIssueAdminJwt();
+  const qs = new URLSearchParams({ action: "pmp_client_sheet_status", unit_key: unitKey });
+  const r = await fetch(`${API_URL}?${qs}`, { headers: { ...adminAuthHeaders(jwt) } });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  return d.integration || null;
+}
+
+/** Troca o code do OAuth e cria (ou reaproveita) a planilha. Retorna
+ *  { spreadsheet_url, reused, integration }. */
+export function pmpClientSheetConnect({ unitKey, code, seatId, redirectUri = "postmessage" }) {
+  return pmpClientSheetPost("pmp_client_sheet_connect",
+    { unit_key: unitKey, code, seat_id: seatId || null, redirect_uri: redirectUri });
+}
+
+/** Reescreve a planilha agora. Retorna { ok, integration }. */
+export function pmpClientSheetSyncNow(unitKey) {
+  return pmpClientSheetPost("pmp_client_sheet_sync_now", { unit_key: unitKey });
+}
+
+/** Troca o ID do seat (vazio = volta pro Deal ID) e re-sincroniza. */
+export function pmpClientSheetSetSeat(unitKey, seatId) {
+  return pmpClientSheetPost("pmp_client_sheet_config", { unit_key: unitKey, seat_id: seatId || null });
+}
+
+/** Desativa a integração (opcionalmente deletando o arquivo do Drive). */
+export function pmpClientSheetDelete(unitKey, { deleteSheet = false } = {}) {
+  return pmpClientSheetPost("pmp_client_sheet_delete", { unit_key: unitKey, delete_sheet: deleteSheet });
+}
+
 /**
  * Frescor da base de dados unified_daily_performance_metrics, por DSP.
  * Cada item tem { source, max_date, days_in_window }. O backend também

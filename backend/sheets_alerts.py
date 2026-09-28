@@ -191,7 +191,8 @@ def _build_email_body(stale: List[Dict]) -> Dict[str, str]:
     lines_html = []
     for item in stale:
         reason = _status_reason(item)
-        kind = {"merge": "agregado", "compplan": "compplan PMP"}.get(
+        kind = {"merge": "agregado", "compplan": "compplan PMP",
+                "pmp_line": "planilha cliente PMP"}.get(
             item["target_type"], "campanha"
         )
         target = item["target_id"]
