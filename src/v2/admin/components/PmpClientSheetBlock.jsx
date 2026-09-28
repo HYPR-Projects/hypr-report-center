@@ -2,12 +2,14 @@
 //
 // Bloco "Planilha do cliente" no drawer da line do PMP.
 //
-// Conecta uma Google Sheet dedicada ao deal com a entrega diária no recorte
-// que pode ir pro cliente: Dia, Line, ID do Seat, Receita Bruta e Impressões
-// (backend/pmp_client_sheet.py). A planilha ganha link público de leitura —
-// é esse link que se manda pro cliente — e é reescrita a cada sync do PMP.
+// Conecta uma Google Sheet dedicada ao DEAL com a entrega diária no recorte
+// que pode ir pro cliente: Dia, Token, Line, ID do Seat, Receita Bruta e
+// Impressões (backend/pmp_client_sheet.py). A planilha ganha link público de
+// leitura — é esse link que se manda pro cliente — e é reescrita a cada sync.
 //
-// Line agrupada → a planilha é do GRUPO (todas as lines, 1 row por dia × line).
+// O deal é resolvido sozinho: entram todas as lines ligadas à clicada por
+// token do Command ou grupo. Abrir o drawer de qualquer uma delas mostra a
+// mesma planilha. Antes de conectar, o bloco lista o que vai entrar.
 //
 // Estados: carregando → não conectada (seat + conectar) → ativa (abrir,
 // copiar link, sync, seat, excluir) → erro/revogada (tentar de novo /
@@ -24,15 +26,18 @@ import {
 import { loadGisScript, requestOAuthCode } from "../../../shared/googleOAuthCode";
 import { fmtDateTimeBR } from "../../../shared/format";
 import { cn } from "../../../ui/cn";
-import { unitKeyFor, defaultSeatId } from "../lib/pmpClientSheet";
+import { defaultSeatId, dealSummaryLabel } from "../lib/pmpClientSheet";
 
-const COLUMNS_LABEL = "Dia · Line · ID do Seat · Receita Bruta · Impressões";
+const COLUMNS_LABEL = "Dia · Token · Line · ID do Seat · Receita Bruta · Impressões";
 
 export function PmpClientSheetBlock({ line, canEdit = false }) {
-  const unitKey = unitKeyFor(line);
-  const isGroup = !!line?.group_id;
+  const source = line?.source || "xandr";
+  const lineId = line?.line_id;
   const seatDefault = defaultSeatId(line);
 
+  // Deal resolvido no backend: { unit_key, tokens, lines }. null = falhou.
+  const [deal, setDeal] = useState(null);
+  const unitKey = deal?.unit_key || null;
   // undefined = carregando · null = nunca conectada · objeto = integração
   const [integration, setIntegration] = useState(undefined);
   const [busy, setBusy]   = useState(false);
@@ -42,22 +47,36 @@ export function PmpClientSheetBlock({ line, canEdit = false }) {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [copied, setCopied] = useState(false);
 
+  const loadStatus = useCallback(async () => {
+    const d = await pmpClientSheetStatus({ source, lineId });
+    setDeal(d);
+    setIntegration(d.integration || null);
+    setSeat(d.integration?.config?.seat_id || "");
+    return d;
+  }, [source, lineId]);
+
   useEffect(() => {
-    if (!unitKey) return;
+    if (lineId == null) return;
     let cancelled = false;
+    setDeal(null);
     setIntegration(undefined);
     setError(null);
     setEditingSeat(false);
     setConfirmDelete(null);
-    pmpClientSheetStatus(unitKey)
-      .then(integ => {
+    pmpClientSheetStatus({ source, lineId })
+      .then(d => {
         if (cancelled) return;
-        setIntegration(integ);
-        setSeat(integ?.config?.seat_id || "");
+        setDeal(d);
+        setIntegration(d.integration || null);
+        setSeat(d.integration?.config?.seat_id || "");
       })
-      .catch(() => { if (!cancelled) setIntegration(null); });
+      .catch(e => {
+        if (cancelled) return;
+        setIntegration(null);
+        setError(e.message || "Erro ao carregar a planilha do deal");
+      });
     return () => { cancelled = true; };
-  }, [unitKey]);
+  }, [source, lineId]);
 
   const run = useCallback(async (fn, fallbackMsg) => {
     setError(null);
@@ -74,8 +93,13 @@ export function PmpClientSheetBlock({ line, canEdit = false }) {
   const handleConnect = () => run(async () => {
     await loadGisScript();
     const code = await requestOAuthCode();
-    const res = await pmpClientSheetConnect({ unitKey, code, seatId: seat.trim() });
-    setIntegration(res.integration || await pmpClientSheetStatus(unitKey));
+    const res = await pmpClientSheetConnect({ source, lineId, code, seatId: seat.trim() });
+    if (res.integration) {
+      setDeal(d => ({ ...(d || {}), unit_key: res.unit_key }));
+      setIntegration(res.integration);
+    } else {
+      await loadStatus();
+    }
   }, "Erro ao conectar");
 
   const handleSyncNow = () => run(async () => {
@@ -106,7 +130,7 @@ export function PmpClientSheetBlock({ line, canEdit = false }) {
     }
   };
 
-  if (!unitKey) return null;
+  if (lineId == null) return null;
 
   if (integration === undefined) {
     return (
@@ -128,9 +152,37 @@ export function PmpClientSheetBlock({ line, canEdit = false }) {
     />
   );
 
+  const dealLines = deal?.lines || [];
+  const dealInfo = deal && (
+    <div className="mt-2 rounded-md border border-border bg-surface/60 px-2.5 py-2">
+      <div className="text-[11px] text-fg">{dealSummaryLabel(deal)}</div>
+      {dealLines.length > 1 && (
+        <ul className="mt-1 space-y-0.5">
+          {dealLines.slice(0, 6).map(l => (
+            <li key={`${l.source}:${l.line_id}`} className="text-[10px] text-fg-subtle font-mono truncate"
+                title={l.line_name || String(l.line_id)}>
+              {l.line_name || l.line_id}
+            </li>
+          ))}
+          {dealLines.length > 6 && (
+            <li className="text-[10px] text-fg-subtle">+ {dealLines.length - 6} lines</li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+
   // ── Não conectada ──────────────────────────────────────────────────────────
   if (!integration) {
     if (!canEdit) return null;
+    if (!deal) {
+      return (
+        <Shell>
+          <Header />
+          {error ? <ErrorLine msg={error} /> : <div className="text-[11px] text-fg-subtle">Sem dados do deal.</div>}
+        </Shell>
+      );
+    }
     return (
       <Shell>
         <Header />
@@ -138,15 +190,14 @@ export function PmpClientSheetBlock({ line, canEdit = false }) {
           Cria uma Google Sheet no seu Drive, com link de leitura pra mandar pro cliente,
           atualizada após cada sync do PMP. Só entram{" "}
           <span className="text-fg">{COLUMNS_LABEL}</span> — custo, margem e PI ficam de fora.
-          {isGroup && (
-            <> A planilha é do grupo inteiro ({line.group_member_count || "todas as"} lines).</>
-          )}
+          Entram sozinhas todas as lines do deal (mesmo token do Command ou mesmo grupo).
         </p>
+        {dealInfo}
         <div className="mt-3">
           <div className="lbl-section mb-1">ID do seat</div>
           {seatInput}
           <div className="text-[10px] text-fg-subtle mt-1">
-            Vazio = usa o Deal ID{seatDefault ? ` (${seatDefault})` : ""}.
+            Vazio = usa o Deal ID de cada line{seatDefault ? ` (esta: ${seatDefault})` : ""}.
           </div>
         </div>
         {error && <ErrorLine msg={error} />}
@@ -164,7 +215,7 @@ export function PmpClientSheetBlock({ line, canEdit = false }) {
 
   // ── Ativa ──────────────────────────────────────────────────────────────────
   if (integration.status === "active") {
-    const seatShown = integration.config?.seat_id || seatDefault || "—";
+    const seatShown = integration.config?.seat_id || "Deal ID de cada line";
     return (
       <Shell>
         <Header pill={<Pill tone="ok">Ativa</Pill>} />
@@ -175,8 +226,8 @@ export function PmpClientSheetBlock({ line, canEdit = false }) {
           {integration.created_by_email && (
             <div>Conectada por <span className="text-fg-muted">{integration.created_by_email}</span></div>
           )}
-          {isGroup && <div>Inclui todas as lines do grupo.</div>}
         </div>
+        {dealInfo}
 
         <div className="mt-2.5 flex items-center gap-2 flex-wrap">
           <a
@@ -200,7 +251,7 @@ export function PmpClientSheetBlock({ line, canEdit = false }) {
           {editingSeat ? (
             <div className="space-y-1.5">
               {seatInput}
-              <div className="text-[10px] text-fg-subtle">Vazio = volta pro Deal ID. Salvar re-sincroniza a planilha.</div>
+              <div className="text-[10px] text-fg-subtle">Vazio = volta pro Deal ID de cada line. Salvar re-sincroniza a planilha.</div>
               <div className="flex items-center gap-2">
                 <SmallButton onClick={handleSaveSeat} disabled={busy} tone="primary">
                   {busy ? "Salvando..." : "Salvar"}

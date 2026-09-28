@@ -1,8 +1,11 @@
 """Testes da planilha de cliente do PMP (pmp_client_sheet.py).
 
-O ponto que mais importa aqui é o RECORTE: a planilha vai pro cliente, então
-só Dia, Line, ID do Seat, Receita Bruta e Impressões podem sair. Custo,
-margem e PI da line não podem vazar nem se vierem na row.
+Dois pontos importam aqui:
+  • o RECORTE: a planilha vai pro cliente, então só Dia, Token, Line, ID do
+    Seat, Receita Bruta e Impressões podem sair. Custo, margem e PI da line
+    não podem vazar nem se vierem na row;
+  • o DEAL: conectar em qualquer line traz todas as ligadas por token do
+    Command ou grupo, sem precisar agrupar nada.
 
 Nenhum teste faz I/O: BQ e Sheets são mockados.
 """
@@ -27,6 +30,7 @@ def _member(**over):
         "campaign_name": "Rock in Rio",
         "group_id": None,
         "group_name": None,
+        "linked_tokens": ["1PIT7I", "B154D4"],
         "end_date": date(2026, 9, 30),
         "last_delivery_day": date(2026, 9, 20),
     }
@@ -40,12 +44,11 @@ def _deliv(day, imps, revenue, source="pubmatic", line_id=735537, **extra):
 
 
 # ─── Recorte ─────────────────────────────────────────────────────────────────
-def test_header_e_so_as_cinco_colunas_do_cliente():
-    assert [label for _, label in pcs.CLIENT_COLUMNS] == [
-        "Dia", "Line", "ID do Seat", "Receita Bruta (R$)", "Impressões",
-    ]
-    payload = pcs.build_payload([])
-    assert payload == [["Dia", "Line", "ID do Seat", "Receita Bruta (R$)", "Impressões"]]
+def test_header_e_so_as_seis_colunas_do_cliente():
+    header = ["Dia", "Token", "Line", "ID do Seat", "Receita Bruta (R$)", "Impressões"]
+    assert [label for _, label in pcs.CLIENT_COLUMNS] == header
+    assert pcs.build_payload([]) == [header]
+    assert len(pcs.COLUMN_WIDTHS_PX) == len(header)
 
 
 def test_campos_internos_nao_vazam_pra_planilha():
@@ -54,11 +57,11 @@ def test_campos_internos_nao_vazam_pra_planilha():
         [_deliv(date(2026, 9, 1), 1000, 50.0,
                 curator_margin=42.0, curator_total_cost=8.0)],
     )
-    assert set(rows[0]) == {"day", "line_name", "seat_id", "revenue", "imps"}
+    assert set(rows[0]) == {"day", "tokens", "line_name", "seat_id", "revenue", "imps"}
     # Mesmo que alguém enfie um campo extra na row, o payload ignora.
     rows[0]["curator_margin"] = 42.0
     payload = pcs.build_payload(rows)
-    assert all(len(r) == 5 for r in payload)
+    assert all(len(r) == 6 for r in payload)
     assert 42.0 not in payload[1] and 999 not in payload[1]
 
 
@@ -68,7 +71,7 @@ def test_payload_dia_vira_serial_de_data_do_sheets():
     ))
     # 1899-12-30 é o dia 0 do Sheets; 2026-09-01 = 46266.
     assert row[0] == (date(2026, 9, 1) - date(1899, 12, 30)).days == 46266
-    assert row[1:] == ["HYPR_TIM_ROCK-IN-RIO_PUBMATIC", "PM-ZZCX-5733", 50.0, 1000]
+    assert row[1:] == ["1PIT7I, B154D4", "HYPR_TIM_ROCK-IN-RIO_PUBMATIC", "PM-ZZCX-5733", 50.0, 1000]
 
 
 # ─── Rows ────────────────────────────────────────────────────────────────────
@@ -126,13 +129,23 @@ def test_override_vazio_volta_pro_deal_id():
 
 
 # ─── unit_key ────────────────────────────────────────────────────────────────
-def test_unit_key_line_e_grupo():
-    assert pcs.unit_key_for(_member()) == "line:pubmatic:735537"
-    assert pcs.unit_key_for(_member(source=None, line_id="31345266")) == "line:xandr:31345266"
-    assert pcs.unit_key_for(_member(group_id="ab12CD_-")) == "group:ab12CD_-"
+def test_anchor_prefere_token_depois_grupo_depois_line():
+    assert pcs.anchor_key_for(_member()) == "token:1PIT7I"
+    assert pcs.anchor_key_for(_member(linked_tokens=None, short_token=" no2015 ",
+                                      extra_short_tokens=["X1"])) == "token:NO2015"
+    assert pcs.anchor_key_for(_member(linked_tokens=[], group_id="ab12CD_-")) == "group:ab12CD_-"
+    assert pcs.anchor_key_for(_member(linked_tokens=[], source=None, line_id="31345266")) == \
+        "line:xandr:31345266"
+
+
+def test_line_tokens_normaliza_e_dedupe():
+    assert pcs.line_tokens({"linked_tokens": ["a1b", "A1B", " c2 "]}) == ["A1B", "C2"]
+    assert pcs.line_tokens({"short_token": "P1", "extra_short_tokens": ["E1", "p1"]}) == ["P1", "E1"]
+    assert pcs.line_tokens({}) == []
 
 
 def test_parse_unit_key():
+    assert pcs.parse_unit_key("token:1PIT7I") == {"kind": "token", "token": "1PIT7I"}
     assert pcs.parse_unit_key("line:pubmatic:735537") == {
         "kind": "line", "source": "pubmatic", "line_id": 735537}
     assert pcs.parse_unit_key("group:ab12cd34") == {"kind": "group", "group_id": "ab12cd34"}
@@ -140,11 +153,90 @@ def test_parse_unit_key():
 
 @pytest.mark.parametrize("bad", [
     "", "line:pubmatic", "line:PubMatic:1", "line:x:12a", "group:", "group:a b",
-    "group:a;DROP", "token:ABC", "line:x:1:2",
+    "group:a;DROP", "token:abc", "token:A", "token:A B", "line:x:1:2", "merge:X",
 ])
 def test_parse_unit_key_rejeita_malformada(bad):
     with pytest.raises(ValueError):
         pcs.parse_unit_key(bad)
+
+
+# ─── Deal = fecho por token e grupo ──────────────────────────────────────────
+def _l(line_id, tokens=(), group=None, source="xandr", **kw):
+    return {"source": source, "line_id": line_id, "line_name": f"L{line_id}",
+            "linked_tokens": list(tokens), "group_id": group, **kw}
+
+
+def _ids(lines):
+    return [l["line_id"] for l in lines]
+
+
+def test_fecho_pega_lines_que_compartilham_token():
+    all_lines = [_l(1, ["A1"]), _l(2, ["A1", "B2"]), _l(3, ["B2"]), _l(4, ["Z9"])]
+    # 1 → (A1) → 2 → (B2) → 3. A 4 é outro deal.
+    assert _ids(pcs.resolve_cluster(all_lines, [all_lines[0]])) == [1, 2, 3]
+    assert _ids(pcs.resolve_cluster(all_lines, [all_lines[3]])) == [4]
+
+
+def test_fecho_pega_o_grupo_e_atravessa_token_mais_grupo():
+    all_lines = [_l(1, ["A1"]), _l(2, [], group="g"), _l(3, ["A1"], group="g"), _l(4, [], group="h")]
+    assert _ids(pcs.resolve_cluster(all_lines, [all_lines[1]])) == [1, 2, 3]
+
+
+def test_fecho_separa_fontes_com_mesmo_line_id():
+    all_lines = [_l(7, ["A1"], source="xandr"), _l(7, ["Z9"], source="pubmatic")]
+    got = pcs.resolve_cluster(all_lines, [all_lines[0]])
+    assert [(l["source"], l["line_id"]) for l in got] == [("xandr", 7)]
+
+
+def test_seeds_e_membros_por_ancora():
+    all_lines = [_l(1, ["A1"]), _l(2, ["A1"], group="g"), _l(3, [], group="g"), _l(4, ["Z9"])]
+    assert _ids(pcs.members_for_key("token:A1", all_lines)) == [1, 2, 3]
+    assert _ids(pcs.members_for_key("group:g", all_lines)) == [1, 2, 3]
+    assert _ids(pcs.members_for_key("line:xandr:4", all_lines)) == [4]
+    assert pcs.members_for_key("token:NOPE", all_lines) == []
+
+
+def test_candidate_keys_cobre_token_grupo_e_line():
+    keys = pcs.candidate_keys([_l(1, ["A1", "B2"], group="g"), _l(2, ["A1"])])
+    assert keys == ["token:A1", "token:B2", "group:g", "line:xandr:1", "line:xandr:2"]
+
+
+def test_resolve_for_line_reaproveita_planilha_existente(monkeypatch):
+    all_lines = [_l(1, ["A1"]), _l(2, ["A1", "B2"]), _l(3, ["B2"])]
+    monkeypatch.setattr(pcs, "fetch_all_lines", lambda: all_lines)
+    seen = {}
+
+    def fake_find(keys):
+        seen["keys"] = keys
+        return "token:B2"          # já conectada a partir da line 3
+
+    monkeypatch.setattr(pcs, "_find_existing", fake_find)
+    res = pcs.resolve_for_line("xandr", 1)
+    assert res["unit_key"] == "token:B2" and res["existing"] is True
+    assert _ids(res["members"]) == [1, 2, 3]
+    assert "token:B2" in seen["keys"]
+
+    monkeypatch.setattr(pcs, "_find_existing", lambda keys: None)
+    res = pcs.resolve_for_line("xandr", 3)
+    assert res["unit_key"] == "token:B2" and res["existing"] is False
+
+    with pytest.raises(ValueError):
+        pcs.resolve_for_line("pubmatic", 1)
+
+
+def test_rows_do_deal_trazem_o_token_de_cada_line():
+    members = [_l(1, ["A1"]), _l(2, ["B2", "A1"])]
+    rows = pcs.build_client_rows(members, [
+        {"source": "xandr", "line_id": 1, "day": "2026-09-01", "imps": 10, "revenue": 1},
+        {"source": "xandr", "line_id": 2, "day": "2026-09-01", "imps": 20, "revenue": 2},
+    ])
+    assert [(r["line_name"], r["tokens"]) for r in rows] == [("L1", "A1"), ("L2", "B2, A1")]
+
+
+def test_members_summary():
+    summ = pcs.members_summary([_l(1, ["A1"]), _l(2, ["A1", "B2"])])
+    assert summ["tokens"] == ["A1", "B2"]
+    assert [l["line_id"] for l in summ["lines"]] == [1, 2]
 
 
 # ─── Janela / título ─────────────────────────────────────────────────────────
@@ -160,7 +252,7 @@ def test_sync_until_usa_o_maior_entre_fim_e_ultima_entrega():
 
 def test_titulo():
     assert pcs.build_title([_member()]) == "HYPR - Tim - Rock in Rio - Entrega PMP"
-    assert pcs.build_title([_member(group_name="Tim RiR Fixed+Flex")]) == \
+    assert pcs.build_title([_member(campaign_name=None, group_name="Tim RiR Fixed+Flex")]) == \
         "HYPR - Tim - Tim RiR Fixed+Flex - Entrega PMP"
     assert pcs.build_title([_member(customer=None, campaign_name=None)]) == \
         "HYPR - HYPR_TIM_ROCK-IN-RIO_PUBMATIC - Entrega PMP"
@@ -188,8 +280,8 @@ def sync_env(monkeypatch):
     monkeypatch.setattr(si, "_resolve_refresh_token", lambda *a: "RT")
     monkeypatch.setattr(si, "_exchange_or_mark", lambda *a: "AT")
     monkeypatch.setattr(si, "_build_sheets_client", lambda at: MagicMock())
-    monkeypatch.setattr(pcs, "fetch_members", lambda unit: [_member()])
-    monkeypatch.setattr(pcs, "fetch_delivery", lambda unit: [_deliv("2026-09-01", 10, 1.0)])
+    monkeypatch.setattr(pcs, "fetch_all_lines", lambda: [_member()])
+    monkeypatch.setattr(pcs, "fetch_delivery", lambda members: [_deliv("2026-09-01", 10, 1.0)])
     writes, status, until = [], [], []
     monkeypatch.setattr(si, "_write_base_de_dados",
                         lambda svc, sid, payload, *a, **kw: writes.append((sid, payload, a, kw)))
@@ -199,22 +291,21 @@ def sync_env(monkeypatch):
 
 
 def test_sync_escreve_com_seat_da_config_e_marca_ativo(sync_env):
-    res = pcs.sync("line:pubmatic:735537")
+    res = pcs.sync("token:1PIT7I")
     assert res == {"spreadsheet_id": "SID", "rows": 1}
     [(sid, payload, args, kw)] = sync_env["writes"]
     assert sid == "SID"
-    assert args == ("line:pubmatic:735537", si.TARGET_PMP_LINE)
+    assert args == ("token:1PIT7I", si.TARGET_PMP_LINE)
     assert kw == {"tab_name": si.BASE_TAB_TITLE, "base_gid": 5}
-    assert payload[1][2] == "SEAT-1"
+    assert payload[1][3] == "SEAT-1"
     assert sync_env["status"][-1]["status"] == "active"
     assert sync_env["status"][-1]["last_error"] == ""
     assert sync_env["until"] == [pcs.compute_sync_until([_member()])]
 
 
 def test_sync_sem_lines_nao_escreve_e_registra(sync_env, monkeypatch):
-    monkeypatch.setattr(pcs, "fetch_members", lambda unit: [])
     with pytest.raises(ValueError):
-        pcs.sync("group:sumiu")
+        pcs.sync("token:SUMIU")
     assert sync_env["writes"] == []
     assert "Nenhuma line" in sync_env["status"][-1]["last_error"]
     assert "status" not in sync_env["status"][-1], "não rebaixa o status"
@@ -222,9 +313,11 @@ def test_sync_sem_lines_nao_escreve_e_registra(sync_env, monkeypatch):
 
 def test_sync_all_isola_erro_e_respeita_orcamento(monkeypatch):
     monkeypatch.setattr(pcs, "list_due", lambda: ["line:x:1", "line:x:2", "line:x:3"])
+    reads = []
+    monkeypatch.setattr(pcs, "fetch_all_lines", lambda: reads.append(1) or [])
     calls = []
 
-    def fake_sync(key):
+    def fake_sync(key, all_lines=None):
         calls.append(key)
         if key == "line:x:1":
             raise RuntimeError("boom")
@@ -232,6 +325,7 @@ def test_sync_all_isola_erro_e_respeita_orcamento(monkeypatch):
     monkeypatch.setattr(pcs, "sync", fake_sync)
     assert pcs.sync_all_connected() == {"due": 3, "synced": 2, "errors": 1, "deferred": 0}
     assert calls == ["line:x:1", "line:x:2", "line:x:3"]
+    assert reads == [1], "1 leitura da enriched pro lote todo"
 
     calls.clear()
     assert pcs.sync_all_connected(time_budget_s=-1) == {

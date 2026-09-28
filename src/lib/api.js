@@ -2028,9 +2028,10 @@ export async function compplanSheetDelete({ deleteSheet = false } = {}) {
 }
 
 // ── Planilha de cliente PMP (admin) ──────────────────────────────────────────
-// 1 Google Sheet por card do PMP (line solta ou grupo) com a entrega diária no
-// recorte do cliente: Dia, Line, ID do Seat, Receita Bruta e Impressões.
-// `unitKey` vem de unitKeyFor (src/v2/admin/lib/pmpClientSheet.js).
+// 1 Google Sheet por DEAL do PMP com a entrega diária no recorte do cliente:
+// Dia, Token, Line, ID do Seat, Receita Bruta e Impressões. O backend resolve o
+// deal a partir da line clicada (lines ligadas por token do Command ou grupo) e
+// devolve o `unit_key` que as demais chamadas usam.
 
 async function pmpClientSheetPost(action, body) {
   const jwt = await getOrIssueAdminJwt();
@@ -2043,21 +2044,29 @@ async function pmpClientSheetPost(action, body) {
   return r.json();
 }
 
-/** Status da planilha de cliente da unidade (null se nunca conectada). */
-export async function pmpClientSheetStatus(unitKey) {
+/** Deal da line + planilha dele. Retorna { unit_key, integration (null se
+ *  nunca conectada), tokens, lines: [{source, line_id, line_name, tokens}] }. */
+export async function pmpClientSheetStatus({ source, lineId }) {
   const jwt = await getOrIssueAdminJwt();
-  const qs = new URLSearchParams({ action: "pmp_client_sheet_status", unit_key: unitKey });
+  const qs = new URLSearchParams({
+    action: "pmp_client_sheet_status", source: source || "xandr", line_id: String(lineId),
+  });
   const r = await fetch(`${API_URL}?${qs}`, { headers: { ...adminAuthHeaders(jwt) } });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  const d = await r.json();
-  return d.integration || null;
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d?.error) msg = d.error; } catch { /* sem corpo útil */ }
+    throw new Error(msg);
+  }
+  return r.json();
 }
 
-/** Troca o code do OAuth e cria (ou reaproveita) a planilha. Retorna
- *  { spreadsheet_url, reused, integration }. */
-export function pmpClientSheetConnect({ unitKey, code, seatId, redirectUri = "postmessage" }) {
-  return pmpClientSheetPost("pmp_client_sheet_connect",
-    { unit_key: unitKey, code, seat_id: seatId || null, redirect_uri: redirectUri });
+/** Troca o code do OAuth e cria (ou reaproveita) a planilha do deal da line.
+ *  Retorna { unit_key, spreadsheet_url, reused, integration }. */
+export function pmpClientSheetConnect({ source, lineId, code, seatId, redirectUri = "postmessage" }) {
+  return pmpClientSheetPost("pmp_client_sheet_connect", {
+    source: source || "xandr", line_id: lineId, code,
+    seat_id: seatId || null, redirect_uri: redirectUri,
+  });
 }
 
 /** Reescreve a planilha agora. Retorna { ok, integration }. */
