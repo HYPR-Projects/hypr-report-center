@@ -2220,6 +2220,32 @@ export async function getOutOfCountry(month = null) {
   return r.json();
 }
 
+/**
+ * KQIs do DoubleVerify Pinnacle (seção DoubleVerify do admin). Devolve
+ * contagens por Brand × Campaign × Dia do período E do período anterior
+ * (mesmo tamanho) — o front agrega, filtra e calcula as taxas. `from`/`to` em
+ * YYYY-MM-DD (null = últimos 30 dias fechados). `refresh` fura o cache de 1h.
+ * Timeout SLOW: o relatório é assíncrono na DV e pode levar dezenas de s.
+ */
+export async function getDvQuality({ from = null, to = null, refresh = false } = {}) {
+  const jwt = await getOrIssueAdminJwt();
+  const qs = new URLSearchParams({ action: "dv_quality" });
+  if (from) qs.set("from", from);
+  if (to) qs.set("to", to);
+  if (refresh) qs.set("refresh", "1");
+  const r = await fetch(`${API_URL}?${qs}`, {
+    headers: adminAuthHeaders(jwt),
+    signal: timeoutSignal(READ_TIMEOUT_SLOW_MS),
+  });
+  if (r.status === 401 || r.status === 403) throw adminSessionLost("getDvQuality", jwt);
+  const d = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  if (!Array.isArray(d?.rows) || !Array.isArray(d?.columns)) {
+    throw new Error("malformed response: rows missing");
+  }
+  return d;
+}
+
 // ── Max Attention (aba do report) ────────────────────────────────────────────
 //
 // `getMaReport` é público como o resto do report (o short_token é o ticket e

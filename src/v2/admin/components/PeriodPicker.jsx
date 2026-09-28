@@ -19,7 +19,9 @@ import { cn } from "../../../ui/cn";
 import { PERIOD_PRESETS } from "../lib/period";
 import { ymd, parseYmd } from "../../../shared/dateFilter";
 
-export function PeriodPicker({ preset, onPresetChange, custom, onCustomChange, ariaLabel = "Período" }) {
+// `presets` permite esconder opções que não fazem sentido pra fonte (ex.: o
+// DoubleVerify não tem modo "Agora" — só dias fechados).
+export function PeriodPicker({ preset, onPresetChange, custom, onCustomChange, ariaLabel = "Período", presets = PERIOD_PRESETS }) {
   // Popover do calendário custom. Fica controlado aqui pra:
   //   (a) auto-abrir quando o user clica no pill "Custom" sem range ainda
   //   (b) re-abrir clicando novamente quando já existe range (edita)
@@ -71,7 +73,7 @@ export function PeriodPicker({ preset, onPresetChange, custom, onCustomChange, a
       aria-label={ariaLabel}
       className="inline-flex flex-wrap gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border w-fit"
     >
-      {PERIOD_PRESETS.map((opt) => {
+      {presets.map((opt) => {
         const active = preset === opt.id;
         if (opt.id === "custom") {
           // Pill "Custom" é o trigger do Popover. Quando ativo, mostra o

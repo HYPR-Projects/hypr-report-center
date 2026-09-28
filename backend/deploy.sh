@@ -175,6 +175,13 @@ PUBMATIC_USER_ALT=$(read_secret_first "PUBMATIC_USER_ALT" "$PUBMATIC_USER_ALT")
 PUBMATIC_PASS_ALT=$(extract_env "PUBMATIC_PASS_ALT")
 PUBMATIC_PASS_ALT=$(read_secret_first "PUBMATIC_PASS_ALT" "$PUBMATIC_PASS_ALT")
 
+# DoubleVerify Pinnacle (Report Data API) — alimenta a seção DoubleVerify do
+# admin. Token criado no Pinnacle (Analytics → Data API); rotaciona quando
+# alguém recria o token lá, então Secret Manager tem prioridade. Sem ele, o
+# endpoint dv_quality responde 503 e o resto do backend segue normal.
+DV_API_TOKEN=$(extract_env "DV_API_TOKEN")
+DV_API_TOKEN=$(read_secret_first "DV_API_TOKEN" "$DV_API_TOKEN")
+
 # PMP_SCHEDULER_SECRET — segredo compartilhado entre Cloud Scheduler e a
 # Cloud Function pra autenticar o cron job sem JWT admin. Gerado uma vez,
 # armazenado no Secret Manager pra deploys futuros, e configurado no
@@ -287,6 +294,12 @@ else
   echo "  ℹ MA_SURVEY_VIEW ausente — survey do Max Attention desligado (só Typeform/VideoAsk)"
   echo "    Para ligar, rode este mesmo script uma vez com:"
   echo "      MA_SURVEY_VIEW_INIT=site-hypr.prod_analytics.ma_survey_responses bash deploy.sh"
+fi
+if [ -n "$DV_API_TOKEN" ]; then
+  echo "  ✓ DV_API_TOKEN capturado (seção DoubleVerify habilitada)"
+else
+  echo "  ⚠ DV_API_TOKEN ausente — seção DoubleVerify do admin desligada"
+  echo "    Para ligar: printf '%s' '<token>' | gcloud secrets create DV_API_TOKEN --project=site-hypr --data-file=-"
 fi
 if [ -n "$XANDR_CURATE_USER" ] && [ -n "$XANDR_CURATE_PASS" ] && [ -n "$XANDR_CURATE_MEMBER_ID" ]; then
   echo "  ✓ XANDR_CURATE_{USER,PASS,MEMBER_ID} capturados (PMP sync habilitado)"
@@ -402,6 +415,9 @@ if [ -n "$XANDR_CURATE_PASS_ALT" ]; then
 fi
 if [ -n "$XANDR_CURATE_MEMBER_ID" ]; then
   echo "XANDR_CURATE_MEMBER_ID: '${XANDR_CURATE_MEMBER_ID}'" >> "$ENV_FILE"
+fi
+if [ -n "$DV_API_TOKEN" ]; then
+  echo "DV_API_TOKEN: '${DV_API_TOKEN}'" >> "$ENV_FILE"
 fi
 if [ -n "$PUBMATIC_USER" ]; then
   echo "PUBMATIC_USER: '${PUBMATIC_USER}'" >> "$ENV_FILE"

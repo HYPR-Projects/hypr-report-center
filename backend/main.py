@@ -63,6 +63,7 @@ import compplan_sheet
 import pmp_client_sheet
 import xandr_curate
 import pubmatic_curate
+import doubleverify
 import pmp_alerts
 import pmp_sync_runs
 import audience_normalize
@@ -281,6 +282,11 @@ _dsp_breakdown_cache = {}   # short_token -> (timestamp, payload)
 # da tabela de regiões) sem deixar o box velho depois que o dado aterrissa.
 _OUT_OF_COUNTRY_CACHE_TTL = 1800
 _out_of_country_cache = {}  # "YYYY-MM" | "current" -> (timestamp, payload)
+# DoubleVerify (menu admin). A DV fecha o dia uma vez (D-1) e cada pedido
+# custa 5-15s de relatório assíncrono lá; 1h poupa a DV e o admin sem deixar o
+# número velho depois que o dia fecha.
+_DV_QUALITY_CACHE_TTL = 3600
+_dv_quality_cache = {}      # "from|to" -> (timestamp, payload)
 _cache_lock      = threading.Lock()
 
 
@@ -4347,6 +4353,38 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR dsp_health] {e}")
             return (jsonify({"error": "Erro ao buscar saúde das DSPs"}), 500, headers)
+
+    # GET ?action=dv_quality[&from=YYYY-MM-DD&to=YYYY-MM-DD][&refresh=1] —
+    # aberto a QUALQUER admin @hypr.mobi (sem FEATURE_ADMINS/PMP_EDITORS).
+    # KQIs do DoubleVerify Pinnacle por Brand × Campaign × Dia,
+    # período + período anterior (pras variações). Filtro é no front. Ver
+    # backend/doubleverify.py.
+    if request.method == "GET" and request.args.get("action") == "dv_quality":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        if not doubleverify.is_configured():
+            return (jsonify({"error": "DoubleVerify não configurado (DV_API_TOKEN)"}), 503, headers)
+        from_s = (request.args.get("from") or "").strip() or None
+        to_s = (request.args.get("to") or "").strip() or None
+        try:
+            doubleverify.resolve_window(from_s, to_s)
+        except ValueError as e:
+            return (jsonify({"error": f"Período inválido: {e}"}), 400, headers)
+        cache_key = f"{from_s}|{to_s}"
+        try:
+            payload = None
+            if request.args.get("refresh") != "1":
+                payload = _cache_get(_dv_quality_cache, cache_key, _DV_QUALITY_CACHE_TTL)
+            if payload is None:
+                payload = doubleverify.fetch_quality(from_s, to_s)
+                _cache_set(_dv_quality_cache, cache_key, payload)
+            return (jsonify(payload), 200, headers)
+        except doubleverify.DoubleVerifyError as e:
+            logger.error(f"[ERROR dv_quality] {e}")
+            return (jsonify({"error": f"DoubleVerify: {e}"}), 502, headers)
+        except Exception as e:
+            logger.error(f"[ERROR dv_quality] {e}")
+            return (jsonify({"error": "Erro ao buscar dados do DoubleVerify"}), 500, headers)
 
     # GET ?action=out_of_country[&month=YYYY-MM] — admin-only. Taxa de
     # entrega fora do Brasil (DV360) do mês, ranking de campanhas e o alerta

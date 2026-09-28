@@ -84,6 +84,15 @@ export function ChartIcon(props) {
   );
 }
 
+export function ShieldIcon(props) {
+  return (
+    <Svg {...props}>
+      <path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6l8-3z" />
+      <path d="m8.5 12 2.5 2.5 4.5-5" />
+    </Svg>
+  );
+}
+
 // "No ar" nunca teve ícone de linha — é um dot vivo, e essa é a leitura
 // certa: o que a aba nomeia é presença de entrega, não um objeto. O halo
 // usa box-shadow via token de glow pra bater com os dots de status do
