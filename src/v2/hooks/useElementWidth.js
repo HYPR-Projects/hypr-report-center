@@ -1,20 +1,23 @@
 // src/v2/hooks/useElementWidth.js
 //
 // Largura atual de um elemento (ResizeObserver). Usado pelos gráficos
-// diários pra escolher quantos labels de data cabem no eixo X.
+// temporais pra escolher quantos labels de data cabem no eixo X.
+//
+// Devolve um callback ref, não um useRef: os gráficos retornam null enquanto
+// não há dado, e o elemento só aparece num render posterior. Com useRef +
+// efeito de montagem, a medição nunca rodaria nesse caso.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 export function useElementWidth() {
-  const ref = useRef(null);
+  const [node, setNode] = useState(null);
   const [width, setWidth] = useState(0);
   useEffect(() => {
-    const el = ref.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    setWidth(el.getBoundingClientRect().width);
+    if (!node || typeof ResizeObserver === "undefined") return;
+    // O observer já entrega a primeira medida logo após o observe().
     const ro = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
-    ro.observe(el);
+    ro.observe(node);
     return () => ro.disconnect();
-  }, []);
-  return [ref, width];
+  }, [node]);
+  return [setNode, width];
 }

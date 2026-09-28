@@ -24,9 +24,9 @@ import {
 } from "recharts";
 import { fmt, fmtCompactTick } from "../../shared/format";
 import { useChartNeutral, useThemeColors } from "../hooks/useThemeColors";
-import { useElementWidth } from "../hooks/useElementWidth";
+import { useUniformTicks } from "../hooks/useUniformTicks";
 import { CHART_ANIMATION_MS, seriesSignature, useAnimationWindow } from "../lib/motion";
-import { dailyTicks } from "../lib/dateTicks";
+import { fillDailyGaps } from "../lib/dateTicks";
 
 const WEEKDAY_PT = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 
@@ -60,7 +60,7 @@ function TrendTooltip({ active, payload, label, metricLabel, formatValue, color 
 }
 
 export function TrendChartV2({
-  data,
+  data: rawData,
   dataKey,
   label,
   kind = "bar",
@@ -81,10 +81,20 @@ export function TrendChartV2({
 }) {
   const hypr = useThemeColors();
   const neutral = useChartNeutral();
+  // Dia sem entrega vira buraco no eixo em vez de sumir (ver fillDailyGaps).
+  const data = fillDailyGaps(rawData);
+  const margin = { top: 8, right: 8, left: 0, bottom: 0 };
+  // Na linha o último ponto fica colado na borda: o respiro à direita evita
+  // cortar o label do dia mais recente.
+  const xPadRight = kind === "line" ? 12 : 0;
+  // Passo fixo entre as datas do eixo (ver lib/dateTicks).
+  const [figureRef, xTicks] = useUniformTicks(
+    Array.isArray(data) ? data.map((d) => d.date) : [],
+    { reservedPx: yWidth + margin.left + margin.right + xPadRight },
+  );
   // Anima na montagem e quando a série muda de verdade (métrica, período,
   // filtro); fica desligada em resize, re-render e export PNG.
   const animate = useAnimationWindow(`${kind}|${seriesSignature(data, dataKey)}`, CHART_ANIMATION_MS + animationDelay + 380);
-  const [figureRef, figureWidth] = useElementWidth();
 
   if (!Array.isArray(data) || data.length === 0) return null;
 
@@ -118,13 +128,7 @@ export function TrendChartV2({
   const surface = hypr.surface2 || hypr.canvas;
   const Chart = kind === "line" ? LineChart : BarChart;
 
-  const margin = { top: 8, right: 8, left: 0, bottom: 0 };
   const common = { data, syncId, margin };
-  // Passo fixo entre as datas do eixo (ver lib/dateTicks).
-  const xTicks = dailyTicks(
-    data.map((d) => d.date),
-    figureWidth - yWidth - margin.left - margin.right - (kind === "line" ? 12 : 0),
-  );
   const barProps = kind === "bar"
     ? {
         // ≥ 2px de respiro entre barras vizinhas mesmo com 60–90 dias.
@@ -149,9 +153,7 @@ export function TrendChartV2({
             axisLine={{ stroke: neutral.grid }}
             ticks={xTicks}
             interval={0}
-            // Na linha o último ponto fica colado na borda: o respiro evita
-            // cortar o label do dia mais recente.
-            padding={kind === "line" ? { left: 0, right: 12 } : undefined}
+            padding={xPadRight ? { left: 0, right: xPadRight } : undefined}
           />
           <YAxis
             width={yWidth}

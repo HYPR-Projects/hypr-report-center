@@ -65,6 +65,7 @@ import {
 } from "recharts";
 import { useRef } from "react";
 import { useThemeColors, useChartNeutral } from "../hooks/useThemeColors";
+import { useUniformTicks } from "../hooks/useUniformTicks";
 import { CHART_ANIMATION_MS, seriesSignature, useAnimationWindow } from "../lib/motion";
 import { fmt } from "../../shared/format";
 import { DownloadPngButtonV2 } from "./DownloadPngButtonV2";
@@ -255,6 +256,13 @@ export function CumulativePacingChartV2({
   // Linhas se desenham na montagem e em troca real de dado; desligadas em
   // resize e durante o export PNG (ver useAnimationWindow).
   const animate = useAnimationWindow(seriesSignature(series, ["display", "video"]));
+  // Passo fixo entre as datas do eixo (ver lib/dateTicks), ancorado no fim
+  // da campanha. "01 de set." em 11px pede mais espaço que "dd/mm".
+  // Reservado: YAxis 48 + margem 12 + padding 8 + 16.
+  const [plotRef, xTicks] = useUniformTicks(series.map((p) => p.label), {
+    reservedPx: 48 + 12 + 8 + 16,
+    slotPx: 68,
+  });
 
   if (series.length === 0) return null;
 
@@ -309,93 +317,98 @@ export function CumulativePacingChartV2({
         </div>
       </div>
 
-      <ResponsiveContainer width="100%" height={height}>
-        <ComposedChart
-          data={series}
-          margin={{ top: 20, right: 12, left: 0, bottom: 0 }}
-        >
-          <CartesianGrid stroke={chartNeutral.grid} vertical={false} />
-          <XAxis
-            dataKey="label"
-            stroke={chartNeutral.axis}
-            tick={{ fill: chartNeutral.label, fontSize: 11 }}
-            tickLine={false}
-            axisLine={{ stroke: chartNeutral.axis }}
-            minTickGap={32}
-            padding={{ left: 8, right: 8 }}
-          />
-          <YAxis
-            stroke={chartNeutral.axis}
-            tick={{ fill: chartNeutral.label, fontSize: 11 }}
-            tickLine={false}
-            axisLine={{ stroke: chartNeutral.axis }}
-            tickFormatter={(v) => `${v}%`}
-            domain={[0, (dataMax) => Math.max(120, Math.ceil(dataMax / 10) * 10)]}
-            width={48}
-          />
-          <RTooltip content={<ChartTooltip />} cursor={{ stroke: chartNeutral.grid }} />
-
-          <Line
-            type="monotone"
-            dataKey="ideal"
-            stroke="var(--color-fg-subtle)"
-            strokeDasharray="4 4"
-            strokeWidth={1.5}
-            dot={false}
-            activeDot={false}
-            isAnimationActive={false}
-          />
-          {showDisplay && (
-            <Line
-              type="monotone"
-              dataKey="display"
-              name="Display"
-              stroke={displayColor}
-              strokeWidth={2}
-              dot={false}
-              activeDot={{ r: 4, fill: displayColor, stroke: hypr.surface2 || hypr.canvas, strokeWidth: 2 }}
-              connectNulls={false}
-              // A re-renderização ao estreitar pra exportar pegava a linha no
-              // meio da animação e a curva saía deformada no PNG; o
-              // useAnimationWindow desliga a animação durante o export.
-              isAnimationActive={animate}
-              animationDuration={CHART_ANIMATION_MS}
-              animationEasing="ease-out"
-            />
-          )}
-          {showVideo && (
-            <Line
-              type="monotone"
-              dataKey="video"
-              name="Vídeo"
-              stroke={videoColor}
-              strokeWidth={2}
-              dot={false}
-              activeDot={{ r: 4, fill: videoColor, stroke: hypr.surface2 || hypr.canvas, strokeWidth: 2 }}
-              connectNulls={false}
-              // Ver nota na Line de Display acima.
-              isAnimationActive={animate}
-              animationBegin={100}
-              animationDuration={CHART_ANIMATION_MS}
-              animationEasing="ease-out"
-            />
-          )}
-
-          {cutoffLabel && (
-            <ReferenceLine
-              x={cutoffLabel}
+      <div ref={plotRef}>
+        <ResponsiveContainer width="100%" height={height}>
+          <ComposedChart
+            data={series}
+            margin={{ top: 20, right: 12, left: 0, bottom: 0 }}
+          >
+            <CartesianGrid stroke={chartNeutral.grid} vertical={false} />
+            <XAxis
+              dataKey="label"
               stroke={chartNeutral.axis}
-              strokeDasharray="2 2"
-              label={{
-                value: "ontem",
-                position: "top",
-                fill: chartNeutral.label,
-                fontSize: 10,
-              }}
+              tick={{ fill: chartNeutral.label, fontSize: 11 }}
+              tickLine={false}
+              axisLine={{ stroke: chartNeutral.axis }}
+              ticks={xTicks}
+              interval={0}
+              // Direita maior: o label do último dia é centrado no ponto e
+              // cortava na borda.
+              padding={{ left: 8, right: 16 }}
             />
-          )}
-        </ComposedChart>
-      </ResponsiveContainer>
+            <YAxis
+              stroke={chartNeutral.axis}
+              tick={{ fill: chartNeutral.label, fontSize: 11 }}
+              tickLine={false}
+              axisLine={{ stroke: chartNeutral.axis }}
+              tickFormatter={(v) => `${v}%`}
+              domain={[0, (dataMax) => Math.max(120, Math.ceil(dataMax / 10) * 10)]}
+              width={48}
+            />
+            <RTooltip content={<ChartTooltip />} cursor={{ stroke: chartNeutral.grid }} />
+
+            <Line
+              type="monotone"
+              dataKey="ideal"
+              stroke="var(--color-fg-subtle)"
+              strokeDasharray="4 4"
+              strokeWidth={1.5}
+              dot={false}
+              activeDot={false}
+              isAnimationActive={false}
+            />
+            {showDisplay && (
+              <Line
+                type="monotone"
+                dataKey="display"
+                name="Display"
+                stroke={displayColor}
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 4, fill: displayColor, stroke: hypr.surface2 || hypr.canvas, strokeWidth: 2 }}
+                connectNulls={false}
+                // A re-renderização ao estreitar pra exportar pegava a linha no
+                // meio da animação e a curva saía deformada no PNG; o
+                // useAnimationWindow desliga a animação durante o export.
+                isAnimationActive={animate}
+                animationDuration={CHART_ANIMATION_MS}
+                animationEasing="ease-out"
+              />
+            )}
+            {showVideo && (
+              <Line
+                type="monotone"
+                dataKey="video"
+                name="Vídeo"
+                stroke={videoColor}
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 4, fill: videoColor, stroke: hypr.surface2 || hypr.canvas, strokeWidth: 2 }}
+                connectNulls={false}
+                // Ver nota na Line de Display acima.
+                isAnimationActive={animate}
+                animationBegin={100}
+                animationDuration={CHART_ANIMATION_MS}
+                animationEasing="ease-out"
+              />
+            )}
+
+            {cutoffLabel && (
+              <ReferenceLine
+                x={cutoffLabel}
+                stroke={chartNeutral.axis}
+                strokeDasharray="2 2"
+                label={{
+                  value: "ontem",
+                  position: "top",
+                  fill: chartNeutral.label,
+                  fontSize: 10,
+                }}
+              />
+            )}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }

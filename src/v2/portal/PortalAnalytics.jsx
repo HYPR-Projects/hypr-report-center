@@ -29,6 +29,8 @@ import {
 
 import { useThemeColors, useChartNeutral } from "../hooks/useThemeColors";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { useUniformTicks } from "../hooks/useUniformTicks";
+import { fillMonthlyGaps, MONTH_STEPS } from "../lib/dateTicks";
 import { ChartCardV2 } from "../components/ChartCardV2";
 import { DateRangeFilterV2 } from "../components/DateRangeFilterV2";
 import { MultiSelectDropdown } from "./PortalFilters";
@@ -210,8 +212,9 @@ export default function PortalAnalytics({ campaigns, accent, shareId, brandLiftM
       if (c.video_pacing != null) e.vPace.push(Number(c.video_pacing));
       if (c.pacing != null) e.pace.push(Number(c.pacing));
     }
-    return [...map.values()]
-      .sort((a, b) => a.month.localeCompare(b.month))
+    const blankMonth = (month) => ({ month, invested: 0, impressions: 0, clicks: 0, completions: 0, vImp: 0, vtrs: [], dPace: [], vPace: [], pace: [] });
+    // Mês sem campanha iniciada entra zerado em vez de sumir do eixo.
+    return fillMonthlyGaps([...map.values()].sort((a, b) => a.month.localeCompare(b.month)), "month", blankMonth)
       .map((e) => ({
         ...e,
         label: formatMonthLabel(e.month, "short"),
@@ -560,26 +563,29 @@ function MonthlyInvestChart({ data, accent }) {
   const neutral = useChartNeutral();
   const hypr = useThemeColors();
   const isMobile = useIsMobile();
+  const [plotRef, xTicks] = useUniformTicks(data.map((d) => d.label), { reservedPx: 66 + 40 + 8 + 32, slotPx: 52, steps: MONTH_STEPS });
   if (!data.length) return null;
   const barSize = Math.min(isMobile ? 22 : 40, Math.max(10, Math.floor((isMobile ? 320 : 560) / data.length)));
   return (
-    <ResponsiveContainer width="100%" height={240}>
-      <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke={neutral.grid} vertical={false} />
-        <XAxis dataKey="label" tick={{ fill: neutral.label, fontSize: 11 }} tickLine={false} axisLine={{ stroke: neutral.grid }} padding={{ left: 16, right: 16 }} />
-        <YAxis yAxisId="left" tick={<MoneyAxisTick fill={neutral.label} />} tickLine={false} axisLine={false} width={66} padding={{ top: 8 }} />
-        <YAxis yAxisId="right" orientation="right" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={40} tickFormatter={compactInt} padding={{ top: 8 }} />
-        <RTooltip cursor={{ fill: hypr.surfaceStrong }} content={(p) => (
-          <ChartTooltip {...p} rows={(pl) => pl.map((x) => ({
-            name: x.dataKey === "invested" ? "Investimento" : "Impressões",
-            value: x.dataKey === "invested" ? formatBRL(x.value) : formatInt(x.value),
-            color: x.dataKey === "invested" ? accent : hypr.fgMuted,
-          }))} />
-        )} />
-        <Bar yAxisId="left" dataKey="invested" fill={accent} radius={[4, 4, 0, 0]} opacity={0.9} barSize={barSize} isAnimationActive={false} />
-        <Line yAxisId="right" dataKey="impressions" type="monotone" stroke={hypr.fg} strokeWidth={2} dot={{ r: 3, fill: hypr.fg }} activeDot={{ r: 5 }} isAnimationActive={false} />
-      </ComposedChart>
-    </ResponsiveContainer>
+    <div ref={plotRef}>
+      <ResponsiveContainer width="100%" height={240}>
+        <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={neutral.grid} vertical={false} />
+          <XAxis dataKey="label" tick={{ fill: neutral.label, fontSize: 11 }} tickLine={false} axisLine={{ stroke: neutral.grid }} ticks={xTicks} interval={0} padding={{ left: 16, right: 16 }} />
+          <YAxis yAxisId="left" tick={<MoneyAxisTick fill={neutral.label} />} tickLine={false} axisLine={false} width={66} padding={{ top: 8 }} />
+          <YAxis yAxisId="right" orientation="right" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={40} tickFormatter={compactInt} padding={{ top: 8 }} />
+          <RTooltip cursor={{ fill: hypr.surfaceStrong }} content={(p) => (
+            <ChartTooltip {...p} rows={(pl) => pl.map((x) => ({
+              name: x.dataKey === "invested" ? "Investimento" : "Impressões",
+              value: x.dataKey === "invested" ? formatBRL(x.value) : formatInt(x.value),
+              color: x.dataKey === "invested" ? accent : hypr.fgMuted,
+            }))} />
+          )} />
+          <Bar yAxisId="left" dataKey="invested" fill={accent} radius={[4, 4, 0, 0]} opacity={0.9} barSize={barSize} isAnimationActive={false} />
+          <Line yAxisId="right" dataKey="impressions" type="monotone" stroke={hypr.fg} strokeWidth={2} dot={{ r: 3, fill: hypr.fg }} activeDot={{ r: 5 }} isAnimationActive={false} />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -587,26 +593,29 @@ function MonthlyInvestChart({ data, accent }) {
 function PerformanceChart({ data, accent }) {
   const neutral = useChartNeutral();
   const hypr = useThemeColors();
+  const [plotRef, xTicks] = useUniformTicks(data.map((d) => d.label), { reservedPx: 44 + 44 + 8 + 32, slotPx: 52, steps: MONTH_STEPS });
   if (!data.length) return null;
   const showDots = data.length <= 14;
   return (
-    <ResponsiveContainer width="100%" height={240}>
-      <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke={neutral.grid} vertical={false} />
-        <XAxis dataKey="label" tick={{ fill: neutral.label, fontSize: 11 }} tickLine={false} axisLine={{ stroke: neutral.grid }} padding={{ left: 16, right: 16 }} />
-        <YAxis yAxisId="ctr" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${fmt(Number(v), 1)}%`} padding={{ top: 8 }} />
-        <YAxis yAxisId="vtr" orientation="right" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${fmt(Number(v), 0)}%`} padding={{ top: 8 }} />
-        <RTooltip content={(p) => (
-          <ChartTooltip {...p} rows={(pl) => pl.map((x) => ({
-            name: x.dataKey === "ctr" ? "CTR" : "VTR",
-            value: x.value == null ? "—" : `${fmt(Number(x.value), 2)}%`,
-            color: x.dataKey === "ctr" ? accent : hypr.fgMuted,
-          }))} />
-        )} />
-        <Line yAxisId="ctr" dataKey="ctr" name="CTR" type="monotone" stroke={accent} strokeWidth={2.2} dot={showDots ? { r: 3, fill: accent } : false} activeDot={{ r: 5 }} connectNulls isAnimationActive={false} />
-        <Line yAxisId="vtr" dataKey="vtr" name="VTR" type="monotone" stroke={hypr.fgMuted} strokeWidth={2} strokeDasharray="5 4" dot={showDots ? { r: 3, fill: hypr.fgMuted } : false} activeDot={{ r: 5 }} connectNulls isAnimationActive={false} />
-      </LineChart>
-    </ResponsiveContainer>
+    <div ref={plotRef}>
+      <ResponsiveContainer width="100%" height={240}>
+        <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={neutral.grid} vertical={false} />
+          <XAxis dataKey="label" tick={{ fill: neutral.label, fontSize: 11 }} tickLine={false} axisLine={{ stroke: neutral.grid }} ticks={xTicks} interval={0} padding={{ left: 16, right: 16 }} />
+          <YAxis yAxisId="ctr" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${fmt(Number(v), 1)}%`} padding={{ top: 8 }} />
+          <YAxis yAxisId="vtr" orientation="right" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${fmt(Number(v), 0)}%`} padding={{ top: 8 }} />
+          <RTooltip content={(p) => (
+            <ChartTooltip {...p} rows={(pl) => pl.map((x) => ({
+              name: x.dataKey === "ctr" ? "CTR" : "VTR",
+              value: x.value == null ? "—" : `${fmt(Number(x.value), 2)}%`,
+              color: x.dataKey === "ctr" ? accent : hypr.fgMuted,
+            }))} />
+          )} />
+          <Line yAxisId="ctr" dataKey="ctr" name="CTR" type="monotone" stroke={accent} strokeWidth={2.2} dot={showDots ? { r: 3, fill: accent } : false} activeDot={{ r: 5 }} connectNulls isAnimationActive={false} />
+          <Line yAxisId="vtr" dataKey="vtr" name="VTR" type="monotone" stroke={hypr.fgMuted} strokeWidth={2} strokeDasharray="5 4" dot={showDots ? { r: 3, fill: hypr.fgMuted } : false} activeDot={{ r: 5 }} connectNulls isAnimationActive={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -616,11 +625,12 @@ function PerformanceChart({ data, accent }) {
 function PacingChart({ data, accent, split }) {
   const neutral = useChartNeutral();
   const hypr = useThemeColors();
+  const [plotRef, xTicks] = useUniformTicks(data.map((d) => d.label), { reservedPx: 48 + 8 + 32, slotPx: 52, steps: MONTH_STEPS });
   if (!data.length) return null;
   const showDots = data.length <= 14;
   const label = (key) => key === "pacingDisplay" ? "Display" : key === "pacingVideo" ? "Vídeo" : "Pacing médio";
   return (
-    <div>
+    <div ref={plotRef}>
       <div className="flex flex-wrap items-center gap-4 mb-3">
         {split ? (
           <>
@@ -635,7 +645,7 @@ function PacingChart({ data, accent, split }) {
       <ResponsiveContainer width="100%" height={240}>
         <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={neutral.grid} vertical={false} />
-          <XAxis dataKey="label" tick={{ fill: neutral.label, fontSize: 11 }} tickLine={false} axisLine={{ stroke: neutral.grid }} padding={{ left: 16, right: 16 }} />
+          <XAxis dataKey="label" tick={{ fill: neutral.label, fontSize: 11 }} tickLine={false} axisLine={{ stroke: neutral.grid }} ticks={xTicks} interval={0} padding={{ left: 16, right: 16 }} />
           <YAxis tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={48} tickFormatter={(v) => `${fmt(Number(v), 0)}%`} padding={{ top: 8 }} domain={[0, (max) => Math.max(120, Math.ceil(max / 20) * 20)]} />
           <ReferenceLine y={100} stroke={neutral.axis} strokeDasharray="4 4" />
           <RTooltip content={(p) => (
@@ -893,14 +903,18 @@ function AudienceBreakdown({ data, accent, top }) {
 function BrandLiftSection({ monthly, accent }) {
   const neutral = useChartNeutral();
   const hypr = useThemeColors();
+  // Só o gráfico ganha os meses sem survey (linha segue por connectNulls); a
+  // tabela abaixo continua listando apenas os meses medidos.
   const data = monthly.map((m) => ({ ...m, label: formatMonthLabel(m.month, "short") }));
-  const showDots = data.length <= 14;
+  const chartData = fillMonthlyGaps(monthly, "month").map((m) => ({ ...m, label: formatMonthLabel(m.month, "short") }));
+  const showDots = chartData.length <= 14;
+  const [plotRef, xTicks] = useUniformTicks(chartData.map((d) => d.label), { reservedPx: 44 + 44 + 8 + 32, slotPx: 52, steps: MONTH_STEPS });
   return (
-    <div className="space-y-5">
+    <div ref={plotRef} className="space-y-5">
       <ResponsiveContainer width="100%" height={240}>
-        <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+        <LineChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={neutral.grid} vertical={false} />
-          <XAxis dataKey="label" tick={{ fill: neutral.label, fontSize: 11 }} tickLine={false} axisLine={{ stroke: neutral.grid }} padding={{ left: 16, right: 16 }} />
+          <XAxis dataKey="label" tick={{ fill: neutral.label, fontSize: 11 }} tickLine={false} axisLine={{ stroke: neutral.grid }} ticks={xTicks} interval={0} padding={{ left: 16, right: 16 }} />
           <YAxis yAxisId="rel" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${fmt(Number(v), 0)}%`} padding={{ top: 8 }} />
           <YAxis yAxisId="abs" orientation="right" tick={{ fill: neutral.label, fontSize: 10 }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${Number(v).toFixed(0)}pp`} padding={{ top: 8 }} />
           <RTooltip content={(p) => (

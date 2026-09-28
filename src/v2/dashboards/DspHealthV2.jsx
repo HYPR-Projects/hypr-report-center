@@ -27,6 +27,7 @@ import { getDspBreakdown } from "../../lib/api";
 import { SparklineV2 } from "../components/SparklineV2";
 import { ChartCardV2 } from "../components/ChartCardV2";
 import { useThemeColors } from "../hooks/useThemeColors";
+import { useUniformTicks } from "../hooks/useUniformTicks";
 import { formatBRL } from "../admin/lib/format";
 
 // Cores fixas por DSP (literais: recharts/SVG não leem CSS var em prop).
@@ -103,6 +104,12 @@ export default function DspHealthV2({ token, data, isAdmin, adminJwt }) {
     () => buildModel(state.payload, campaignEnded),
     [state.payload, campaignEnded],
   );
+  // Passo fixo entre as datas do eixo (ver lib/dateTicks). Reservado:
+  // YAxis 70 + margens 8 + 8. Labels "dd/mm" em 11px.
+  const [chartRef, xTicks] = useUniformTicks((model?.chart || []).map((r) => r.label), {
+    reservedPx: 70 + 8 + 8,
+    slotPx: 56,
+  });
 
   if (!isAdmin) return null;
 
@@ -232,7 +239,7 @@ export default function DspHealthV2({ token, data, isAdmin, adminJwt }) {
 
           {/* Série diária empilhada por fonte */}
           <ChartCardV2 title="Impressões por dia · por DSP" downloadable={isAdmin} filename={`dsp-diario-${token}`}>
-            <div className="h-[300px]">
+            <div ref={chartRef} className="h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={model.chart} margin={{ top: 4, right: 8, left: 8, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke={colors?.border || "#333"} vertical={false} />
@@ -241,7 +248,8 @@ export default function DspHealthV2({ token, data, isAdmin, adminJwt }) {
                     tick={{ fontSize: 11, fill: colors?.["fg-subtle"] || "#888" }}
                     tickLine={false}
                     axisLine={false}
-                    interval="preserveStartEnd"
+                    ticks={xTicks}
+                    interval={0}
                   />
                   <YAxis
                     tick={{ fontSize: 11, fill: colors?.["fg-subtle"] || "#888" }}

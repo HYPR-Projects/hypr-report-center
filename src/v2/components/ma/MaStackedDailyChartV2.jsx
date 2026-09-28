@@ -17,9 +17,9 @@ import { fmt, fmtCompactTick } from "../../../shared/format";
 import { formatLabel } from "../../../shared/maMetrics";
 import { resolveChartVar } from "./maFormat";
 import { useChartNeutral, useThemeColors } from "../../hooks/useThemeColors";
-import { useElementWidth } from "../../hooks/useElementWidth";
+import { useUniformTicks } from "../../hooks/useUniformTicks";
 import { CHART_ANIMATION_MS, seriesSignature, useAnimationWindow } from "../../lib/motion";
-import { dailyTicks } from "../../lib/dateTicks";
+import { fillDailyGaps } from "../../lib/dateTicks";
 
 const WEEKDAY_PT = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 const ddmm = (ymd) => {
@@ -55,11 +55,17 @@ function StackTooltip({ active, payload, label, colorFor }) {
   );
 }
 
-export function MaStackedDailyChartV2({ rows, formats, colors, height = 210 }) {
+export function MaStackedDailyChartV2({ rows: rawRows, formats, colors, height = 210 }) {
   const neutral = useChartNeutral();
   const hypr = useThemeColors();
+  // Dia sem sessão vira buraco no eixo em vez de sumir (ver fillDailyGaps).
+  const rows = fillDailyGaps(rawRows);
   const animate = useAnimationWindow(seriesSignature(rows, formats || []));
-  const [wrapRef, wrapWidth] = useElementWidth();
+  // Passo fixo entre as datas do eixo (ver lib/dateTicks). 48 = YAxis, 8 = margem.
+  const [wrapRef, xTicks] = useUniformTicks(
+    Array.isArray(rows) ? rows.map((r) => r.date) : [],
+    { reservedPx: 48 + 8 },
+  );
   if (!rows?.length || !formats?.length) return null;
   // Recharts precisa da cor resolvida (var() não entra no fill do SVG em
   // todos os navegadores): traduz var(--color-chart-sN) pelo tema atual.
@@ -68,8 +74,6 @@ export function MaStackedDailyChartV2({ rows, formats, colors, height = 210 }) {
     return resolveChartVar(c, hypr) || c;
   };
   const n = rows.length;
-  // Passo fixo entre as datas do eixo (ver lib/dateTicks). 48 = YAxis, 8 = margem.
-  const xTicks = dailyTicks(rows.map((r) => r.date), wrapWidth - 48 - 8);
   return (
     <div ref={wrapRef}>
       <ResponsiveContainer width="100%" height={height}>
