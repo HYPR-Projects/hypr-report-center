@@ -17,7 +17,9 @@ import { fmt, fmtCompactTick } from "../../../shared/format";
 import { formatLabel } from "../../../shared/maMetrics";
 import { resolveChartVar } from "./maFormat";
 import { useChartNeutral, useThemeColors } from "../../hooks/useThemeColors";
+import { useElementWidth } from "../../hooks/useElementWidth";
 import { CHART_ANIMATION_MS, seriesSignature, useAnimationWindow } from "../../lib/motion";
+import { dailyTicks } from "../../lib/dateTicks";
 
 const WEEKDAY_PT = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 const ddmm = (ymd) => {
@@ -57,6 +59,7 @@ export function MaStackedDailyChartV2({ rows, formats, colors, height = 210 }) {
   const neutral = useChartNeutral();
   const hypr = useThemeColors();
   const animate = useAnimationWindow(seriesSignature(rows, formats || []));
+  const [wrapRef, wrapWidth] = useElementWidth();
   if (!rows?.length || !formats?.length) return null;
   // Recharts precisa da cor resolvida (var() não entra no fill do SVG em
   // todos os navegadores): traduz var(--color-chart-sN) pelo tema atual.
@@ -65,8 +68,10 @@ export function MaStackedDailyChartV2({ rows, formats, colors, height = 210 }) {
     return resolveChartVar(c, hypr) || c;
   };
   const n = rows.length;
+  // Passo fixo entre as datas do eixo (ver lib/dateTicks). 48 = YAxis, 8 = margem.
+  const xTicks = dailyTicks(rows.map((r) => r.date), wrapWidth - 48 - 8);
   return (
-    <div>
+    <div ref={wrapRef}>
       <ResponsiveContainer width="100%" height={height}>
         <BarChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} barCategoryGap={n > 40 ? 2 : "22%"}>
           <CartesianGrid vertical={false} stroke={neutral.grid} />
@@ -76,8 +81,8 @@ export function MaStackedDailyChartV2({ rows, formats, colors, height = 210 }) {
             tick={{ fill: neutral.label, fontSize: 10 }}
             tickLine={false}
             axisLine={{ stroke: neutral.grid }}
-            minTickGap={24}
-            interval="preserveStartEnd"
+            ticks={xTicks}
+            interval={0}
           />
           <YAxis
             width={48}
