@@ -3,30 +3,43 @@ Planilha de cliente do PMP — entrega diária de um deal numa Google Sheet
 dedicada, pra o cliente acompanhar sem acesso ao hub.
 
 Mesma ideia das sheets de report de campanha (sheets_integration.py), com o
-recorte de dados que PODE ir pro cliente num deal PMP. Só 5 colunas:
+recorte de dados que PODE ir pro cliente num deal PMP. Só 6 colunas:
 
-    Dia · Line · ID do Seat · Receita Bruta (R$) · Impressões
+    Dia · Token · Line · ID do Seat · Receita Bruta (R$) · Impressões
 
 Custo, margem HYPR, PI, % entrega e tudo o mais do hub ficam de fora. O
 recorte é garantido em `build_client_rows`/`build_payload` (as únicas portas
 de saída de dado pra planilha) e travado por teste: acrescentar coluna aqui é
 decisão comercial, não refactor.
 
-Unidade
--------
-Um "card" do PMP é uma line solta OU um grupo de lines (Fixed+Flex sob o
-mesmo PI). A planilha segue a mesma unidade — `unit_key`:
-    line:<source>:<line_id>   line solta (par source/line_id, ver pmp_lines)
-    group:<group_id>          grupo inteiro, 1 row por dia × line do grupo
-Vive em `sheets_integrations` com target_type='pmp_line', target_id=unit_key.
+Deal = tudo o que está ligado
+-----------------------------
+Quem conecta clica numa line, mas quer o DEAL inteiro. A planilha pega
+automaticamente todas as lines ligadas à clicada, de forma transitiva:
+  • pelos tokens do Command (principal + extras) — lines que compartilham
+    qualquer token entram;
+  • pelo grupo (Fixed+Flex sob o mesmo PI).
+Sem precisar agrupar nada: agrupar mexe em PI/Compplan, e a planilha não
+pode exigir isso. A coluna Token diz de qual campanha do Command é cada
+row (a entrega vem por line da SSP; line com 2 tokens mostra os 2).
+
+Os membros são recalculados a cada sync: token novo vinculado a outra line
+passa a entrar na planilha sozinho.
+
+Chave (`unit_key`, target_id em sheets_integrations, target_type='pmp_line'):
+    token:<TOKEN>             âncora = token principal da line clicada
+    group:<group_id>          line sem token, agrupada
+    line:<source>:<line_id>   line sem token e sem grupo
+A chave é só a ÂNCORA — o conjunto real é o fecho a partir dela. Clicar em
+qualquer line do mesmo deal acha a mesma planilha (`resolve_for_line`).
 
 ID do Seat
 ----------
 As fontes não expõem o seat do comprador (PubMatic só dá dealMetaId +
 publisherDealId; Xandr dá os curated deal ids). O default é o Deal ID que o
-cliente ativa no seat da DSP dele: `external_deal_id` (PM-XXXX-0000) na
-PubMatic, `deal_ids` no Xandr. Quem conecta pode sobrescrever com o ID real
-do seat — fica em `config_json.seat_id` e vale pra todas as rows.
+cliente ativa no seat da DSP dele, por line: `external_deal_id`
+(PM-XXXX-0000) na PubMatic, `deal_ids` no Xandr. Quem conecta pode
+sobrescrever — fica em `config_json.seat_id` e vale pra todas as rows.
 
 Ciclo de vida
 -------------
@@ -69,6 +82,7 @@ TABLE_DELIVERY       = "pmp_line_delivery_daily"
 # (chave interna da row, header na planilha). Ordem = ordem das colunas.
 CLIENT_COLUMNS = [
     ("day",       "Dia"),
+    ("tokens",    "Token"),
     ("line_name", "Line"),
     ("seat_id",   "ID do Seat"),
     ("revenue",   "Receita Bruta (R$)"),
@@ -76,7 +90,8 @@ CLIENT_COLUMNS = [
 ]
 
 # Índices 0-based das colunas formatadas (ordem de CLIENT_COLUMNS).
-DATE_COL, REVENUE_COL, IMPS_COL = 0, 3, 4
+DATE_COL, REVENUE_COL, IMPS_COL = 0, 4, 5
+COLUMN_WIDTHS_PX = [96, 130, 360, 160, 150, 120]
 
 # Epoch dos seriais de data do Sheets. O dia vai como NÚMERO (write RAW) com
 # formato de data na coluna: ordena e filtra como data de verdade — string ISO
@@ -88,8 +103,8 @@ README_TEXT = [
     [""],
     ["• Esta planilha é atualizada automaticamente pela HYPR todos os dias,"],
     ["  na parte da manhã (horário de Brasília)."],
-    ["• A aba 'Base de Dados' traz 1 linha por dia e line: Dia, Line, ID do"],
-    ["  Seat, Receita Bruta (R$) e Impressões."],
+    ["• A aba 'Base de Dados' traz 1 linha por dia e line: Dia, Token, Line,"],
+    ["  ID do Seat, Receita Bruta (R$) e Impressões."],
     ["• Só entram dias fechados. Alguns SSPs consolidam a entrega com 1 a 2"],
     ["  dias de atraso, e o dia pode ser revisado nesse período."],
     ["• Edições manuais na aba 'Base de Dados' são sobrescritas na próxima"],
@@ -103,29 +118,112 @@ README_TEXT = [
 # ─── unit_key ────────────────────────────────────────────────────────────────
 _SOURCE_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _GROUP_RE  = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-
-
-def unit_key_for(line: Dict) -> str:
-    """Chave da unidade (card) de uma line: o grupo, se agrupada; senão a
-    própria line."""
-    gid = line.get("group_id")
-    if gid:
-        return f"group:{gid}"
-    source = line.get("source") or "xandr"
-    return f"line:{source}:{int(line['line_id'])}"
+# Mesmo formato do pmp_lines.TOKEN_RE (short_token do Command, já UPPER).
+_TOKEN_RE  = re.compile(r"^[A-Z0-9][A-Z0-9_-]{1,39}$")
 
 
 def parse_unit_key(key: str) -> Dict:
-    """'line:pubmatic:735537' → {kind:'line', source, line_id};
-    'group:ab12cd34' → {kind:'group', group_id}. ValueError se malformada —
-    a chave vem do request, então valida antes de virar parâmetro de query."""
+    """'token:1PIT7I' → {kind:'token', token}; 'group:ab12' → {kind:'group',
+    group_id}; 'line:pubmatic:735537' → {kind:'line', source, line_id}.
+    ValueError se malformada — a chave vem do request, então valida antes de
+    virar parâmetro de query."""
     key = (key or "").strip()
     parts = key.split(":")
-    if len(parts) == 3 and parts[0] == "line" and _SOURCE_RE.match(parts[1]) and parts[2].isdigit():
-        return {"kind": "line", "source": parts[1], "line_id": int(parts[2])}
+    if len(parts) == 2 and parts[0] == "token" and _TOKEN_RE.match(parts[1]):
+        return {"kind": "token", "token": parts[1]}
     if len(parts) == 2 and parts[0] == "group" and _GROUP_RE.match(parts[1]):
         return {"kind": "group", "group_id": parts[1]}
+    if len(parts) == 3 and parts[0] == "line" and _SOURCE_RE.match(parts[1]) and parts[2].isdigit():
+        return {"kind": "line", "source": parts[1], "line_id": int(parts[2])}
     raise ValueError(f"unit_key inválida: {key!r}")
+
+
+def _member_key(source, line_id) -> str:
+    return f"{source or 'xandr'}:{int(line_id)}"
+
+
+def line_tokens(line: Dict) -> List[str]:
+    """Tokens do Command da line, principal primeiro, normalizados e sem
+    repetição. Lê `linked_tokens` (enriched nova) e cai pra short_token +
+    extra_short_tokens."""
+    raw = line.get("linked_tokens")
+    if not raw:
+        raw = [line.get("short_token")] + list(line.get("extra_short_tokens") or [])
+    out = []
+    for t in raw:
+        t = str(t or "").strip().upper()
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def anchor_key_for(line: Dict) -> str:
+    """Chave de uma planilha NOVA a partir da line clicada: o token principal
+    (mais estável que grupo/line — sobrevive a reagrupamento); sem token, o
+    grupo; sem grupo, a própria line."""
+    toks = line_tokens(line)
+    if toks and _TOKEN_RE.match(toks[0]):
+        return f"token:{toks[0]}"
+    if line.get("group_id"):
+        return f"group:{line['group_id']}"
+    return f"line:{line.get('source') or 'xandr'}:{int(line['line_id'])}"
+
+
+def resolve_cluster(all_lines: List[Dict], seeds: List[Dict]) -> List[Dict]:
+    """Fecho transitivo a partir de `seeds`: entra toda line que compartilha
+    token ou grupo com alguma que já entrou. Ordem estável (a de all_lines)."""
+    by_token: Dict[str, List[str]] = {}
+    by_group: Dict[str, List[str]] = {}
+    by_key: Dict[str, Dict] = {}
+    for l in all_lines:
+        k = _member_key(l.get("source"), l["line_id"])
+        by_key[k] = l
+        for t in line_tokens(l):
+            by_token.setdefault(t, []).append(k)
+        if l.get("group_id"):
+            by_group.setdefault(l["group_id"], []).append(k)
+
+    seen = set()
+    stack = [_member_key(s.get("source"), s["line_id"]) for s in seeds]
+    seen_tokens, seen_groups = set(), set()
+    while stack:
+        k = stack.pop()
+        if k in seen or k not in by_key:
+            continue
+        seen.add(k)
+        l = by_key[k]
+        for t in line_tokens(l):
+            if t not in seen_tokens:
+                seen_tokens.add(t)
+                stack.extend(by_token.get(t, []))
+        g = l.get("group_id")
+        if g and g not in seen_groups:
+            seen_groups.add(g)
+            stack.extend(by_group.get(g, []))
+    return [l for l in all_lines if _member_key(l.get("source"), l["line_id"]) in seen]
+
+
+def seeds_for_key(all_lines: List[Dict], unit_key: str) -> List[Dict]:
+    """Lines onde o fecho começa, conforme a âncora."""
+    unit = parse_unit_key(unit_key)
+    if unit["kind"] == "token":
+        return [l for l in all_lines if unit["token"] in line_tokens(l)]
+    if unit["kind"] == "group":
+        return [l for l in all_lines if l.get("group_id") == unit["group_id"]]
+    return [l for l in all_lines
+            if (l.get("source") or "xandr") == unit["source"] and int(l["line_id"]) == unit["line_id"]]
+
+
+def candidate_keys(members: List[Dict]) -> List[str]:
+    """Todas as chaves que uma planilha já existente desse deal pode ter
+    (qualquer token, grupo ou line do fecho)."""
+    keys = []
+    for m in members:
+        keys += [f"token:{t}" for t in line_tokens(m)]
+        if m.get("group_id"):
+            keys.append(f"group:{m['group_id']}")
+        keys.append(f"line:{m.get('source') or 'xandr'}:{int(m['line_id'])}")
+    return list(dict.fromkeys(keys))
 
 
 # ─── Regras puras (testadas) ─────────────────────────────────────────────────
@@ -163,10 +261,6 @@ def default_seat_id(line: Dict) -> str:
     return ", ".join(str(i) for i in ids if i not in (None, ""))
 
 
-def _member_key(source, line_id) -> str:
-    return f"{source or 'xandr'}:{int(line_id)}"
-
-
 def build_client_rows(
     members: List[Dict],
     delivery: List[Dict],
@@ -174,7 +268,7 @@ def build_client_rows(
 ) -> List[Dict]:
     """Rows da planilha: 1 por dia × line, só com as colunas do cliente.
 
-    `members`: lines da unidade (enriched) — dão nome e seat.
+    `members`: lines do deal (enriched) — dão nome, token e seat.
     `delivery`: [{source, line_id, day, imps, revenue}] (1+ por dia/line; soma).
     Dia sem impressão nem receita não entra (não é entrega). Ordem: dia, line.
     """
@@ -184,11 +278,10 @@ def build_client_rows(
     acc: Dict[tuple, Dict] = {}
     for d in delivery:
         mk = _member_key(d.get("source"), d["line_id"])
-        m = meta.get(mk)
         day = _as_date(d.get("day"))
-        if m is None or day is None:
+        if mk not in meta or day is None:
             continue
-        row = acc.setdefault((day, mk), {"day": day, "_mk": mk, "imps": 0, "revenue": 0.0})
+        row = acc.setdefault((day, mk), {"imps": 0, "revenue": 0.0})
         row["imps"]    += int(_num(d.get("imps")))
         row["revenue"] += _num(d.get("revenue"))
 
@@ -199,6 +292,7 @@ def build_client_rows(
         m = meta[mk]
         rows.append({
             "day":       day,
+            "tokens":    ", ".join(line_tokens(m)),
             "line_name": m.get("line_name") or m.get("campaign_name") or str(m["line_id"]),
             "seat_id":   seat_override or default_seat_id(m),
             "revenue":   round(r["revenue"], 2),
@@ -227,10 +321,10 @@ def build_payload(rows: List[Dict]) -> List[List]:
     return out
 
 
-def compute_sync_until(members: List[Dict], today: Optional[date] = None) -> Optional[date]:
+def compute_sync_until(members: List[Dict]) -> Optional[date]:
     """Fim da janela de sync: o maior entre fim do flight e última entrega,
-    + SYNC_GRACE_DAYS. None quando a unidade não tem nenhum dos dois (deal
-    que ainda não começou) — o caller decide o que manter."""
+    + SYNC_GRACE_DAYS. None quando o deal não tem nenhum dos dois (ainda não
+    começou) — o caller decide o que manter."""
     candidates = []
     for m in members:
         for f in ("end_date", "last_delivery_day"):
@@ -243,8 +337,7 @@ def compute_sync_until(members: List[Dict], today: Optional[date] = None) -> Opt
 
 
 def build_title(members: List[Dict]) -> str:
-    """'HYPR - {Cliente} - {Campanha} - Entrega PMP'. Grupo usa o nome do
-    grupo; partes vazias somem."""
+    """'HYPR - {Cliente} - {Campanha} - Entrega PMP'. Partes vazias somem."""
     def first(field):
         for m in members:
             v = str(m.get(field) or "").strip()
@@ -253,8 +346,29 @@ def build_title(members: List[Dict]) -> str:
         return None
 
     customer = first("customer")
-    campaign = first("group_name") or first("campaign_name") or first("line_name")
+    campaign = first("campaign_name") or first("group_name") or first("line_name")
     return " - ".join(["HYPR"] + [p for p in (customer, campaign) if p] + ["Entrega PMP"])
+
+
+def members_summary(members: List[Dict]) -> Dict:
+    """O que a UI mostra antes de conectar: quais lines e tokens entram."""
+    tokens = []
+    for m in members:
+        for t in line_tokens(m):
+            if t not in tokens:
+                tokens.append(t)
+    return {
+        "tokens": tokens,
+        "lines": [
+            {
+                "source":    m.get("source") or "xandr",
+                "line_id":   int(m["line_id"]),
+                "line_name": m.get("line_name"),
+                "tokens":    line_tokens(m),
+            }
+            for m in members
+        ],
+    }
 
 
 def _format_requests(sheet_id: int) -> List[Dict]:
@@ -278,7 +392,7 @@ def _format_requests(sheet_id: int) -> List[Dict]:
         fmt(REVENUE_COL, "CURRENCY", '"R$" #,##0.00'),
         fmt(IMPS_COL,    "NUMBER",   "#,##0"),
     ]
-    for col, px in enumerate([96, 360, 160, 150, 120]):
+    for col, px in enumerate(COLUMN_WIDTHS_PX):
         reqs.append({
             "updateDimensionProperties": {
                 "range": {"sheetId": sheet_id, "dimension": "COLUMNS",
@@ -295,70 +409,103 @@ def _full(t: str) -> str:
     return f"`{PROJECT_ID}.{DATASET}.{t}`"
 
 
-def _unit_filter(unit: Dict):
-    """WHERE da enriched pra unidade + parâmetros."""
-    if unit["kind"] == "group":
-        return "group_id = @gid", [bigquery.ScalarQueryParameter("gid", "STRING", unit["group_id"])]
-    return (
-        "COALESCE(source, 'xandr') = @src AND line_id = @lid",
-        [
-            bigquery.ScalarQueryParameter("src", "STRING", unit["source"]),
-            bigquery.ScalarQueryParameter("lid", "INT64", unit["line_id"]),
-        ],
-    )
-
-
-def fetch_members(unit: Dict) -> List[Dict]:
-    where, params = _unit_filter(unit)
+def fetch_all_lines() -> List[Dict]:
+    """Todas as lines (~centenas) com o necessário pro fecho e pra planilha.
+    Barato, e é o que permite achar o deal inteiro a partir de uma line."""
     sql = f"""
         SELECT COALESCE(source, 'xandr') AS source, line_id, line_name,
                external_deal_id, deal_ids, customer, campaign_name,
-               group_id, group_name, end_date, last_delivery_day
+               group_id, group_name, end_date, last_delivery_day,
+               short_token, extra_short_tokens, linked_tokens
         FROM {_full(TABLE_LINES_ENRICHED)}
-        WHERE {where}
         ORDER BY line_id
     """
-    rows = sheets_integration._bq_client().query(
-        sql, job_config=bigquery.QueryJobConfig(query_parameters=params),
-    ).result()
     out = []
-    for r in rows:
+    for r in sheets_integration._bq_client().query(sql).result():
         d = dict(r)
-        if isinstance(d.get("deal_ids"), (list, tuple)):
-            d["deal_ids"] = list(d["deal_ids"])
+        for f in ("deal_ids", "extra_short_tokens", "linked_tokens"):
+            if isinstance(d.get(f), (list, tuple)):
+                d[f] = list(d[f])
         out.append(d)
     return out
 
 
-def fetch_delivery(unit: Dict) -> List[Dict]:
-    """Entrega diária das lines da unidade. Casa pelo par (source, line_id)
-    — um dealMetaId PubMatic pode colidir com um line_id Xandr."""
-    where, params = _unit_filter(unit)
+def fetch_delivery(members: List[Dict]) -> List[Dict]:
+    """Entrega diária das lines do deal. Casa pelo par (source, line_id) —
+    um dealMetaId PubMatic pode colidir com um line_id Xandr."""
+    if not members:
+        return []
+    pairs = [_member_key(m.get("source"), m["line_id"]) for m in members]
+    ids = sorted({int(m["line_id"]) for m in members})
     sql = f"""
-        WITH m AS (
-          SELECT COALESCE(source, 'xandr') AS source, line_id
-          FROM {_full(TABLE_LINES_ENRICHED)}
-          WHERE {where}
-        )
-        SELECT m.source, d.line_id, d.day,
-               SUM(d.imps)            AS imps,
-               SUM(d.curator_revenue) AS revenue
-        FROM {_full(TABLE_DELIVERY)} d
-        JOIN m ON d.line_id = m.line_id AND COALESCE(d.source, 'xandr') = m.source
-        GROUP BY m.source, d.line_id, d.day
+        SELECT COALESCE(source, 'xandr') AS source, line_id, day,
+               SUM(imps)            AS imps,
+               SUM(curator_revenue) AS revenue
+        FROM {_full(TABLE_DELIVERY)}
+        WHERE line_id IN UNNEST(@ids)
+          AND CONCAT(COALESCE(source, 'xandr'), ':', CAST(line_id AS STRING)) IN UNNEST(@pairs)
+        GROUP BY 1, 2, 3
     """
     rows = sheets_integration._bq_client().query(
-        sql, job_config=bigquery.QueryJobConfig(query_parameters=params),
+        sql, job_config=bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ArrayQueryParameter("ids", "INT64", ids),
+            bigquery.ArrayQueryParameter("pairs", "STRING", pairs),
+        ]),
     ).result()
     return [dict(r) for r in rows]
 
 
-def _load(unit_key: str, seat_override: Optional[str]):
-    unit = parse_unit_key(unit_key)
-    members = fetch_members(unit)
+def members_for_key(unit_key: str, all_lines: Optional[List[Dict]] = None) -> List[Dict]:
+    all_lines = fetch_all_lines() if all_lines is None else all_lines
+    return resolve_cluster(all_lines, seeds_for_key(all_lines, unit_key))
+
+
+def _find_existing(keys: List[str]) -> Optional[str]:
+    """Chave da planilha já conectada pra esse deal, se houver (a mais antiga
+    ganha — é o link que o cliente já recebeu)."""
+    if not keys:
+        return None
+    sheets_integration.ensure_table_exists()
+    sql = f"""
+        SELECT short_token
+        FROM `{sheets_integration._table_id()}`
+        WHERE target_type = @tt AND status != 'deleted'
+          AND short_token IN UNNEST(@keys)
+        ORDER BY created_at
+        LIMIT 1
+    """
+    rows = list(sheets_integration._bq_client().query(
+        sql, job_config=bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("tt", "STRING", TARGET_PMP_LINE),
+            bigquery.ArrayQueryParameter("keys", "STRING", keys),
+        ]),
+    ).result())
+    return rows[0]["short_token"] if rows else None
+
+
+def resolve_for_line(source: str, line_id: int) -> Dict:
+    """A partir da line clicada: deal inteiro (fecho), chave da planilha
+    (existente ou a que seria criada) e resumo pra UI."""
+    all_lines = fetch_all_lines()
+    clicked = [l for l in all_lines
+               if (l.get("source") or "xandr") == (source or "xandr") and int(l["line_id"]) == int(line_id)]
+    if not clicked:
+        raise ValueError(f"Line {source}:{line_id} não encontrada")
+    members = resolve_cluster(all_lines, clicked)
+    existing = _find_existing(candidate_keys(members))
+    return {
+        "unit_key": existing or anchor_key_for(clicked[0]),
+        "existing": bool(existing),
+        "members":  members,
+    }
+
+
+def _load(unit_key: str, seat_override: Optional[str],
+          all_lines: Optional[List[Dict]] = None):
+    members = members_for_key(unit_key, all_lines)
     if not members:
         raise ValueError(f"Nenhuma line encontrada pra {unit_key}")
-    rows = build_client_rows(members, fetch_delivery(unit), seat_override=seat_override)
+    rows = build_client_rows(members, fetch_delivery(members), seat_override=seat_override)
     return members, build_payload(rows)
 
 
@@ -385,25 +532,28 @@ def _today_brt() -> date:
 
 
 # ─── Criação ─────────────────────────────────────────────────────────────────
-def connect(unit_key: str, refresh_token: str, member_email: str,
+def connect(source: str, line_id: int, refresh_token: str, member_email: str,
             seat_id: Optional[str] = None) -> Dict:
-    """Conecta a planilha de cliente da unidade.
+    """Conecta a planilha do deal da line clicada.
 
-    Se já existe planilha e o token novo ainda enxerga ela, reaproveita (o
-    cliente não perde o link) e só re-sincroniza. Senão cria uma nova.
-    Retorna {spreadsheet_id, spreadsheet_url, reused}.
+    Se o deal já tem planilha (por qualquer line/token dele) e o token novo
+    ainda enxerga ela, reaproveita — o cliente não perde o link — e só
+    re-sincroniza. Senão cria uma nova. Retorna {unit_key, spreadsheet_id,
+    spreadsheet_url, reused}.
     """
-    parse_unit_key(unit_key)  # valida antes de qualquer I/O
     sheets_integration.ensure_table_exists()
     seat_id = (seat_id or "").strip() or None
+    resolved = resolve_for_line(source, line_id)
+    unit_key = resolved["unit_key"]
 
-    reused = sheets_integration.reattach_existing_sheet(
-        unit_key, TARGET_PMP_LINE, refresh_token, member_email,
-    )
-    if reused:
-        sheets_integration.set_integration_config(unit_key, TARGET_PMP_LINE, {"seat_id": seat_id})
-        sync(unit_key)
-        return {**reused, "reused": True}
+    if resolved["existing"]:
+        reused = sheets_integration.reattach_existing_sheet(
+            unit_key, TARGET_PMP_LINE, refresh_token, member_email,
+        )
+        if reused:
+            sheets_integration.set_integration_config(unit_key, TARGET_PMP_LINE, {"seat_id": seat_id})
+            sync(unit_key)
+            return {**reused, "unit_key": unit_key, "reused": True}
 
     members, payload = _load(unit_key, seat_id)
     access_token = sheets_integration._refresh_access_token(refresh_token)
@@ -435,12 +585,13 @@ def connect(unit_key: str, refresh_token: str, member_email: str,
         "base_tab_title":    BASE_TAB_TITLE,
     })
     sheets_integration.set_integration_config(unit_key, TARGET_PMP_LINE, {"seat_id": seat_id})
-    return {"spreadsheet_id": spreadsheet_id, "spreadsheet_url": spreadsheet_url, "reused": False}
+    return {"unit_key": unit_key, "spreadsheet_id": spreadsheet_id,
+            "spreadsheet_url": spreadsheet_url, "reused": False}
 
 
 # ─── Sync ────────────────────────────────────────────────────────────────────
-def sync(unit_key: str) -> Dict:
-    """Reescreve a Base de Dados da planilha da unidade. Mesma semântica de
+def sync(unit_key: str, all_lines: Optional[List[Dict]] = None) -> Dict:
+    """Reescreve a Base de Dados da planilha do deal. Mesma semântica de
     erro das sheets de campanha (write-first, transiente preserva status,
     403/404 → revoked, aba renomeada é reencontrada)."""
     integ = sheets_integration.get_integration(unit_key, target_type=TARGET_PMP_LINE)
@@ -450,10 +601,10 @@ def sync(unit_key: str) -> Dict:
     sheets_integration._mark_attempt(unit_key, TARGET_PMP_LINE)
     seat_override = (integ.get("config") or {}).get("seat_id")
     try:
-        members, payload = _load(unit_key, seat_override)
+        members, payload = _load(unit_key, seat_override, all_lines)
     except ValueError as e:
-        # Line/grupo sumiu da enriched (grupo desfeito, line removida). Não
-        # escreve nada (apagaria o histórico do cliente); só registra.
+        # Token desvinculado de todas as lines / grupo desfeito. Não escreve
+        # nada (apagaria o histórico do cliente); só registra.
         sheets_integration._update_status(unit_key, target_type=TARGET_PMP_LINE,
                                           last_error=str(e)[:500])
         raise
@@ -511,6 +662,10 @@ def sync_all_connected(time_budget_s: float = PUSH_TIME_BUDGET_S) -> Dict:
     summary = {"due": 0, "synced": 0, "errors": 0, "deferred": 0}
     due = list_due()
     summary["due"] = len(due)
+    if not due:
+        return summary
+    # 1 leitura da enriched pro lote todo (o fecho de cada deal sai dela).
+    all_lines = fetch_all_lines()
     for i, key in enumerate(due):
         if time.time() - t0 > time_budget_s:
             summary["deferred"] = len(due) - i
@@ -518,10 +673,9 @@ def sync_all_connected(time_budget_s: float = PUSH_TIME_BUDGET_S) -> Dict:
                            f"estourou — {summary['deferred']} ficam pro próximo sync")
             break
         try:
-            sync(key)
+            sync(key, all_lines)
             summary["synced"] += 1
         except Exception as e:
             summary["errors"] += 1
             logger.warning(f"[pmp_client_sheet push {key}] {e}")
     return summary
-

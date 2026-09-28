@@ -5416,25 +5416,26 @@ def report_data(request):
             return (jsonify({"error": f"Erro ao excluir: {e}"}), 500, headers)
 
     # ── Endpoints: Planilha de cliente PMP (admin) ───────────────────────────
-    # 1 Google Sheet por card do PMP (line solta ou grupo) com a entrega
-    # diária no recorte que pode ir pro cliente: Dia, Line, ID do Seat,
-    # Receita Bruta e Impressões. Push automático no fim de cada sync do PMP.
-    # Ver pmp_client_sheet.py. `unit_key` = line:<source>:<line_id> | group:<id>.
+    # 1 Google Sheet por DEAL do PMP com a entrega diária no recorte que pode
+    # ir pro cliente: Dia, Token, Line, ID do Seat, Receita Bruta e
+    # Impressões. O deal é resolvido sozinho a partir da line clicada (lines
+    # ligadas por token do Command ou grupo). Push automático no fim de cada
+    # sync do PMP. Ver pmp_client_sheet.py. `unit_key` (âncora) =
+    # token:<TOKEN> | group:<id> | line:<source>:<line_id>.
     if request.method == "POST" and request.args.get("action") == "pmp_client_sheet_connect":
         admin = authenticate_admin(request)
         if not admin:
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
             body = request.get_json(silent=True) or {}
-            unit_key     = (body.get("unit_key") or "").strip()
+            source       = (body.get("source") or "xandr").strip()
+            line_id_raw  = str(body.get("line_id") or "").strip()
             code         = (body.get("code") or "").strip()
             redirect_uri = (body.get("redirect_uri") or "postmessage").strip()
             if not code:
                 return (jsonify({"error": "code é obrigatório"}), 400, headers)
-            try:
-                pmp_client_sheet.parse_unit_key(unit_key)
-            except ValueError as ve:
-                return (jsonify({"error": str(ve)}), 400, headers)
+            if not line_id_raw.isdigit():
+                return (jsonify({"error": "line_id é obrigatório"}), 400, headers)
             tokens = sheets_integration.exchange_code_for_tokens(code, redirect_uri)
             refresh_token = tokens.get("refresh_token")
             if not refresh_token:
@@ -5443,32 +5444,41 @@ def report_data(request):
                     400, headers,
                 )
             result = pmp_client_sheet.connect(
-                unit_key,
+                source, int(line_id_raw),
                 refresh_token=refresh_token,
                 member_email=admin.get("email") or "unknown",
                 seat_id=body.get("seat_id"),
             )
             status = sheets_integration.status_for_response(
-                unit_key, is_admin=True, target_type=sheets_integration.TARGET_PMP_LINE,
+                result["unit_key"], is_admin=True, target_type=sheets_integration.TARGET_PMP_LINE,
             )
             return (jsonify({**result, "integration": status}), 200, headers)
         except Exception as e:
             logger.error(f"[ERROR pmp_client_sheet_connect] {e}")
             return (jsonify({"error": f"Erro ao criar a planilha do cliente: {e}"}), 500, headers)
 
+    # Status a partir da line clicada: resolve o deal inteiro (lines ligadas
+    # por token do Command ou grupo), acha a planilha existente de qualquer
+    # uma delas e devolve o que a UI mostra antes de conectar.
     if request.method == "GET" and request.args.get("action") == "pmp_client_sheet_status":
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
-        unit_key = (request.args.get("unit_key") or "").strip()
+        source      = (request.args.get("source") or "xandr").strip()
+        line_id_raw = (request.args.get("line_id") or "").strip()
+        if not line_id_raw.isdigit():
+            return (jsonify({"error": "line_id é obrigatório"}), 400, headers)
         try:
-            pmp_client_sheet.parse_unit_key(unit_key)
-        except ValueError as ve:
-            return (jsonify({"error": str(ve)}), 400, headers)
-        try:
+            resolved = pmp_client_sheet.resolve_for_line(source, int(line_id_raw))
             status = sheets_integration.status_for_response(
-                unit_key, is_admin=True, target_type=sheets_integration.TARGET_PMP_LINE,
-            )
-            return (jsonify({"integration": status}), 200, headers)
+                resolved["unit_key"], is_admin=True, target_type=sheets_integration.TARGET_PMP_LINE,
+            ) if resolved["existing"] else None
+            return (jsonify({
+                "unit_key":    resolved["unit_key"],
+                "integration": status,
+                **pmp_client_sheet.members_summary(resolved["members"]),
+            }), 200, headers)
+        except ValueError as ve:
+            return (jsonify({"error": str(ve)}), 404, headers)
         except Exception as e:
             logger.error(f"[ERROR pmp_client_sheet_status] {e}")
             return (jsonify({"error": "Erro ao buscar status"}), 500, headers)
