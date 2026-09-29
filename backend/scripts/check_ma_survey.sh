@@ -27,6 +27,36 @@ echo "▸ Projeto: $PROJECT"
 echo "▸ View:    $VIEW"
 echo
 
+# ── 0. Tabela materializada: o que o backend REALMENTE lê ──────────────────
+# Vem primeiro e nunca aborta: desde set/2026 o modal e o report leem
+# `prod_assets.ma_survey_answers`, não a view. Uma view cheia com a tabela
+# vazia (ou coberta só em parte) é exatamente o "nenhuma resposta" falso do
+# modal — e os passos abaixo, que só olham a view, não enxergam isso.
+ANS="${MA_SURVEY_ANSWERS_TABLE:-${PROJECT}.prod_assets.ma_survey_answers}"
+RAW="${MA_EVENTS_RAW:-${VIEW%.*}.creative_events_raw}"
+echo "▸ Tabela materializada: $ANS"
+q "SELECT COUNT(*) AS linhas, COUNT(DISTINCT creative_id) AS criativos,
+          FORMAT_TIMESTAMP('%Y-%m-%d %H:%M', MIN(responded_at)) AS primeira,
+          FORMAT_TIMESTAMP('%Y-%m-%d %H:%M', MAX(responded_at)) AS ultima
+   FROM \`$ANS\`" | column -t -s,
+echo "  Log do sync (últimas 40 fatias, UTC):"
+q "SELECT FORMAT_TIMESTAMP('%Y-%m-%d %H:%M', synced_from) AS de,
+          FORMAT_TIMESTAMP('%Y-%m-%d %H:%M', synced_through) AS ate,
+          inserted, FORMAT_TIMESTAMP('%m-%d %H:%M:%S', ran_at) AS rodou
+   FROM \`${ANS}_sync\` ORDER BY ran_at DESC LIMIT 40" | column -t -s,
+echo "  Partições do lake ($RAW):"
+q "SELECT MIN(partition_id) AS primeira, MAX(partition_id) AS ultima, COUNT(*) AS particoes,
+          ROUND(SUM(total_logical_bytes)/POW(1024,3),1) AS gib
+   FROM \`${RAW%.*}.INFORMATION_SCHEMA.PARTITIONS\`
+   WHERE table_name = '${RAW##*.}' AND total_rows > 0" | column -t -s,
+SINCE7=$(date -u -d '7 days ago' '+%Y-%m-%d 00:00:00')
+echo "  survey_answer direto no lake, por dia (7d, corte constante):"
+q "SELECT DATE(occurred_at) AS dia, COUNT(*) AS eventos, COUNT(DISTINCT creative_id) AS criativos
+   FROM \`$RAW\`
+   WHERE event_type = 'survey_answer' AND occurred_at >= TIMESTAMP('$SINCE7')
+   GROUP BY 1 ORDER BY 1" | column -t -s,
+echo
+
 # ── 1. A view existe e responde? ────────────────────────────────────────────
 RESP=$(q "SELECT COUNT(*) FROM \`$VIEW\` WHERE responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)")
 if ! [[ "$RESP" =~ ^[0-9]+$ ]]; then

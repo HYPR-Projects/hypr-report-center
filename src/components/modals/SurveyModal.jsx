@@ -356,6 +356,13 @@ function maOptionOverlap(creative, typeformOptions) {
 // mais ou a menos de um lado); abaixo disso são perguntas diferentes.
 const MA_OPTION_THRESHOLD = 0.5;
 
+// Enquanto a cópia das respostas do Max Attention não cobre a janela da
+// lista, o modal pede outra rodada a cada poucos segundos (ver o efeito
+// `maSyncRetries`). Teto: ~15 rodadas × ~20s de backend dão alguns minutos,
+// o bastante pro backfill inicial; depois disso a mensagem fica na tela.
+const MA_SYNC_RETRY_MS = 3000;
+const MA_SYNC_MAX_RETRIES = 15;
+
 // Melhor pergunta do criativo pro nome do bloco. Criativo sem pergunta
 // declarada (pergunta única) devolve "" — o backend então soma todas as
 // respostas dele, que é exatamente o certo aí.
@@ -623,6 +630,23 @@ const SurveyModal = ({ shortToken, onClose, onSaved, theme }) => {
       setMaReloading(false);
     }
   }, [shortToken]);
+
+  // Cópia lake → Report Center em andamento (`window_covered === false`): o
+  // próprio modal empurra o backfill, uma rodada de cada vez (cada uma com
+  // ~20s de orçamento no backend, do recente pro antigo), até a janela ficar
+  // coberta. Sem isto o admin via uma lista vazia/parcial e precisava saber
+  // que tinha que apertar "Atualizar lista" várias vezes.
+  const maSyncRetries = useRef(0);
+  useEffect(() => {
+    if (maStatus !== "ready" || maReloading) return undefined;
+    if (maPayload?.window_covered !== false) return undefined;
+    if (maSyncRetries.current >= MA_SYNC_MAX_RETRIES) return undefined;
+    const t = setTimeout(() => {
+      maSyncRetries.current += 1;
+      reloadMa();
+    }, MA_SYNC_RETRY_MS);
+    return () => clearTimeout(t);
+  }, [maStatus, maPayload, maReloading, reloadMa]);
 
   // Explicação da lista vazia (null quando há criativo) e aviso de "nenhuma
   // peça desta campanha" (null quando há, ou sem diagnóstico). Textos em

@@ -13,13 +13,42 @@
 // Contrato de entrada (`listMaxAttentionCreatives`):
 //   { creatives, scope: "campaign"|"all", short_token, days, recent_days,
 //     includes_recent, campaign_count,
-//     diagnostics: null | { reason, dim_rows, dim_synced_at, dim_matched, dim_names } }
+//     diagnostics: null | { reason, dim_rows, dim_synced_at, dim_matched, dim_names },
+//     window_covered: bool,   // a tabela copiada cobre a janela listada?
+//     sync: null | { synced_through, covered_from, complete, error } }
+//
+// `window_covered === false` muda o sentido do vazio: não é "ninguém
+// respondeu", é "a cópia lake → Report Center ainda não chegou lá". Dizer
+// "confira a coleta" nesse caso mandou o admin investigar a coisa errada
+// (PPV8JF, 29/09/2026, com a peça recebendo respostas).
 
 export const MA_EMPTY_REASONS = Object.freeze({
   DIM_EMPTY: "dim_empty",        // dimensão de criativos nunca carregou (cron da plataforma)
   NO_DIM_MATCH: "no_dim_match",  // dimensão ok, mas nenhuma peça leva o token no nome
   NO_RESPONSES: "no_responses",  // peças da campanha existem, ninguém respondeu na janela
+  SYNC_PENDING: "sync_pending",  // a cópia do lake ainda não cobre a janela: o vazio é da cópia
 });
+
+/**
+ * Aviso de cópia em andamento. null quando a janela está coberta (ou backend
+ * antigo, sem o campo). Vale pra lista vazia E pra lista parcial.
+ */
+export function describeMaSyncPending(payload) {
+  if (payload?.window_covered !== false) return null;
+  const sync = payload?.sync || {};
+  const from = formatSyncedAt(sync.covered_from);
+  const to = formatSyncedAt(sync.synced_through);
+  const cobertura = from && to ? ` Já copiado: de ${from} a ${to}.` : "";
+  const erro = sync.error ? ` Última falha da cópia: ${sync.error}` : "";
+  return {
+    reason: MA_EMPTY_REASONS.SYNC_PENDING,
+    title: "Ainda copiando as respostas do Max Attention pro Report Center.",
+    detail:
+      "As respostas existem no lake; a cópia anda do mais recente pro mais antigo e " +
+      "a lista pode estar incompleta até ela terminar." + cobertura + erro,
+    hint: "O modal tenta de novo sozinho. Não é problema de coleta.",
+  };
+}
 
 export function formatSyncedAt(iso) {
   if (!iso) return "";
@@ -73,6 +102,16 @@ function explainDiagnostics(diag, { token, days }) {
     };
   }
 
+  if (diag?.reason === MA_EMPTY_REASONS.SYNC_PENDING) {
+    const n = Number(diag.dim_matched) || 0;
+    return {
+      reason: diag.reason,
+      title: `${n} peça${n === 1 ? "" : "s"} ${tokenTxt} na plataforma; as respostas ainda estão sendo copiadas.`,
+      detail: "A cópia do lake ainda não cobre a janela da campanha, então a falta de resposta aqui não diz nada sobre a coleta.",
+      hint: "O modal tenta de novo sozinho em alguns segundos.",
+    };
+  }
+
   if (diag?.reason === MA_EMPTY_REASONS.NO_RESPONSES) {
     const n = Number(diag.dim_matched) || 0;
     const names = Array.isArray(diag.dim_names) ? diag.dim_names.filter(Boolean) : [];
@@ -107,6 +146,10 @@ function explainDiagnostics(diag, { token, days }) {
 export function describeMaEmptyList(payload, { shortToken = "" } = {}) {
   const creatives = payload?.creatives || [];
   if (creatives.length > 0) return null;
+
+  // Antes de tudo: vazio de cópia incompleta não é vazio de coleta.
+  const pending = describeMaSyncPending(payload);
+  if (pending) return pending;
 
   const token = shortToken || payload?.short_token || "";
   const recentDays = Number(payload?.recent_days) || null;
@@ -148,6 +191,8 @@ export function describeMaCampaignNote(payload, { shortToken = "" } = {}) {
   const campaignCount = Number(payload?.campaign_count);
   if (Number.isFinite(campaignCount) && campaignCount > 0) return null;
   if (creatives.some((c) => c?.match)) return null;
+  const pending = describeMaSyncPending(payload);
+  if (pending) return { ...pending, shown: creatives.length };
 
   const token = shortToken || payload?.short_token || "";
   const days = Number(payload?.days) || null;
