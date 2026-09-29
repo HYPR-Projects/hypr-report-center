@@ -137,3 +137,31 @@ def test_recalculo_da_exclusao_geo_fura(base):
     base.adj_lm = 9500
     check()
     assert not cached()
+
+
+def test_last_modified_vem_de_tables_get(monkeypatch):
+    """Metadata via tables.get (REST), não um job de query em __TABLES__."""
+    from datetime import datetime, timezone
+
+    class T:
+        modified = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+
+    class FakeBQ:
+        def get_table(self, ref, timeout=None):
+            assert ref.endswith(".campaign_results")
+            return T()
+
+        def query(self, *a, **k):
+            raise AssertionError("não deveria abrir job de query")
+
+    monkeypatch.setattr(main, "bq", FakeBQ())
+    assert main._table_last_modified("ds", "campaign_results") == int(T.modified.timestamp() * 1000)
+
+
+def test_last_modified_falhou_devolve_none(monkeypatch):
+    class FakeBQ:
+        def get_table(self, ref, timeout=None):
+            raise RuntimeError("403")
+
+    monkeypatch.setattr(main, "bq", FakeBQ())
+    assert main._table_last_modified("ds", "x") is None

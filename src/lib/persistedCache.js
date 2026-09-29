@@ -69,6 +69,31 @@ export function readCache(key, ttlMs = TTL_MS) {
 }
 
 /**
+ * Leitura pra PINTAR enquanto o refetch roda: aceita entrada de outro build e
+ * mais velha que o TTL padrão (até `maxAgeMs`). Só serve pra payload cru do
+ * backend (lista de campanhas, time), que não depende da versão do front:
+ * scoring/alertas são recalculados no render com o código atual.
+ *
+ * Por que existe: com o `readCache` normal, qualquer deploy do front (vários
+ * por dia) ou 30min longe do menu zerava o cache e a pessoa caía no skeleton
+ * até a lista voltar do backend, que a frio leva 15-65s. Com isso, o menu
+ * pinta o último dado conhecido na hora e troca quando o refetch chega.
+ */
+export function readStaleCache(key, maxAgeMs) {
+  try {
+    const raw = localStorage.getItem(PREFIX + key);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (obj?.v !== VERSION) return null;
+    if (typeof obj.ts !== "number") return null;
+    if (Date.now() - obj.ts > maxAgeMs) return null;
+    return { data: obj.data, ts: obj.ts };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Remove entradas de cache que a leitura JÁ IGNORA: de outra versão de
  * schema ou de outro build. Devolve quantas saíram.
  *

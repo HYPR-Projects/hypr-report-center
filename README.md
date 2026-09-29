@@ -53,7 +53,8 @@ Pontos que valem saber antes de mexer em performance:
 - **Code-splitting por rota** (`App.jsx`, `React.lazy`) e por família de vendor (`vite.config.js`). Modais pesados são carregados sob demanda com preload em idle (`src/shared/lazyWithPreload.js`).
 - **Deploy novo com aba aberta:** se um chunk lazy não carregar (hash antigo), o ErrorBoundary recarrega a página uma vez em vez de mostrar erro (`src/shared/chunkReload.js`). Modal lazy tem boundary próprio (`LazyModalBoundary`): se falhar, fecha sem derrubar a página.
 - **Timeouts:** as leituras que seguram tela em `src/lib/api.js` têm deadline (30s/60s/120s conforme o peso, via `src/shared/timeout.js`); escritas não têm, de propósito — abortar um save que o backend ainda vai concluir mostraria erro de algo que deu certo.
-- **Cache:** stale-while-revalidate em localStorage (`src/lib/persistedCache.js`), invalidado a cada deploy pelo BUILD_ID.
+- **Cache:** stale-while-revalidate em localStorage (`src/lib/persistedCache.js`), invalidado a cada deploy pelo BUILD_ID. Exceção: o menu admin pinta a lista/time de até 24h atrás mesmo de outro deploy (`readStaleCache`), só enquanto o refetch roda.
+- **Lista admin no backend:** quando a base muda ou o cache vence, o `?list=true` devolve a última lista boa (`_cache: "stale"`) e reconstrói em background; o menu re-busca em seguida. Mutação admin derruba a cópia stale junto.
 
 ## Deploy
 

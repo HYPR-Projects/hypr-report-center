@@ -36,8 +36,8 @@ import { Suspense, useState, useEffect, useMemo, useCallback, useRef, useSyncExt
 // rota raiz, então precisa importar explicitamente aqui.
 import "../../v2.css";
 
-import { listCampaigns, listTeamMembers, listClients, getShareId, getCachedShareId, getOutOfCountry } from "../../../lib/api";
-import { readCache, writeCache } from "../../../lib/persistedCache";
+import { listCampaigns, listCampaignsWithMeta, listTeamMembers, listClients, getShareId, getCachedShareId, getOutOfCountry } from "../../../lib/api";
+import { readCache, readStaleCache, writeCache } from "../../../lib/persistedCache";
 import {
   getOwnerFilter, setOwnerFilter as persistOwnerFilter,
   getSortBy as getSortByPref, setSortBy as setSortByPref,
@@ -105,6 +105,14 @@ import {
   getAllPrefetchedDetails,
 } from "../../../lib/prefetchReport";
 
+// Idade máxima do cache local usado só pra PINTAR o menu enquanto o refetch
+// roda. Um dia cobre "abri ontem, abro hoje"; mais velho que isso cai no
+// skeleton, que é mais honesto que mostrar a carteira da semana passada.
+const MENU_PAINT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+// Re-poll quando o backend responde com a lista stale (ver runRefresh).
+const STALE_REPOLL_MS = 25_000;
+const STALE_REPOLL_MAX = 4;
+
 export default function CampaignMenuV2({
   user, onLogout, onOpenReport, onOpenClient,
   // `layout` vem da URL (ver navConfig + App.jsx). A persistência em
@@ -127,9 +135,13 @@ export default function CampaignMenuV2({
   // funcionalmente equivalente ao backend (paridade testada em
   // aggregation.js).
   const [bootstrap] = useState(() => {
-    const cachedCampaigns = readCache("menu.campaigns");
+    // Lista e time aceitam cache de outro deploy e mais velho que o TTL
+    // (readStaleCache): é só pra pintar enquanto o refetch roda. Sem isso,
+    // todo deploy do front ou 30min fora do menu caíam no skeleton esperando
+    // a query fria da lista (15-65s).
+    const cachedCampaigns = readStaleCache("menu.campaigns", MENU_PAINT_MAX_AGE_MS);
     const cachedClients   = readCache("menu.clients");
-    const cachedTeam      = readCache("menu.team");
+    const cachedTeam      = readStaleCache("menu.team", MENU_PAINT_MAX_AGE_MS);
     // Kicka o prefetch de access summaries DENTRO do init de bootstrap.
     //
     // Por quê: quando vínhamos com cache de campanhas em localStorage,
@@ -311,9 +323,45 @@ export default function CampaignMenuV2({
   // react-hooks/set-state-in-effect.
   const runRefresh = useCallback(() => {
     let cancelled = false;
+    let repollTimer = null;
+    let repolls = 0;
+
+    const applyCampaigns = (camps) => {
+      setCampaigns(camps);
+      writeCache("menu.campaigns", camps);
+      // Recalcula worklist client-side — paridade com backend
+      // (testada em aggregation.js).
+      setWorklist(computeWorklist(camps));
+      // Dispara prefetch dos access summaries pra alimentar os badges
+      // dos cards. 1 request batched, dedup interno via cache.
+      const tokens = (camps || []).map((c) => c.short_token).filter(Boolean);
+      prefetchAccessSummaries(tokens).catch(() => { /* silencioso */ });
+      // Mesma ideia pro indicador de notas internas dos cards: 1 request
+      // batched pro menu inteiro, nunca fetch por card.
+      prefetchNoteSummaries(tokens).catch(() => { /* silencioso */ });
+    };
+
+    // Backend serviu a última lista boa e está reconstruindo em background
+    // (base mudou ou cache venceu): busca de novo daqui a pouco pra trocar
+    // pela nova sem ninguém esperar a query fria. Poucas tentativas — se a
+    // reconstrução demorar mais que isso, o próximo mount/retry pega.
+    const repollIfStale = (stale) => {
+      if (!stale || cancelled || repolls >= STALE_REPOLL_MAX) return;
+      repolls += 1;
+      repollTimer = setTimeout(() => {
+        listCampaignsWithMeta()
+          .then(({ campaigns: camps, stale: again }) => {
+            if (cancelled) return;
+            applyCampaigns(camps);
+            setLastFetchedAt(Date.now());
+            repollIfStale(again);
+          })
+          .catch(() => { /* mantém a stale que já está na tela */ });
+      }, STALE_REPOLL_MS);
+    };
 
     Promise.allSettled([
-      listCampaigns(),
+      listCampaignsWithMeta(),
       listTeamMembers(),
     ]).then(([campsR, membersR]) => {
       if (cancelled) return;
@@ -321,18 +369,8 @@ export default function CampaignMenuV2({
       const errors = [];
 
       if (campsR.status === "fulfilled") {
-        setCampaigns(campsR.value);
-        writeCache("menu.campaigns", campsR.value);
-        // Recalcula worklist client-side — paridade com backend
-        // (testada em aggregation.js).
-        setWorklist(computeWorklist(campsR.value));
-        // Dispara prefetch dos access summaries pra alimentar os badges
-        // dos cards. 1 request batched, dedup interno via cache.
-        const tokens = (campsR.value || []).map((c) => c.short_token).filter(Boolean);
-        prefetchAccessSummaries(tokens).catch(() => { /* silencioso */ });
-        // Mesma ideia pro indicador de notas internas dos cards: 1 request
-        // batched pro menu inteiro, nunca fetch por card.
-        prefetchNoteSummaries(tokens).catch(() => { /* silencioso */ });
+        applyCampaigns(campsR.value.campaigns);
+        repollIfStale(campsR.value.stale);
       } else {
         errors.push(`campaigns: ${campsR.reason?.message || campsR.reason}`);
       }
@@ -367,7 +405,10 @@ export default function CampaignMenuV2({
       setRefreshing(false);
     });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      clearTimeout(repollTimer);
+    };
   }, []);
 
   useEffect(() => {
