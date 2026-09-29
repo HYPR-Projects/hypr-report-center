@@ -103,7 +103,7 @@ function adminSessionLost(context, usedJwt = null) {
  * dezenas de segundos legitimamente. O alvo aqui é o pendurado infinito, não
  * a lentidão.
  */
-const READ_TIMEOUT_HEAVY_MS = 60_000;  // lista de campanhas / clientes
+const READ_TIMEOUT_HEAVY_MS = 60_000;  // leituras pesadas (a lista de campanhas usa o SLOW)
 const READ_TIMEOUT_LIGHT_MS = 30_000;  // lookups pequenos
 // Leituras que podem varrer muito dado a frio (série de 5 anos do PMP, base
 // inteira do Max Attention, portal que monta a lista + shares). O teto é
@@ -289,7 +289,21 @@ export async function checkCampaignToken(token) {
  *   após blip de rede. Agora callers têm que tratar — o pattern
  *   recomendado é stale-while-revalidate via `persistedCache`.
  */
-export async function listCampaigns({ refresh = false } = {}) {
+export async function listCampaigns(opts = {}) {
+  return (await listCampaignsWithMeta(opts)).campaigns;
+}
+
+/**
+ * Igual a `listCampaigns`, mas devolve também `stale`: true quando o backend
+ * serviu a última lista boa enquanto reconstrói a nova em background (base
+ * mudou ou o cache venceu). O menu usa isso pra buscar de novo em seguida.
+ *
+ * Deadline no teto "lento" (120s), não no pesado (60s): a query fria da lista
+ * leva até ~65s legitimamente e o backend espera até 150s por ela. Com 60s o
+ * front abortava justo a request que ia popular o cache, e quem não tinha
+ * cache local ficava sem lista nenhuma.
+ */
+export async function listCampaignsWithMeta({ refresh = false } = {}) {
   const jwt = await getOrIssueAdminJwt();
   // ?refresh=true bypassa o cache server (`_get_campaigns_list_cached` no
   // backend) e evita o HTTP cache do navegador (URL diferente de `?list=true`
@@ -298,7 +312,7 @@ export async function listCampaigns({ refresh = false } = {}) {
   const url = refresh ? `${API_URL}?list=true&refresh=true` : `${API_URL}?list=true`;
   const r = await fetch(url, {
     headers: { ...adminAuthHeaders(jwt) },
-    signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
+    signal: timeoutSignal(READ_TIMEOUT_SLOW_MS),
   });
   if (r.status === 401 || r.status === 403) {
     throw adminSessionLost("listCampaigns", jwt);
@@ -322,7 +336,7 @@ export async function listCampaigns({ refresh = false } = {}) {
   for (const c of filtered) {
     if (c.share_id) setCachedShareId(c.short_token, c.share_id);
   }
-  return filtered;
+  return { campaigns: filtered, stale: d._cache === "stale" };
 }
 
 /**
@@ -348,9 +362,10 @@ export async function listClients() {
   try {
     const jwt = await getOrIssueAdminJwt();
     if (!jwt) throw new Error("no admin jwt");
+    // Mesmo teto do listCampaigns: a frio, depende da mesma query da lista.
     const r = await fetch(`${API_URL}?action=list_clients`, {
       headers: { ...adminAuthHeaders(jwt) },
-      signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
+      signal: timeoutSignal(READ_TIMEOUT_SLOW_MS),
     });
     if (r.status === 401 || r.status === 403) {
       throw adminSessionLost("listClients", jwt);

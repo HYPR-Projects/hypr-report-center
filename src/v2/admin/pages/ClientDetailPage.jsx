@@ -25,7 +25,7 @@ import { Suspense, useState, useEffect, useMemo, useCallback } from "react";
 import "../../v2.css";
 
 import { listCampaigns, listTeamMembers, getShareId, getCachedShareId } from "../../../lib/api";
-import { readCache, writeCache } from "../../../lib/persistedCache";
+import { readStaleCache, writeCache } from "../../../lib/persistedCache";
 import { useTheme } from "../../hooks/useTheme";
 import { normalizeSlug } from "../lib/aggregation";
 import { createOwnerMatcher } from "../lib/ownerFilter";
@@ -73,9 +73,11 @@ export default function ClientDetailPage({
   // ClientDetailPage apenas filtra por slug. Quando o user navega
   // Menu → ClientDetail, os dados aparecem instantaneamente vindos do
   // cache populado lá.
+  // Mesma leitura tolerante do menu (readStaleCache): pinta o último dado
+  // conhecido mesmo de outro deploy, e o refetch troca quando chegar.
   const [bootstrap] = useState(() => ({
-    campaigns: readCache("menu.campaigns"),
-    team:      readCache("menu.team"),
+    campaigns: readStaleCache("menu.campaigns", 24 * 60 * 60 * 1000),
+    team:      readStaleCache("menu.team", 24 * 60 * 60 * 1000),
   }));
   // Filtra cache por slug no init pra render imediato sem flicker.
   const [campaigns, setCampaigns] = useState(() => {

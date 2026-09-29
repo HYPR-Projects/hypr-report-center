@@ -127,6 +127,15 @@ _CLIENTS_CACHE_TTL = 3 * 3600
 _report_cache    = {}     # short_token -> (timestamp, payload)
 _merged_report_cache = {} # merge_id -> (timestamp, payload merged)
 _list_cache      = {}     # "all" -> (timestamp, payload)
+# Última lista BOA, guardada à parte do _list_cache — stale-while-revalidate do
+# `?list=true` (ver _get_campaigns_list_cached). Só mutação admin derruba esta
+# (via _cache_invalidate_token); mudança de base e TTL derrubam só o _list_cache.
+_list_stale      = {}     # "all" -> (timestamp, payload)
+_LIST_STALE_MAX_AGE = 24 * 3600
+# Sobe a cada mutação admin que derruba a lista (_drop_list_hard). O rebuild em
+# background só grava se a geração não mudou — senão gravaria por cima a lista
+# lida ANTES da mutação.
+_list_generation = {"v": 0}
 _clients_cache   = {}     # "all" -> (timestamp, payload)
 # Runs de "Reconstruir agora" cujo término já derrubou o cache da lista —
 # polls repetidos do mesmo run não podem ficar descartando cache recém-aquecido.
@@ -332,6 +341,8 @@ def _cache_invalidate_token(short_token):
         _report_cache.pop(short_token, None)
         _report_asset_ver.pop(short_token, None)
         _list_cache.pop("all", None)
+        _list_stale.pop("all", None)
+        _list_generation["v"] += 1
         _clients_cache.pop("all", None)
         _overrides_cache.pop("all", None)
         _aliases_cache.pop("all", None)
@@ -401,12 +412,65 @@ def _fresh_read_prelude():
         _base_version_cache.clear()
 
 
-def _get_campaigns_list_cached(force_refresh=False):
+def _store_campaigns_list(data):
+    _cache_set(_list_cache, "all", data)
+    _cache_set(_list_stale, "all", data)
+
+
+# Rebuild da lista em background, disparado quando o `?list=true` serve a cópia
+# stale. Um por instância: a flag impede empilhar threads enquanto a query fria
+# roda, e o _list_inflight_lock serializa com quem pede a lista síncrona.
+_list_rebuild_running = {"v": False}
+
+
+def _kick_list_rebuild():
+    with _cache_lock:
+        if _list_rebuild_running["v"]:
+            return
+        _list_rebuild_running["v"] = True
+
+    def run():
+        try:
+            with _list_inflight_lock:
+                if _cache_get(_list_cache, "all", _LIST_CACHE_TTL) is not None:
+                    return
+                with _cache_lock:
+                    gen = _list_generation["v"]
+                t0 = time.time()
+                data = query_campaigns_list()
+                with _cache_lock:
+                    superseded = _list_generation["v"] != gen
+                if superseded:
+                    logger.info("[list] rebuild em background descartado: mutação admin no meio")
+                    return
+                _store_campaigns_list(data)
+                logger.info(f"[list] rebuild em background: {int((time.time() - t0) * 1000)}ms")
+        except Exception as e:  # noqa: BLE001 — a cópia stale segue servindo
+            logger.warning(f"[list] rebuild em background falhou: {e}")
+        finally:
+            with _cache_lock:
+                _list_rebuild_running["v"] = False
+
+    # Thread própria, NÃO o _query_pool: query_campaigns_list submete as
+    # sub-queries nele e espera — rodar o nível externo lá pode deadlockar.
+    threading.Thread(target=run, name="list-rebuild", daemon=True).start()
+
+
+def _get_campaigns_list_cached(force_refresh=False, allow_stale=False):
     """Wrapper single-flight em torno de query_campaigns_list().
 
     Retorna a lista cacheada se válida; caso contrário executa a query e
     popula o cache. Garante que, se múltiplas threads pedem ao mesmo tempo,
     apenas uma faz o trabalho real. As outras esperam e leem do cache.
+
+    allow_stale (só o `?list=true` usa): com o cache vencido ou furado por
+    mudança da base, devolve a última lista boa na hora e reconstrói em
+    background — `hit` vem "stale". Motivo: o checklist_info muda várias vezes
+    por dia (contrato editado no Command, campanha nova), cada mudança fura a
+    lista em todas as instâncias e o próximo a abrir o menu esperava a query
+    fria (15-65s), às vezes estourando o deadline do front. Mutação admin
+    derruba a cópia stale junto (_cache_invalidate_token), então o que o admin
+    acabou de salvar nunca volta velho por aqui.
     """
     # Fura lista+clientes se a base (delivery da campaign_results OU contrato do
     # checklist_info) mudou desde a última leitura — mesmo gatilho do report.
@@ -420,6 +484,11 @@ def _get_campaigns_list_cached(force_refresh=False):
         cached = _cache_get(_list_cache, "all", _LIST_CACHE_TTL)
         if cached is not None:
             return cached, True  # (data, hit)
+        if allow_stale:
+            stale = _cache_get(_list_stale, "all", _LIST_STALE_MAX_AGE)
+            if stale is not None:
+                _kick_list_rebuild()
+                return stale, "stale"
 
     with _list_inflight_lock:
         # Double-check: outra thread pode ter acabado de popular o cache
@@ -429,7 +498,7 @@ def _get_campaigns_list_cached(force_refresh=False):
             if cached is not None:
                 return cached, True
         data = query_campaigns_list()
-        _cache_set(_list_cache, "all", data)
+        _store_campaigns_list(data)
         return data, False  # (data, miss)
 
 
@@ -513,18 +582,17 @@ _checklist_fp_memo = {"lm": None, "fp": None}
 
 
 def _table_last_modified(dataset, table, location=None):
-    """last_modified_time (ms) de uma tabela via __TABLES__ (metadata, não
+    """last_modified (ms) de uma tabela via tables.get (metadata, não
     escaneia). None se a checagem falhar — o chamador ignora esse componente.
-    location: campaign_results (DATASET_HUB) na região default, igual às queries
-    do report; checklist_info (prod_assets) em US, igual query_totals."""
+
+    Era um SELECT em __TABLES__: um job de query por tabela, três em série a
+    cada minuto, na frente de toda leitura de lista e report que caía na
+    checagem (~1s de overhead de job cada). tables.get é uma chamada REST de
+    ~100ms e devolve o mesmo lastModifiedTime. `location` fica na assinatura
+    por compatibilidade — tables.get não precisa dela."""
     try:
-        sql = ("SELECT last_modified_time FROM "
-               f"`{PROJECT_ID}.{dataset}.__TABLES__` WHERE table_id = @t")
-        jc = bigquery.QueryJobConfig(
-            query_parameters=[bigquery.ScalarQueryParameter("t", "STRING", table)]
-        )
-        rows = list(bq.query(sql, job_config=jc, location=location).result())
-        return int(rows[0][0]) if rows else 0
+        t = bq.get_table(f"{PROJECT_ID}.{dataset}.{table}", timeout=15)
+        return int(t.modified.timestamp() * 1000) if t.modified else 0
     except Exception as e:
         logger.warning(f"[cache] last_modified de {dataset}.{table} falhou "
                        f"({e}); componente ignorado (mantém TTL)")
@@ -3843,6 +3911,8 @@ def report_data(request):
             # Invalida caches pra a nova regra valer já no próximo F5.
             with _cache_lock:
                 _list_cache.pop("all", None)
+                _list_stale.pop("all", None)
+                _list_generation["v"] += 1
                 _clients_cache.pop("all", None)
                 _aliases_cache.pop("all", None)
             return (jsonify({"ok": True, "alias": saved}), 200, headers)
@@ -3863,6 +3933,8 @@ def report_data(request):
             owners.delete_alias(alias_raw)
             with _cache_lock:
                 _list_cache.pop("all", None)
+                _list_stale.pop("all", None)
+                _list_generation["v"] += 1
                 _clients_cache.pop("all", None)
                 _aliases_cache.pop("all", None)
             return (jsonify({"ok": True}), 200, headers)
@@ -5757,21 +5829,26 @@ def report_data(request):
             # owner" porque o list_cache é rebuildado com sheet_cache stale.
             if force_refresh:
                 owners.invalidate_cache()
-            campaigns, hit = _get_campaigns_list_cached(force_refresh=force_refresh)
+            campaigns, hit = _get_campaigns_list_cached(
+                force_refresh=force_refresh, allow_stale=True,
+            )
+            cache_state = "stale" if hit == "stale" else ("hit" if hit else "miss")
             total_ms = int((time.time() - t0) * 1000)
             resp_headers = {
                 **headers,
                 # Browser/CDN cacheiam refresh por 30s. F5 do admin não vira request
                 # a menos que o cache local expire. max-age curto pra não estourar
                 # janela de invalidação por mutação (já tratada em backend).
-                "Cache-Control": "private, max-age=30",
-                "Server-Timing": f"list;dur={total_ms};desc=\"{'hit' if hit else 'miss'}\"",
+                # Cópia stale: sem max-age, senão o re-poll do front (que vem
+                # buscar a lista reconstruída) seria servido pelo HTTP cache.
+                "Cache-Control": "private, no-cache" if cache_state == "stale" else "private, max-age=30",
+                "Server-Timing": f"list;dur={total_ms};desc=\"{cache_state}\"",
             }
             # ETag/304: depois do max-age expirar, browser revalida. Se o
             # payload não mudou (caso comum dado TTL backend de 5min), ETag
             # bate e devolvemos 304 vazio em vez de 139KB.
             return _etag_response(
-                {"campaigns": campaigns, "_cache": "hit" if hit else "miss"},
+                {"campaigns": campaigns, "_cache": cache_state},
                 request,
                 resp_headers,
             )
