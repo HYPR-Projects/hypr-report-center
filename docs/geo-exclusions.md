@@ -39,7 +39,9 @@ campanha sai, inclusive a de dias futuros.
 - Fica: país não resolvido pelo DV360, e linhas de DSPs sem país no BQ
   (Yahoo, StackAdapt, Amazon). O status mostra esse volume como "sem país".
 - O box **Fora do BR** do admin continua mostrando a entrega real. Ele é o
-  monitor da operação.
+  monitor da operação e, desde 29/09/2026, já enxerga a Yahoo também (lê a
+  `unified_daily_geo_performance_metrics`, ver `out-of-country-geo.md`). A
+  retirada do report segue só DV360.
 
 ## Garantias
 

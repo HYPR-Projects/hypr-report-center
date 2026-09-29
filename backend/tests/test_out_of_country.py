@@ -98,8 +98,8 @@ def test_month_window_current_and_explicit():
 MS, ME = date(2026, 9, 1), date(2026, 9, 30)
 
 
-def _r(d, token, country, bucket, imps):
-    return {"date": d, "short_token": token, "country": country, "bucket": bucket, "imps": imps}
+def _r(d, token, country, bucket, imps, source="DV360"):
+    return {"date": d, "source": source, "short_token": token, "country": country, "bucket": bucket, "imps": imps}
 
 
 def _steady_days(n_days, end, total=1_000_000, unexpected=10_000, token="AAA111"):
@@ -271,17 +271,40 @@ class _FakeJob:
 
 
 class _FakeBQ:
-    def __init__(self, geo_rows, meta_rows):
+    """Responde pelo formato do SQL: geo (tem `bucket`), cobertura (lê a
+    unified de performance por source/date), meta (checklist). `geo_table`
+    diz se a unified de geo existe (get_table)."""
+
+    def __init__(self, geo_rows, meta_rows, delivered_rows=(), geo_table=False):
         self.calls = []
         self.ddl = []
-        self._queue = [geo_rows, meta_rows]
+        self._geo, self._meta, self._delivered = geo_rows, meta_rows, list(delivered_rows)
+        self._queue = None
+        self.geo_table = geo_table
+
+    def get_table(self, table_id):
+        if not self.geo_table:
+            raise ooc.NotFound(f"Not found: Table {table_id}")
+        return object()
 
     def query(self, sql, job_config=None, location=None):
         if "CREATE TABLE IF NOT EXISTS" in sql:
             self.ddl.append(sql)
             return _FakeJob([])
         self.calls.append((sql, job_config, location))
-        return _FakeJob(self._queue.pop(0))
+        if self._queue is not None:
+            return _FakeJob(self._queue.pop(0))
+        if "AS bucket" in sql:
+            return _FakeJob(self._geo)
+        if "GROUP BY 1, 2" in sql and "unified_daily_performance_metrics" in sql and "bucket" not in sql:
+            return _FakeJob(self._delivered)
+        return _FakeJob(self._meta)
+
+
+@pytest.fixture(autouse=True)
+def _reset_geo_backend():
+    ooc._geo_backend_state.update(backend=None, checked_at=0.0)
+    yield
 
 
 def test_query_window_includes_lookback_and_caps_bytes():
@@ -325,7 +348,126 @@ def test_box_survives_when_override_table_cannot_be_created():
 def test_sql_without_overrides_still_parses():
     sqlglot = pytest.importorskip("sqlglot")
     for flag in (True, False):
-        sqlglot.parse_one(ooc.build_sql(flag), read="bigquery")
+        for backend in ("unified", "dv360"):
+            sqlglot.parse_one(ooc.build_sql(flag, backend), read="bigquery")
+    sqlglot.parse_one(ooc.build_coverage_sql(ooc.GEO_SOURCES), read="bigquery")
+
+
+# ── Base de geo: unified (DV360 + Yahoo) ou Region cru ─────────────────────
+
+def test_unified_sql_reads_geo_table_and_joins_by_source():
+    sql = ooc.build_sql(True, "unified")
+    assert "unified_daily_geo_performance_metrics" in sql
+    assert "dv360_daily_regions_performance_metrics" not in sql
+    assert "USING (source, line_item_id)" in sql
+    # token da base de geo só entra se a unified de performance não tiver
+    assert "COALESCE(m.short_token, g.geo_token)" in sql
+    legacy = ooc.build_sql(True, "dv360")
+    assert "dv360_daily_regions_performance_metrics" in legacy
+    assert "'DV360' AS source" in legacy
+
+
+def test_backend_falls_back_while_geo_table_is_missing_and_rechecks():
+    fake = _FakeBQ([], [])
+    assert ooc.resolve_geo_backend(fake, now_ts=1000) == "dv360"
+    fake.geo_table = True
+    # negativo em cache: não recheca dentro do TTL...
+    assert ooc.resolve_geo_backend(fake, now_ts=1000 + ooc._GEO_NEGATIVE_TTL - 1) == "dv360"
+    # ...e troca sozinho depois dele
+    assert ooc.resolve_geo_backend(fake, now_ts=1000 + ooc._GEO_NEGATIVE_TTL + 1) == "unified"
+    fake.geo_table = False
+    assert ooc.resolve_geo_backend(fake, now_ts=99_999) == "unified"  # positivo fica
+
+
+def test_backend_check_error_keeps_legacy_path():
+    class _Boom(_FakeBQ):
+        def get_table(self, table_id):
+            raise PermissionError("403")
+    assert ooc.resolve_geo_backend(_Boom([], []), now_ts=1) == "dv360"
+
+
+def test_payload_splits_by_source_and_tags_campaigns():
+    d = date(2026, 9, 10)
+    rows = [
+        _r(d, "DIAGEO", "BR", "BR", 60_000),
+        _r(d, "DIAGEO", "IN", "UNEXPECTED", 40_000),
+        _r(d, "DIAGEO", "BR", "BR", 18_000, source="YAHOO"),
+        _r(d, "DIAGEO", "US", "UNEXPECTED", 2_000, source="YAHOO"),
+        _r(d, "LOREAL", "BR", "BR", 50_000, source="YAHOO"),
+    ]
+    p = ooc.build_payload(rows, MS, ME, True)
+    assert p["source"] == "DV360 + Yahoo"
+    by = {s["source"]: s for s in p["sources"]}
+    assert by["DV360"]["rate"] == 40.0 and by["DV360"]["impressions"] == 100_000
+    assert by["YAHOO"]["label"] == "Yahoo" and by["YAHOO"]["unexpected_impressions"] == 2_000
+    assert p["rate"] == 24.71  # 42k / 170k, as duas fontes no mesmo balde
+    camp = {c["short_token"]: c for c in p["campaigns"]}
+    assert camp["DIAGEO"]["sources"] == ["DV360", "Yahoo"]
+    assert "LOREAL" not in camp  # sem entrega fora
+
+
+def test_coverage_warns_when_source_delivers_without_geo():
+    d1, d2 = date(2026, 9, 9), date(2026, 9, 10)
+    rows = [_r(d1, "AAA111", "BR", "BR", 1_000_000), _r(d2, "AAA111", "BR", "BR", 1_000_000)]
+    delivered = {
+        "DV360": {d1: 1_000_000, d2: 1_000_000},
+        # Yahoo entregou e o geo não veio
+        "YAHOO": {d1: 300_000, d2: 300_000},
+    }
+    p = ooc.build_payload(rows, MS, ME, True, delivered_daily=delivered)
+    by = {s["source"]: s for s in p["sources"]}
+    assert by["DV360"]["coverage"] == 100.0
+    assert by["YAHOO"]["impressions"] == 0 and by["YAHOO"]["coverage"] == 0.0
+    warn = [w for w in p["data_warnings"] if w["kind"] == "geo_coverage"]
+    assert warn == [{"kind": "geo_coverage", "source": "YAHOO", "label": "Yahoo", "share": 0.0}]
+    assert p["source"] == "DV360"
+
+
+def test_coverage_counts_only_until_last_geo_day_and_ignores_small_volume():
+    d1, d2 = date(2026, 9, 9), date(2026, 9, 10)
+    rows = [_r(d1, "AAA111", "BR", "BR", 1_000_000),
+            _r(d1, "AAA111", "BR", "BR", 50_000, source="YAHOO")]
+    delivered = {
+        # d2 ainda não tem geo de ninguém: não entra no denominador
+        "DV360": {d1: 1_000_000, d2: 900_000},
+        "YAHOO": {d1: 50_000, d2: 40_000},
+        "STACKADAPT": {d1: 5},
+    }
+    p = ooc.build_payload(rows, MS, ME, True, delivered_daily=delivered)
+    by = {s["source"]: s for s in p["sources"]}
+    assert by["DV360"]["delivered_impressions"] == 1_000_000
+    assert by["YAHOO"]["coverage"] == 100.0
+    assert "STACKADAPT" not in by  # não reporta geo
+    assert not [w for w in p["data_warnings"] if w["kind"] == "geo_coverage"]
+
+
+def test_query_uses_unified_geo_when_table_exists():
+    d = date(2026, 9, 2)
+    geo = [_r(d, "AAA111", "BR", "BR", 90), _r(d, "AAA111", "US", "UNEXPECTED", 10, source="YAHOO")]
+    delivered = [{"source": "DV360", "date": d, "imps": 90}, {"source": "YAHOO", "date": d, "imps": 10}]
+    fake = _FakeBQ(geo, [], delivered, geo_table=True)
+    ooc._overrides_ready = True
+    p = ooc.query_out_of_country(fake, None, now=datetime(2026, 9, 3, 10, 0, tzinfo=ooc.SP_TZ))
+    assert p["geo_backend"] == "unified"
+    assert "unified_daily_geo_performance_metrics" in fake.calls[0][0]
+    cov_sql, cov_cfg, _ = fake.calls[1]
+    assert "'DV360', 'YAHOO'" in cov_sql
+    params = {q.name: q.value for q in cov_cfg.query_parameters}
+    assert params == {"m_from": date(2026, 9, 1), "m_to": date(2026, 9, 3)}
+    assert {s["source"]: s["coverage"] for s in p["sources"]} == {"DV360": 100.0, "YAHOO": 100.0}
+
+
+def test_coverage_query_failure_does_not_break_box():
+    class _NoCoverage(_FakeBQ):
+        def query(self, sql, job_config=None, location=None):
+            if "GROUP BY 1, 2" in sql and "bucket" not in sql:
+                raise RuntimeError("quota")
+            return super().query(sql, job_config, location)
+    geo = [_r(date(2026, 9, 2), "AAA111", "BR", "BR", 90)]
+    ooc._overrides_ready = True
+    p = ooc.query_out_of_country(_NoCoverage(geo, [], geo_table=True), None,
+                                 now=datetime(2026, 9, 3, 10, 0, tzinfo=ooc.SP_TZ))
+    assert p["impressions"] == 90 and p["sources"][0]["coverage"] is None
 
 
 def test_save_override_empty_list_deletes_and_list_merges():

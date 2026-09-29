@@ -17,7 +17,7 @@
 // uma linha discreta de pills via SecondaryAlerts — preserva a função
 // de filtro do worklist sem competir com os números.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { cn } from "../../../ui/cn";
 import { formatBRL, formatPct as formatPctBR } from "../lib/format";
 import * as Popover from "@radix-ui/react-popover";
@@ -241,7 +241,8 @@ function MetricDelta({ current, previous, goodDirection = "up" }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Fora do BR — entrega do DV360 em país que a line não prevê.
+// Fora do BR — entrega em país que a line não prevê, nas DSPs que reportam
+// país (DV360 e Yahoo; StackAdapt e Amazon não têm geo no BQ).
 //
 // Dado: action=out_of_country (backend/out_of_country.py). "Previsto" é o
 // país escrito por extenso no nome da line (Elux _CHILE_/_PERU_/_COLOMBIA_):
@@ -264,6 +265,9 @@ function dataWarningText(w) {
   }
   if (w.kind === "untracked_lines") {
     return `${formatPctBR(w.share, 1)} do volume em lines sem campanha vinculada — ranking e alerta por campanha incompletos.`;
+  }
+  if (w.kind === "geo_coverage") {
+    return `${w.label}: só ${formatPctBR(w.share, 1)} da entrega do mês tem país — a ${w.label} está subrepresentada na taxa.`;
   }
   return null;
 }
@@ -560,8 +564,11 @@ function OutOfCountryCard({ data, compact, onOpenReport }) {
     impressions, unexpected_impressions, expected_impressions, expected_rate,
     unknown_impressions, unknown_rate, expected_countries = [], top_countries = [],
     reference_date, day_rate, campaigns_with_unexpected, data_warnings = [], daily = [],
+    sources = [],
   } = data;
   const suspect = data_warnings.length > 0;
+  const sourceLabel = data.source || "DV360";
+  const multiSource = sources.length > 1;
 
   const footer = alert ? (
     <span className="inline-flex items-center gap-1 font-semibold text-danger whitespace-nowrap">
@@ -574,10 +581,10 @@ function OutOfCountryCard({ data, compact, onOpenReport }) {
     </span>
   ) : reference_date ? (
     <span className="whitespace-nowrap">
-      {formatDayMonth(reference_date)}: <span className="tabular-nums">{formatPctTwo(day_rate)}</span> · DV360
+      {formatDayMonth(reference_date)}: <span className="tabular-nums">{formatPctTwo(day_rate)}</span> · {sourceLabel}
     </span>
   ) : (
-    <span className="whitespace-nowrap">DV360</span>
+    <span className="whitespace-nowrap">{sourceLabel}</span>
   );
 
   return (
@@ -627,7 +634,7 @@ function OutOfCountryCard({ data, compact, onOpenReport }) {
           )}
         >
           <div className="px-3.5 pt-3 pb-2 flex items-baseline justify-between gap-3 border-b border-border/60">
-            <span className="lbl-section">Entrega fora do Brasil · DV360</span>
+            <span className="lbl-section">Entrega fora do Brasil · {sourceLabel}</span>
             {reference_date && (
               <span className="text-[11px] text-fg-subtle whitespace-nowrap">dado até {formatDayMonth(reference_date)}</span>
             )}
@@ -665,6 +672,24 @@ function OutOfCountryCard({ data, compact, onOpenReport }) {
               <span className={cn("font-bold", TONE_CLASS[toneOutOfCountry(rate)])}>{formatPctTwo(rate)}</span>
               <span className="text-fg-subtle"> · {formatImps(unexpected_impressions)} imps</span>
             </span>
+            {multiSource && sources.map((src) => (
+              <Fragment key={src.source}>
+                <span className="text-fg-subtle">Fora sem previsão · {src.label}</span>
+                <span className="text-right tabular-nums">
+                  {src.impressions > 0 ? (
+                    <>
+                      <span className={cn("font-semibold", TONE_CLASS[toneOutOfCountry(src.rate)])}>{formatPctTwo(src.rate)}</span>
+                      <span className="text-fg-subtle"> · {formatImps(src.unexpected_impressions)} de {formatImps(src.impressions)}</span>
+                    </>
+                  ) : (
+                    <span className="text-warning font-semibold">sem país no mês</span>
+                  )}
+                  {src.coverage != null && src.coverage < 95 && src.impressions > 0 && (
+                    <span className="text-warning"> · {formatPctBR(src.coverage, 0)} com país</span>
+                  )}
+                </span>
+              </Fragment>
+            ))}
             {top_countries.length > 0 && (
               <>
                 <span className="text-fg-subtle">Principais países</span>
@@ -685,7 +710,7 @@ function OutOfCountryCard({ data, compact, onOpenReport }) {
             <span className="text-right tabular-nums">
               {formatPctTwo(unknown_rate)}<span className="text-fg-subtle"> · {formatImps(unknown_impressions)}</span>
             </span>
-            <span className="text-fg-subtle">Total DV360 no mês</span>
+            <span className="text-fg-subtle">Total com país no mês</span>
             <span className="text-right tabular-nums font-semibold">{formatImps(impressions)} imps</span>
           </div>
 
@@ -727,6 +752,7 @@ function OutOfCountryCard({ data, compact, onOpenReport }) {
                           </div>
                           <div className="text-[10px] text-fg-subtle tabular-nums">
                             {c.short_token}
+                            {multiSource && c.sources?.length > 0 && ` · ${c.sources.join(" + ")}`}
                             {c.expected_countries?.length > 0 && ` · previsto ${c.expected_countries.join(", ")}`}
                           </div>
                         </td>
@@ -755,7 +781,7 @@ function OutOfCountryCard({ data, compact, onOpenReport }) {
             {campaigns_with_unexpected > campaigns.length
               ? `Top ${campaigns.length} de ${campaigns_with_unexpected} campanhas com entrega fora. `
               : ""}
-            Só DV360. País no nome da line ou da campanha (ex.: CHILE, CH) conta como previsto e fica fora da taxa. Pra liberar outro país, use "Entrega fora do Brasil" no drawer da campanha.
+            {data.geo_backend === "unified" ? `${sourceLabel}; StackAdapt e Amazon não reportam país.` : "Só DV360."} País no nome da line ou da campanha (ex.: CHILE, CH) conta como previsto e fica fora da taxa. Pra liberar outro país, use "Entrega fora do Brasil" no drawer da campanha.
           </div>
         </Popover.Content>
       </Popover.Portal>

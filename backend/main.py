@@ -4387,8 +4387,9 @@ def report_data(request):
             return (jsonify({"error": "Erro ao buscar dados do DoubleVerify"}), 500, headers)
 
     # GET ?action=out_of_country[&month=YYYY-MM] — admin-only. Taxa de
-    # entrega fora do Brasil (DV360) do mês, ranking de campanhas e o alerta
-    # de salto dia a dia. Ver backend/out_of_country.py.
+    # entrega fora do Brasil (DV360 + Yahoo, pela unified de geo) do mês,
+    # ranking de campanhas e o alerta de salto dia a dia. Ver
+    # backend/out_of_country.py.
     if request.method == "GET" and request.args.get("action") == "out_of_country":
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
