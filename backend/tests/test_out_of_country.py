@@ -296,7 +296,7 @@ class _FakeBQ:
             return _FakeJob(self._queue.pop(0))
         if "AS bucket" in sql:
             return _FakeJob(self._geo)
-        if "GROUP BY 1, 2" in sql and "unified_daily_performance_metrics" in sql and "bucket" not in sql:
+        if "GROUP BY 1, 2" in sql and "unified_daily_performance" in sql and "bucket" not in sql:
             return _FakeJob(self._delivered)
         return _FakeJob(self._meta)
 
@@ -358,12 +358,12 @@ def test_sql_without_overrides_still_parses():
 def test_unified_sql_reads_geo_table_and_joins_by_source():
     sql = ooc.build_sql(True, "unified")
     assert "unified_daily_geo_performance_metrics" in sql
-    assert "dv360_daily_regions_performance_metrics" not in sql
+    assert "dv360_daily_regions" not in sql
     assert "USING (source, line_item_id)" in sql
     # token da base de geo só entra se a unified de performance não tiver
     assert "COALESCE(m.short_token, g.geo_token)" in sql
     legacy = ooc.build_sql(True, "dv360")
-    assert "dv360_daily_regions_performance_metrics" in legacy
+    assert "dv360_daily_regions" in legacy
     assert "'DV360' AS source" in legacy
 
 
