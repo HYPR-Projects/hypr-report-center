@@ -1,5 +1,5 @@
 """
-Exclusão de entrega fora do Brasil no report (ajuste excepcional, DV360).
+Exclusão de entrega fora do Brasil no report (ajuste excepcional, DV360 + Yahoo).
 
 Por que existe
 --------------
@@ -21,8 +21,9 @@ Como funciona
 
 2. `refresh()` recalcula `campaign_geo_adjustments`: para cada chave
    (token × dia × line × criativo) que o report lê, a FRAÇÃO de cada métrica
-   que foi entregue fora, tirada do relatório de Region do DV360
-   (`dv360_daily_regions_performance_metrics`). Fração, e não valor absoluto,
+   que foi entregue fora, tirada da base de geo unificada
+   (`unified_daily_geo_performance_metrics`: DV360 + Yahoo; enquanto ela não
+   existe, do Region cru do DV360). Fração, e não valor absoluto,
    porque unified e campaign_results divergem por arredondamento; a fração
    aplica igual nas duas. Métrica a métrica (viewable, cliques, vídeo)
    porque o CTR fora chega a 5% contra 0,1% no BR: escalar cliques pela fração
@@ -34,15 +35,18 @@ Como funciona
      line_window  o dia não está no Region (export de 12/09/2026 faltou) →
                   fração da line na janela inteira. É ESTIMATIVA; some sozinha
                   quando o dia for reprocessado, porque o refresh roda de novo.
-   Line sem nenhum dado no Region (Yahoo, StackAdapt…) não ganha fração: não
+   Line sem nenhum dado de geo (StackAdapt, Amazon…) não ganha fração: não
    há como saber o país, então não se retira nada.
 
-3. Conciliação antes de publicar: nas chaves `exact`, a soma de impressões do
-   Region tem de bater com a da unified dentro de RECON_TOLERANCE. Token que
-   não bate NÃO recebe a fração nova: mantém a última que bateu (ou fica sem
-   ajuste, se nunca bateu). Assim o report não oscila por causa de um dia de
-   dado ruim, e nunca retira volume com base num Region que não fecha com a
-   entrega. O resultado fica em `campaign_geo_exclusion_status`.
+3. Conciliação antes de publicar, POR DSP: nas chaves `exact`, a soma de
+   impressões do geo de cada DSP tem de bater com a da unified dentro de
+   RECON_TOLERANCE. Token × DSP que não bate NÃO recebe a fração nova: mantém
+   a última que bateu (ou fica sem ajuste, se nunca bateu). Por DSP porque uma
+   Yahoo que não fecha não pode travar o ajuste do DV360 que fecha: o status
+   do token vira `partial` e `source_detail` diz qual DSP ficou de fora.
+   Assim o report não oscila por causa de um dia de dado ruim, e nunca retira
+   volume com base num geo que não fecha com a entrega. O resultado fica em
+   `campaign_geo_exclusion_status`.
 
 4. `adjusted_source()` devolve o FROM que as queries do report usam: a tabela
    original com as métricas multiplicadas por (1 − fração), via LEFT JOIN com
@@ -58,6 +62,7 @@ O box "Fora do BR" do admin segue lendo o Region cru: é o monitor da operação
 e precisa mostrar o que aconteceu, não o que o cliente vê.
 """
 
+import json
 import logging
 import re
 import threading
@@ -76,6 +81,11 @@ ADJ_TABLE = f"`{PROJECT}.prod_assets.{ADJ_TABLE_ID}`"
 STATUS_TABLE = f"`{PROJECT}.prod_assets.campaign_geo_exclusion_status`"
 OVERRIDES_TABLE = f"`{PROJECT}.prod_assets.campaign_country_overrides`"
 REGIONS_TABLE = f"`{PROJECT}.prod_assets.dv360_daily_regions_performance_metrics`"
+# Base de geo unificada (DV360 + Yahoo, hyprster). Quando existe, a cópia
+# compacta sai dela e a Yahoo entra no ajuste; senão, sai do Region cru e o
+# ajuste segue só DV360.
+GEO_TABLE_ID = "unified_daily_geo_performance_metrics"
+GEO_TABLE = f"`{PROJECT}.prod_assets.{GEO_TABLE_ID}`"
 # Cópia compacta do Region (dia × line × criativo × país, sem cidade/DMA),
 # particionada por data. A tabela original NÃO é particionada: qualquer leitura
 # varre ~19 GB. Refeita quando o Region muda (warmup); o toggle lê só ela.
@@ -90,6 +100,8 @@ CR_TABLE = f"`{PROJECT}.prod_prod_hypr_reporthub.campaign_results`"
 
 # Tabelas cujo last_modified dispara um refresh (ver `needs_refresh`).
 SOURCE_TABLES = [
+    # A cópia compacta segue a fonte de geo (Region do DV360 ou a unificada
+    # DV360 + Yahoo, ver sync_compact); a mudança dela chega aqui.
     ("prod_assets", COMPACT_TABLE_ID),
     ("prod_assets", "unified_daily_performance_metrics"),
     ("prod_prod_hypr_reporthub", "campaign_results"),
@@ -111,7 +123,7 @@ TOKEN_RE = re.compile(r"^[A-Z0-9]{4,12}$")
 
 # Sobe quando o formato do status/frações muda: o próximo warmup recalcula
 # mesmo sem mudança nas fontes (ver `needs_refresh`).
-SCRIPT_VERSION = 2
+SCRIPT_VERSION = 3
 
 # ── Colunas ajustadas por tabela ────────────────────────────────────────────
 # (coluna, fração, é inteiro). A fração é o nome da coluna na tabela de
@@ -326,6 +338,10 @@ def ensure_tables(bq):
               last_geo_date           DATE,
               script_version          INT64
             );
+            -- v3: fração e status por DSP (DV360 + Yahoo). Linha antiga sem
+            -- `source` é DV360 (era a única DSP).
+            ALTER TABLE {ADJ_TABLE} ADD COLUMN IF NOT EXISTS source STRING;
+            ALTER TABLE {STATUS_TABLE} ADD COLUMN IF NOT EXISTS source_detail STRING;
         """, location="US").result()
         _ready = True
 
@@ -368,6 +384,7 @@ def list_exclusions(bq):
             d[k] = d[k].isoformat() if d.get(k) else None
         for k in ("updated_at", "refreshed_at"):
             d[k] = d[k].isoformat() if d.get(k) else None
+        d["source_detail"] = _parse_source_detail(d.get("source_detail"))
         out.append(d)
     return out
 
@@ -435,7 +452,7 @@ _STATUS_COLS = ", ".join([
     "short_token", "refreshed_at", "status", "recon_diff_pct", "unified_imps",
     "removed_imps", "removed_viewable", "removed_clicks", "removed_video_100",
     "removed_cost", "unified_cost", "exact_imps", "estimated_imps", "no_geo_imps",
-    "last_geo_date", "script_version",
+    "last_geo_date", "script_version", "source_detail",
 ])
 
 
@@ -495,13 +512,23 @@ WHERE line_item_id IS NOT NULL AND creative_id IS NOT NULL
   AND (c.date_to IS NULL OR k.date <= c.date_to)
 GROUP BY 1, 2, 3, 4;
 
-CREATE TEMP TABLE lines AS
-SELECT DISTINCT k.short_token, k.line_item_id, c.allowed
-FROM keys k JOIN cfg c USING (short_token);
+-- DSP de cada line vem da unified (o campaign_results não tem source).
+-- Line só no campaign_results fica com source NULL e casa com qualquer DSP.
+CREATE TEMP TABLE line_source AS
+SELECT short_token, line_item_id, ANY_VALUE(source) AS source
+FROM {UNIFIED_TABLE}
+WHERE date >= d_from AND short_token IN (SELECT short_token FROM cfg)
+  AND line_item_id IS NOT NULL
+GROUP BY 1, 2;
 
--- Region por token × dia × line × criativo: total e parcela fora.
+CREATE TEMP TABLE lines AS
+SELECT DISTINCT k.short_token, k.line_item_id, c.allowed, ls.source
+FROM keys k JOIN cfg c USING (short_token)
+LEFT JOIN line_source ls USING (short_token, line_item_id);
+
+-- Geo por token × DSP × dia × line × criativo: total e parcela fora.
 CREATE TEMP TABLE geo AS
-SELECT l.short_token, r.date,
+SELECT l.short_token, r.source, r.date,
        r.line_item_id,
        r.creative_id,
        SUM(r.impressions) AS g_imps,
@@ -516,33 +543,36 @@ SELECT l.short_token, r.date,
        SUM(IF({out}, r.total_media_cost_advertiser_currency, 0)) AS o_cost
 FROM (
   -- Cópia compacta particionada (ver COMPACT_TABLE): lê só as datas da janela.
-  SELECT date, line_item_id, creative_id, cc,
+  SELECT date, source, line_item_id, creative_id, cc,
          impressions, viewable_impressions, clicks, video_view_100_complete,
          total_media_cost_advertiser_currency
   FROM {COMPACT_TABLE}
   WHERE date >= d_from
 ) r
-JOIN lines l ON l.line_item_id = r.line_item_id
-GROUP BY 1, 2, 3, 4;
+JOIN lines l
+  ON l.line_item_id = r.line_item_id
+ AND (l.source IS NULL OR l.source = r.source)
+GROUP BY 1, 2, 3, 4, 5;
 
 CREATE TEMP TABLE geo_line_day AS
-SELECT short_token, date, line_item_id,
+SELECT short_token, source, date, line_item_id,
+       SUM(g_imps) g_imps, SUM(o_imps) o_imps, SUM(g_vw) g_vw, SUM(o_vw) o_vw,
+       SUM(g_clk) g_clk, SUM(o_clk) o_clk, SUM(g_vid) g_vid, SUM(o_vid) o_vid,
+       SUM(g_cost) g_cost, SUM(o_cost) o_cost
+FROM geo GROUP BY 1, 2, 3, 4;
+
+CREATE TEMP TABLE geo_line AS
+SELECT short_token, source, line_item_id,
        SUM(g_imps) g_imps, SUM(o_imps) o_imps, SUM(g_vw) g_vw, SUM(o_vw) o_vw,
        SUM(g_clk) g_clk, SUM(o_clk) o_clk, SUM(g_vid) g_vid, SUM(o_vid) o_vid,
        SUM(g_cost) g_cost, SUM(o_cost) o_cost
 FROM geo GROUP BY 1, 2, 3;
 
-CREATE TEMP TABLE geo_line AS
-SELECT short_token, line_item_id,
-       SUM(g_imps) g_imps, SUM(o_imps) o_imps, SUM(g_vw) g_vw, SUM(o_vw) o_vw,
-       SUM(g_clk) g_clk, SUM(o_clk) o_clk, SUM(g_vid) g_vid, SUM(o_vid) o_vid,
-       SUM(g_cost) g_cost, SUM(o_cost) o_cost
-FROM geo GROUP BY 1, 2;
-
 -- Frações por chave, com o método usado (exact > line_day > line_window).
 CREATE TEMP TABLE new_adj AS
 WITH picked AS (
   SELECT k.short_token, k.date, k.line_item_id, k.creative_id, k.u_imps,
+    COALESCE(e.source, d.source, w.source) AS source,
     CASE WHEN e.g_imps IS NOT NULL THEN 'exact'
          WHEN d.g_imps IS NOT NULL THEN 'line_day'
          WHEN w.g_imps IS NOT NULL THEN 'line_window' END AS method,
@@ -562,7 +592,7 @@ WITH picked AS (
   LEFT JOIN geo_line_day d USING (short_token, date, line_item_id)
   LEFT JOIN geo_line w USING (short_token, line_item_id)
 )
-SELECT short_token, date, line_item_id, creative_id, method, u_imps, exact_g_imps,
+SELECT short_token, source, date, line_item_id, creative_id, method, u_imps, exact_g_imps,
   {frac("o_imps", "g_imps")} AS f_imps,
   {frac("o_vw", "g_vw")}     AS f_viewable,
   {frac("o_clk", "g_clk")}   AS f_clicks,
@@ -571,13 +601,59 @@ SELECT short_token, date, line_item_id, creative_id, method, u_imps, exact_g_imp
 FROM picked
 WHERE method IS NOT NULL;
 
--- Conciliação por token nas chaves exatas + números pro admin.
-CREATE TEMP TABLE recon AS
-SELECT c.short_token,
-  SUM(IF(a.method = 'exact' AND a.u_imps > 0, a.u_imps, 0)) AS exact_u_imps,
-  SUM(IF(a.method = 'exact' AND a.u_imps > 0, a.exact_g_imps, 0)) AS exact_g_imps
-FROM cfg c LEFT JOIN new_adj a USING (short_token)
-GROUP BY 1;
+-- Conciliação POR DSP nas chaves exatas. Cada DSP publica sozinha: uma
+-- Yahoo que não fecha não pode derrubar o ajuste do DV360 que fecha.
+CREATE TEMP TABLE src_status AS
+WITH r AS (
+  SELECT short_token, source,
+    SUM(IF(method = 'exact' AND u_imps > 0, u_imps, 0)) AS exact_u_imps,
+    SUM(IF(method = 'exact' AND u_imps > 0, exact_g_imps, 0)) AS exact_g_imps
+  FROM new_adj
+  GROUP BY 1, 2
+)
+SELECT short_token, source, exact_u_imps, exact_g_imps,
+  CASE
+    WHEN exact_u_imps = 0 THEN 'no_data'
+    WHEN SAFE_DIVIDE(ABS(exact_u_imps - exact_g_imps), exact_u_imps) <= {tolerance} THEN 'ok'
+    ELSE 'blocked'
+  END AS status,
+  ROUND(SAFE_DIVIDE(ABS(exact_u_imps - exact_g_imps), exact_u_imps) * 100, 3) AS recon_diff_pct
+FROM r;
+
+-- Frações já publicadas (antes da v3 não havia source: era tudo DV360).
+CREATE TEMP TABLE prev_adj AS
+SELECT short_token, COALESCE(source, 'DV360') AS source, date, line_item_id, creative_id,
+       method, f_imps, f_viewable, f_clicks, f_video, f_cost
+FROM {ADJ_TABLE};
+
+-- O que vai ser publicado:
+--   token × DSP conciliado agora      → fração nova
+--   token × DSP deste cálculo que não  → mantém a última publicada (ou nada)
+--   token fora deste cálculo           → mantém tudo
+-- Token que saiu da config some. Uma linha por chave (guarda contra id de
+-- line repetido entre DSPs, que duplicaria linha no JOIN do report).
+CREATE TEMP TABLE pub_adj AS
+SELECT * EXCEPT (rn) FROM (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY short_token, date, line_item_id, creative_id ORDER BY source) AS rn
+  FROM (
+    SELECT a.short_token, a.source, a.date, a.line_item_id, a.creative_id, a.method,
+           a.f_imps, a.f_viewable, a.f_clicks, a.f_video, a.f_cost
+    FROM new_adj a JOIN src_status s USING (short_token, source)
+    WHERE s.status = 'ok'
+    UNION ALL
+    SELECT p.* FROM prev_adj p
+    WHERE p.short_token IN (SELECT short_token FROM cfg)
+      AND NOT EXISTS (
+        SELECT 1 FROM src_status s
+        WHERE s.short_token = p.short_token AND s.source = p.source AND s.status = 'ok')
+    UNION ALL
+    SELECT p.* FROM prev_adj p
+    WHERE p.short_token IN (SELECT short_token FROM cfg_all)
+      AND p.short_token NOT IN (SELECT short_token FROM cfg)
+  )
+)
+WHERE rn = 1;
 
 CREATE TEMP TABLE new_status AS
 WITH u AS (
@@ -591,29 +667,60 @@ WITH u AS (
     AND (c.date_to IS NULL OR u.date <= c.date_to)
   GROUP BY 1, 2, 3, 4
 ),
+-- Números do admin sobre o que ficou PUBLICADO (não sobre o cálculo novo de
+-- uma DSP que não conciliou).
+per_key AS (
+  SELECT u.*, a.source, a.method,
+         a.f_imps, a.f_viewable, a.f_clicks, a.f_video, a.f_cost
+  FROM u LEFT JOIN pub_adj a USING (short_token, date, line_item_id, creative_id)
+),
 agg AS (
-  SELECT u.short_token,
-    SUM(u.imps) AS unified_imps,
-    SUM(u.imps * IFNULL(a.f_imps, 0)) AS removed_imps,
-    SUM(u.vw * IFNULL(a.f_viewable, 0)) AS removed_viewable,
-    SUM(u.clk * IFNULL(a.f_clicks, 0)) AS removed_clicks,
-    SUM(u.vid * IFNULL(a.f_video, 0)) AS removed_video_100,
-    SUM(u.cost * IFNULL(a.f_cost, 0)) AS removed_cost,
-    SUM(u.cost) AS unified_cost,
-    SUM(IF(a.method = 'exact', u.imps, 0)) AS exact_imps,
-    SUM(IF(a.method IN ('line_day', 'line_window'), u.imps, 0)) AS estimated_imps,
-    SUM(IF(a.method IS NULL, u.imps, 0)) AS no_geo_imps
-  FROM u LEFT JOIN new_adj a USING (short_token, date, line_item_id, creative_id)
+  SELECT short_token,
+    SUM(imps) AS unified_imps,
+    SUM(imps * IFNULL(f_imps, 0)) AS removed_imps,
+    SUM(vw * IFNULL(f_viewable, 0)) AS removed_viewable,
+    SUM(clk * IFNULL(f_clicks, 0)) AS removed_clicks,
+    SUM(vid * IFNULL(f_video, 0)) AS removed_video_100,
+    SUM(cost * IFNULL(f_cost, 0)) AS removed_cost,
+    SUM(cost) AS unified_cost,
+    SUM(IF(method = 'exact', imps, 0)) AS exact_imps,
+    SUM(IF(method IN ('line_day', 'line_window'), imps, 0)) AS estimated_imps,
+    SUM(IF(method IS NULL, imps, 0)) AS no_geo_imps
+  FROM per_key
+  GROUP BY 1
+),
+agg_src AS (
+  SELECT short_token, source,
+    SUM(imps * IFNULL(f_imps, 0)) AS removed_imps,
+    SUM(cost * IFNULL(f_cost, 0)) AS removed_cost
+  FROM per_key
+  WHERE source IS NOT NULL
+  GROUP BY 1, 2
+),
+tok AS (
+  SELECT s.short_token,
+    CASE
+      WHEN COUNTIF(s.status = 'ok') > 0 AND COUNTIF(s.status = 'blocked') > 0 THEN 'partial'
+      WHEN COUNTIF(s.status = 'ok') > 0 THEN 'ok'
+      WHEN COUNTIF(s.status = 'blocked') > 0 THEN 'blocked'
+      ELSE 'no_data'
+    END AS status,
+    ROUND(SAFE_DIVIDE(ABS(SUM(s.exact_u_imps) - SUM(s.exact_g_imps)), SUM(s.exact_u_imps)) * 100, 3)
+      AS recon_diff_pct,
+    TO_JSON_STRING(ARRAY_AGG(STRUCT(
+      s.source, s.status, s.recon_diff_pct,
+      CAST(s.exact_u_imps AS INT64) AS exact_imps,
+      ROUND(IFNULL(x.removed_imps, 0)) AS removed_imps,
+      ROUND(IFNULL(x.removed_cost, 0), 2) AS removed_cost
+    ) ORDER BY s.source)) AS source_detail
+  FROM src_status s
+  LEFT JOIN agg_src x USING (short_token, source)
   GROUP BY 1
 )
 SELECT c.short_token,
   CURRENT_TIMESTAMP() AS refreshed_at,
-  CASE
-    WHEN r.exact_u_imps IS NULL OR r.exact_u_imps = 0 THEN 'no_data'
-    WHEN SAFE_DIVIDE(ABS(r.exact_u_imps - r.exact_g_imps), r.exact_u_imps) <= {tolerance} THEN 'ok'
-    ELSE 'blocked'
-  END AS status,
-  ROUND(SAFE_DIVIDE(ABS(r.exact_u_imps - r.exact_g_imps), r.exact_u_imps) * 100, 3) AS recon_diff_pct,
+  IFNULL(t.status, 'no_data') AS status,
+  t.recon_diff_pct,
   CAST(g.unified_imps AS INT64) AS unified_imps,
   g.removed_imps, g.removed_viewable, g.removed_clicks, g.removed_video_100,
   ROUND(g.removed_cost, 2) AS removed_cost,
@@ -622,9 +729,10 @@ SELECT c.short_token,
   CAST(g.estimated_imps AS INT64) AS estimated_imps,
   CAST(g.no_geo_imps AS INT64) AS no_geo_imps,
   (SELECT MAX(date) FROM geo x WHERE x.short_token = c.short_token) AS last_geo_date,
-  {SCRIPT_VERSION} AS script_version
+  {SCRIPT_VERSION} AS script_version,
+  t.source_detail
 FROM cfg c
-LEFT JOIN recon r USING (short_token)
+LEFT JOIN tok t USING (short_token)
 LEFT JOIN agg g USING (short_token);
 
 -- Status: os tokens calculados agora + (no recálculo parcial) o status
@@ -637,24 +745,27 @@ WHERE scoped
   AND short_token IN (SELECT short_token FROM cfg_all)
   AND short_token NOT IN (SELECT short_token FROM cfg);
 
--- Publica: token conciliado recebe a fração nova; token que não fechou
--- mantém a última publicada (ou fica sem ajuste); token fora deste cálculo
--- mantém a sua. Token que saiu da config some.
 CREATE OR REPLACE TABLE {ADJ_TABLE}
 CLUSTER BY short_token AS
 SELECT short_token, date, line_item_id, creative_id, method,
-       f_imps, f_viewable, f_clicks, f_video, f_cost
-FROM new_adj
-WHERE short_token IN (SELECT short_token FROM new_status WHERE status = 'ok')
-UNION ALL
-SELECT short_token, date, line_item_id, creative_id, method,
-       f_imps, f_viewable, f_clicks, f_video, f_cost
-FROM {ADJ_TABLE}
-WHERE short_token IN (SELECT short_token FROM cfg_all)
-  AND short_token NOT IN (SELECT short_token FROM new_status WHERE status = 'ok');
+       f_imps, f_viewable, f_clicks, f_video, f_cost, source
+FROM pub_adj;
 
 SELECT * FROM {STATUS_TABLE} ORDER BY short_token;
 """
+
+
+def _parse_source_detail(raw):
+    """JSON do status por DSP → lista (vazia se ausente/ilegível)."""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return raw
+    try:
+        out = json.loads(raw)
+        return out if isinstance(out, list) else []
+    except (TypeError, ValueError):
+        return []
 
 
 _refresh_lock = threading.Lock()
@@ -681,8 +792,9 @@ def refresh(bq, scope=None):
     a eles; sem scope, ou com status de versão antiga, recalcula todos. Um
     refresh por instância por vez. Devolve o status de todos os tokens."""
     ensure_tables(bq)
-    if _last_modified_ms(bq, "prod_assets", COMPACT_TABLE_ID) is None:
-        sync_compact(bq, force=True)  # primeira vez: ~20s, depois só no warmup
+    if _last_modified_ms(bq, "prod_assets", COMPACT_TABLE_ID) is None or _compact_needs_rebuild(bq):
+        # primeira vez ou formato antigo: ~20s, depois só no warmup
+        sync_compact(bq, force=True)
     scope = sorted({normalize_token(t) for t in (scope or [])})
     if scope and not _status_is_current(bq):
         scope = []
@@ -699,6 +811,7 @@ def refresh(bq, scope=None):
             for k in ("refreshed_at", "last_geo_date"):
                 if r.get(k) is not None:
                     r[k] = r[k].isoformat()
+            r["source_detail"] = _parse_source_detail(r.get("source_detail"))
         logger.warning(f"[geo_exclusions] refresh {scope or 'total'} em {time.time() - t0:.1f}s: "
                        + ", ".join(f"{r['short_token']}={r['status']}" for r in rows))
         return rows
@@ -742,12 +855,27 @@ def has_config(bq):
         return False
 
 
-def build_compact_sql():
-    return f"""
-        CREATE OR REPLACE TABLE {COMPACT_TABLE}
-        PARTITION BY date
-        CLUSTER BY line_item_id AS
-        SELECT date,
+def build_compact_sql(from_geo=True):
+    """Cópia compacta dia × DSP × line × criativo × país. `from_geo`: da base
+    unificada (DV360 + Yahoo, país já em ISO-2 ou NULL); senão do Region cru
+    do DV360, como antes."""
+    if from_geo:
+        source_sql = f"""
+        SELECT date, source,
+               CAST(line_item_id AS STRING) AS line_item_id,
+               CAST(creative_id AS STRING) AS creative_id,
+               UPPER(TRIM(country_code)) AS cc,
+               SUM(impressions) AS impressions,
+               SUM(viewable_impressions) AS viewable_impressions,
+               SUM(clicks) AS clicks,
+               SUM(video_view_100_complete) AS video_view_100_complete,
+               SUM(total_cost) AS total_media_cost_advertiser_currency,
+               -- marca de origem no schema (ver _compact_needs_rebuild)
+               TRUE AS {COMPACT_GEO_MARKER}
+        FROM {GEO_TABLE}"""
+    else:
+        source_sql = f"""
+        SELECT date, 'DV360' AS source,
                CAST(line_item_id AS STRING) AS line_item_id,
                CAST(creative_id AS STRING) AS creative_id,
                UPPER(TRIM(CAST(country_code AS STRING))) AS cc,
@@ -756,29 +884,67 @@ def build_compact_sql():
                SUM(clicks) AS clicks,
                SUM(video_view_100_complete) AS video_view_100_complete,
                SUM(total_media_cost_advertiser_currency) AS total_media_cost_advertiser_currency
-        FROM {REGIONS_TABLE}
+        FROM {REGIONS_TABLE}"""
+    return f"""
+        CREATE OR REPLACE TABLE {COMPACT_TABLE}
+        PARTITION BY date
+        CLUSTER BY line_item_id AS
+        {source_sql.strip()}
         WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL {COMPACT_LOOKBACK_DAYS} DAY)
-        GROUP BY 1, 2, 3, 4
+        GROUP BY 1, 2, 3, 4, 5
     """
 
 
 _compact_lock = threading.Lock()
+# Coluna que só existe na cópia montada da base unificada. É como o sync sabe
+# a origem sem ler dado nem depender de permissão pra editar metadata.
+COMPACT_GEO_MARKER = "from_unified_geo"
+
+
+def _geo_table_ready(bq):
+    """A base de geo unificada existe? (metadata; sem ela, só DV360)."""
+    return _last_modified_ms(bq, "prod_assets", GEO_TABLE_ID) is not None
+
+
+def _compact_needs_rebuild(bq):
+    """Cópia compacta ausente ou num formato que o refresh não lê: sem a
+    coluna `source` (anterior à v3), ou montada do Region cru quando a base
+    unificada já existe (a Yahoo ficaria de fora)."""
+    try:
+        table = bq.get_table(COMPACT_TABLE.strip("`"))
+    except NotFound:
+        return True
+    except Exception as e:  # noqa: BLE001 — sem metadata, não força rebuild
+        logger.warning(f"[geo_exclusions] schema da cópia compacta indisponível: {e}")
+        return False
+    cols = {f.name for f in table.schema}
+    if "source" not in cols:
+        return True
+    built_from_geo = COMPACT_GEO_MARKER in cols
+    return built_from_geo != _geo_table_ready(bq)
+
+
+def _compact_origin(bq):
+    return "geo" if _geo_table_ready(bq) else "regions"
 
 
 def sync_compact(bq, force=False):
-    """Refaz a cópia compacta quando o Region mudou depois dela (ou quando
-    não existe). Reconstrução inteira, não incremental: pega também dia antigo
-    reprocessado (o 12/09 que faltou). Devolve True se reconstruiu."""
+    """Refaz a cópia compacta quando a fonte mudou depois dela (ou quando não
+    existe / está no formato antigo). Reconstrução inteira, não incremental:
+    pega também dia antigo reprocessado (o 12/09 que faltou). Devolve True se
+    reconstruiu."""
     with _compact_lock:
+        origin = _compact_origin(bq)
         compact = _last_modified_ms(bq, "prod_assets", COMPACT_TABLE_ID)
-        if not force and compact is not None:
-            regions = _last_modified_ms(bq, "prod_assets", "dv360_daily_regions_performance_metrics")
-            if regions is None or regions <= compact:
+        if not force and compact is not None and not _compact_needs_rebuild(bq):
+            src_table = GEO_TABLE_ID if origin == "geo" else "dv360_daily_regions_performance_metrics"
+            src = _last_modified_ms(bq, "prod_assets", src_table)
+            if src is None or src <= compact:
                 return False
         t0 = time.time()
         cfg = bigquery.QueryJobConfig(maximum_bytes_billed=MAX_BYTES_BILLED)
-        bq.query(build_compact_sql(), job_config=cfg, location="US").result()
-        logger.warning(f"[geo_exclusions] cópia compacta do Region refeita em {time.time() - t0:.1f}s")
+        bq.query(build_compact_sql(from_geo=origin == "geo"), job_config=cfg, location="US").result()
+        logger.warning(f"[geo_exclusions] cópia compacta ({origin}) refeita em {time.time() - t0:.1f}s")
         return True
 
 

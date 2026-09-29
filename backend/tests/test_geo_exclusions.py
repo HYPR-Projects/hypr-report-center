@@ -115,15 +115,24 @@ def test_leitura_dos_tokens_falhou_sem_historico_nao_ajusta():
 
 # ── Refresh ────────────────────────────────────────────────────────────────
 
-def test_refresh_publica_so_token_conciliado_e_guarda_o_ultimo_bom():
+def test_refresh_publica_so_dsp_conciliada_e_guarda_o_ultimo_bom():
     sql = ge.build_refresh_script(tolerance=0.005)
     assert "<= 0.005 THEN 'ok'" in sql
+    pub = sql[sql.index("CREATE TEMP TABLE pub_adj"):sql.index("CREATE TEMP TABLE new_status")]
+    # conciliação e publicação por token × DSP: Yahoo que não fecha não
+    # derruba o DV360 que fecha
+    assert "GROUP BY 1, 2" in sql[sql.index("CREATE TEMP TABLE src_status"):]
+    assert "FROM new_adj a JOIN src_status s USING (short_token, source)\n    WHERE s.status = 'ok'" in pub
+    # a DSP que não fechou mantém a fração publicada dela
+    assert "s.short_token = p.short_token AND s.source = p.source AND s.status = 'ok'" in pub
+    # token fora do cálculo mantém tudo; quem saiu da config some
+    assert "p.short_token IN (SELECT short_token FROM cfg_all)" in pub
+    # linha anterior à v3 (sem source) é DV360
+    assert "COALESCE(source, 'DV360') AS source" in sql
+    # uma linha por chave: o JOIN do report nunca duplica
+    assert "PARTITION BY short_token, date, line_item_id, creative_id ORDER BY source" in pub
     publish = sql[sql.index(f"CREATE OR REPLACE TABLE {ge.ADJ_TABLE}"):]
-    # fração nova só pra quem conciliou
-    assert "FROM new_adj\nWHERE short_token IN (SELECT short_token FROM new_status WHERE status = 'ok')" in publish
-    # quem não fechou (ou ficou fora do cálculo) mantém a publicada; quem saiu da config some
-    assert f"FROM {ge.ADJ_TABLE}\nWHERE short_token IN (SELECT short_token FROM cfg_all)" in publish
-    assert "NOT IN (SELECT short_token FROM new_status WHERE status = 'ok')" in publish
+    assert "FROM pub_adj;" in publish
 
 
 def test_refresh_nao_conta_pais_nao_resolvido_nem_liberado():
@@ -140,7 +149,7 @@ def test_refresh_marca_estimativa_do_dia_sem_region():
     sql = ge.build_refresh_script()
     assert "'line_window'" in sql and "'line_day'" in sql and "'exact'" in sql
     # conciliação só nas chaves exatas que existem na unified
-    assert "a.method = 'exact' AND a.u_imps > 0" in sql
+    assert "IF(method = 'exact' AND u_imps > 0, u_imps, 0)" in sql
 
 
 def test_refresh_if_stale_sem_config_nao_roda(monkeypatch):
@@ -220,8 +229,10 @@ def test_auto_freeze_pula_campanha_com_ajuste_ativo():
 
 def test_status_guarda_o_custo_dsp_fora_do_br_e_a_versao():
     sql = ge.build_refresh_script()
-    assert "SUM(u.cost * IFNULL(a.f_cost, 0)) AS removed_cost" in sql
+    assert "SUM(cost * IFNULL(f_cost, 0)) AS removed_cost" in sql
     assert f"{ge.SCRIPT_VERSION} AS script_version" in sql
+    # números do admin sobre o que ficou publicado, não sobre o cálculo novo
+    assert "FROM u LEFT JOIN pub_adj a USING (short_token, date, line_item_id, creative_id)" in sql
 
 
 def test_resumo_pro_card_so_de_token_ativo(monkeypatch):
@@ -252,8 +263,8 @@ def test_recalculo_parcial_preserva_os_outros_tokens():
     assert "WHERE NOT scoped OR e.short_token IN UNNEST(scope)" in sql
     # status dos tokens fora do cálculo é reaproveitado, com colunas explícitas
     assert f"SELECT {ge._STATUS_COLS} FROM {ge.STATUS_TABLE}\nWHERE scoped" in sql
-    # frações dos tokens fora do cálculo (ou que não fecharam) ficam
-    assert "AND short_token NOT IN (SELECT short_token FROM new_status WHERE status = 'ok')" in sql
+    # frações dos tokens fora do cálculo ficam
+    assert "AND p.short_token NOT IN (SELECT short_token FROM cfg)" in sql
 
 
 def test_recalculo_le_a_copia_compacta_particionada():
@@ -262,7 +273,12 @@ def test_recalculo_le_a_copia_compacta_particionada():
     assert ge.REGIONS_TABLE not in sql  # a original não é particionada (~19 GB por leitura)
     compact = ge.build_compact_sql()
     assert "PARTITION BY date" in compact and "CLUSTER BY line_item_id" in compact
-    assert ge.REGIONS_TABLE in compact
+    # com a base unificada: DV360 + Yahoo, com a DSP
+    assert ge.GEO_TABLE in compact and ge.REGIONS_TABLE not in compact
+    assert "SELECT date, source," in compact
+    # sem ela: Region cru, só DV360, como antes
+    legacy = ge.build_compact_sql(from_geo=False)
+    assert ge.REGIONS_TABLE in legacy and "'DV360' AS source" in legacy
 
 
 def test_refresh_parcial_vira_total_com_status_de_versao_antiga(monkeypatch):
@@ -313,3 +329,110 @@ def test_refresh_true_descarta_o_cache_geo_da_instancia():
     main._fresh_read_prelude()
     assert ge._active_cache["tokens"] is None
     assert "v" not in main._base_version_cache
+
+
+# ── Yahoo (v3): geo por DSP ─────────────────────────────────────────────────
+
+def test_geo_casa_line_com_a_dsp_dela():
+    sql = ge.build_refresh_script()
+    # DSP da line vem da unified; line só no campaign_results casa com qualquer uma
+    assert "ANY_VALUE(source) AS source" in sql
+    assert "AND (l.source IS NULL OR l.source = r.source)" in sql
+    assert "COALESCE(e.source, d.source, w.source) AS source" in sql
+
+
+def test_status_parcial_quando_uma_dsp_fecha_e_outra_nao():
+    sql = ge.build_refresh_script()
+    assert "COUNTIF(s.status = 'ok') > 0 AND COUNTIF(s.status = 'blocked') > 0 THEN 'partial'" in sql
+    assert "TO_JSON_STRING(ARRAY_AGG(STRUCT(" in sql and "AS source_detail" in sql
+    assert "source_detail" in ge._STATUS_COLS
+
+
+def test_scripts_parseiam_no_dialeto_bigquery():
+    sqlglot = pytest.importorskip("sqlglot")
+    sqlglot.parse(ge.build_refresh_script(), read="bigquery")
+    for flag in (True, False):
+        sqlglot.parse_one(ge.build_compact_sql(flag), read="bigquery")
+
+
+def test_tabelas_ganham_as_colunas_da_v3():
+    bq = FakeBQ()
+    ge._ready = False
+    ge.ensure_tables(bq)
+    ddl = bq.queries[0]
+    assert f"ALTER TABLE {ge.ADJ_TABLE} ADD COLUMN IF NOT EXISTS source STRING" in ddl
+    assert f"ALTER TABLE {ge.STATUS_TABLE} ADD COLUMN IF NOT EXISTS source_detail STRING" in ddl
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, []),
+    ("", []),
+    ('[{"source":"DV360","status":"ok"},{"source":"YAHOO","status":"blocked"}]',
+     [{"source": "DV360", "status": "ok"}, {"source": "YAHOO", "status": "blocked"}]),
+    ("não é json", []),
+    ('{"source":"DV360"}', []),
+])
+def test_source_detail_vira_lista(raw, expected):
+    assert ge._parse_source_detail(raw) == expected
+
+
+class _MetaBQ(FakeBQ):
+    """get_table com schema/descrição controlados, e last_modified por tabela."""
+
+    def __init__(self, compact_cols=None):
+        super().__init__()
+        self.compact_cols = compact_cols
+
+    def get_table(self, table_id):
+        from types import SimpleNamespace
+        if table_id.endswith(ge.COMPACT_TABLE_ID):
+            if self.compact_cols is None:
+                raise ge.NotFound("compact")
+            return SimpleNamespace(schema=[SimpleNamespace(name=c) for c in self.compact_cols])
+        raise ge.NotFound(table_id)
+
+    def query(self, sql, job_config=None, location=None):
+        if f"CREATE OR REPLACE TABLE {ge.COMPACT_TABLE}" in sql:
+            self.compact_cols = ["date", "source", "line_item_id"] + (
+                [ge.COMPACT_GEO_MARKER] if ge.COMPACT_GEO_MARKER in sql else [])
+        return super().query(sql, job_config, location)
+
+
+def _lm(geo_exists):
+    def f(bq, ds, table):
+        if table == ge.GEO_TABLE_ID:
+            return 10 if geo_exists else None
+        return 5
+    return f
+
+
+def test_compacta_antiga_sem_source_e_refeita(monkeypatch):
+    monkeypatch.setattr(ge, "_last_modified_ms", _lm(True))
+    assert ge._compact_needs_rebuild(_MetaBQ(compact_cols=["date", "line_item_id", "cc"])) is True
+
+
+def test_compacta_do_region_e_refeita_quando_a_unificada_aparece(monkeypatch):
+    monkeypatch.setattr(ge, "_last_modified_ms", _lm(True))
+    from_regions = ["date", "source"]
+    from_geo = ["date", "source", ge.COMPACT_GEO_MARKER]
+    assert ge._compact_needs_rebuild(_MetaBQ(compact_cols=from_regions)) is True
+    assert ge._compact_needs_rebuild(_MetaBQ(compact_cols=from_geo)) is False
+    monkeypatch.setattr(ge, "_last_modified_ms", _lm(False))
+    assert ge._compact_needs_rebuild(_MetaBQ(compact_cols=from_regions)) is False
+
+
+def test_sync_monta_da_unificada_e_marca_a_origem(monkeypatch):
+    monkeypatch.setattr(ge, "_last_modified_ms", _lm(True))
+    bq = _MetaBQ(compact_cols=["date", "line_item_id"])  # formato antigo
+    assert ge.sync_compact(bq) is True
+    assert ge.GEO_TABLE in bq.queries[-1]
+    # a cópia nova já sai marcada: o próximo sync não refaz
+    assert ge._compact_needs_rebuild(bq) is False
+
+
+def test_sync_sem_unificada_segue_no_region(monkeypatch):
+    monkeypatch.setattr(ge, "_last_modified_ms", _lm(False))
+    bq = _MetaBQ(compact_cols=None)
+    assert ge.sync_compact(bq, force=True) is True
+    assert ge.REGIONS_TABLE in bq.queries[-1] and ge.GEO_TABLE not in bq.queries[-1]
+    assert ge._compact_needs_rebuild(bq) is False

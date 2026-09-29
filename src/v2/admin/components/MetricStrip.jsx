@@ -21,6 +21,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { cn } from "../../../ui/cn";
 import { formatBRL, formatPct as formatPctBR } from "../lib/format";
 import * as Popover from "@radix-ui/react-popover";
+import { SegmentedControlV2 } from "../../components/SegmentedControlV2";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
 
 // BRL compacto sem centavos pro tooltip de breakdown do Tech Cost. Numbers
@@ -241,7 +242,8 @@ function MetricDelta({ current, previous, goodDirection = "up" }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Fora do BR — entrega do DV360 em país que a line não prevê.
+// Fora do BR — entrega em país que a line não prevê, nas DSPs que reportam
+// país (DV360 e Yahoo; StackAdapt e Amazon não têm geo no BQ).
 //
 // Dado: action=out_of_country (backend/out_of_country.py). "Previsto" é o
 // país escrito por extenso no nome da line (Elux _CHILE_/_PERU_/_COLOMBIA_):
@@ -264,6 +266,12 @@ function dataWarningText(w) {
   }
   if (w.kind === "untracked_lines") {
     return `${formatPctBR(w.share, 1)} do volume em lines sem campanha vinculada — ranking e alerta por campanha incompletos.`;
+  }
+  if (w.kind === "source_stale") {
+    return `${w.label} sem geo desde ${formatDayMonth(w.last_date)} — fica fora do corte da visão agregada até voltar.`;
+  }
+  if (w.kind === "geo_coverage") {
+    return `${w.label}: só ${formatPctBR(w.share, 1)} da entrega do mês tem país — a ${w.label} está subrepresentada na taxa.`;
   }
   return null;
 }
@@ -553,15 +561,34 @@ function useHoverOpen() {
   return { open, onOpenChange, hoverProps: { onPointerEnter, onPointerLeave } };
 }
 
+// Visão do hover: "Agregado" (padrão, todas as DSPs juntas) ou uma DSP só.
+// Cada aba de DSP é o payload inteiro recalculado só com ela
+// (`by_source` do backend): taxa, gráfico, países e ranking dela. O número
+// grande da célula é sempre o agregado.
+const OOC_ALL = "ALL";
+
 function OutOfCountryCard({ data, compact, onOpenReport }) {
   const { open, onOpenChange, hoverProps } = useHoverOpen();
-  const {
-    rate, alert, alert_reasons = [], campaigns = [],
-    impressions, unexpected_impressions, expected_impressions, expected_rate,
-    unknown_impressions, unknown_rate, expected_countries = [], top_countries = [],
-    reference_date, day_rate, campaigns_with_unexpected, data_warnings = [], daily = [],
-  } = data;
+  const [view, setView] = useState(OOC_ALL);
+  const { rate, alert, reference_date, day_rate, data_warnings = [] } = data;
   const suspect = data_warnings.length > 0;
+  const sourceLabel = data.source || "DV360";
+
+  const bySource = data.by_source || null;
+  const tabs = bySource
+    ? [{ value: OOC_ALL, label: "Agregado" }, ...(data.sources || []).map((s) => ({ value: s.source, label: s.label }))]
+    : null;
+  const current = view !== OOC_ALL && bySource?.[view] ? view : OOC_ALL;
+  const shown = current === OOC_ALL ? data : bySource[current];
+  const shownLabel = current === OOC_ALL
+    ? sourceLabel
+    : (data.sources || []).find((s) => s.source === current)?.label || current;
+
+  // Abre sempre no agregado.
+  const handleOpenChange = (next) => {
+    if (!next) setView(OOC_ALL);
+    onOpenChange(next);
+  };
 
   const footer = alert ? (
     <span className="inline-flex items-center gap-1 font-semibold text-danger whitespace-nowrap">
@@ -574,14 +601,14 @@ function OutOfCountryCard({ data, compact, onOpenReport }) {
     </span>
   ) : reference_date ? (
     <span className="whitespace-nowrap">
-      {formatDayMonth(reference_date)}: <span className="tabular-nums">{formatPctTwo(day_rate)}</span> · DV360
+      {formatDayMonth(reference_date)}: <span className="tabular-nums">{formatPctTwo(day_rate)}</span> · {sourceLabel}
     </span>
   ) : (
-    <span className="whitespace-nowrap">DV360</span>
+    <span className="whitespace-nowrap">{sourceLabel}</span>
   );
 
   return (
-    <Popover.Root open={open} onOpenChange={onOpenChange}>
+    <Popover.Root open={open} onOpenChange={handleOpenChange}>
       <Popover.Trigger asChild>
         {/* Fundo opaco no wrapper: o danger-soft da célula é translúcido e,
             sem isso, o bg-border da grade (os filetes) vazaria por baixo.
@@ -593,7 +620,7 @@ function OutOfCountryCard({ data, compact, onOpenReport }) {
           aria-label="Entrega fora do Brasil: ver campanhas"
           {...hoverProps}
           onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenChange(!open); }
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleOpenChange(!open); }
           }}
           className={cn(
             "cursor-pointer bg-canvas-elevated focus-visible:outline-none",
@@ -626,140 +653,236 @@ function OutOfCountryCard({ data, compact, onOpenReport }) {
             "data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out focus-visible:outline-none",
           )}
         >
-          <div className="px-3.5 pt-3 pb-2 flex items-baseline justify-between gap-3 border-b border-border/60">
-            <span className="lbl-section">Entrega fora do Brasil · DV360</span>
-            {reference_date && (
-              <span className="text-[11px] text-fg-subtle whitespace-nowrap">dado até {formatDayMonth(reference_date)}</span>
-            )}
-          </div>
-
-          {suspect && (
-            <div className="mx-3.5 mt-2.5 rounded-md border border-warning/40 bg-warning-soft px-3 py-2">
-              <div className="text-[11px] font-bold text-warning mb-1">Dado suspeito</div>
-              <ul className="flex flex-col gap-0.5 text-[11px] text-fg">
-                {data_warnings.map((w, i) => {
-                  const text = dataWarningText(w);
-                  return text ? <li key={i}>{text}</li> : null;
-                })}
-              </ul>
-            </div>
-          )}
-
-          {alert && alert_reasons.length > 0 && (
-            <div className="mx-3.5 mt-2.5 rounded-md border border-danger/40 bg-danger-soft px-3 py-2">
-              <div className="text-[11px] font-bold text-danger mb-1">Fora do normal</div>
-              <ul className="flex flex-col gap-0.5 text-[11px] text-fg">
-                {alert_reasons.map((r, i) => {
-                  const text = alertReasonText(r);
-                  return text ? <li key={i}>{text}</li> : null;
-                })}
-              </ul>
-            </div>
-          )}
-
-          <OutOfCountryTrend daily={daily} alert={alert} />
-
-          <div className="px-3.5 py-2.5 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
-            <span className="text-fg-subtle">Fora sem previsão na line</span>
-            <span className="text-right tabular-nums">
-              <span className={cn("font-bold", TONE_CLASS[toneOutOfCountry(rate)])}>{formatPctTwo(rate)}</span>
-              <span className="text-fg-subtle"> · {formatImps(unexpected_impressions)} imps</span>
-            </span>
-            {top_countries.length > 0 && (
-              <>
-                <span className="text-fg-subtle">Principais países</span>
-                <span className="text-right truncate" title={top_countries.map((c) => countryName(c.country)).join(", ")}>
-                  {top_countries.slice(0, 4).map((c) => `${c.country} ${formatImps(c.impressions)}`).join(" · ")}
+          <div className="px-3.5 pt-3 pb-2 flex items-center justify-between gap-3 border-b border-border/60">
+            <div className="flex flex-col gap-0.5 min-w-0">
+              <span className="lbl-section">Entrega fora do Brasil · {shownLabel}</span>
+              {shown.reference_date && (
+                <span className="text-[11px] text-fg-subtle whitespace-nowrap">
+                  dado até {formatDayMonth(shown.reference_date)}
+                  {current === OOC_ALL && data.lagging_sources?.length > 0 && (
+                    <> · {data.lagging_sources.map((s) => s.label).join(", ")} ainda sem os dias seguintes</>
+                  )}
                 </span>
-              </>
-            )}
-            <span className="text-fg-subtle">Previsto na line</span>
-            <span className="text-right tabular-nums">
-              {formatPctTwo(expected_rate)}
-              {expected_countries.length > 0 && (
-                <span className="text-fg-subtle"> · {expected_countries.map((c) => c.country).join(", ")}</span>
               )}
-              <span className="text-fg-subtle"> · {formatImps(expected_impressions)}</span>
-            </span>
-            <span className="text-fg-subtle">País não identificado</span>
-            <span className="text-right tabular-nums">
-              {formatPctTwo(unknown_rate)}<span className="text-fg-subtle"> · {formatImps(unknown_impressions)}</span>
-            </span>
-            <span className="text-fg-subtle">Total DV360 no mês</span>
-            <span className="text-right tabular-nums font-semibold">{formatImps(impressions)} imps</span>
-          </div>
-
-          <div className="border-t border-border/60">
-            {campaigns.length === 0 ? (
-              <div className="px-3.5 py-3 text-[11px] text-fg-subtle">
-                Nenhuma campanha com entrega fora do Brasil sem previsão na line.
-              </div>
-            ) : (
-              <table className="w-full text-[11px]">
-                <thead>
-                  <tr className="text-fg-subtle">
-                    <th className="text-left font-semibold px-3.5 py-1.5">Campanha</th>
-                    <th className="text-right font-semibold px-2 py-1.5">Fora</th>
-                    <th className="text-right font-semibold px-2 py-1.5">Imps fora</th>
-                    <th className="text-left font-semibold pl-2 pr-3.5 py-1.5">Países</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {campaigns.map((c) => {
-                    const clickable = !!onOpenReport;
-                    const name = [c.client_name, c.campaign_name].filter(Boolean).join(" · ") || c.short_token;
-                    return (
-                      <tr
-                        key={c.short_token}
-                        onClick={clickable ? () => onOpenReport(c.short_token) : undefined}
-                        tabIndex={clickable ? 0 : undefined}
-                        onKeyDown={clickable ? (e) => { if (e.key === "Enter") onOpenReport(c.short_token); } : undefined}
-                        className={cn(
-                          "border-t border-border/40",
-                          clickable && "cursor-pointer hover:bg-surface focus-visible:outline-none focus-visible:bg-surface",
-                          c.alert && "bg-danger-soft",
-                        )}
-                      >
-                        <td className="px-3.5 py-1.5 max-w-[220px]">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            {c.alert && <span aria-label="alerta" className="size-1.5 shrink-0 rounded-full bg-danger" />}
-                            <span className="truncate font-medium text-fg" title={name}>{name}</span>
-                          </div>
-                          <div className="text-[10px] text-fg-subtle tabular-nums">
-                            {c.short_token}
-                            {c.expected_countries?.length > 0 && ` · previsto ${c.expected_countries.join(", ")}`}
-                          </div>
-                        </td>
-                        <td className={cn("px-2 py-1.5 text-right tabular-nums font-bold", TONE_CLASS[toneOutOfCountry(c.rate)])}>
-                          {formatPctTwo(c.rate)}
-                          {c.day_rate != null && (
-                            <div className="text-[10px] font-normal text-fg-subtle">dia {formatPctTwo(c.day_rate)}</div>
-                          )}
-                        </td>
-                        <td className="px-2 py-1.5 text-right tabular-nums">{formatImps(c.unexpected_impressions)}</td>
-                        <td
-                          className="pl-2 pr-3.5 py-1.5 text-fg-muted whitespace-nowrap"
-                          title={(c.top_countries || []).map((t) => countryName(t.country)).join(", ")}
-                        >
-                          {(c.top_countries || []).map((t) => t.country).join(", ") || "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            </div>
+            {tabs && (
+              <SegmentedControlV2
+                label="Visão por DSP"
+                options={tabs}
+                value={current}
+                onChange={setView}
+                className="shrink-0 text-[11px]"
+              />
             )}
           </div>
 
-          <div className="px-3.5 py-2 border-t border-border/60 text-[10px] text-fg-subtle leading-snug">
-            {campaigns_with_unexpected > campaigns.length
-              ? `Top ${campaigns.length} de ${campaigns_with_unexpected} campanhas com entrega fora. `
-              : ""}
-            Só DV360. País no nome da line ou da campanha (ex.: CHILE, CH) conta como previsto e fica fora da taxa. Pra liberar outro país, use "Entrega fora do Brasil" no drawer da campanha.
-          </div>
+          <OutOfCountryDetail
+            data={shown}
+            scope={current}
+            scopeLabel={shownLabel}
+            sources={current === OOC_ALL ? data.sources || [] : []}
+            onPickSource={bySource ? setView : null}
+            onOpenReport={onOpenReport}
+          />
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
+  );
+}
+
+// Comparativo por DSP na visão agregada: quanto de cada uma saiu do país.
+// Clicar na linha abre a aba da DSP.
+function OutOfCountryBySource({ sources, onPick }) {
+  if (sources.length < 2) return null;
+  return (
+    <div className="border-t border-border/60">
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-fg-subtle">
+            <th className="text-left font-semibold px-3.5 py-1.5">DSP</th>
+            <th className="text-right font-semibold px-2 py-1.5">Fora</th>
+            <th className="text-right font-semibold px-2 py-1.5">Imps fora</th>
+            <th className="text-right font-semibold pl-2 pr-3.5 py-1.5">Imps com país</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sources.map((s) => {
+            const noGeo = !s.impressions;
+            const lowCoverage = s.coverage != null && s.coverage < 95;
+            return (
+              <tr
+                key={s.source}
+                onClick={onPick ? () => onPick(s.source) : undefined}
+                tabIndex={onPick ? 0 : undefined}
+                onKeyDown={onPick ? (e) => { if (e.key === "Enter") onPick(s.source); } : undefined}
+                className={cn(
+                  "border-t border-border/40",
+                  onPick && "cursor-pointer hover:bg-surface focus-visible:outline-none focus-visible:bg-surface",
+                )}
+              >
+                <td className="px-3.5 py-1.5 font-medium text-fg">{s.label}</td>
+                <td className={cn("px-2 py-1.5 text-right tabular-nums font-bold", noGeo ? "text-warning" : TONE_CLASS[toneOutOfCountry(s.rate)])}>
+                  {noGeo ? "sem país" : formatPctTwo(s.rate)}
+                </td>
+                <td className="px-2 py-1.5 text-right tabular-nums">{noGeo ? "—" : formatImps(s.unexpected_impressions)}</td>
+                <td className="pl-2 pr-3.5 py-1.5 text-right tabular-nums">
+                  {formatImps(s.impressions)}
+                  {lowCoverage && (
+                    <div className="text-[10px] text-warning">{formatPctBR(s.coverage, 0)} da entrega</div>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function OutOfCountryDetail({ data, scope, scopeLabel, sources, onPickSource, onOpenReport }) {
+  const {
+    rate, alert, alert_reasons = [], campaigns = [],
+    impressions, unexpected_impressions, expected_impressions, expected_rate,
+    unknown_impressions, unknown_rate, expected_countries = [], top_countries = [],
+    campaigns_with_unexpected, data_warnings = [], daily = [],
+  } = data;
+  const aggregated = scope === OOC_ALL;
+  const multiSource = aggregated && sources.length > 1;
+
+  return (
+    <>
+      {data_warnings.length > 0 && (
+        <div className="mx-3.5 mt-2.5 rounded-md border border-warning/40 bg-warning-soft px-3 py-2">
+          <div className="text-[11px] font-bold text-warning mb-1">Dado suspeito</div>
+          <ul className="flex flex-col gap-0.5 text-[11px] text-fg">
+            {data_warnings.map((w, i) => {
+              const text = dataWarningText(w);
+              return text ? <li key={i}>{text}</li> : null;
+            })}
+          </ul>
+        </div>
+      )}
+
+      {alert && alert_reasons.length > 0 && (
+        <div className="mx-3.5 mt-2.5 rounded-md border border-danger/40 bg-danger-soft px-3 py-2">
+          <div className="text-[11px] font-bold text-danger mb-1">Fora do normal</div>
+          <ul className="flex flex-col gap-0.5 text-[11px] text-fg">
+            {alert_reasons.map((r, i) => {
+              const text = alertReasonText(r);
+              return text ? <li key={i}>{text}</li> : null;
+            })}
+          </ul>
+        </div>
+      )}
+
+      <OutOfCountryTrend daily={daily} alert={alert} />
+
+      <div className="px-3.5 py-2.5 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+        <span className="text-fg-subtle">Fora sem previsão na line</span>
+        <span className="text-right tabular-nums">
+          <span className={cn("font-bold", TONE_CLASS[toneOutOfCountry(rate)])}>{formatPctTwo(rate)}</span>
+          <span className="text-fg-subtle"> · {formatImps(unexpected_impressions)} imps</span>
+        </span>
+        {top_countries.length > 0 && (
+          <>
+            <span className="text-fg-subtle">Principais países</span>
+            <span className="text-right truncate" title={top_countries.map((c) => countryName(c.country)).join(", ")}>
+              {top_countries.slice(0, 4).map((c) => `${c.country} ${formatImps(c.impressions)}`).join(" · ")}
+            </span>
+          </>
+        )}
+        <span className="text-fg-subtle">Previsto na line</span>
+        <span className="text-right tabular-nums">
+          {formatPctTwo(expected_rate)}
+          {expected_countries.length > 0 && (
+            <span className="text-fg-subtle"> · {expected_countries.map((c) => c.country).join(", ")}</span>
+          )}
+          <span className="text-fg-subtle"> · {formatImps(expected_impressions)}</span>
+        </span>
+        <span className="text-fg-subtle">País não identificado</span>
+        <span className="text-right tabular-nums">
+          {formatPctTwo(unknown_rate)}<span className="text-fg-subtle"> · {formatImps(unknown_impressions)}</span>
+        </span>
+        <span className="text-fg-subtle">{aggregated ? "Total com país no mês" : `Total ${scopeLabel} no mês`}</span>
+        <span className="text-right tabular-nums font-semibold">{formatImps(impressions)} imps</span>
+      </div>
+
+      {multiSource && <OutOfCountryBySource sources={sources} onPick={onPickSource} />}
+
+      <div className="border-t border-border/60">
+        {campaigns.length === 0 ? (
+          <div className="px-3.5 py-3 text-[11px] text-fg-subtle">
+            Nenhuma campanha com entrega fora do Brasil sem previsão na line.
+          </div>
+        ) : (
+          <table className="w-full text-[11px]">
+            <thead>
+              <tr className="text-fg-subtle">
+                <th className="text-left font-semibold px-3.5 py-1.5">Campanha</th>
+                <th className="text-right font-semibold px-2 py-1.5">Fora</th>
+                <th className="text-right font-semibold px-2 py-1.5">Imps fora</th>
+                <th className="text-left font-semibold pl-2 pr-3.5 py-1.5">Países</th>
+              </tr>
+            </thead>
+            <tbody>
+              {campaigns.map((c) => {
+                const clickable = !!onOpenReport;
+                const name = [c.client_name, c.campaign_name].filter(Boolean).join(" · ") || c.short_token;
+                return (
+                  <tr
+                    key={c.short_token}
+                    onClick={clickable ? () => onOpenReport(c.short_token) : undefined}
+                    tabIndex={clickable ? 0 : undefined}
+                    onKeyDown={clickable ? (e) => { if (e.key === "Enter") onOpenReport(c.short_token); } : undefined}
+                    className={cn(
+                      "border-t border-border/40",
+                      clickable && "cursor-pointer hover:bg-surface focus-visible:outline-none focus-visible:bg-surface",
+                      c.alert && "bg-danger-soft",
+                    )}
+                  >
+                    <td className="px-3.5 py-1.5 max-w-[220px]">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        {c.alert && <span aria-label="alerta" className="size-1.5 shrink-0 rounded-full bg-danger" />}
+                        <span className="truncate font-medium text-fg" title={name}>{name}</span>
+                      </div>
+                      <div className="text-[10px] text-fg-subtle tabular-nums">
+                        {c.short_token}
+                        {multiSource && c.sources?.length > 0 && ` · ${c.sources.join(" + ")}`}
+                        {c.expected_countries?.length > 0 && ` · previsto ${c.expected_countries.join(", ")}`}
+                      </div>
+                    </td>
+                    <td className={cn("px-2 py-1.5 text-right tabular-nums font-bold", TONE_CLASS[toneOutOfCountry(c.rate)])}>
+                      {formatPctTwo(c.rate)}
+                      {c.day_rate != null && (
+                        <div className="text-[10px] font-normal text-fg-subtle">dia {formatPctTwo(c.day_rate)}</div>
+                      )}
+                    </td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{formatImps(c.unexpected_impressions)}</td>
+                    <td
+                      className="pl-2 pr-3.5 py-1.5 text-fg-muted whitespace-nowrap"
+                      title={(c.top_countries || []).map((t) => countryName(t.country)).join(", ")}
+                    >
+                      {(c.top_countries || []).map((t) => t.country).join(", ") || "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="px-3.5 py-2 border-t border-border/60 text-[10px] text-fg-subtle leading-snug">
+        {campaigns_with_unexpected > campaigns.length
+          ? `Top ${campaigns.length} de ${campaigns_with_unexpected} campanhas com entrega fora. `
+          : ""}
+        {aggregated
+          ? (multiSource ? `${scopeLabel} somados; StackAdapt e Amazon não reportam país. ` : `Só ${scopeLabel}. `)
+          : `Só ${scopeLabel}. `}
+        País no nome da line ou da campanha (ex.: CHILE, CH) conta como previsto e fica fora da taxa. Pra liberar outro país, use "Entrega fora do Brasil" no drawer da campanha.
+      </div>
+    </>
   );
 }
 

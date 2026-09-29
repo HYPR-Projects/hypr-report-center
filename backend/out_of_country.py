@@ -1,24 +1,35 @@
 """
-Entrega fora do Brasil (DV360) — box das big metrics do menu admin.
+Entrega fora do Brasil (DV360 + Yahoo) — box das big metrics do menu admin.
 
 Substitui a planilha manual HYPR_OUT-OF-COUNTRY_<MÊS>, que era montada
 baixando o report de Country do DV360 e pivotando na mão.
 
 De onde vem
 -----------
-`prod_assets.dv360_daily_regions_performance_metrics` — performance DV360
-por data × IO × line × criativo × país/região/DMA/cidade, atualizada todo
-dia pelo export do DV360 (dbt no Dagster). A coluna de país é
-`country_code` (ISO-2, "BR").
+`prod_assets.unified_daily_geo_performance_metrics` (dbt no Dagster,
+repo hyprster) — entrega por dia × source × line × criativo × país ISO-2 ×
+região de todas as DSPs que reportam geo: hoje DV360 (export de Region) e
+Yahoo (extreport com país/região). Particionada por data e já com
+`short_token`. DSP nova que entrar lá aparece aqui sem mudar código.
 
-O vínculo com a campanha é por `line_item_id` contra a
+Enquanto essa tabela não existir (deploy do hyprster pendente), o box cai
+sozinho no caminho antigo: `dv360_daily_regions_performance_metrics`, só
+DV360. A checagem é por `get_table`, com cache curto, então a troca acontece
+sem deploy daqui assim que o dbt criar a tabela. O payload diz qual caminho
+foi usado em `geo_backend`.
+
+O vínculo com a campanha é por (source, line_item_id) contra a
 `unified_daily_performance_metrics`, que tem `short_token` nativo — o mesmo
 mapeamento que o ABS automático já usa com a `dv360_daily_costs`. O nome
 da line na tabela de regiões vem "normalizado" pelo dbt (sem prefixo
-HYPR_), então não dá pra confiar no `ID-<token>_` dele.
+HYPR_), então não dá pra confiar no `ID-<token>_` dele. O `short_token` da
+base de geo entra só como fallback.
 
-Só DV360 por enquanto. StackAdapt, Amazon e Yahoo não têm tabela de região
-no BQ; quando tiverem, entram como mais um UNION na CTE `geo`.
+Cobertura por fonte: a mesma janela é somada na unified de performance, e o
+payload traz geo ÷ entregue por DSP. Fonte que entrega mas não tem geo (a
+ingestão da Yahoo parou, o Region do DV360 perdeu o dia) vira aviso de dado
+em vez de sumir calada da taxa. StackAdapt e Amazon não reportam país no BQ
+e ficam fora do box.
 
 A regra de negócio: país previsto no nome da line
 -------------------------------------------------
@@ -70,16 +81,20 @@ alta estável que oscila; só razão dispara em 0,1% → 0,3%.
 import logging
 import re
 import threading
+import time
 import unicodedata
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 
 SP_TZ = ZoneInfo("America/Sao_Paulo")
 logger = logging.getLogger(__name__)
 
 REGIONS_TABLE = "`site-hypr.prod_assets.dv360_daily_regions_performance_metrics`"
+GEO_TABLE_ID = "site-hypr.prod_assets.unified_daily_geo_performance_metrics"
+GEO_TABLE = f"`{GEO_TABLE_ID}`"
 UNIFIED_TABLE = "`site-hypr.prod_assets.unified_daily_performance_metrics`"
 CHECKLIST_TABLE = "`site-hypr.prod_assets.checklist_info`"
 OVERRIDES_TABLE = "`site-hypr.prod_assets.campaign_country_overrides`"
@@ -114,6 +129,24 @@ CAMPAIGN_MIN_DAY_UNEXPECTED = 1_000
 # metade do volume não é.
 DQ_MAX_UNKNOWN_SHARE = 0.10
 DQ_MAX_UNTRACKED_SHARE = 0.50
+
+# Cobertura de geo por DSP: impressões com país ÷ impressões entregues no
+# mês. Abaixo disso a fonte vira aviso ("Yahoo sem geo"). Volume mínimo pra
+# um fim de mês com 3 mil imps de Yahoo não acender o aviso.
+DQ_MIN_GEO_COVERAGE = 0.80
+DQ_COVERAGE_MIN_IMPS = 100_000
+
+# Visão agregada: o dia de referência é o último dia com dado de TODAS as
+# DSPs ativas. Sem isso, com a Yahoo chegando um dia depois do DV360, o
+# último ponto do gráfico e o alerta seriam só DV360 e a taxa "saltaria"
+# sem salto nenhum. DSP que atrasa mais que isto sai do corte (senão uma
+# ingestão parada congelaria o box) e vira aviso de dado.
+SOURCE_LAG_TOLERANCE_DAYS = 2
+
+# DSPs que reportam geo. No caminho antigo só o DV360.
+GEO_SOURCES = ("DV360", "YAHOO")
+SOURCE_LABELS = {"DV360": "DV360", "YAHOO": "Yahoo", "XANDR": "Xandr",
+                 "STACKADAPT": "StackAdapt", "AMAZON": "Amazon"}
 
 # Ranking do hover: campanha precisa de volume no mês pra entrar, senão uma
 # line de teste com 40 impressões lidera a tabela com 50%.
@@ -185,9 +218,41 @@ def _expected_sql(country_col, text_col):
     return "(" + "\n          OR ".join(clauses) + ")"
 
 
-def build_sql(with_overrides=True):
+def _geo_cte(backend):
+    """CTE `geo`: (source, line_item_id, date, cc, geo_line_name, geo_token, imps).
+    `cc` é o país cru; a classificação BR/UNKNOWN/ISO fica no `classified`."""
+    if backend == "unified":
+        return f"""
+      SELECT
+        source,
+        CAST(line_item_id AS STRING) AS line_item_id,
+        date,
+        UPPER(TRIM(country_code)) AS cc,
+        ANY_VALUE(line_item_name) AS geo_line_name,
+        ANY_VALUE(short_token) AS geo_token,
+        SUM(impressions) AS imps
+      FROM {GEO_TABLE}
+      WHERE date BETWEEN @d_from AND @d_to
+      GROUP BY 1, 2, 3, 4"""
+    return f"""
+      SELECT
+        'DV360' AS source,
+        CAST(line_item_id AS STRING) AS line_item_id,
+        date,
+        UPPER(TRIM(CAST(country_code AS STRING))) AS cc,
+        ANY_VALUE(line_name) AS geo_line_name,
+        CAST(NULL AS STRING) AS geo_token,
+        SUM(impressions) AS imps
+      FROM {REGIONS_TABLE}
+      WHERE date BETWEEN @d_from AND @d_to
+      GROUP BY 1, 2, 3, 4"""
+
+
+def build_sql(with_overrides=True, backend="unified"):
     """`with_overrides=False` é o degrau de segurança: sem a tabela de override
-    (não deu pra criar), o box segue com a regra por nome em vez de sumir."""
+    (não deu pra criar), o box segue com a regra por nome em vez de sumir.
+    `backend`: "unified" (base de geo DV360 + Yahoo) ou "dv360" (Region cru,
+    enquanto a unified não existe)."""
     expected = _expected_sql("country", "name_text")
     overrides_cte = (
         f"SELECT short_token, countries FROM {OVERRIDES_TABLE}" if with_overrides
@@ -195,9 +260,11 @@ def build_sql(with_overrides=True):
     )
     return f"""
     WITH line_map AS (
-      -- line_item_id → short_token. Sem filtro de source: ids de DSPs
-      -- diferentes não colidem (mesmo racional do ABS automático).
+      -- (source, line_item_id) → short_token. Com source: ids de DSPs
+      -- diferentes quase não colidem, mas com a Yahoo no mesmo box "quase"
+      -- não basta.
       SELECT
+        source,
         CAST(line_item_id AS STRING) AS line_item_id,
         ANY_VALUE(short_token) AS short_token,
         STRING_AGG(DISTINCT line_name, ' || ' LIMIT 5) AS line_names,
@@ -207,7 +274,7 @@ def build_sql(with_overrides=True):
       WHERE date BETWEEN @d_from AND @d_to
         AND line_item_id IS NOT NULL
         AND short_token IS NOT NULL
-      GROUP BY 1
+      GROUP BY 1, 2
     ),
     checklist_names AS (
       SELECT short_token, ANY_VALUE(campaign_name) AS checklist_campaign
@@ -218,21 +285,19 @@ def build_sql(with_overrides=True):
     overrides AS (
       {overrides_cte}
     ),
-    geo AS (
-      SELECT
-        CAST(line_item_id AS STRING) AS line_item_id,
-        date,
-        UPPER(TRIM(CAST(country_code AS STRING))) AS cc,
-        ANY_VALUE(line_name) AS geo_line_name,
-        SUM(impressions) AS imps
-      FROM {REGIONS_TABLE}
-      WHERE date BETWEEN @d_from AND @d_to
-      GROUP BY 1, 2, 3
+    geo AS ({_geo_cte(backend)}
+    ),
+    tokened AS (
+      SELECT g.*, COALESCE(m.short_token, g.geo_token) AS short_token,
+             m.line_names, m.dsp_campaign_names
+      FROM geo g
+      LEFT JOIN line_map m USING (source, line_item_id)
     ),
     classified AS (
       SELECT
         g.date,
-        m.short_token,
+        g.source,
+        g.short_token,
         g.imps,
         CASE
           WHEN g.cc IN ('BR', 'BRA', 'BRAZIL', 'BRASIL') THEN 'BR'
@@ -241,21 +306,21 @@ def build_sql(with_overrides=True):
         END AS country,
         REGEXP_REPLACE(
           NORMALIZE(UPPER(CONCAT(
-            IFNULL(m.line_names, ''), ' || ',
+            IFNULL(g.line_names, ''), ' || ',
             IFNULL(g.geo_line_name, ''), ' || ',
-            IFNULL(m.dsp_campaign_names, ''), ' || ',
+            IFNULL(g.dsp_campaign_names, ''), ' || ',
             IFNULL(c.checklist_campaign, '')
           )), NFD),
           r'\\p{{M}}', ''
         ) AS name_text,
         IFNULL(o.countries, []) AS allowed
-      FROM geo g
-      LEFT JOIN line_map m USING (line_item_id)
-      LEFT JOIN checklist_names c ON c.short_token = m.short_token
-      LEFT JOIN overrides o ON o.short_token = m.short_token
+      FROM tokened g
+      LEFT JOIN checklist_names c ON c.short_token = g.short_token
+      LEFT JOIN overrides o ON o.short_token = g.short_token
     )
     SELECT
       date,
+      source,
       short_token,
       country,
       CASE
@@ -266,8 +331,46 @@ def build_sql(with_overrides=True):
       END AS bucket,
       SUM(imps) AS imps
     FROM classified
-    GROUP BY 1, 2, 3, 4
+    GROUP BY 1, 2, 3, 4, 5
     """
+
+
+def build_coverage_sql(sources):
+    """Entregue por DSP no mês, pra medir a cobertura de geo."""
+    in_list = ", ".join(f"'{s}'" for s in sources)
+    return f"""
+    SELECT source, date, SUM(impressions) AS imps
+    FROM {UNIFIED_TABLE}
+    WHERE date BETWEEN @m_from AND @m_to
+      AND source IN ({in_list})
+    GROUP BY 1, 2
+    """
+
+
+# ── Qual base de geo ler ─────────────────────────────────────────────────────
+# Positivo fica em cache pra sempre (a tabela não some); negativo expira
+# rápido pra o box trocar pra unified sozinho logo que o dbt criar a tabela.
+_GEO_NEGATIVE_TTL = 600
+_geo_backend_state = {"backend": None, "checked_at": 0.0}
+
+
+def resolve_geo_backend(bq, now_ts=None):
+    now_ts = time.time() if now_ts is None else now_ts
+    st = _geo_backend_state
+    if st["backend"] == "unified":
+        return "unified"
+    if st["backend"] == "dv360" and now_ts - st["checked_at"] < _GEO_NEGATIVE_TTL:
+        return "dv360"
+    try:
+        bq.get_table(GEO_TABLE_ID)
+        backend = "unified"
+    except NotFound:
+        backend = "dv360"
+    except Exception as e:  # noqa: BLE001 — permissão/rede: segue no caminho antigo
+        logger.warning(f"[out_of_country] não deu pra checar {GEO_TABLE_ID}, seguindo com o Region do DV360: {e}")
+        backend = "dv360"
+    st["backend"], st["checked_at"] = backend, now_ts
+    return backend
 
 
 # ── Override manual: países liberados por campanha ──────────────────────────
@@ -394,10 +497,44 @@ def _add(acc, bucket, imps):
     acc[bucket.lower()] += imps
 
 
-def build_payload(rows, month_start, month_end, is_current, meta_by_token=None):
-    """Agrega as linhas (date, short_token, country, bucket, imps) no payload
-    do box. Pura — sem I/O — pra régua ser testável."""
+def _source_label(source):
+    return SOURCE_LABELS.get(source, (source or "").title() or "?")
+
+
+def build_payload(rows, month_start, month_end, is_current, meta_by_token=None,
+                  delivered_daily=None, geo_sources=GEO_SOURCES):
+    """Agrega as linhas (date, source, short_token, country, bucket, imps) no
+    payload do box. Pura — sem I/O — pra régua ser testável.
+
+    `delivered_daily`: {source: {date: imps}} da unified de performance, pra
+    cobertura de geo. Conta do 1º dia do mês até o dia de referência: se a
+    Yahoo parou e o DV360 seguiu, a Yahoo aparece descoberta. None = não
+    medido (sem aviso).
+
+    Com mais de uma DSP, `by_source` traz o mesmo payload calculado só com
+    cada uma (a aba "por DSP" do box)."""
     meta_by_token = meta_by_token or {}
+    rows = [_normalize_row(r) for r in rows]
+    rows = [r for r in rows if r["imps"] > 0]
+
+    # Corte comum entre as DSPs (ver SOURCE_LAG_TOLERANCE_DAYS).
+    last_by_source = {}
+    for r in rows:
+        if r["date"] > last_by_source.get(r["source"], date.min):
+            last_by_source[r["source"]] = r["date"]
+    stale_sources = []
+    lagging_sources = []   # dentro da tolerância, mas segurando o corte
+    if len(last_by_source) > 1:
+        newest = max(last_by_source.values())
+        active = {s: d for s, d in last_by_source.items()
+                  if (newest - d).days <= SOURCE_LAG_TOLERANCE_DAYS}
+        cutoff = min(active.values())
+        stale_sources = sorted((s, d) for s, d in last_by_source.items() if s not in active)
+        lagging_sources = sorted((s, d) for s, d in active.items() if d < newest)
+        rows_all = rows
+        rows = [r for r in rows if r["date"] <= cutoff]
+    else:
+        rows_all = rows
 
     month = _empty_buckets()
     daily = {}                 # date -> buckets (todas as datas da janela)
@@ -407,18 +544,16 @@ def build_payload(rows, month_start, month_end, is_current, meta_by_token=None):
     expected_countries_imps = {}
     token_unexpected_c = {}    # token -> {country: imps}
     token_expected_c = {}
+    by_source = {}             # source -> buckets do mês
+    token_sources = {}         # token -> {source}
     untracked = 0
 
     for r in rows:
         d = r["date"]
-        if isinstance(d, datetime):
-            d = d.date()
         token = r.get("short_token")
         bucket = r["bucket"]
         country = r["country"]
-        imps = int(r["imps"] or 0)
-        if imps <= 0:
-            continue
+        imps = r["imps"]
 
         _add(daily.setdefault(d, _empty_buckets()), bucket, imps)
         if token:
@@ -426,7 +561,9 @@ def build_payload(rows, month_start, month_end, is_current, meta_by_token=None):
 
         if not (month_start <= d <= month_end):
             continue
+        source = r["source"]
         _add(month, bucket, imps)
+        _add(by_source.setdefault(source, _empty_buckets()), bucket, imps)
         if bucket == "UNEXPECTED":
             unexpected_countries[country] = unexpected_countries.get(country, 0) + imps
         elif bucket == "EXPECTED":
@@ -435,6 +572,7 @@ def build_payload(rows, month_start, month_end, is_current, meta_by_token=None):
             untracked += imps
             continue
         _add(by_token.setdefault(token, _empty_buckets()), bucket, imps)
+        token_sources.setdefault(token, set()).add(source)
         if bucket == "UNEXPECTED":
             tc = token_unexpected_c.setdefault(token, {})
             tc[country] = tc.get(country, 0) + imps
@@ -531,6 +669,7 @@ def build_payload(rows, month_start, month_end, is_current, meta_by_token=None):
             "day_rate": _rate(ref_b["unexpected"], ref_b["total"]) if ref_b else None,
             "top_countries": _top(token_unexpected_c.get(token, {})),
             "expected_countries": sorted(token_expected_c.get(token, {})),
+            "sources": sorted(_source_label(s) for s in token_sources.get(token, ())),
             "alert": token in spiking,
         })
     campaigns.sort(key=lambda c: (not c["alert"], -(c["rate"] or 0), -c["unexpected_impressions"]))
@@ -544,8 +683,53 @@ def build_payload(rows, month_start, month_end, is_current, meta_by_token=None):
         if untracked_share > DQ_MAX_UNTRACKED_SHARE:
             data_warnings.append({"kind": "untracked_lines", "share": round(untracked_share * 100, 1)})
 
-    return {
-        "source": "DV360",
+    # Uma linha por DSP que reporta geo: a que tem geo no mês e a que devia
+    # ter (entregou, mas o geo não veio).
+    delivered_by_source = {}
+    if ref_day:
+        for source, per_day in (delivered_daily or {}).items():
+            total = 0
+            for d, v in per_day.items():
+                d = d.date() if isinstance(d, datetime) else d
+                if month_start <= d <= ref_day:
+                    total += int(v or 0)
+            delivered_by_source[source] = total
+    sources = []
+    for source in sorted(set(by_source) | {s for s in geo_sources if delivered_by_source.get(s)}):
+        b = by_source.get(source, _empty_buckets())
+        delivered = delivered_by_source.get(source)
+        coverage = _rate(b["total"], delivered) if delivered else None
+        sources.append({
+            "source": source,
+            "label": _source_label(source),
+            "impressions": b["total"],
+            "unexpected_impressions": b["unexpected"],
+            "rate": _rate(b["unexpected"], b["total"]),
+            "delivered_impressions": delivered,
+            "coverage": coverage,
+        })
+        if (delivered and delivered >= DQ_COVERAGE_MIN_IMPS
+                and b["total"] / delivered < DQ_MIN_GEO_COVERAGE):
+            data_warnings.append({
+                "kind": "geo_coverage", "source": source, "label": _source_label(source),
+                "share": coverage or 0.0,
+            })
+    for source, last in stale_sources:
+        data_warnings.append({
+            "kind": "source_stale", "source": source, "label": _source_label(source),
+            "last_date": last.isoformat(),
+        })
+    with_geo = [s["label"] for s in sources if s["impressions"] > 0]
+
+    payload = {
+        "source": " + ".join(with_geo) or "DV360",
+        "sources": sources,
+        # Por que o agregado para antes da DSP mais nova: quem ainda não tem
+        # os dias seguintes. Vazio quando todas estão no mesmo dia.
+        "lagging_sources": [
+            {"source": s, "label": _source_label(s), "last_date": d.isoformat()}
+            for s, d in lagging_sources
+        ],
         "month": month_start.strftime("%Y-%m"),
         "is_current_month": is_current,
         "impressions": month["total"],
@@ -577,6 +761,37 @@ def build_payload(rows, month_start, month_end, is_current, meta_by_token=None):
         "campaigns_with_unexpected": sum(1 for b in by_token.values() if b["unexpected"] > 0),
     }
 
+    # Aba por DSP: a régua inteira de novo, só com a DSP (cada uma com o
+    # próprio dia de referência, sem o corte comum). Só as que têm geo ou
+    # entregaram no mês; com uma DSP só não há o que separar.
+    tabs = [s["source"] for s in sources]
+    if len(tabs) > 1:
+        payload["by_source"] = {
+            source: build_payload(
+                [r for r in rows_all if r["source"] == source],
+                month_start, month_end, is_current, meta_by_token,
+                delivered_daily=({source: delivered_daily.get(source, {})}
+                                 if delivered_daily is not None else None),
+                geo_sources=(source,),
+            )
+            for source in tabs
+        }
+    return payload
+
+
+def _normalize_row(r):
+    d = r["date"]
+    if isinstance(d, datetime):
+        d = d.date()
+    return {
+        "date": d,
+        "source": r.get("source") or "DV360",
+        "short_token": r.get("short_token"),
+        "country": r["country"],
+        "bucket": r["bucket"],
+        "imps": int(r["imps"] or 0),
+    }
+
 
 def _job_config(params):
     return bigquery.QueryJobConfig(
@@ -602,7 +817,7 @@ def _campaign_meta(bq, tokens):
 
 
 def query_out_of_country(bq, month_key=None, now=None):
-    """Lê a tabela de regiões e devolve o payload do box. `bq` é o client
+    """Lê a base de geo e devolve o payload do box. `bq` é o client
     compartilhado do backend (bq_client.get_client())."""
     today = (now or datetime.now(SP_TZ)).date()
     month_start, month_end, is_current = month_window(month_key, today)
@@ -619,10 +834,32 @@ def query_out_of_country(bq, month_key=None, now=None):
     except Exception as e:  # noqa: BLE001 — permissão/DDL não pode derrubar o box
         logger.warning(f"[out_of_country] tabela de override indisponível, seguindo só com a regra por nome: {e}")
         with_overrides = False
-    rows = [dict(r) for r in bq.query(build_sql(with_overrides), job_config=cfg, location="US").result()]
+    backend = resolve_geo_backend(bq)
+    geo_sources = GEO_SOURCES if backend == "unified" else ("DV360",)
+    rows = [dict(r) for r in bq.query(build_sql(with_overrides, backend), job_config=cfg, location="US").result()]
 
+    delivered = _delivered_daily(bq, geo_sources, month_start, d_to)
     tokens = {r["short_token"] for r in rows if r.get("short_token")}
     meta = _campaign_meta(bq, tokens)
-    payload = build_payload(rows, month_start, month_end, is_current, meta)
+    payload = build_payload(rows, month_start, month_end, is_current, meta,
+                            delivered_daily=delivered, geo_sources=geo_sources)
+    payload["geo_backend"] = backend
     payload["server_now"] = datetime.now(SP_TZ).isoformat()
     return payload
+
+
+def _delivered_daily(bq, sources, m_from, m_to):
+    """{source: {date: imps}} entregue no mês. Falha aqui não derruba o box:
+    sem o número, só não há aviso de cobertura."""
+    cfg = _job_config([
+        bigquery.ScalarQueryParameter("m_from", "DATE", m_from),
+        bigquery.ScalarQueryParameter("m_to", "DATE", m_to),
+    ])
+    try:
+        out = {}
+        for r in bq.query(build_coverage_sql(sources), job_config=cfg, location="US").result():
+            out.setdefault(r["source"], {})[r["date"]] = int(r["imps"] or 0)
+        return out
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[out_of_country] cobertura por fonte indisponível: {e}")
+        return None
