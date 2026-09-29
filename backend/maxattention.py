@@ -420,9 +420,21 @@ def _job_config(params, max_bytes=None):
 #
 # Agora: `survey_answer` é copiado pra uma tabela pequena em `prod_assets`
 # (uma linha por resposta; milhares, não bilhões), e TODA leitura vai nela.
-# Quem lê o lake é só o sync, incremental a partir de uma marca d'água e em
-# fatias de poucos dias — cada fatia estima só as partições dela, então o
-# custo por rodada não cresce com o histórico.
+# Quem lê o lake é só o sync, em fatias de poucos dias — cada fatia estima só
+# as partições dela, então o custo por rodada não cresce com o histórico.
+#
+# O sync anda do RECENTE pro antigo, e a cobertura é explícita. A primeira
+# versão (29/09) andava pra frente a partir da partição mais antiga, com
+# orçamento de tempo por rodada: o primeiro uso gastou as rodadas em meses
+# vazios e a tabela parcial foi servida como completa — o modal da PPV8JF
+# disse "nenhuma resposta, confira a coleta" com a peça recebendo resposta.
+# Duas regras saíram disso e estão travadas por teste:
+#   - ordem: ponta (última marca → agora) primeiro, depois os buracos do
+#     histórico, cada um andando pra trás; dias sem partição no lake são
+#     pulados sem MERGE;
+#   - honestidade: `window_covered` / `sync` no payload. "Não houve resposta"
+#     só é dito quando a tabela cobre a janela inteira; fora disso o front
+#     diz que a cópia está em andamento, e o erro do sync vai junto.
 #
 # Quem roda o sync:
 #   - o warmup do main.py (a cada 3h, horário comercial), com sobreposição de
@@ -456,11 +468,22 @@ DEEP_SYNC_OVERLAP = timedelta(days=1)
 # fatias; cada fatia grava a própria marca d'água, então parar no meio é
 # seguro — a próxima rodada continua de onde esta parou.
 SYNC_BUDGET_S = 60
+# Orçamento quando o sync roda DENTRO de uma leitura (modal / report). Curto:
+# o backfill anda do recente pro antigo, então os primeiros segundos já trazem
+# a campanha no ar; o resto do histórico vem nas próximas rodadas e no warmup.
+READ_SYNC_BUDGET_S = 20
+# O detalhe (`fetch_results`) roda no navegador do CLIENTE: orçamento menor.
+RESULTS_SYNC_BUDGET_S = 8
+# Intervalo mínimo entre rodadas de backfill disparadas por leitura.
+_BACKFILL_RETRY_S = 30
 
 _SYNC_LOCK = threading.Lock()
+LOCK_WAIT_S = 25
 # checked_at: monotonic da última vez que confirmamos frescor (evita ir ao
 # BigQuery a cada leitura). synced_through: marca d'água conhecida.
-_SYNC_STATE = {"checked_at": None, "synced_through": None}
+_SYNC_STATE = {"checked_at": None, "synced_through": None, "covered_from": None,
+               "complete": False, "last_error": None, "partitions_error": None,
+               "last_run": None}
 _TABLES_READY = set()
 
 
@@ -561,24 +584,56 @@ def _ensure_tables():
     _TABLES_READY.add(answers)
 
 
-def _synced_through():
+def _covered_intervals():
+    """Intervalos [de, até) já copiados, fundidos. Vem do log de fatias, que
+    é pequeno (uma linha por fatia, e fatias vazias viram UMA linha longa)."""
     rows = list(_client().query(
-        f"SELECT MAX(synced_through) AS t FROM `{_sync_log_table()}`",
+        f"SELECT synced_from, synced_through FROM `{_sync_log_table()}` WHERE synced_from IS NOT NULL",
         job_config=_job_config([], max_bytes=READ_MAX_BYTES_BILLED),
     ).result())
-    return rows[0]["t"] if rows else None
+    return _merge_intervals((r["synced_from"], r["synced_through"]) for r in rows)
 
 
-def _backfill_start(now):
-    """Primeira partição com dado no lake, pra o backfill não gastar dezenas
-    de fatias em meses vazios. Metadata, não varredura. Sem permissão no
-    INFORMATION_SCHEMA, cai na janela cheia — mais lento, mesmo resultado."""
+def _merge_intervals(ivs):
+    out = []
+    for a, b in sorted(i for i in ivs if i[0] is not None and i[1] is not None and i[0] < i[1]):
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def _gaps(covered, lo, hi):
+    """Trechos de [lo, hi) fora de `covered`, do MAIS RECENTE pro mais antigo."""
+    gaps, cur = [], lo
+    for a, b in covered:
+        if b <= cur:
+            continue
+        if a >= hi:
+            break
+        if a > cur:
+            gaps.append((cur, min(a, hi)))
+        cur = max(cur, b)
+    if cur < hi:
+        gaps.append((cur, hi))
+    return list(reversed(gaps))
+
+
+def _lake_partitions(now):
+    """(piso do backfill, dias com partição não vazia | None).
+
+    Metadata, não varredura. O piso é a primeira partição com dado (limitado
+    a `BACKFILL_DAYS`); o conjunto de dias deixa o backfill PULAR meses vazios
+    sem gastar um MERGE em cada. Sem permissão no INFORMATION_SCHEMA: piso de
+    730 dias e sem pulo — mais lento, mesmo resultado, e como o backfill anda
+    do recente pro antigo, o que importa (campanha no ar) chega primeiro."""
     floor = now - timedelta(days=BACKFILL_DAYS)
     project, dataset, table = events_raw_table().split(".")
     try:
         rows = list(_client().query(
             f"""
-            SELECT MIN(partition_id) AS p
+            SELECT partition_id
             FROM `{project}.{dataset}.INFORMATION_SCHEMA.PARTITIONS`
             WHERE table_name = @t
               AND total_rows > 0
@@ -589,13 +644,47 @@ def _backfill_start(now):
                 max_bytes=READ_MAX_BYTES_BILLED,
             ),
         ).result())
-        p = rows[0]["p"] if rows else None
-        if p:
-            first = datetime.strptime(p, "%Y%m%d").replace(tzinfo=timezone.utc)
-            return max(floor, first)
+        days = set()
+        for r in rows:
+            try:
+                days.add(datetime.strptime(r["partition_id"], "%Y%m%d").date())
+            except (TypeError, ValueError):
+                continue
+        if days:
+            first = datetime.combine(min(days), datetime.min.time(), tzinfo=timezone.utc)
+            return max(floor, first), days
+        # Zero partições NÃO quer dizer lake vazio: com escrita por streaming,
+        # o dado recente fica em `__UNPARTITIONED__` até o buffer descarregar,
+        # e metadata sem permissão pode vir vazia em vez de dar erro. Tratar
+        # vazio como "nada a copiar" seria o mesmo bug do "nenhuma resposta"
+        # por outro caminho. Sem informação, sem pulo.
+        logger.warning("[maxattention] INFORMATION_SCHEMA sem partições; backfill sem pulo")
+        return floor, None
     except Exception as e:  # noqa: BLE001 — otimização, não requisito
-        logger.warning(f"[maxattention] INFORMATION_SCHEMA indisponível, backfill de {BACKFILL_DAYS} dias: {e}")
-    return floor
+        logger.warning(f"[maxattention] INFORMATION_SCHEMA indisponível, backfill de {BACKFILL_DAYS} dias sem pulo: {e}")
+        _SYNC_STATE["partitions_error"] = str(e)[:300]
+        return floor, None
+
+
+# Janela recente que o sync NUNCA pula, tenha partição listada ou não. O lake
+# é escrito por streaming: o dado das últimas horas mora no streaming buffer e
+# aparece em INFORMATION_SCHEMA como `__UNPARTITIONED__`, não no dia dele.
+# Pular por falta de partição aqui marcaria como copiado justamente o trecho
+# em que a campanha no ar está recebendo resposta.
+NEVER_SKIP_RECENT = timedelta(days=3)
+
+
+def _has_partition(days, since, until):
+    if days is None:
+        return True
+    if until > _now() - NEVER_SKIP_RECENT:
+        return True
+    d, last = since.date(), (until - timedelta(microseconds=1)).date()
+    while d <= last:
+        if d in days:
+            return True
+        d += timedelta(days=1)
+    return False
 
 
 def _merge_range(since, until):
@@ -659,85 +748,177 @@ def _log_sync(since, until, inserted):
 
 
 def sync_answers(force=False, overlap=SYNC_OVERLAP, budget_s=SYNC_BUDGET_S, wait=True):
-    """Traz o que chegou no lake desde a última rodada. Erro sobe.
+    """Traz o que chegou no lake e completa o histórico. Erro sobe.
 
-    Devolve `{status, synced_through, inserted, chunks, complete}`:
-      - status "fresh": nada a fazer (rodada recente, por esta ou outra
-        instância — a marca d'água é compartilhada, está no BigQuery);
-      - status "synced": rodou; `complete=False` quando o orçamento de tempo
-        acabou antes de alcançar o agora (backfill longo) e a próxima rodada
-        continua;
+    Ordem de trabalho, sempre do RECENTE pro antigo:
+      1. a ponta: da última marca (menos a sobreposição) até agora;
+      2. os buracos de [piso, agora) que o log ainda não cobre, cada um em
+         fatias andando pra trás.
+    Com orçamento de tempo curto, a rodada entrega primeiro o que a campanha
+    no ar precisa. A primeira versão fazia o contrário (andava pra frente a
+    partir do piso) e, com uma partição velha no lake, gastava a rodada inteira
+    em meses vazios enquanto a tabela parcial era servida como completa.
+
+    Devolve `{status, synced_through, covered_from, complete, inserted,
+    chunks}`. `covered_from` é o início do trecho CONTÍNUO que termina em
+    `synced_through`: é o que dá pra afirmar sobre "não houve resposta".
+    `complete` = não sobrou buraco entre o piso e agora.
+
+      - status "fresh": nada a fazer;
+      - status "synced": rodou (talvez parcial, ver `complete`);
       - status "busy": `wait=False` e outra thread desta instância já está
         sincronizando — quem lê não fica na fila atrás de um backfill.
     """
     ttl = _sync_ttl_s()
-    if not _SYNC_LOCK.acquire(blocking=wait):
-        return {"status": "busy", "synced_through": _SYNC_STATE["synced_through"],
-                "inserted": 0, "chunks": 0, "complete": False}
+    # Espera com teto: o warmup pode estar no meio de um backfill de minutos
+    # nesta instância, e a leitura não pode estourar o timeout do front
+    # esperando por ele. Sem o lock, "busy": a leitura segue com o que houver
+    # e o payload diz que a cópia está em andamento.
+    acquired = _SYNC_LOCK.acquire(timeout=LOCK_WAIT_S) if wait else _SYNC_LOCK.acquire(blocking=False)
+    if not acquired:
+        return {**_sync_snapshot(), "status": "busy", "inserted": 0, "chunks": 0}
     try:
         return _sync_locked(force, overlap, budget_s, ttl)
+    except Exception as e:
+        _SYNC_STATE["last_error"] = f"{type(e).__name__}: {e}"[:500]
+        raise
     finally:
         _SYNC_LOCK.release()
 
 
+def _sync_snapshot():
+    return {
+        "synced_through": _SYNC_STATE["synced_through"],
+        "covered_from": _SYNC_STATE["covered_from"],
+        "complete": bool(_SYNC_STATE["complete"]),
+    }
+
+
+def _contiguous_from(covered, through):
+    for a, b in covered:
+        if a <= through <= b:
+            return a
+    return None
+
+
+def _publish_state(covered, floor, now, days):
+    through = covered[-1][1] if covered else None
+    # "Completo" fala do HISTÓRICO (piso → última marca). A ponta (marca →
+    # agora) é sempre um trecho aberto, e o frescor dela é o TTL que governa.
+    remaining = _gaps(covered, floor, through) if through else [(floor, now)]
+    # Buraco em dias sem partição não é buraco: não há o que copiar ali.
+    remaining = [g for g in remaining if _has_partition(days, *g)]
+    _SYNC_STATE.update(
+        synced_through=through,
+        covered_from=_contiguous_from(covered, through) if through else None,
+        complete=not remaining,
+    )
+
+
 def _sync_locked(force, overlap, budget_s, ttl):
     checked = _SYNC_STATE["checked_at"]
-    if not force and checked is not None and (time.monotonic() - checked) < ttl:
-        return {"status": "fresh", "synced_through": _SYNC_STATE["synced_through"],
-                "inserted": 0, "chunks": 0, "complete": True}
+    if (not force and checked is not None and _SYNC_STATE["complete"]
+            and (time.monotonic() - checked) < ttl):
+        return {**_sync_snapshot(), "status": "fresh", "inserted": 0, "chunks": 0}
+
+    # Histórico incompleto com a ponta fresca: leitura não-forçada só volta a
+    # gastar orçamento de backfill a cada `_BACKFILL_RETRY_S`. Sem isso, cada
+    # leitura (inclusive a do report do cliente) pagaria segundos de MERGE
+    # até o histórico fechar.
+    last = _SYNC_STATE.get("last_run")
+    through_known = _SYNC_STATE["synced_through"]
+    if (not force and last is not None and (time.monotonic() - last) < _BACKFILL_RETRY_S
+            and through_known is not None and (_now() - through_known).total_seconds() < ttl):
+        return {**_sync_snapshot(), "status": "fresh", "inserted": 0, "chunks": 0}
 
     _ensure_tables()
     now = _now()
-    through = _synced_through()
-    if through is not None:
-        _SYNC_STATE["synced_through"] = through
-    if not force and through is not None and (now - through).total_seconds() < ttl:
-        _SYNC_STATE.update(checked_at=time.monotonic(), synced_through=through)
-        return {"status": "fresh", "synced_through": through,
-                "inserted": 0, "chunks": 0, "complete": True}
+    covered = _covered_intervals()
+    floor, days = _lake_partitions(now)
+    _publish_state(covered, floor, now, days)
+    through = _SYNC_STATE["synced_through"]
+    if (not force and _SYNC_STATE["complete"] and through is not None
+            and (now - through).total_seconds() < ttl):
+        _SYNC_STATE["checked_at"] = time.monotonic()
+        return {**_sync_snapshot(), "status": "fresh", "inserted": 0, "chunks": 0}
 
-    cur = _backfill_start(now) if through is None else through - overlap
-    step = timedelta(days=SYNC_CHUNK_DAYS)
+    # Fila de trabalho, do recente pro antigo: a ponta primeiro (reabre a
+    # sobreposição, onde pode ter chegado evento atrasado), depois os buracos.
+    if through is None:
+        work = [(floor, now)]
+    else:
+        tail = (max(floor, through - overlap), now)
+        work = [tail] + _gaps(_merge_intervals(covered + [tail]), floor, now)
+
     t0 = time.monotonic()
     inserted = chunks = 0
-    while cur < now:
-        if chunks and (time.monotonic() - t0) > budget_s:
-            break
-        end = min(cur + step, now)
-        try:
-            n = _merge_range(cur, end)
-        except Exception as e:  # noqa: BLE001 — só o teto é tratado
-            if _is_bytes_limit_error(e) and step > timedelta(days=1):
-                step = max(timedelta(days=1), step / 2)
-                continue
-            raise
-        _log_sync(cur, end, n)
-        inserted += n
-        chunks += 1
-        through = end if through is None or end > through else through
-        cur = end
+    done = []            # o que esta rodada de fato cobriu
+    skip = None          # trecho contíguo sem partição, logado numa linha só
+    out_of_budget = False
 
-    complete = cur >= now
+    for lo, hi in work:
+        end = hi
+        step = timedelta(days=SYNC_CHUNK_DAYS)
+        while end > lo:
+            start = max(lo, end - step)
+            if not _has_partition(days, start, end):
+                # Anda pra trás: o trecho novo encosta no início do acumulado.
+                if skip and skip[0] == end:
+                    skip = (start, skip[1])
+                else:
+                    if skip:
+                        _log_sync(*skip, 0)
+                        done.append(skip)
+                    skip = (start, end)
+                end = start
+                continue
+            if chunks and (time.monotonic() - t0) > budget_s:
+                out_of_budget = True
+                break
+            try:
+                n = _merge_range(start, end)
+            except Exception as e:  # noqa: BLE001 — só o teto é tratado
+                if _is_bytes_limit_error(e) and step > timedelta(days=1):
+                    step = max(timedelta(days=1), step / 2)
+                    continue
+                raise
+            _log_sync(start, end, n)
+            done.append((start, end))
+            inserted += n
+            chunks += 1
+            end = start
+        if out_of_budget:
+            break
+    if skip:
+        _log_sync(*skip, 0)
+        done.append(skip)
+
+    covered = _merge_intervals(covered + done)
+    _publish_state(covered, floor, now, days)
+    _SYNC_STATE["last_error"] = None
+    _SYNC_STATE["last_run"] = time.monotonic()
+    _SYNC_STATE["checked_at"] = time.monotonic() if _SYNC_STATE["complete"] else None
     if inserted:
         # O ramo amplo da listagem fica cacheado por horas; resposta nova
         # na tabela tem que aparecer nele sem esperar o TTL.
         _RECENT_CACHE.clear()
-    _SYNC_STATE.update(checked_at=time.monotonic() if complete else None, synced_through=through)
+    snap = _sync_snapshot()
     logger.info(
-        f"[maxattention] sync: {inserted} respostas novas em {chunks} fatia(s), "
-        f"até {through.isoformat() if through else '—'}{'' if complete else ' (parcial, continua na próxima)'}"
+        f"[maxattention] sync: {inserted} respostas novas em {chunks} fatia(s); cobertura "
+        f"{snap['covered_from'].isoformat() if snap['covered_from'] else '—'} → "
+        f"{snap['synced_through'].isoformat() if snap['synced_through'] else '—'}"
+        f"{'' if snap['complete'] else ' (histórico incompleto, continua na próxima)'}"
     )
-    return {"status": "synced", "synced_through": through,
-            "inserted": inserted, "chunks": chunks, "complete": complete}
+    return {**snap, "status": "synced", "inserted": inserted, "chunks": chunks}
 
 
-def _ensure_fresh(force=False):
-    """Sync best-effort pro caminho de LEITURA. Falha não derruba a leitura:
-    a tabela ainda tem tudo até a última rodada boa, e dado de uma hora atrás
-    é melhor que erro na tela do cliente. O que não dá pra servir é tabela que
-    nunca recebeu uma rodada boa (não criada, ou backfill falhando): ela
-    responderia "zero respostas" com cara de verdade. Aí o erro original
-    sobe, que é o que explica o problema."""
+def _ensure_fresh(force=False, budget_s=READ_SYNC_BUDGET_S):
+    """Sync pro caminho de LEITURA. Falha não derruba a leitura: a tabela
+    ainda tem tudo até a última rodada boa, e o erro vai no payload
+    (`sync.error`) pro admin ver — não só no log. O que não dá pra servir é
+    tabela que nunca recebeu uma rodada boa (não criada, ou backfill falhando
+    desde o início): ela responderia "zero respostas" com cara de verdade.
+    Aí o erro original sobe."""
     if not materialized():
         return None
     ready = answers_table() in _TABLES_READY
@@ -745,7 +926,7 @@ def _ensure_fresh(force=False):
         # Tabela já conhecida: não espera sync de outra thread (serve o que
         # tem). Primeira leitura da instância: espera, porque pode ser o
         # backfill e a tabela ainda nem existir.
-        return sync_answers(force=force, wait=force or not ready)
+        return sync_answers(force=force, wait=force or not ready, budget_s=budget_s)
     except Exception as e:  # noqa: BLE001
         if _SYNC_STATE["synced_through"] is None:
             raise
@@ -753,9 +934,85 @@ def _ensure_fresh(force=False):
         return None
 
 
+def sync_status():
+    """Estado do sync pro payload (admin) e pro endpoint de status. `None` no
+    modo legado."""
+    if not materialized():
+        return None
+    snap = _sync_snapshot()
+    iso = lambda t: t.isoformat() if t else None  # noqa: E731
+    return {
+        "synced_through": iso(snap["synced_through"]),
+        "covered_from": iso(snap["covered_from"]),
+        "complete": snap["complete"],
+        "error": _SYNC_STATE.get("last_error"),
+        "partitions_error": _SYNC_STATE.get("partitions_error"),
+    }
+
+
+def status_report():
+    """Raio-x do sync pra quem está investigando SEM acesso ao BigQuery (é o
+    caso de quase todo mundo que abre o modal). Só leitura: log de fatias,
+    tamanho e alcance da tabela, e o estado em memória desta instância.
+    `?action=maxattention_sync&dry=true` devolve isto."""
+    if not materialized():
+        return {"materialized": False}
+    ans, log = answers_table(), _sync_log_table()
+    out = {"materialized": True, "answers_table": ans, "state": sync_status()}
+    try:
+        covered = _covered_intervals()
+        out["covered"] = [[a.isoformat(), b.isoformat()] for a, b in covered[-20:]]
+        out["covered_intervals"] = len(covered)
+    except Exception as e:  # noqa: BLE001
+        out["covered_error"] = str(e)[:300]
+    try:
+        r = list(_client().query(
+            f"""
+            SELECT COUNT(*) AS n, COUNT(DISTINCT creative_id) AS creatives,
+                   MIN(responded_at) AS first_at, MAX(responded_at) AS last_at,
+                   COUNTIF(responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)) AS last_7d
+            FROM `{ans}`
+            """,
+            job_config=_job_config([], max_bytes=READ_MAX_BYTES_BILLED),
+        ).result())[0]
+        out["answers"] = {
+            "rows": int(r["n"] or 0), "creatives": int(r["creatives"] or 0),
+            "first_at": r["first_at"].isoformat() if r["first_at"] else None,
+            "last_at": r["last_at"].isoformat() if r["last_at"] else None,
+            "last_7d": int(r["last_7d"] or 0),
+        }
+    except Exception as e:  # noqa: BLE001
+        out["answers_error"] = str(e)[:300]
+    try:
+        rows = list(_client().query(
+            f"""
+            SELECT synced_from, synced_through, inserted, ran_at FROM `{log}`
+            ORDER BY ran_at DESC LIMIT 15
+            """,
+            job_config=_job_config([], max_bytes=READ_MAX_BYTES_BILLED),
+        ).result())
+        out["last_chunks"] = [{
+            "from": r["synced_from"].isoformat() if r["synced_from"] else None,
+            "through": r["synced_through"].isoformat() if r["synced_through"] else None,
+            "inserted": r["inserted"], "ran_at": r["ran_at"].isoformat() if r["ran_at"] else None,
+        } for r in rows]
+    except Exception as e:  # noqa: BLE001
+        out["log_error"] = str(e)[:300]
+    return out
+
+
 def _synced_through_iso():
     t = _SYNC_STATE["synced_through"] if materialized() else None
     return t.isoformat() if t else None
+
+
+def window_covered(since):
+    """True quando a tabela cobre, sem buraco, de `since` até a última marca.
+    É a condição pra afirmar "não houve resposta nessa janela"."""
+    if not materialized():
+        return True
+    cf = _SYNC_STATE["covered_from"]
+    return bool(_SYNC_STATE["complete"]) or (cf is not None and cf <= since)
 
 
 # Teto de nomes de criativo devolvidos no diagnóstico de lista vazia. Serve
@@ -910,6 +1167,11 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
             "client_name": client_name or None,
             "diagnostics": diagnostics,
             "synced_through": _synced_through_iso(),
+            # Estado da cópia lake → tabela: até quando, desde quando sem
+            # buraco, se o histórico está completo e o último erro. É o que
+            # deixa o front dizer "ainda copiando" em vez de "não há resposta".
+            "sync": sync_status(),
+            "window_covered": window_covered(since_recent if not (token and ids) else since_campaign),
         }
 
     # Duas queries, não uma: o ramo da CAMPANHA é barato (poda por
@@ -975,7 +1237,11 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
     elif not any(c["creative_id"] in id_set for c in out):
         names = sorted({c["creative_name"] for c in dim_matched if c["creative_name"]})
         diagnostics = {
-            "reason": "no_responses",
+            # "Ninguém respondeu" só é afirmação quando a tabela cobre a janela
+            # inteira. Com o histórico ainda sendo copiado, o vazio é da CÓPIA,
+            # não da coleta — e dizer "confira a coleta" nesse caso manda o
+            # admin investigar a coisa errada (foi o que aconteceu na PPV8JF).
+            "reason": "no_responses" if window_covered(since_campaign) else "sync_pending",
             "dim_rows": None,
             "dim_synced_at": None,
             "dim_matched": len(dim_matched),
@@ -1016,10 +1282,15 @@ def _recent_rows(recent_days, force=False):
         params = [bigquery.ScalarQueryParameter(
             "since_recent", "TIMESTAMP", _now() - timedelta(days=recent_days),
         )]
+        since_recent = _now() - timedelta(days=recent_days)
         rows = list(_client().query(
             sql, job_config=_job_config(params, max_bytes=_read_max_bytes()),
         ).result())
-        _RECENT_CACHE[recent_days] = (time.monotonic(), rows)
+        # Resultado de tabela ainda sem cobertura da janela NÃO entra no cache
+        # de horas: foi assim que uma lista vazia, lida no meio do backfill,
+        # ficaria servida por 3h mesmo depois da cópia terminar.
+        if window_covered(since_recent):
+            _RECENT_CACHE[recent_days] = (time.monotonic(), rows)
         return rows
 
 
@@ -1093,31 +1364,6 @@ def _rows_to_creatives(rows, token, dim_match_by_id):
         })
     return out
 
-    # Diagnóstico da CAMPANHA, mesmo com a lista ampla cheia: o admin precisa
-    # saber por que nenhuma peça foi marcada como sendo desta campanha —
-    # dimensão vazia é uma coisa (cron da plataforma), nome fora da convenção
-    # é outra (quem criou a peça), peça sem resposta é uma terceira (coleta).
-    if not dim_matched:
-        stats = _dim_stats()
-        reason = "dim_empty" if stats["rows"] == 0 else "no_dim_match"
-        return _payload(out, {
-            "reason": reason,
-            "dim_rows": stats["rows"],
-            "dim_synced_at": stats["synced_at"],
-            "dim_matched": 0,
-            "dim_names": [],
-        })
-    if not any(c["creative_id"] in id_set for c in out):
-        names = sorted({c["creative_name"] for c in dim_matched if c["creative_name"]})
-        return _payload(out, {
-            "reason": "no_responses",
-            "dim_rows": None,
-            "dim_synced_at": None,
-            "dim_matched": len(dim_matched),
-            "dim_names": names[:MAX_DIAG_NAMES],
-        })
-    return _payload(out)
-
 
 def _view_columns(view):
     """(short_token, responses, creative_name, question, session_id) — quais
@@ -1161,7 +1407,7 @@ def fetch_results(creative_id, question=None, date_from=None, date_to=None):
     ao mesmo filtro, senão a soma compara períodos diferentes.
     """
     view = survey_view()
-    _ensure_fresh()
+    _ensure_fresh(budget_s=RESULTS_SYNC_BUDGET_S)
     _, has_responses_col, _, has_question_col, has_session_col = _view_columns(view)
     weight = _weight_expr(has_session_col, has_responses_col)
 
@@ -1226,4 +1472,5 @@ def fetch_results(creative_id, question=None, date_from=None, date_to=None):
         # Até quando a tabela materializada tem o lake copiado (None no modo
         # legado). É a idade real do dado — o cache de 5 min vem por cima.
         "synced_through": _synced_through_iso(),
+        "sync_complete": bool(_SYNC_STATE["complete"]) if materialized() else True,
     }

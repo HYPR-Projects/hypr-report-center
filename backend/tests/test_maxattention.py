@@ -624,10 +624,18 @@ class _SyncClient:
         self.calls.append((sql, params, job_config))
         if "CREATE TABLE IF NOT EXISTS" in sql:
             return _FakeJob([])
-        if "MAX(synced_through)" in sql:
-            return _FakeJob([{"t": self.through}])
+        if "SELECT synced_from, synced_through" in sql:
+            if self.through is None:
+                return _FakeJob([])
+            first = datetime.strptime(self.first_partition, "%Y%m%d").replace(tzinfo=timezone.utc)
+            return _FakeJob([{"synced_from": first, "synced_through": self.through}])
         if "INFORMATION_SCHEMA.PARTITIONS" in sql:
-            return _FakeJob([{"p": self.first_partition}])
+            d = datetime.strptime(self.first_partition, "%Y%m%d").date()
+            out = []
+            while d <= ma._now().date():
+                out.append({"partition_id": d.strftime("%Y%m%d")})
+                d += timedelta(days=1)
+            return _FakeJob(out)
         if sql.lstrip().startswith("MERGE"):
             if self.fail_merge:
                 err = self.fail_merge(params)
@@ -662,20 +670,22 @@ def test_materializacao_e_o_default_e_as_tabelas_derivam_da_view(mat_env):
     assert ma._view_columns("qualquer") == ma._MATERIALIZED_COLUMNS
 
 
-def test_backfill_comeca_na_primeira_particao_e_anda_em_fatias(mat_env, monkeypatch):
+def test_backfill_anda_do_recente_pro_antigo_em_fatias(mat_env, monkeypatch):
     client = _install(monkeypatch, _SyncClient(through=None, first_partition="20260901", merge_rows=3))
     r = ma.sync_answers()
     assert r["status"] == "synced" and r["complete"] is True
     merges = client.merges()
-    # 01/09 → 29/09 15h em fatias de 7 dias: 5 fatias, contíguas, sem buraco.
-    assert merges[0][1]["since"] == datetime(2026, 9, 1, tzinfo=timezone.utc)
-    assert merges[-1][1]["until"] == mat_env
+    # 29/09 15h → 01/09 em fatias de 7 dias, a primeira é a mais recente, e
+    # as fatias encostam uma na outra, sem buraco.
+    assert merges[0][1]["until"] == mat_env
+    assert merges[-1][1]["since"] == datetime(2026, 9, 1, tzinfo=timezone.utc)
     for (_, a), (_, b) in zip(merges, merges[1:]):
-        assert a["until"] == b["since"]
+        assert a["since"] == b["until"]
     assert all(p["until"] - p["since"] <= timedelta(days=ma.SYNC_CHUNK_DAYS) for _, p in merges)
     assert len(merges) == 5
     assert r["inserted"] == 15
     assert r["synced_through"] == mat_env
+    assert r["covered_from"] == datetime(2026, 9, 1, tzinfo=timezone.utc)
     # Cada fatia grava a própria marca d'água: parar no meio é seguro.
     logs = [c for c in client.calls if "INSERT INTO" in c[0]]
     assert len(logs) == len(merges)
@@ -718,8 +728,8 @@ def test_fatia_estourando_o_teto_cai_pela_metade(mat_env, monkeypatch):
     r = ma.sync_answers()
     assert r["complete"] is True
     ok = [p for _, p in client.merges() if p["until"] - p["since"] <= timedelta(days=2)]
-    assert ok[0]["since"] == datetime(2026, 9, 22, tzinfo=timezone.utc)
-    assert ok[-1]["until"] == mat_env
+    assert ok[0]["until"] == mat_env
+    assert ok[-1]["since"] == datetime(2026, 9, 22, tzinfo=timezone.utc)
 
 
 def test_outro_erro_no_sync_sobe(mat_env, monkeypatch):
@@ -804,3 +814,151 @@ def test_modo_legado_segue_lendo_a_view(mat_env, monkeypatch):
     (sql, _, jc), = client.calls
     assert "`site-hypr.prod_analytics.ma_survey_responses`" in sql
     assert jc.maximum_bytes_billed == int(ma.MAX_BYTES_BILLED)
+
+
+# ── Simulação do lake: o bug do "nenhuma resposta" pós-deploy ────────────────
+#
+# 29/09/2026, primeiro uso depois do deploy da materialização: sem erro
+# nenhum, o modal dizia "Nenhum criativo registrou resposta de survey nos
+# últimos 30 dias, em campanha nenhuma" — com a DIAGEO Selo recebendo
+# respostas. O backfill andava do MAIS ANTIGO pro mais novo com orçamento de
+# tempo; bastava uma partição velha no lake (ou o INFORMATION_SCHEMA falhar e
+# o piso virar 730 dias) pra rodada gastar o orçamento em meses vazios, e a
+# tabela parcial era servida como se fosse completa.
+
+class _LakeSim:
+    """BigQuery de mentira com semântica suficiente pro sync: lake por
+    evento, MERGE por [since, until) e dedupe por event_id, log de fatias."""
+
+    def __init__(self, events, partitions=None, merge_cost_s=10, clock=None):
+        self.events = list(events)           # dicts com event_id, creative_id, occurred_at, option
+        self.partitions = partitions         # None = INFORMATION_SCHEMA indisponível
+        self.answers = {}
+        self.log = []                        # (from, through, inserted)
+        self.merge_cost_s = merge_cost_s
+        self.clock = clock
+        self.merges = []
+
+    def query(self, sql, job_config=None):
+        params = {p.name: getattr(p, "value", getattr(p, "values", None))
+                  for p in (job_config.query_parameters if job_config else [])}
+        s = sql.lstrip()
+        if "CREATE TABLE IF NOT EXISTS" in s:
+            return _FakeJob([])
+        if "INFORMATION_SCHEMA.PARTITIONS" in s:
+            if self.partitions is None:
+                raise RuntimeError("Access Denied: INFORMATION_SCHEMA")
+            if "MIN(partition_id)" in s:
+                return _FakeJob([{"p": min(self.partitions) if self.partitions else None}])
+            return _FakeJob([{"partition_id": p} for p in sorted(self.partitions)])
+        if "MAX(synced_through)" in s and "synced_from" not in s:
+            return _FakeJob([{"t": max((t for _, t, _ in self.log), default=None)}])
+        if "synced_from" in s and s.startswith("SELECT"):
+            return _FakeJob([{"synced_from": f, "synced_through": t} for f, t, _ in self.log])
+        if s.startswith("MERGE"):
+            if self.clock is not None:
+                self.clock[0] += self.merge_cost_s
+            since, until = params["since"], params["until"]
+            self.merges.append((since, until))
+            n = 0
+            for e in self.events:
+                if since <= e["occurred_at"] < until and e["event_id"] not in self.answers:
+                    self.answers[e["event_id"]] = e
+                    n += 1
+            return _FakeDML(n)
+        if s.startswith("INSERT INTO"):
+            if "rows" in params:
+                for r in params["rows"]:
+                    self.log.append((r["synced_from"], r["synced_through"], r["inserted"]))
+            else:
+                self.log.append((params["since"], params["until"], params.get("inserted")))
+            return _FakeDML(1)
+        return _FakeJob([])
+
+
+def _answer(i, when, creative="c1"):
+    return {"event_id": f"e{i}", "creative_id": creative, "occurred_at": when, "option": "Sim"}
+
+
+@pytest.fixture
+def sim_clock(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(ma.time, "monotonic", lambda: clock[0])
+    return clock
+
+
+def test_backfill_curto_ja_traz_o_recente_mesmo_com_particao_velha(mat_env, monkeypatch, sim_clock):
+    now = mat_env
+    recent = [_answer(i, now - timedelta(days=1, hours=i)) for i in range(50)]
+    stray = [_answer(999, datetime(2025, 1, 3, tzinfo=timezone.utc))]   # relógio torto no client
+    parts = {"20250103"} | {(now - timedelta(days=d)).strftime("%Y%m%d") for d in range(0, 4)}
+    sim = _install(monkeypatch, _LakeSim(recent + stray, partitions=parts, clock=sim_clock))
+    r = ma.sync_answers(budget_s=15)          # orçamento curto: 1–2 fatias
+    assert len([e for e in sim.answers if e != "e999"]) == 50
+    # A primeira fatia é a MAIS RECENTE.
+    assert sim.merges[0][1] == now
+
+
+def test_backfill_sem_information_schema_tambem_comeca_pelo_recente(mat_env, monkeypatch, sim_clock):
+    now = mat_env
+    recent = [_answer(i, now - timedelta(days=3)) for i in range(10)]
+    sim = _install(monkeypatch, _LakeSim(recent, partitions=None, clock=sim_clock))
+    r = ma.sync_answers(budget_s=15)
+    assert len(sim.answers) == 10
+    assert r["complete"] is False             # 730 dias não cabem em 15s
+    assert r["covered_from"] is not None and r["covered_from"] <= now - timedelta(days=3)
+
+
+def test_cobertura_parcial_nao_vira_nenhuma_resposta(mat_env, monkeypatch, sim_clock):
+    # Enquanto o histórico não está coberto, a listagem diz isso — em vez de
+    # afirmar que ninguém respondeu.
+    sim = _install(monkeypatch, _LakeSim([], partitions=None, clock=sim_clock))
+    p = ma.list_creatives_payload(short_token="")
+    assert p["sync"]["complete"] is False
+    assert p["sync"]["covered_from"] is not None
+
+
+def test_backfill_pula_meses_sem_particao_sem_gastar_merge(mat_env, monkeypatch, sim_clock):
+    now = mat_env
+    ev = [_answer(1, now - timedelta(days=2)), _answer(2, datetime(2026, 3, 10, 12, tzinfo=timezone.utc))]
+    parts = {(now - timedelta(days=2)).strftime("%Y%m%d"), "20260310"}
+    sim = _install(monkeypatch, _LakeSim(ev, partitions=parts, clock=sim_clock))
+    r = ma.sync_answers(budget_s=60)
+    assert r["complete"] is True
+    assert set(sim.answers) == {"e1", "e2"}
+    # Só fatias com partição de verdade viram MERGE: 2, não ~30.
+    assert len(sim.merges) <= 3
+
+
+def test_retoma_backfill_de_log_antigo_sem_refazer_do_comeco(mat_env, monkeypatch, sim_clock):
+    # Estado real de produção depois do deploy anterior: log com fatias velhas
+    # (backfill que andava pra frente) e nada do recente. A próxima rodada
+    # tem que ir DIRETO no recente.
+    now = mat_env
+    recent = [_answer(i, now - timedelta(days=5)) for i in range(7)]
+    sim = _install(monkeypatch, _LakeSim(recent, partitions=None, clock=sim_clock))
+    t0 = datetime(2024, 9, 30, 15, tzinfo=timezone.utc)
+    sim.log = [(t0 + timedelta(days=7 * k), t0 + timedelta(days=7 * (k + 1)), 0) for k in range(12)]
+    ma.sync_answers(force=True, budget_s=15)
+    assert len(sim.answers) == 7
+    assert sim.merges[0][1] == now
+
+
+def test_streaming_buffer_nao_e_pulado_mesmo_sem_particao_listada(mat_env, monkeypatch, sim_clock):
+    # Resposta de uma hora atrás ainda está no streaming buffer: o
+    # INFORMATION_SCHEMA não lista a partição de hoje. Tem que ser copiada.
+    now = mat_env
+    ev = [_answer(1, now - timedelta(hours=1)), _answer(2, now - timedelta(days=10))]
+    parts = {(now - timedelta(days=10)).strftime("%Y%m%d")}      # hoje fora da lista
+    sim = _install(monkeypatch, _LakeSim(ev, partitions=parts, clock=sim_clock))
+    ma.sync_answers(budget_s=60)
+    assert set(sim.answers) == {"e1", "e2"}
+
+
+def test_information_schema_vazio_nao_vira_lake_vazio(mat_env, monkeypatch, sim_clock):
+    now = mat_env
+    ev = [_answer(1, now - timedelta(days=5))]
+    sim = _install(monkeypatch, _LakeSim(ev, partitions=set(), clock=sim_clock))
+    r = ma.sync_answers(budget_s=15)
+    assert set(sim.answers) == {"e1"}
+    assert r["complete"] is False            # sem metadata, 730 dias não cabem numa rodada
