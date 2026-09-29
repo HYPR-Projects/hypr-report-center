@@ -234,6 +234,7 @@ somadas, e só uma delas é deste repo:
 | Camada | Defasagem | Onde |
 |---|---|---|
 | evento → `creative_events_raw` | quem escreve é o Worker de ingestão (o2o-platform) | fora deste repo |
+| lake → `prod_assets.ma_survey_answers` | até **60 min** (sync incremental; `refresh=true` do admin força) | `MA_SURVEY_SYNC_MIN`, `backend/maxattention.py` |
 | cache de resultado do backend | **5 min** por criativo × pergunta × período | `_MA_RESULTS_TTL`, `_TYPEFORM_RESULTS_TTL` |
 | frontend | ciclo de **60s** enquanto a aba estiver aberta e visível | `POLL_INTERVAL_MS` em `SurveyTab.jsx` |
 
@@ -273,6 +274,50 @@ o custo escala com **tempo**, não com audiência (o cache é compartilhado entr
 leitores) — baixar pra 120s multiplica a conta de query por ~2,5×.
 
 ## Custo
+
+### Materialização (set/2026)
+
+Nenhuma requisição lê mais o lake. O backend copia `survey_answer` de
+`creative_events_raw` pra `site-hypr.prod_assets.ma_survey_answers` (uma linha
+por resposta, dedupe por `event_id`) e TODA leitura (listagem do modal e
+`maxattention_results` do report do cliente) vai nessa tabela, com teto de
+2 GiB.
+
+Por quê: o teto de bytes do BigQuery age sobre a ESTIMATIVA, e a estimativa
+ignora poda de cluster. Filtrar por `creative_id` deixava a query barata de
+verdade, mas a estimativa seguia o tamanho do lake inteiro na janela, e o lake
+cresce ~3 GiB/dia nas colunas lidas. Foi 34 GiB, teto 32 → 36,5 GiB, teto 48 →
+63 GiB em 29/09 (PPV8JF: `Query exceeded limit for bytes billed: 51539607552.
+67857547264 or higher required`). Subir o teto de novo só marcava a data da
+próxima quebra, e o detalhe público ia pelo mesmo caminho.
+
+Como anda:
+
+- **sync incremental** a partir de uma marca d'água (`ma_survey_answers_sync`,
+  uma linha por fatia), em fatias de até 7 dias com corte `TIMESTAMP`
+  constante. Cada fatia estima só as partições dela; se estourar o teto, a
+  fatia cai pela metade sozinha. Parar no meio é seguro: a próxima rodada
+  continua da marca;
+- **quem dispara:** o warmup (a cada 3h, com 1 dia de sobreposição pra evento
+  atrasado), a própria leitura quando a última rodada tem mais de
+  `MA_SURVEY_SYNC_MIN` (default 60, com 2h de sobreposição), o `refresh=true`
+  do admin ("Atualizar lista") e `?action=maxattention_sync` (admin; `deep=true`
+  pra sobreposição de 1 dia);
+- **falha do sync não derruba leitura:** serve a tabela como está e loga. A
+  exceção é tabela que nunca teve rodada boa, que responderia "zero" com cara
+  de verdade: aí o erro sobe;
+- **backfill:** automático no primeiro uso depois do deploy, a partir da
+  primeira partição com dado (`INFORMATION_SCHEMA.PARTITIONS`). Custo único
+  ≈ o lake inteiro nas colunas lidas (~60 GiB em set/2026, centavos de dólar).
+  Pode levar mais de uma rodada (orçamento de 60s na leitura, 240s no warmup e
+  no endpoint de sync);
+- **custo recorrente:** cada rodada lê as partições do dia (1–2), não o
+  histórico. Não cresce com o tempo de vida do lake.
+
+`MA_SURVEY_MATERIALIZE=0` volta a ler a view direto. É o modo que quebra;
+existe pra emergência.
+
+### O que vinha antes
 
 O risco não é volume de dado, é **quantas vezes a query roda**:
 `maxattention_results` é chamado por cliente, por pergunta — e agora também em
@@ -437,12 +482,10 @@ e é barato. O ramo amplo não tem como podar por criativo, e a view faz
 cluster, então a ESTIMATIVA (que é sobre o que o teto de bytes age) sai em
 ~36 GiB pra 30 dias. Duas defesas: os cortes de data são parâmetros
 `TIMESTAMP` constantes (com `CURRENT_TIMESTAMP()` a estimativa nem podava
-partição), e o teto subiu pra 48 GiB (~R$1 por query fria, admin-only,
-cacheado 10 min). Se o ramo amplo estourar mesmo assim, a listagem degrada
-pra só a campanha e o modal avisa (`recent_skipped`). O lake cresce ~1 GiB
-por dia; quando o teto voltar a incomodar, o conserto é materializar
-`survey_answer` numa tabela pequena (scheduled query), não subir o teto de
-novo.
+partição), e o teto subiu pra 48 GiB. Durou oito dias: em 29/09 a estimativa
+passou de 63 GiB e o modal voltou a morrer. Desde então as leituras vão na
+tabela materializada (ver "Materialização" em Custo) e esse teto só vale pro
+sync, que lê o lake em fatias.
 
 Pelo terminal, `bash backend/scripts/check_ma_survey.sh PPV8JF` faz a mesma
 separação e para no passo que falhou.
