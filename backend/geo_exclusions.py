@@ -80,7 +80,7 @@ ADJ_TABLE_ID = "campaign_geo_adjustments"
 ADJ_TABLE = f"`{PROJECT}.prod_assets.{ADJ_TABLE_ID}`"
 STATUS_TABLE = f"`{PROJECT}.prod_assets.campaign_geo_exclusion_status`"
 OVERRIDES_TABLE = f"`{PROJECT}.prod_assets.campaign_country_overrides`"
-REGIONS_TABLE = f"`{PROJECT}.prod_assets.dv360_daily_regions_performance_metrics`"
+REGIONS_TABLE = f"`{PROJECT}.bidiq_enriched.dv360_daily_regions`"
 # Base de geo unificada (DV360 + Yahoo, hyprster). Quando existe, a cópia
 # compacta sai dela e a Yahoo entra no ajuste; senão, sai do Region cru e o
 # ajuste segue só DV360.
@@ -95,7 +95,7 @@ COMPACT_LOOKBACK_DAYS = 120
 # Janela máxima para trás no refresh: a mesma da cópia compacta (proteção de
 # custo). Campanha com entrega mais antiga que isso não é ajustada.
 MAX_LOOKBACK_DAYS = COMPACT_LOOKBACK_DAYS
-UNIFIED_TABLE = f"`{PROJECT}.prod_assets.unified_daily_performance_metrics`"
+UNIFIED_TABLE = f"`{PROJECT}.bidiq_mart.unified_daily_performance`"
 CR_TABLE = f"`{PROJECT}.prod_prod_hypr_reporthub.campaign_results`"
 
 # Tabelas cujo last_modified dispara um refresh (ver `needs_refresh`).

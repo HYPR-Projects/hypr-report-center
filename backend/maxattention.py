@@ -19,7 +19,7 @@ já devolve, e o resto do pipeline segue igual.
 Contrato de entrada: uma VIEW, não uma tabela
 ---------------------------------------------
 A fonte é o lake de eventos que a plataforma (o2o-platform) já drena pro
-BigQuery no MESMO projeto — `site-hypr.prod_analytics.creative_events_raw`,
+BigQuery no MESMO projeto — `site-hypr.adsiq_raw.maxattention_creative_events`,
 evento `survey_answer`, rótulo em `metadata.optionLabel`. Mas o schema
 daquele lake é da plataforma e muda no ritmo dela, e há uma regra de
 leitura que não dá pra esquecer (dedupe por event_id: o lake tem dois

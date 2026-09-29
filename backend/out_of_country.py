@@ -92,11 +92,11 @@ from google.cloud import bigquery
 SP_TZ = ZoneInfo("America/Sao_Paulo")
 logger = logging.getLogger(__name__)
 
-REGIONS_TABLE = "`site-hypr.prod_assets.dv360_daily_regions_performance_metrics`"
+REGIONS_TABLE = "`site-hypr.bidiq_enriched.dv360_daily_regions`"
 GEO_TABLE_ID = "site-hypr.prod_assets.unified_daily_geo_performance_metrics"
 GEO_TABLE = f"`{GEO_TABLE_ID}`"
-UNIFIED_TABLE = "`site-hypr.prod_assets.unified_daily_performance_metrics`"
-CHECKLIST_TABLE = "`site-hypr.prod_assets.checklist_info`"
+UNIFIED_TABLE = "`site-hypr.bidiq_mart.unified_daily_performance`"
+CHECKLIST_TABLE = "`site-hypr.hyprops_mart.checklist_info`"
 OVERRIDES_TABLE = "`site-hypr.prod_assets.campaign_country_overrides`"
 
 # Teto de bytes por query. A tabela de regiões tem ~127 GB; com poda por

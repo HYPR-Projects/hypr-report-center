@@ -1419,7 +1419,7 @@ export async function fetchMaxAttentionResults(creativeId, { question = "", rang
 
 /**
  * Busca o checklist comercial cadastrado no Sales Center
- * (`hypr_sales_center.checklists`). Mesmo nível de acesso do report —
+ * (`hyprops_app.salescenter_checklists`). Mesmo nível de acesso do report —
  * quem tem o short_token, vê. Retorna o objeto com PI, peças, proposta,
  * features, volumes negociados e times responsáveis. Devolve null
  * quando a campanha não está cadastrada (legacy pre-Sales Center) —
