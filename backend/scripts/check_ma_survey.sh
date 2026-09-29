@@ -176,6 +176,22 @@ else
   fi
 fi
 
+# ── 6. A tabela materializada está andando? ─────────────────────────────────
+# Desde set/2026 o backend não lê a view nas requisições: copia survey_answer
+# pra uma tabela pequena em prod_assets e lê dela (ver "Materialização" em
+# backend/maxattention.py). Marca d'água velha = o sync não está rodando, e o
+# report mostra número parado sem erro nenhum.
+ANS="${MA_SURVEY_ANSWERS_TABLE:-${PROJECT}.prod_assets.ma_survey_answers}"
+LAST=$(q "SELECT FORMAT_TIMESTAMP('%d/%m %H:%M', MAX(synced_through), 'America/Sao_Paulo') FROM \`${ANS}_sync\`")
+NANS=$(q "SELECT COUNT(*) FROM \`$ANS\`")
+echo
+if ! [[ "$NANS" =~ ^[0-9]+$ ]]; then
+  echo "⚠ Tabela materializada ($ANS) ainda não existe — o backend cria no primeiro"
+  echo "  uso. Pra forçar: $FN?action=maxattention_sync&ak=<chave admin>"
+else
+  echo "✓ Tabela materializada: $NANS respostas, copiadas até ${LAST:-nunca}"
+fi
+
 echo
 echo "✓ TUDO DE PÉ — BigQuery e backend. Abra o modal de survey da campanha:"
 echo "  o botão 'Conectar automaticamente' deve aparecer."

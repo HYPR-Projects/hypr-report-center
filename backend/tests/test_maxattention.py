@@ -29,8 +29,12 @@ def test_unidade_de_contagem_prefere_sessao(session, responses, esperado):
 def clean_env(monkeypatch):
     monkeypatch.delenv("MA_SURVEY_VIEW", raising=False)
     monkeypatch.delenv("MA_CREATIVES_DIM", raising=False)
+    for k in ("MA_SURVEY_MATERIALIZE", "MA_SURVEY_ANSWERS_TABLE", "MA_EVENTS_RAW", "MA_SURVEY_SYNC_MIN"):
+        monkeypatch.delenv(k, raising=False)
     ma._COLUMNS_CACHE.clear()
     ma._RECENT_CACHE.clear()
+    ma._TABLES_READY.clear()
+    ma._SYNC_STATE.update(checked_at=None, synced_through=None)
 
 
 def test_sem_env_a_falha_diz_o_que_configurar():
@@ -215,6 +219,9 @@ class _FakeClient:
 @pytest.fixture
 def ma_env(monkeypatch):
     monkeypatch.setenv("MA_SURVEY_VIEW", "site-hypr.prod_analytics.ma_survey_responses")
+    # Os testes de listagem abaixo exercitam a lógica dos ramos sobre a view
+    # (modo legado). A fonte materializada tem os testes dela no fim do arquivo.
+    monkeypatch.setenv("MA_SURVEY_MATERIALIZE", "0")
     # (short_token, responses, creative_name, question, session_id)
     monkeypatch.setattr(ma, "_view_columns", lambda view: (True, False, True, True, True))
 
@@ -580,3 +587,220 @@ def test_ramo_amplo_e_cacheado_e_compartilhado_entre_campanhas(ma_env, monkeypat
 
     # warm_recent aquece e devolve a contagem.
     assert ma.warm_recent() == 2
+
+
+# ── Fonte materializada (o conserto do bytesBilledLimitExceeded) ────────────
+#
+# PPV8JF, 29/09/2026: "Query exceeded limit for bytes billed: 51539607552.
+# 67857547264 or higher required". A estimativa de qualquer leitura que
+# atravessa a view acompanha o tamanho do lake, e o lake cresce todo dia —
+# subir o teto (32 → 48) só adiou. Agora só o sync lê o lake, em fatias; toda
+# leitura vai na tabela pequena.
+
+class _FakeDML:
+    def __init__(self, n):
+        self.num_dml_affected_rows = n
+
+    def result(self):
+        return []
+
+
+class _SyncClient:
+    """Simula o BigQuery do sync: marca d'água no log, partição mais antiga,
+    MERGE devolvendo linhas afetadas. Grava (sql, params) de tudo."""
+
+    def __init__(self, through=None, first_partition="20260901", merge_rows=0,
+                 lake_rows=(), fail_merge=None):
+        self.through = through
+        self.first_partition = first_partition
+        self.merge_rows = merge_rows
+        self.lake_rows = list(lake_rows)
+        self.fail_merge = fail_merge
+        self.calls = []
+
+    def query(self, sql, job_config=None):
+        params = {p.name: getattr(p, "value", getattr(p, "values", None))
+                  for p in (job_config.query_parameters if job_config else [])}
+        self.calls.append((sql, params, job_config))
+        if "CREATE TABLE IF NOT EXISTS" in sql:
+            return _FakeJob([])
+        if "MAX(synced_through)" in sql:
+            return _FakeJob([{"t": self.through}])
+        if "INFORMATION_SCHEMA.PARTITIONS" in sql:
+            return _FakeJob([{"p": self.first_partition}])
+        if sql.lstrip().startswith("MERGE"):
+            if self.fail_merge:
+                err = self.fail_merge(params)
+                if err:
+                    raise err
+            return _FakeDML(self.merge_rows)
+        if "INSERT INTO" in sql:
+            return _FakeDML(1)
+        return _FakeJob(self.lake_rows)
+
+    def merges(self):
+        return [(s, p) for s, p, _ in self.calls if s.lstrip().startswith("MERGE")]
+
+    def reads(self):
+        return [(s, p, jc) for s, p, jc in self.calls
+                if "ma_survey_answers`" in s and "MERGE" not in s and "CREATE" not in s]
+
+
+@pytest.fixture
+def mat_env(monkeypatch):
+    monkeypatch.setenv("MA_SURVEY_VIEW", "site-hypr.prod_analytics.ma_survey_responses")
+    now = datetime(2026, 9, 29, 15, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(ma, "_now", lambda: now)
+    return now
+
+
+def test_materializacao_e_o_default_e_as_tabelas_derivam_da_view(mat_env):
+    assert ma.materialized() is True
+    assert ma.answers_table() == "site-hypr.prod_assets.ma_survey_answers"
+    assert ma.events_raw_table() == "site-hypr.prod_analytics.creative_events_raw"
+    # Contrato fixo: não precisa ler schema de view nenhuma.
+    assert ma._view_columns("qualquer") == ma._MATERIALIZED_COLUMNS
+
+
+def test_backfill_comeca_na_primeira_particao_e_anda_em_fatias(mat_env, monkeypatch):
+    client = _install(monkeypatch, _SyncClient(through=None, first_partition="20260901", merge_rows=3))
+    r = ma.sync_answers()
+    assert r["status"] == "synced" and r["complete"] is True
+    merges = client.merges()
+    # 01/09 → 29/09 15h em fatias de 7 dias: 5 fatias, contíguas, sem buraco.
+    assert merges[0][1]["since"] == datetime(2026, 9, 1, tzinfo=timezone.utc)
+    assert merges[-1][1]["until"] == mat_env
+    for (_, a), (_, b) in zip(merges, merges[1:]):
+        assert a["until"] == b["since"]
+    assert all(p["until"] - p["since"] <= timedelta(days=ma.SYNC_CHUNK_DAYS) for _, p in merges)
+    assert len(merges) == 5
+    assert r["inserted"] == 15
+    assert r["synced_through"] == mat_env
+    # Cada fatia grava a própria marca d'água: parar no meio é seguro.
+    logs = [c for c in client.calls if "INSERT INTO" in c[0]]
+    assert len(logs) == len(merges)
+
+
+def test_merge_le_o_lake_so_com_corte_constante_e_dedupe_por_event_id(mat_env, monkeypatch):
+    client = _install(monkeypatch, _SyncClient(through=mat_env - timedelta(hours=3)))
+    ma.sync_answers()
+    (sql, params), = client.merges()
+    assert "creative_events_raw" in sql
+    assert "event_type = 'survey_answer'" in sql
+    # Corte de partição como parâmetro: é o que deixa a estimativa podar.
+    assert "occurred_at >= @since" in sql and "occurred_at <  @until" in sql
+    assert "TIMESTAMP_SUB(CURRENT_TIMESTAMP()" not in sql
+    assert "PARTITION BY event_id" in sql
+    assert "WHEN NOT MATCHED THEN" in sql and "WHEN MATCHED" not in sql
+    # Incremental: da marca d'água menos a sobreposição até agora.
+    assert params["since"] == mat_env - timedelta(hours=3) - ma.SYNC_OVERLAP
+    assert params["until"] == mat_env
+
+
+def test_sync_recente_nao_toca_o_lake(mat_env, monkeypatch):
+    client = _install(monkeypatch, _SyncClient(through=mat_env - timedelta(minutes=10)))
+    r = ma.sync_answers()
+    assert r["status"] == "fresh"
+    assert client.merges() == []
+    # E a segunda chamada nem vai ao BigQuery: frescor lembrado em memória.
+    n = len(client.calls)
+    ma.sync_answers()
+    assert len(client.calls) == n
+
+
+def test_fatia_estourando_o_teto_cai_pela_metade(mat_env, monkeypatch):
+    def fail(params):
+        if params["until"] - params["since"] > timedelta(days=2):
+            return RuntimeError("Query exceeded limit for bytes billed: 51539607552. 67857547264 or higher required.")
+        return None
+
+    client = _install(monkeypatch, _SyncClient(through=None, first_partition="20260922", fail_merge=fail))
+    r = ma.sync_answers()
+    assert r["complete"] is True
+    ok = [p for _, p in client.merges() if p["until"] - p["since"] <= timedelta(days=2)]
+    assert ok[0]["since"] == datetime(2026, 9, 22, tzinfo=timezone.utc)
+    assert ok[-1]["until"] == mat_env
+
+
+def test_outro_erro_no_sync_sobe(mat_env, monkeypatch):
+    _install(monkeypatch, _SyncClient(fail_merge=lambda p: RuntimeError("Access Denied: prod_assets")))
+    with pytest.raises(RuntimeError, match="Access Denied"):
+        ma.sync_answers()
+
+
+def test_orcamento_de_tempo_para_no_meio_e_continua_depois(mat_env, monkeypatch):
+    clock = iter(range(0, 10_000, 100))
+    monkeypatch.setattr(ma.time, "monotonic", lambda: next(clock))
+    client = _install(monkeypatch, _SyncClient(through=None, first_partition="20260101"))
+    r = ma.sync_answers(budget_s=150)
+    assert r["complete"] is False
+    assert 1 <= len(client.merges()) < 10
+    # Parcial não conta como fresco: a próxima leitura continua o backfill.
+    assert ma._SYNC_STATE["checked_at"] is None
+
+
+def test_leituras_vao_na_tabela_pequena_com_teto_baixo(mat_env, monkeypatch):
+    now = mat_env
+    rows = [{"option": "Sim", "n": 40, "first_at": now, "last_at": now},
+            {"option": "Não", "n": 60, "first_at": now, "last_at": now}]
+    client = _install(monkeypatch, _SyncClient(through=now - timedelta(minutes=5), lake_rows=rows))
+    data = ma.fetch_results("c1")
+    assert data["counts"] == {"Sim": 40, "Não": 60}
+    assert data["synced_through"] == (now - timedelta(minutes=5)).isoformat()
+    (sql, _, jc), = client.reads()
+    assert "creative_events_raw" not in sql
+    assert "ma_survey_responses" not in sql       # a view não entra mais na leitura
+    assert "creatives_dim" in sql                 # nome/token vêm da dimensão
+    assert jc.maximum_bytes_billed == int(ma.READ_MAX_BYTES_BILLED)
+    assert client.merges() == []
+
+
+def test_listagem_materializada_nao_varre_o_lake(mat_env, monkeypatch):
+    now = mat_env
+    lake = [{
+        "creative_id": "c1", "creative_name": "ID-PPV8JF_X_CONTROLE", "short_token": "PPV8JF",
+        "questions": [], "options": ["Sim"], "responses": 10, "first_at": now, "last_at": now,
+    }]
+
+    class _Client(_SyncClient):
+        def query(self, sql, job_config=None):
+            if "creatives_dim" in sql and "SELECT creative_id, creative_name, client_name" in sql:
+                self.calls.append((sql, {}, job_config))
+                return _FakeJob([{"creative_id": "c1", "creative_name": "ID-PPV8JF_X_CONTROLE", "client_name": None}])
+            return super().query(sql, job_config)
+
+    client = _install(monkeypatch, _Client(through=now - timedelta(minutes=5), lake_rows=lake))
+    p = ma.list_creatives_payload(short_token="PPV8JF")
+    assert [c["creative_id"] for c in p["creatives"]] == ["c1"]
+    assert p["includes_recent"] is True
+    assert p["synced_through"] == (now - timedelta(minutes=5)).isoformat()
+    assert not any("FROM `site-hypr.prod_analytics.creative_events_raw`" in s for s, _, _ in client.calls)
+    assert len(client.reads()) == 2               # campanha + amplo, ambos na tabela
+
+
+def test_sync_falhando_depois_de_uma_rodada_boa_nao_derruba_a_leitura(mat_env, monkeypatch):
+    now = mat_env
+    rows = [{"option": "Sim", "n": 1, "first_at": now, "last_at": now}]
+    client = _install(monkeypatch, _SyncClient(through=now - timedelta(hours=5), lake_rows=rows,
+                                               fail_merge=lambda p: RuntimeError("concurrent update")))
+    data = ma.fetch_results("c1")
+    assert data["total"] == 1
+    assert len(client.merges()) == 1              # tentou, falhou, serviu a tabela
+
+
+def test_tabela_que_nunca_sincronizou_nao_finge_zero(mat_env, monkeypatch):
+    # Sem nenhuma rodada boa, a tabela responderia "0 respostas" com cara de
+    # verdade. O erro original tem que chegar no admin.
+    _install(monkeypatch, _SyncClient(through=None, fail_merge=lambda p: RuntimeError("Access Denied: prod_analytics")))
+    with pytest.raises(RuntimeError, match="Access Denied"):
+        ma.fetch_results("c1")
+
+
+def test_modo_legado_segue_lendo_a_view(mat_env, monkeypatch):
+    monkeypatch.setenv("MA_SURVEY_MATERIALIZE", "0")
+    monkeypatch.setattr(ma, "_view_columns", lambda view: (True, False, True, True, True))
+    client = _install(monkeypatch, _SyncClient(lake_rows=[]))
+    ma.fetch_results("c1")
+    (sql, _, jc), = client.calls
+    assert "`site-hypr.prod_analytics.ma_survey_responses`" in sql
+    assert jc.maximum_bytes_billed == int(ma.MAX_BYTES_BILLED)

@@ -106,6 +106,19 @@ DEFAULT_LOOKBACK_DAYS = 180
 # conserto é materializar `survey_answer` numa tabela pequena, não subir de
 # novo.
 MAX_BYTES_BILLED = str(48 * 1024 ** 3)  # 48 GiB de ESTIMATIVA
+#
+# Atualização (set/2026): voltou a bater — 63 GiB estimados contra 48, no
+# modal da PPV8JF, oito dias depois de o teto subir de 32 pra 48. O lake cresce
+# ~3 GiB/dia nas colunas que a view lê, e toda leitura que atravessa a view
+# paga a janela inteira de novo. Subir o teto só adiava a próxima quebra; o
+# conserto foi o que o parágrafo acima já dizia: materializar. Ver
+# "Materialização" abaixo. Este teto agora vale pro SYNC (que lê o lake em
+# fatias pequenas) e pro modo legado `MA_SURVEY_MATERIALIZE=0`.
+
+# Teto das LEITURAS quando a fonte é a tabela materializada. Ela tem uma linha
+# por resposta (milhares, não bilhões), então qualquer coisa acima disto é
+# fonte apontada errado — e a falha tem que ser alta e cedo, não uma conta.
+READ_MAX_BYTES_BILLED = str(2 * 1024 ** 3)  # 2 GiB
 
 # Teto de opções distintas devolvidas por criativo na LISTAGEM. Serve pra
 # comparar conjuntos de opções, não pra exibir: uma dúzia já decide se duas
@@ -369,10 +382,10 @@ def _client():
     return bq_client.get_client()
 
 
-def _job_config(params):
+def _job_config(params, max_bytes=None):
     return bigquery.QueryJobConfig(
         query_parameters=params,
-        maximum_bytes_billed=MAX_BYTES_BILLED,
+        maximum_bytes_billed=max_bytes or MAX_BYTES_BILLED,
         # Cache de query do BigQuery: ligado, mas HOJE ele não pega nada —
         # e o comentário anterior aqui dizia o contrário, o que é pior que
         # não ter comentário.
@@ -390,6 +403,359 @@ def _job_config(params):
         # um limite fixo.
         use_query_cache=True,
     )
+
+
+# ── Materialização ──────────────────────────────────────────────────────────
+#
+# Por que existe: a view (`backend/sql/ma_survey_view.sql`) é um SELECT
+# DISTINCT sobre `creative_events_raw`, e cada leitura daqui atravessava ela
+# até o lake. O BigQuery aplica o teto de bytes sobre a ESTIMATIVA, e a
+# estimativa ignora poda de cluster — então filtrar por creative_id deixava a
+# query barata de verdade, mas não a deixava passar no teto. A estimativa
+# acompanha o tamanho do lake (todas as colunas lidas, de TODOS os eventos, na
+# janela), e o lake cresce todo dia: 34 GiB → teto de 32 → 36,5 GiB → teto de
+# 48 → 63 GiB. Três remendos em uma manhã, e a quebra voltou em oito dias.
+# O detalhe público (`fetch_results`, chamado no render do report do cliente)
+# ia pelo mesmo caminho, sem corte de data: a janela inteira da view.
+#
+# Agora: `survey_answer` é copiado pra uma tabela pequena em `prod_assets`
+# (uma linha por resposta; milhares, não bilhões), e TODA leitura vai nela.
+# Quem lê o lake é só o sync, incremental a partir de uma marca d'água e em
+# fatias de poucos dias — cada fatia estima só as partições dela, então o
+# custo por rodada não cresce com o histórico.
+#
+# Quem roda o sync:
+#   - o warmup do main.py (a cada 3h, horário comercial), com sobreposição de
+#     1 dia pra pegar evento que chegou atrasado no lake;
+#   - a própria leitura, quando a última rodada tem mais de
+#     `MA_SURVEY_SYNC_MIN` (default 60) — best-effort: se o sync falhar, a
+#     leitura serve o que já está na tabela e o erro vai pro log;
+#   - `refresh=true` do admin, que força.
+#
+# `MA_SURVEY_MATERIALIZE=0` volta ao modo antigo (lendo a view direto). Existe
+# pra emergência, não pra uso: é o modo que quebra.
+
+# Colunas que a fonte materializada expõe, na ordem de `_view_columns`:
+# (short_token, responses, creative_name, question, session_id).
+_MATERIALIZED_COLUMNS = (True, False, True, True, True)
+
+# Janela máxima que o backfill inicial olha — a mesma teto da view.
+BACKFILL_DAYS = 730
+
+# Tamanho da fatia do sync. 7 dias estimam ~20 GiB no volume de set/2026; se
+# um dia estourar o teto, a fatia cai pela metade sozinha (até 1 dia).
+SYNC_CHUNK_DAYS = 7
+
+# Sobreposição da rodada incremental com a anterior. O Worker de ingestão
+# grava em quase tempo real; 2h cobrem o streaming buffer e relógio torto. O
+# warmup usa 1 dia (`DEEP_SYNC_OVERLAP`) pra cobrir re-export atrasado.
+SYNC_OVERLAP = timedelta(hours=2)
+DEEP_SYNC_OVERLAP = timedelta(days=1)
+
+# Orçamento de tempo de uma rodada. O backfill inicial pode ter dezenas de
+# fatias; cada fatia grava a própria marca d'água, então parar no meio é
+# seguro — a próxima rodada continua de onde esta parou.
+SYNC_BUDGET_S = 60
+
+_SYNC_LOCK = threading.Lock()
+# checked_at: monotonic da última vez que confirmamos frescor (evita ir ao
+# BigQuery a cada leitura). synced_through: marca d'água conhecida.
+_SYNC_STATE = {"checked_at": None, "synced_through": None}
+_TABLES_READY = set()
+
+
+def materialized():
+    return os.environ.get("MA_SURVEY_MATERIALIZE", "1").strip() != "0"
+
+
+def _sync_ttl_s():
+    try:
+        return max(1, int(os.environ.get("MA_SURVEY_SYNC_MIN", "60"))) * 60
+    except ValueError:
+        return 3600
+
+
+def _qualified_env(name, default):
+    raw = os.environ.get(name, "").strip().strip("`")
+    if not raw:
+        return default
+    if not _VIEW_RE.match(raw):
+        raise NotConfigured(f"{name} inválida ({raw!r}). Esperado 'projeto.dataset.tabela'.")
+    return raw
+
+
+def answers_table():
+    """Tabela materializada. Em `prod_assets` porque é lá que a service
+    account do Report Center já escreve (MERGE de overrides, checklist...);
+    em `prod_analytics` ela só tem leitura."""
+    project = survey_view().split(".")[0]
+    return _qualified_env("MA_SURVEY_ANSWERS_TABLE", f"{project}.prod_assets.ma_survey_answers")
+
+
+def _sync_log_table():
+    return answers_table() + "_sync"
+
+
+def events_raw_table():
+    project, dataset, _ = survey_view().split(".")
+    return _qualified_env("MA_EVENTS_RAW", f"{project}.{dataset}.creative_events_raw")
+
+
+def _source(view):
+    """O que vai depois do FROM nas leituras: a view (modo legado) ou a tabela
+    materializada com o MESMO contrato de colunas da view.
+
+    Dedupe por event_id aqui, na leitura: MERGE só de INSERT pode rodar em
+    paralelo entre instâncias, e duas rodadas simultâneas gravariam a mesma
+    resposta duas vezes. A contagem por sessão distinta já absorveria isso,
+    mas contagem certa não deveria depender de qual unidade está em uso. Na
+    tabela pequena, função de janela custa nada."""
+    if not materialized():
+        return f"`{view}`"
+    return f"""(
+          SELECT
+            a.creative_id,
+            d.creative_name,
+            REGEXP_EXTRACT(UPPER(COALESCE(d.creative_name, '')), r'^ID-([A-Z0-9]{{4,10}})_') AS short_token,
+            a.session_id,
+            a.question,
+            a.option,
+            a.responded_at
+          FROM (
+            SELECT * FROM `{answers_table()}`
+            WHERE TRUE
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY event_id ORDER BY synced_at) = 1
+          ) a
+          LEFT JOIN `{creatives_dim_table()}` d ON d.creative_id = a.creative_id
+        )"""
+
+
+def _read_max_bytes():
+    return READ_MAX_BYTES_BILLED if materialized() else MAX_BYTES_BILLED
+
+
+def _ensure_tables():
+    answers, log = answers_table(), _sync_log_table()
+    if answers in _TABLES_READY:
+        return
+    _client().query(f"""
+        CREATE TABLE IF NOT EXISTS `{answers}` (
+          event_id     STRING    NOT NULL,
+          creative_id  STRING    NOT NULL,
+          session_id   STRING,
+          question     STRING,
+          option       STRING    NOT NULL,
+          responded_at TIMESTAMP NOT NULL,
+          synced_at    TIMESTAMP
+        )
+        CLUSTER BY creative_id
+        OPTIONS (description = "Respostas survey_answer do Max Attention, copiadas de creative_events_raw pelo Report Center (backend/maxattention.py). Não editar à mão.");
+        CREATE TABLE IF NOT EXISTS `{log}` (
+          synced_from    TIMESTAMP,
+          synced_through TIMESTAMP NOT NULL,
+          inserted       INT64,
+          ran_at         TIMESTAMP
+        )
+        OPTIONS (description = "Marca d'água do sync de ma_survey_answers. Uma linha por fatia.");
+    """).result()
+    _TABLES_READY.add(answers)
+
+
+def _synced_through():
+    rows = list(_client().query(
+        f"SELECT MAX(synced_through) AS t FROM `{_sync_log_table()}`",
+        job_config=_job_config([], max_bytes=READ_MAX_BYTES_BILLED),
+    ).result())
+    return rows[0]["t"] if rows else None
+
+
+def _backfill_start(now):
+    """Primeira partição com dado no lake, pra o backfill não gastar dezenas
+    de fatias em meses vazios. Metadata, não varredura. Sem permissão no
+    INFORMATION_SCHEMA, cai na janela cheia — mais lento, mesmo resultado."""
+    floor = now - timedelta(days=BACKFILL_DAYS)
+    project, dataset, table = events_raw_table().split(".")
+    try:
+        rows = list(_client().query(
+            f"""
+            SELECT MIN(partition_id) AS p
+            FROM `{project}.{dataset}.INFORMATION_SCHEMA.PARTITIONS`
+            WHERE table_name = @t
+              AND total_rows > 0
+              AND REGEXP_CONTAINS(partition_id, r'^\\d{{8}}$')
+            """,
+            job_config=_job_config(
+                [bigquery.ScalarQueryParameter("t", "STRING", table)],
+                max_bytes=READ_MAX_BYTES_BILLED,
+            ),
+        ).result())
+        p = rows[0]["p"] if rows else None
+        if p:
+            first = datetime.strptime(p, "%Y%m%d").replace(tzinfo=timezone.utc)
+            return max(floor, first)
+    except Exception as e:  # noqa: BLE001 — otimização, não requisito
+        logger.warning(f"[maxattention] INFORMATION_SCHEMA indisponível, backfill de {BACKFILL_DAYS} dias: {e}")
+    return floor
+
+
+def _merge_range(since, until):
+    """Copia as respostas de [since, until) do lake pra tabela. Idempotente
+    (casa por event_id), então sobreposição entre rodadas é segura.
+
+    Aqui o dedupe PODE ser por QUALIFY, ao contrário da view: a janela roda
+    sobre o scan que já tem o filtro de partição constante, sem o otimizador
+    precisar empurrar nada pra dentro. `event_id` nulo (não deveria existir)
+    ganha uma chave derivada em vez de sumir ou de duplicar a cada rodada."""
+    sql = f"""
+        MERGE `{answers_table()}` T
+        USING (
+          SELECT event_id, creative_id, session_id, question, option, responded_at
+          FROM (
+            SELECT
+              COALESCE(event_id, TO_HEX(MD5(CONCAT(
+                creative_id, '|', IFNULL(session_id, ''), '|',
+                CAST(occurred_at AS STRING), '|', IFNULL(JSON_VALUE(metadata, '$.optionLabel'), '')
+              )))) AS event_id,
+              creative_id,
+              session_id,
+              JSON_VALUE(metadata, '$.questionText') AS question,
+              JSON_VALUE(metadata, '$.optionLabel')  AS option,
+              occurred_at                            AS responded_at
+            FROM `{events_raw_table()}`
+            WHERE event_type = 'survey_answer'
+              AND occurred_at >= @since
+              AND occurred_at <  @until
+              AND creative_id IS NOT NULL
+          )
+          WHERE option IS NOT NULL AND TRIM(option) != ''
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY event_id ORDER BY responded_at) = 1
+        ) S
+        ON T.event_id = S.event_id
+        WHEN NOT MATCHED THEN
+          INSERT (event_id, creative_id, session_id, question, option, responded_at, synced_at)
+          VALUES (S.event_id, S.creative_id, S.session_id, S.question, S.option, S.responded_at, CURRENT_TIMESTAMP())
+    """
+    params = [
+        bigquery.ScalarQueryParameter("since", "TIMESTAMP", since),
+        bigquery.ScalarQueryParameter("until", "TIMESTAMP", until),
+    ]
+    job = _client().query(sql, job_config=_job_config(params))
+    job.result()
+    return int(getattr(job, "num_dml_affected_rows", None) or 0)
+
+
+def _log_sync(since, until, inserted):
+    _client().query(
+        f"""
+        INSERT INTO `{_sync_log_table()}` (synced_from, synced_through, inserted, ran_at)
+        VALUES (@since, @until, @inserted, CURRENT_TIMESTAMP())
+        """,
+        job_config=_job_config([
+            bigquery.ScalarQueryParameter("since", "TIMESTAMP", since),
+            bigquery.ScalarQueryParameter("until", "TIMESTAMP", until),
+            bigquery.ScalarQueryParameter("inserted", "INT64", int(inserted)),
+        ], max_bytes=READ_MAX_BYTES_BILLED),
+    ).result()
+
+
+def sync_answers(force=False, overlap=SYNC_OVERLAP, budget_s=SYNC_BUDGET_S, wait=True):
+    """Traz o que chegou no lake desde a última rodada. Erro sobe.
+
+    Devolve `{status, synced_through, inserted, chunks, complete}`:
+      - status "fresh": nada a fazer (rodada recente, por esta ou outra
+        instância — a marca d'água é compartilhada, está no BigQuery);
+      - status "synced": rodou; `complete=False` quando o orçamento de tempo
+        acabou antes de alcançar o agora (backfill longo) e a próxima rodada
+        continua;
+      - status "busy": `wait=False` e outra thread desta instância já está
+        sincronizando — quem lê não fica na fila atrás de um backfill.
+    """
+    ttl = _sync_ttl_s()
+    if not _SYNC_LOCK.acquire(blocking=wait):
+        return {"status": "busy", "synced_through": _SYNC_STATE["synced_through"],
+                "inserted": 0, "chunks": 0, "complete": False}
+    try:
+        return _sync_locked(force, overlap, budget_s, ttl)
+    finally:
+        _SYNC_LOCK.release()
+
+
+def _sync_locked(force, overlap, budget_s, ttl):
+    checked = _SYNC_STATE["checked_at"]
+    if not force and checked is not None and (time.monotonic() - checked) < ttl:
+        return {"status": "fresh", "synced_through": _SYNC_STATE["synced_through"],
+                "inserted": 0, "chunks": 0, "complete": True}
+
+    _ensure_tables()
+    now = _now()
+    through = _synced_through()
+    if through is not None:
+        _SYNC_STATE["synced_through"] = through
+    if not force and through is not None and (now - through).total_seconds() < ttl:
+        _SYNC_STATE.update(checked_at=time.monotonic(), synced_through=through)
+        return {"status": "fresh", "synced_through": through,
+                "inserted": 0, "chunks": 0, "complete": True}
+
+    cur = _backfill_start(now) if through is None else through - overlap
+    step = timedelta(days=SYNC_CHUNK_DAYS)
+    t0 = time.monotonic()
+    inserted = chunks = 0
+    while cur < now:
+        if chunks and (time.monotonic() - t0) > budget_s:
+            break
+        end = min(cur + step, now)
+        try:
+            n = _merge_range(cur, end)
+        except Exception as e:  # noqa: BLE001 — só o teto é tratado
+            if _is_bytes_limit_error(e) and step > timedelta(days=1):
+                step = max(timedelta(days=1), step / 2)
+                continue
+            raise
+        _log_sync(cur, end, n)
+        inserted += n
+        chunks += 1
+        through = end if through is None or end > through else through
+        cur = end
+
+    complete = cur >= now
+    if inserted:
+        # O ramo amplo da listagem fica cacheado por horas; resposta nova
+        # na tabela tem que aparecer nele sem esperar o TTL.
+        _RECENT_CACHE.clear()
+    _SYNC_STATE.update(checked_at=time.monotonic() if complete else None, synced_through=through)
+    logger.info(
+        f"[maxattention] sync: {inserted} respostas novas em {chunks} fatia(s), "
+        f"até {through.isoformat() if through else '—'}{'' if complete else ' (parcial, continua na próxima)'}"
+    )
+    return {"status": "synced", "synced_through": through,
+            "inserted": inserted, "chunks": chunks, "complete": complete}
+
+
+def _ensure_fresh(force=False):
+    """Sync best-effort pro caminho de LEITURA. Falha não derruba a leitura:
+    a tabela ainda tem tudo até a última rodada boa, e dado de uma hora atrás
+    é melhor que erro na tela do cliente. O que não dá pra servir é tabela que
+    nunca recebeu uma rodada boa (não criada, ou backfill falhando): ela
+    responderia "zero respostas" com cara de verdade. Aí o erro original
+    sobe, que é o que explica o problema."""
+    if not materialized():
+        return None
+    ready = answers_table() in _TABLES_READY
+    try:
+        # Tabela já conhecida: não espera sync de outra thread (serve o que
+        # tem). Primeira leitura da instância: espera, porque pode ser o
+        # backfill e a tabela ainda nem existir.
+        return sync_answers(force=force, wait=force or not ready)
+    except Exception as e:  # noqa: BLE001
+        if _SYNC_STATE["synced_through"] is None:
+            raise
+        logger.warning(f"[maxattention] sync falhou, servindo a tabela como está: {e}")
+        return None
+
+
+def _synced_through_iso():
+    t = _SYNC_STATE["synced_through"] if materialized() else None
+    return t.isoformat() if t else None
 
 
 # Teto de nomes de criativo devolvidos no diagnóstico de lista vazia. Serve
@@ -457,6 +823,9 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
     distinguir. Foi exatamente esse buraco que virou "a integração quebrou".
     """
     view = survey_view()
+    # refresh=true do admin ("Atualizar lista") força o sync: é o botão que
+    # ele aperta depois de responder no preview pra ver a resposta entrar.
+    _ensure_fresh(force=refresh)
     days = max(1, min(int(days or DEFAULT_LOOKBACK_DAYS), 730))
     limit = max(1, min(int(limit or 200), 1000))
     token = (short_token or "").strip()
@@ -540,6 +909,7 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
             # Cliente usado no vínculo por cliente (None = só por token).
             "client_name": client_name or None,
             "diagnostics": diagnostics,
+            "synced_through": _synced_through_iso(),
         }
 
     # Duas queries, não uma: o ramo da CAMPANHA é barato (poda por
@@ -551,7 +921,7 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
     campaign_rows = []
     if ids:
         sql = _listing_sql(view, [f"""
-          SELECT * FROM `{view}`
+          SELECT * FROM {_source(view)}
           WHERE creative_id IN UNNEST(@ids)
             AND responded_at >= @since_campaign
         """], "ORDER BY last_at DESC", name_expr, token_expr, questions_expr, weight, limit)
@@ -559,7 +929,9 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
             bigquery.ScalarQueryParameter("since_campaign", "TIMESTAMP", since_campaign),
             bigquery.ArrayQueryParameter("ids", "STRING", ids),
         ]
-        campaign_rows = list(_client().query(sql, job_config=_job_config(params)).result())
+        campaign_rows = list(_client().query(
+            sql, job_config=_job_config(params, max_bytes=_read_max_bytes()),
+        ).result())
 
     includes_recent = True
     recent_skipped = None
@@ -631,7 +1003,7 @@ def _recent_rows(recent_days, force=False):
         sql = _listing_sql(
             view,
             [f"""
-              SELECT * FROM `{view}`
+              SELECT * FROM {_source(view)}
               WHERE responded_at >= @since_recent
             """],
             "ORDER BY last_at DESC",
@@ -644,7 +1016,9 @@ def _recent_rows(recent_days, force=False):
         params = [bigquery.ScalarQueryParameter(
             "since_recent", "TIMESTAMP", _now() - timedelta(days=recent_days),
         )]
-        rows = list(_client().query(sql, job_config=_job_config(params)).result())
+        rows = list(_client().query(
+            sql, job_config=_job_config(params, max_bytes=_read_max_bytes()),
+        ).result())
         _RECENT_CACHE[recent_days] = (time.monotonic(), rows)
         return rows
 
@@ -747,7 +1121,10 @@ def _rows_to_creatives(rows, token, dim_match_by_id):
 
 def _view_columns(view):
     """(short_token, responses, creative_name, question, session_id) — quais
-    colunas opcionais a view expõe. Lido do schema uma vez por instância."""
+    colunas opcionais a view expõe. Lido do schema uma vez por instância.
+    Com a fonte materializada o contrato é fixo e nem precisa ler."""
+    if materialized():
+        return _MATERIALIZED_COLUMNS
     cached = _COLUMNS_CACHE.get(view)
     if cached is not None:
         return cached
@@ -784,6 +1161,7 @@ def fetch_results(creative_id, question=None, date_from=None, date_to=None):
     ao mesmo filtro, senão a soma compara períodos diferentes.
     """
     view = survey_view()
+    _ensure_fresh()
     _, has_responses_col, _, has_question_col, has_session_col = _view_columns(view)
     weight = _weight_expr(has_session_col, has_responses_col)
 
@@ -805,14 +1183,16 @@ def fetch_results(creative_id, question=None, date_from=None, date_to=None):
           {weight}          AS n,
           MIN(responded_at) AS first_at,
           MAX(responded_at) AS last_at
-        FROM `{view}`
+        FROM {_source(view)}
         WHERE {' AND '.join(where)}
         GROUP BY option
         ORDER BY n DESC
         LIMIT {MAX_OPTIONS + 1}
     """
 
-    rows = list(_client().query(sql, job_config=_job_config(params)).result())
+    rows = list(_client().query(
+        sql, job_config=_job_config(params, max_bytes=_read_max_bytes()),
+    ).result())
 
     truncated = len(rows) > MAX_OPTIONS
     if truncated:
@@ -843,4 +1223,7 @@ def fetch_results(creative_id, question=None, date_from=None, date_to=None):
         "first_response_at": first_at.isoformat() if first_at else None,
         "last_response_at": last_at.isoformat() if last_at else None,
         "truncated": truncated,
+        # Até quando a tabela materializada tem o lake copiado (None no modo
+        # legado). É a idade real do dado — o cache de 5 min vem por cima.
+        "synced_through": _synced_through_iso(),
     }

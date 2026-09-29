@@ -864,6 +864,18 @@ def warmup_caches(force_refresh=True, max_reports=150, deadline_s=480):
     # que é igual pra toda campanha. Aquecida aqui, o modal de survey abre
     # sem esperar por ela. Sem MA_SURVEY_VIEW, não há o que aquecer.
     try:
+        if maxattention.is_configured() and maxattention.materialized():
+            # Antes do ramo amplo: ele lê a tabela que este sync alimenta.
+            # Sobreposição de 1 dia (não as 2h da leitura) pra pegar evento que
+            # chegou atrasado no lake; orçamento maior pro backfill inicial.
+            r = maxattention.sync_answers(
+                force=True, overlap=maxattention.DEEP_SYNC_OVERLAP, budget_s=240,
+            )
+            summary["ma_answers_synced"] = {"inserted": r["inserted"], "complete": r["complete"]}
+    except Exception as e:
+        logger.warning(f"[WARN warmup maxattention sync] {e}")
+        summary["ma_answers_synced"] = False
+    try:
         if maxattention.is_configured():
             summary["ma_recent_warmed"] = maxattention.warm_recent()
     except Exception as e:
@@ -3191,6 +3203,31 @@ def report_data(request):
                 502,
                 headers,
             )
+
+    # Sync manual da tabela materializada de respostas (admin). Pro primeiro
+    # backfill depois do deploy e pra conferir a marca d'água sem abrir o
+    # BigQuery. `deep=true` usa a sobreposição de 1 dia do warmup.
+    if request.method in ("GET", "POST") and request.args.get("action") == "maxattention_sync":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            deep = request.args.get("deep") == "true"
+            r = maxattention.sync_answers(
+                force=True,
+                overlap=maxattention.DEEP_SYNC_OVERLAP if deep else maxattention.SYNC_OVERLAP,
+                budget_s=240,
+            )
+            if r["inserted"]:
+                with _cache_lock:
+                    _ma_creatives_cache.clear()
+                    _ma_results_cache.clear()
+            t = r["synced_through"]
+            return (jsonify({**r, "synced_through": t.isoformat() if t else None}), 200, headers)
+        except maxattention.NotConfigured as e:
+            return (jsonify({"error": str(e), "configured": False}), 501, headers)
+        except Exception as e:
+            logger.error(f"[ERROR maxattention_sync] {e}")
+            return (jsonify({"error": f"Erro no sync do Max Attention: {e}"}), 502, headers)
 
     # Sem auth, deliberadamente — e pelo mesmo motivo do typeform_proxy: o
     # report é lido por cliente sem JWT, e o que sai aqui é contagem
