@@ -2,8 +2,10 @@
 
 Ajuste excepcional criado em 24/09/2026 depois do erro de setup de setembro
 (lines sem geo targeting em open exchange). Tira do report do cliente a entrega
-DV360 feita fora do Brasil, campanha por campanha, sem mexer na base e sem
-congelar o report. Código: `backend/geo_exclusions.py`.
+feita fora do Brasil, campanha por campanha, sem mexer na base e sem
+congelar o report. Vale pra DV360 e, desde 29/09/2026, pra Yahoo (as DSPs com
+país no BQ, pela `unified_daily_geo_performance_metrics`; ver
+`out-of-country-geo.md`). Código: `backend/geo_exclusions.py`.
 
 ## Como ligar
 
@@ -36,18 +38,23 @@ campanha sai, inclusive a de dias futuros.
   com o custo cheio, porque o dinheiro foi gasto. Embaixo do Gasto, o card
   mostra **Fora do BR (oculto)**: a parte desse custo que foi entregue fora e
   não aparece como entrega pro cliente. O drawer mostra o mesmo valor.
-- Fica: país não resolvido pelo DV360, e linhas de DSPs sem país no BQ
-  (Yahoo, StackAdapt, Amazon). O status mostra esse volume como "sem país".
+- Fica: país não resolvido pela DSP, e linhas de DSPs sem país no BQ
+  (StackAdapt, Amazon). O status mostra esse volume como "sem país".
 - O box **Fora do BR** do admin continua mostrando a entrega real. Ele é o
   monitor da operação e, desde 29/09/2026, já enxerga a Yahoo também (lê a
-  `unified_daily_geo_performance_metrics`, ver `out-of-country-geo.md`). A
-  retirada do report segue só DV360.
+  `unified_daily_geo_performance_metrics`, ver `out-of-country-geo.md`).
 
 ## Garantias
 
-- **Conciliação:** a fração só é publicada se o Region do DV360 bater com a
-  entrega (unified) dentro de 0,5% nas chaves dia × line × criativo. Se não
-  bater, o report fica com o último ajuste que bateu, ou sem ajuste.
+- **Conciliação por DSP:** a fração de cada DSP só é publicada se o geo dela
+  bater com a entrega (unified) dentro de 0,5% nas chaves dia × line ×
+  criativo. Se não bater, aquela DSP fica com o último ajuste que bateu, ou
+  sem ajuste, e as outras seguem. Com uma DSP aplicada e outra não, o status
+  é **parcial** e o drawer diz qual ficou de fora e a diferença de cada uma.
+- **Enquanto a base unificada não existe** (deploy do hyprster pendente), a
+  cópia compacta sai do Region cru e o ajuste segue só DV360, como antes.
+  Quando ela aparece, o próximo warmup refaz a cópia pela unificada (a cópia
+  montada dela tem a coluna `from_unified_geo`) e recalcula tudo.
 - **Dia sem Region:** quando o Region não tem o dia (12/09/2026 faltou, ver
   `dv360-regions-gap-backfill.md`), a fração é estimada pela line no período e
   aparece como "estimado" no status. Quando o dia for reprocessado, o próximo
@@ -72,7 +79,7 @@ linhas e sparkline de clientes.
 | `campaign_geo_exclusions` | config: token, janela opcional, motivo, quem ligou |
 | `campaign_geo_adjustments` | frações por token × dia × line × criativo |
 | `campaign_geo_exclusion_status` | status do último recálculo por token |
-| `dv360_region_country_compact` | cópia do Region por dia × line × criativo × país, particionada por data (a original não é, e cada leitura varria ~19 GB). Refeita no warmup quando o Region muda; é o que deixa o toggle rápido |
+| `dv360_region_country_compact` | cópia do geo por dia × DSP × line × criativo × país, particionada por data. Sai da `unified_daily_geo_performance_metrics` (DV360 + Yahoo) quando ela existe, senão do Region cru (que não é particionado; cada leitura varria ~19 GB). Refeita no warmup quando a fonte muda; é o que deixa o toggle rápido. O nome ficou por compatibilidade |
 
 ## Desligar tudo em emergência
 

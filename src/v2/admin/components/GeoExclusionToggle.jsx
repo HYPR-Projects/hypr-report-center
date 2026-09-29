@@ -1,9 +1,10 @@
 // src/v2/admin/components/GeoExclusionToggle.jsx
 //
-// Toggle no CampaignDrawer pra retirar do report do cliente a entrega DV360
-// fora do Brasil (ajuste excepcional de set/2026: line sem geo targeting em
-// open exchange). O backend recalcula as frações a partir do relatório de
-// Region e só aplica se o Region conciliar com a entrega (backend/geo_exclusions.py).
+// Toggle no CampaignDrawer pra retirar do report do cliente a entrega fora do
+// Brasil (ajuste excepcional de set/2026: line sem geo targeting em open
+// exchange). DV360 e Yahoo, as DSPs com país no BQ. O backend recalcula as
+// frações pela base de geo e só aplica a DSP cujo geo concilia com a entrega
+// (backend/geo_exclusions.py); uma DSP que não fecha não trava a outra.
 //
 // Diferente dos outros toggles do drawer, o save não é otimista no resultado:
 // ligar recalcula a campanha no BQ (segundos) e o que volta importa (conciliou?
@@ -49,20 +50,30 @@ function pct(part, total) {
   return `${p.toLocaleString("pt-BR", { maximumFractionDigits: p < 10 ? 1 : 0 })}%`;
 }
 
+const SOURCE_LABEL = { DV360: "DV360", YAHOO: "Yahoo" };
+const sourceLabel = (s) => SOURCE_LABEL[s] || s;
+
+function blockedText(list) {
+  return list.map((d) => `${sourceLabel(d.source)} (${d.recon_diff_pct}%)`).join(", ");
+}
+
 function StatusLine({ row }) {
   if (!row) return null;
+  const detail = Array.isArray(row.source_detail) ? row.source_detail : [];
+  const blocked = detail.filter((d) => d.status === "blocked");
   if (row.status === "blocked") {
     return (
       <p className="text-[10.5px] text-danger mt-1 leading-snug">
-        Region não conciliou com a entrega (diferença de {row.recon_diff_pct}%). O report segue
-        com o último ajuste que fechou, ou sem ajuste.
+        O geo não conciliou com a entrega
+        {blocked.length > 0 ? ` em ${blockedText(blocked)}` : ` (diferença de ${row.recon_diff_pct}%)`}.
+        O report segue com o último ajuste que fechou, ou sem ajuste.
       </p>
     );
   }
   if (row.status === "no_data" || !row.status) {
     return (
       <p className="text-[10.5px] text-fg-subtle mt-1 leading-snug">
-        Sem dado de país no Region pra essa campanha. Nada foi retirado.
+        Sem dado de país pra essa campanha (DV360 nem Yahoo). Nada foi retirado.
       </p>
     );
   }
@@ -70,20 +81,35 @@ function StatusLine({ row }) {
   const estShare = pct(row.estimated_imps, row.unified_imps);
   const noGeoShare = pct(row.no_geo_imps, row.unified_imps);
   const video = Number(row.removed_video_100) || 0;
+  const applied = detail.filter((d) => d.status === "ok" || Number(d.removed_imps) > 0);
   return (
     <div className="text-[10.5px] text-fg-subtle mt-1 leading-snug space-y-0.5">
+      {row.status === "partial" && blocked.length > 0 && (
+        <p className="text-warning">
+          {blockedText(blocked)} não conciliou com a entrega: segue com o último ajuste que fechou, ou sem ajuste.
+          O resto foi aplicado.
+        </p>
+      )}
       <p>
         <span className="text-fg font-medium">{compact(row.removed_imps)} impressões</span> retiradas
         {removedShare ? ` (${removedShare} da entrega)` : ""}
         {video > 0 ? `, incluindo ${compact(video)} views 100% de vídeo` : ", nada de vídeo fora do BR"}.
       </p>
+      {detail.length > 1 && applied.length > 0 && (
+        <p>
+          Por DSP: {applied.map((d) => `${sourceLabel(d.source)} ${compact(d.removed_imps)}`).join(" · ")}.
+        </p>
+      )}
       {row.removed_cost > 0 && (
         <p>Custo DSP fora do BR: {brl(row.removed_cost)}. Continua no Gasto do admin.</p>
       )}
       <p>
-        Conciliação Region × entrega: {row.recon_diff_pct}%.
-        {row.estimated_imps > 0 && estShare ? ` ${estShare} estimado (dia sem Region).` : ""}
-        {row.no_geo_imps > 0 && noGeoShare ? ` ${noGeoShare} sem país (Yahoo/outras DSPs), mantido.` : ""}
+        Conciliação geo × entrega:{" "}
+        {detail.length > 1
+          ? detail.filter((d) => d.status !== "no_data").map((d) => `${sourceLabel(d.source)} ${d.recon_diff_pct}%`).join(" · ")
+          : `${row.recon_diff_pct}%`}.
+        {row.estimated_imps > 0 && estShare ? ` ${estShare} estimado (dia sem geo).` : ""}
+        {row.no_geo_imps > 0 && noGeoShare ? ` ${noGeoShare} sem país (StackAdapt, Amazon ou DSP que não conciliou), mantido.` : ""}
       </p>
     </div>
   );
@@ -218,12 +244,12 @@ export function GeoExclusionToggle({ shortToken, onChange }) {
             <p className="text-[10.5px] text-danger mt-1 leading-snug">{error}</p>
           ) : pending === "on" ? (
             <p className="text-[10.5px] text-fg-subtle mt-1 leading-snug">
-              Calculando pelo Region do DV360 quanto saiu do Brasil (display e vídeo) e conferindo
-              com a entrega. Pode fechar o drawer: o ajuste termina sozinho.
+              Calculando pelo geo do DV360 e da Yahoo quanto saiu do Brasil (display e vídeo) e
+              conferindo com a entrega. Pode fechar o drawer: o ajuste termina sozinho.
             </p>
           ) : pending === "off" ? (
             <p className="text-[10.5px] text-fg-subtle mt-1 leading-snug">Voltando a mostrar a entrega cheia…</p>
-          ) : done === "on" && row?.status === "ok" ? (
+          ) : done === "on" && (row?.status === "ok" || row?.status === "partial") ? (
             <>
               <p className="text-[10.5px] text-success mt-1 flex items-center gap-1">
                 <span>{CHECK_ICON}</span>
@@ -240,7 +266,7 @@ export function GeoExclusionToggle({ shortToken, onChange }) {
             <StatusLine row={row} />
           ) : !loading ? (
             <p className="text-[10.5px] text-fg-subtle mt-1 leading-snug">
-              Só DV360 (única DSP com país no BQ), display e vídeo. Países liberados acima continuam no report.
+              DV360 e Yahoo (as DSPs com país no BQ), display e vídeo. Países liberados acima continuam no report.
             </p>
           ) : null}
         </div>

@@ -2204,7 +2204,7 @@ export async function getDspHealth() {
 }
 
 /**
- * Entrega fora do Brasil (só DV360 por enquanto) no mês — box das big
+ * Entrega fora do Brasil (DV360 + Yahoo) no mês — box das big
  * metrics do menu. `month` = "YYYY-MM" ou null (mês corrente). Devolve taxa,
  * ranking de campanhas e `alert`/`alert_reasons` do salto dia a dia.
  */

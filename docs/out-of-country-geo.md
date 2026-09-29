@@ -68,9 +68,11 @@ vira aviso (`source_stale`).
 6. O box troca sozinho em até 10 min depois que a tabela existir (cache
    negativo de `resolve_geo_backend`), ou no próximo cold start.
 
-## O que não mudou
+## Exclusão geo do report (retirar a entrega fora do BR)
 
-- A exclusão geo do report do cliente (`geo_exclusions.py`) segue só DV360.
-  Estender pra Yahoo é o próximo passo natural: a fração por line × criativo
-  sai da mesma unificada.
-- StackAdapt e Amazon continuam sem país no BQ.
+Também passou a valer pra Yahoo (`backend/geo_exclusions.py`, ver
+`geo-exclusions.md`). A conciliação geo × entrega é por DSP: se o geo da Yahoo
+não fechar com a entrega, só a Yahoo fica sem ajuste novo (status
+**parcial**) e o DV360 segue aplicado.
+
+StackAdapt e Amazon continuam sem país no BQ e ficam de fora das duas coisas.
