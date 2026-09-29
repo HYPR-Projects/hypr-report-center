@@ -1,6 +1,6 @@
 -- View materializada (TABLE refresh-by-query) pra a UI v2 do PMP Deals.
 --
--- Junta: pmp_line_items + pmp_insertion_orders + hypr_sales_center.checklists
+-- Junta: pmp_line_items + pmp_insertion_orders + hyprops_app.salescenter_checklists
 -- + delivery agregada de pmp_line_delivery_daily.
 --
 -- Não é VIEW pura porque queremos calcular health/pacing/projections sem

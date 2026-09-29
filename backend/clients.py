@@ -428,7 +428,7 @@ def query_client_timeseries(weeks=12):
 
     # Entrega fora do BR retirada dos tokens com exclusão geo — a sparkline
     # tem de bater com o report (ver geo_exclusions.py).
-    unified = "`site-hypr.prod_assets.unified_daily_performance_metrics`"
+    unified = "`site-hypr.bidiq_mart.unified_daily_performance`"
     try:
         unified = geo_exclusions.adjusted_source(bq, unified, "unified")
     except Exception as e:  # noqa: BLE001

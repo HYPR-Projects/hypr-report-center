@@ -414,7 +414,7 @@ def _update_enriched_rows_direct(line_ids: List[int], clean: dict) -> None:
 
 
 def sync_checklists_mirror() -> dict:
-    """Recopia hypr_sales_center.checklists (us-central1) → checklists_mirror (US-multi).
+    """Recopia hyprops_app.salescenter_checklists (us-central1) → checklists_mirror (US-multi).
 
     Cross-region copy gerenciado (mesma semântica do `bq cp -f`). A sugestão de
     vinculação (suggest_command_links) e o JOIN do pmp_lines_enriched leem do

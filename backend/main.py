@@ -1170,7 +1170,7 @@ _GF_CONTRACT_GATE = (
     " + COALESCE(MAX(contracted_groundflow_video_completions),0)"
     " + COALESCE(MAX(bonus_groundflow_display_impressions),0)"
     " + COALESCE(MAX(bonus_groundflow_video_completions),0)"
-    " FROM `site-hypr.prod_assets.checklist_info` WHERE short_token = @token) > 0"
+    " FROM `site-hypr.hyprops_mart.checklist_info` WHERE short_token = @token) > 0"
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6951,7 +6951,7 @@ def table_ref():
     return f"`{PROJECT_ID}.{DATASET_HUB}.{TABLE}`"
 
 
-UNIFIED_REF = "`site-hypr.prod_assets.unified_daily_performance_metrics`"
+UNIFIED_REF = "`site-hypr.bidiq_mart.unified_daily_performance`"
 
 
 def _geo_src(base, kind, token=None):
@@ -7777,7 +7777,7 @@ def fmt_br(iso):
 
 
 # ── Trigger de reconstrução das bases unificadas via Dagster+ ────────────────
-# A `prod_assets.unified_daily_performance_metrics` (e demais unified_*) é
+# A `bidiq_mart.unified_daily_performance` (e demais unified_*) é
 # materializada por um job dbt orquestrado no Dagster+ (org `hypr`, deployment
 # `prod`, location `hyprster`, job `dbt_assets_freshness_06am_job`). O job roda
 # 06h diário, mas depende das 4 fontes (DV360/Amazon/StackAdapt/Xandr) terem
@@ -10213,7 +10213,7 @@ def query_comments(short_token: str):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Negotiation (Sales Center) — checklist comercial rico, fonte de verdade
-# do que foi vendido. Tabela `hypr_sales_center.checklists` traz:
+# do que foi vendido. Tabela `hyprops_app.salescenter_checklists` traz:
 #   - Plano: investment, cpm, cpcv, formats[], products[], deal_dv360
 #   - Volumes: o2o_impressoes/views (+ bonus_*), feature_volumes (JSON)
 #   - Features ativadas: extras.cl_features (JSON), com fv_<f>_<m> volumes
@@ -10368,7 +10368,7 @@ def query_totals(token, campaign_info, unified_src=None, win_from=None, win_to=N
     """
     UNIFIED = _geo_src(unified_src or UNIFIED_REF, "unified", token)
     win_sql = _win_clause(win_from, win_to)
-    CHECKLIST = "`site-hypr.prod_assets.checklist_info`"
+    CHECKLIST = "`site-hypr.hyprops_mart.checklist_info`"
 
     sql_perf = f"""
         WITH base AS (
@@ -10459,7 +10459,7 @@ def _fetch_contracts(token):
             MAX(contracted_groundflow_video_completions)      AS contracted_groundflow_video_completions,
             MAX(bonus_groundflow_display_impressions)         AS bonus_groundflow_display_impressions,
             MAX(bonus_groundflow_video_completions)           AS bonus_groundflow_video_completions
-        FROM `site-hypr.prod_assets.checklist_info`
+        FROM `site-hypr.hyprops_mart.checklist_info`
         WHERE short_token = @token
     """
     jc = bigquery.QueryJobConfig(query_parameters=[
@@ -11191,7 +11191,7 @@ def query_campaigns_list():
                  + COALESCE(MAX(contracted_groundflow_video_completions),0)
                  + COALESCE(MAX(bonus_groundflow_display_impressions),0)
                  + COALESCE(MAX(bonus_groundflow_video_completions),0)) > 0 AS gf_on
-            FROM `site-hypr.prod_assets.checklist_info`
+            FROM `site-hypr.hyprops_mart.checklist_info`
             GROUP BY short_token
         ),
         base AS (
@@ -11322,7 +11322,7 @@ def query_campaigns_list():
                 SUM(IF(media_type='DISPLAY', impressions, 0)) AS d_admin_impressions,
                 SUM(IF(media_type='VIDEO',   total_cost,  0)) AS v_admin_total_cost,
                 SUM(IF(media_type='VIDEO',   impressions, 0)) AS v_admin_impressions
-            FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+            FROM `site-hypr.bidiq_mart.unified_daily_performance`
             LEFT JOIN checklist USING(short_token)
             WHERE media_type IN ('DISPLAY', 'VIDEO')
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
@@ -11352,7 +11352,7 @@ def query_campaigns_list():
                 SUM(IF(media_type='VIDEO' AND impressions > 0,
                         video_view_100_complete * (viewable_impressions / impressions),
                         0)) AS v_yesterday_completions
-            FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+            FROM `site-hypr.bidiq_mart.unified_daily_performance`
             WHERE date = DATE_SUB(@today_sp, INTERVAL 1 DAY)
               AND media_type IN ('DISPLAY', 'VIDEO')
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
@@ -11380,7 +11380,7 @@ def query_campaigns_list():
                 SUM(IF(media_type='VIDEO' AND impressions > 0,
                         video_view_100_complete * (viewable_impressions / impressions),
                         0)) AS v_last7d_completions
-            FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+            FROM `site-hypr.bidiq_mart.unified_daily_performance`
             WHERE date BETWEEN DATE_SUB(@today_sp, INTERVAL 7 DAY)
                            AND DATE_SUB(@today_sp, INTERVAL 1 DAY)
               AND media_type IN ('DISPLAY', 'VIDEO')
@@ -11413,7 +11413,7 @@ def query_campaigns_list():
                 SUM(IF(date=DATE_SUB(@today_sp, INTERVAL 1 DAY) AND media_type='VIDEO',   impressions, 0)) AS v_impr_d1,
                 SUM(IF(date=DATE_SUB(@today_sp, INTERVAL 2 DAY) AND media_type='VIDEO',   total_cost,  0)) AS v_cost_d2,
                 SUM(IF(date=DATE_SUB(@today_sp, INTERVAL 2 DAY) AND media_type='VIDEO',   impressions, 0)) AS v_impr_d2
-            FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+            FROM `site-hypr.bidiq_mart.unified_daily_performance`
             WHERE date BETWEEN DATE_SUB(@today_sp, INTERVAL 2 DAY)
                            AND DATE_SUB(@today_sp, INTERVAL 1 DAY)
               AND media_type IN ('DISPLAY', 'VIDEO')
@@ -11444,10 +11444,10 @@ def query_campaigns_list():
         -- (que tem ambos nativamente, pra DV360 e Xandr).
         abs_signals AS (
             SELECT m.short_token, d.media_type
-            FROM `site-hypr.prod_assets.dv360_daily_costs` d
+            FROM `site-hypr.bidiq_enriched.dv360_daily_costs` d
             JOIN (
                 SELECT DISTINCT short_token, line_item_id
-                FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+                FROM `site-hypr.bidiq_mart.unified_daily_performance`
                 WHERE line_item_id IS NOT NULL
             ) m USING (line_item_id)
             WHERE d.doubleverify_pre_bid_fee_advertiser_currency > 0
@@ -11458,12 +11458,12 @@ def query_campaigns_list():
             -- xandr_daily_costs.line_item_id é STRING; xandr_daily_performance_metrics
             -- é FLOAT64. CAST AS STRING pra normalizar o JOIN.
             SELECT m.short_token, p.media_type
-            FROM `site-hypr.prod_assets.xandr_daily_costs` c
-            JOIN `site-hypr.prod_assets.xandr_daily_performance_metrics` p
+            FROM `site-hypr.bidiq_raw.xandr_daily_costs` c
+            JOIN `site-hypr.bidiq_raw.xandr_daily_performance` p
               ON CAST(c.line_item_id AS STRING) = CAST(p.line_item_id AS STRING)
             JOIN (
                 SELECT DISTINCT short_token, line_item_id
-                FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+                FROM `site-hypr.bidiq_mart.unified_daily_performance`
                 WHERE source = 'XANDR' AND line_item_id IS NOT NULL
             ) m ON CAST(c.line_item_id AS STRING) = m.line_item_id
             WHERE c.data_provider_name IN ('DOUBLEVERIFY', 'INTEGRAL AD SCIENCE - WEB')
@@ -11518,7 +11518,7 @@ def query_campaigns_list():
                     short_token,
                     FORMAT_DATE('%Y-%m', date) AS month_key,
                     SUM(total_cost) AS cost
-                FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+                FROM `site-hypr.bidiq_mart.unified_daily_performance`
                 WHERE media_type IN ('DISPLAY', 'VIDEO')
                   -- INTENCIONAL: sem filtro de survey (mesmo motivo do
                   -- unified_cost_full — tech cost considera custo real).
@@ -11549,7 +11549,7 @@ def query_campaigns_list():
                 SUM(total_cost)                              AS admin_total_cost_full,
                 SUM(IF(media_type='DISPLAY', total_cost, 0)) AS d_admin_total_cost_full,
                 SUM(IF(media_type='VIDEO',   total_cost, 0)) AS v_admin_total_cost_full
-            FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+            FROM `site-hypr.bidiq_mart.unified_daily_performance`
             WHERE media_type IN ('DISPLAY', 'VIDEO')
               -- INTENCIONAL: sem filtro de SURVEY/CONTROLE/EXPOSTO aqui.
               -- Survey faz parte do custo real DSP — admin precisa ver.
@@ -12343,7 +12343,7 @@ def query_performers_for_period(window_from: date, window_to: date):
                 MAX(contracted_groundflow_video_completions)   AS contracted_groundflow_video,
                 MAX(bonus_groundflow_display_impressions)      AS bonus_groundflow_display,
                 MAX(bonus_groundflow_video_completions)        AS bonus_groundflow_video
-            FROM `site-hypr.prod_assets.checklist_info`
+            FROM `site-hypr.hyprops_mart.checklist_info`
             GROUP BY short_token
         ),
         base AS (
@@ -12400,7 +12400,7 @@ def query_performers_for_period(window_from: date, window_to: date):
                 SUM(IF(media_type='DISPLAY', impressions, 0)) AS d_admin_impressions,
                 SUM(IF(media_type='VIDEO',   total_cost,  0)) AS v_admin_total_cost,
                 SUM(IF(media_type='VIDEO',   impressions, 0)) AS v_admin_impressions
-            FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+            FROM `site-hypr.bidiq_mart.unified_daily_performance`
             WHERE date BETWEEN @from_date AND @to_date
               AND media_type IN ('DISPLAY', 'VIDEO')
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'SURVEY|_(CONTROLE|EXPOSTO)(_|$)|DARK[ _-]?TEST')
@@ -12418,7 +12418,7 @@ def query_performers_for_period(window_from: date, window_to: date):
                 SUM(total_cost)                              AS admin_total_cost_full,
                 SUM(IF(media_type='DISPLAY', total_cost, 0)) AS d_admin_total_cost_full,
                 SUM(IF(media_type='VIDEO',   total_cost, 0)) AS v_admin_total_cost_full
-            FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+            FROM `site-hypr.bidiq_mart.unified_daily_performance`
             WHERE date BETWEEN @from_date AND @to_date
               AND media_type IN ('DISPLAY', 'VIDEO')
               -- INTENCIONAL: sem filtro de survey aqui.
@@ -12429,10 +12429,10 @@ def query_performers_for_period(window_from: date, window_to: date):
         -- pre-bid foi contratado ou não), não do período.
         abs_signals AS (
             SELECT m.short_token, d.media_type
-            FROM `site-hypr.prod_assets.dv360_daily_costs` d
+            FROM `site-hypr.bidiq_enriched.dv360_daily_costs` d
             JOIN (
                 SELECT DISTINCT short_token, line_item_id
-                FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+                FROM `site-hypr.bidiq_mart.unified_daily_performance`
                 WHERE line_item_id IS NOT NULL
             ) m USING (line_item_id)
             WHERE d.doubleverify_pre_bid_fee_advertiser_currency > 0
@@ -12441,12 +12441,12 @@ def query_performers_for_period(window_from: date, window_to: date):
             UNION ALL
 
             SELECT m.short_token, p.media_type
-            FROM `site-hypr.prod_assets.xandr_daily_costs` c
-            JOIN `site-hypr.prod_assets.xandr_daily_performance_metrics` p
+            FROM `site-hypr.bidiq_raw.xandr_daily_costs` c
+            JOIN `site-hypr.bidiq_raw.xandr_daily_performance` p
               ON CAST(c.line_item_id AS STRING) = CAST(p.line_item_id AS STRING)
             JOIN (
                 SELECT DISTINCT short_token, line_item_id
-                FROM `site-hypr.prod_assets.unified_daily_performance_metrics`
+                FROM `site-hypr.bidiq_mart.unified_daily_performance`
                 WHERE source = 'XANDR' AND line_item_id IS NOT NULL
             ) m ON CAST(c.line_item_id AS STRING) = m.line_item_id
             WHERE c.data_provider_name IN ('DOUBLEVERIFY', 'INTEGRAL AD SCIENCE - WEB')

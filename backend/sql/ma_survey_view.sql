@@ -10,7 +10,7 @@
 -- A plataforma (o2o-platform) já drena os eventos de criativo pro BigQuery,
 -- no MESMO projeto do Report Center — não há pipeline novo nesta integração:
 --
---   site-hypr.prod_analytics.creative_events_raw
+--   site-hypr.adsiq_raw.maxattention_creative_events
 --     particionada por DIA em occurred_at, clusterizada por
 --     creative_id + event_type. Quem escreve na prática é o Worker de
 --     ingestão do Cloudflare: existe uma rota de export (Postgres → BQ) no
@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS `site-hypr.prod_analytics.creatives_dim` (
 )
 CLUSTER BY creative_id;
 
-CREATE OR REPLACE VIEW `site-hypr.prod_analytics.ma_survey_responses` AS
+CREATE OR REPLACE VIEW `site-hypr.askiq_raw.maxattention_survey_responses` AS
 WITH answers AS (
   -- DISTINCT, não QUALIFY: ver "Dedupe NÃO é opcional" acima. `created_at`
   -- fica DE FORA de propósito — é a única coluna em que duas gravações do
@@ -105,7 +105,7 @@ WITH answers AS (
     JSON_VALUE(metadata, '$.questionText') AS question,
     JSON_VALUE(metadata, '$.optionLabel')  AS option,
     occurred_at                            AS responded_at
-  FROM `site-hypr.prod_analytics.creative_events_raw`
+  FROM `site-hypr.adsiq_raw.maxattention_creative_events`
   WHERE event_type = 'survey_answer'
     -- Filtro de partição DENTRO da view: a tabela exige um, e depender do
     -- filtro do consumidor é depender de o otimizador conseguir empurrá-lo
@@ -142,7 +142,7 @@ WHERE a.option IS NOT NULL AND TRIM(a.option) != '';
 --
 --   SELECT creative_name, short_token, option,
 --          COUNT(DISTINCT session_id) AS respondentes
---   FROM `site-hypr.prod_analytics.ma_survey_responses`
+--   FROM `site-hypr.askiq_raw.maxattention_survey_responses`
 --   WHERE responded_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
 --     AND short_token = 'FXR5US'
 --   GROUP BY 1, 2, 3
