@@ -293,11 +293,17 @@ próxima quebra, e o detalhe público ia pelo mesmo caminho.
 
 Como anda:
 
-- **sync incremental** a partir de uma marca d'água (`ma_survey_answers_sync`,
-  uma linha por fatia), em fatias de até 7 dias com corte `TIMESTAMP`
-  constante. Cada fatia estima só as partições dela; se estourar o teto, a
-  fatia cai pela metade sozinha. Parar no meio é seguro: a próxima rodada
-  continua da marca;
+- **sync do recente pro antigo**, com o que já foi copiado registrado em
+  `ma_survey_answers_sync` (uma linha por fatia; trecho sem partição vira uma
+  linha só). Cada rodada faz primeiro a ponta (última marca → agora) e depois
+  os buracos do histórico, andando pra trás, em fatias de até 7 dias com corte
+  `TIMESTAMP` constante. Cada fatia estima só as partições dela; se estourar o
+  teto, cai pela metade sozinha. Parar no meio é seguro;
+- **cobertura explícita:** o payload da listagem traz `window_covered` e
+  `sync` (`covered_from`, `synced_through`, `complete`, `error`). Enquanto a
+  cópia não cobre a janela, o modal diz "ainda copiando" (e não "confira a
+  coleta"), mostra a última falha da cópia e pede outra rodada sozinho a cada
+  poucos segundos. Resultado lido sem cobertura não entra em cache;
 - **quem dispara:** o warmup (a cada 3h, com 1 dia de sobreposição pra evento
   atrasado), a própria leitura quando a última rodada tem mais de
   `MA_SURVEY_SYNC_MIN` (default 60, com 2h de sobreposição), o `refresh=true`
@@ -306,16 +312,34 @@ Como anda:
 - **falha do sync não derruba leitura:** serve a tabela como está e loga. A
   exceção é tabela que nunca teve rodada boa, que responderia "zero" com cara
   de verdade: aí o erro sobe;
-- **backfill:** automático no primeiro uso depois do deploy, a partir da
-  primeira partição com dado (`INFORMATION_SCHEMA.PARTITIONS`). Custo único
-  ≈ o lake inteiro nas colunas lidas (~60 GiB em set/2026, centavos de dólar).
-  Pode levar mais de uma rodada (orçamento de 60s na leitura, 240s no warmup e
-  no endpoint de sync);
+- **backfill:** automático no primeiro uso depois do deploy, começando pelo
+  agora e descendo até a primeira partição com dado
+  (`INFORMATION_SCHEMA.PARTITIONS`, que também diz quais dias pular). Custo
+  único ≈ o lake inteiro nas colunas lidas (~60 GiB em set/2026, centavos de
+  dólar). Orçamento por rodada: 20s na listagem, 8s no detalhe do report, 240s
+  no warmup e no endpoint de sync;
+- **raio-x sem BigQuery:** `?action=maxattention_sync&dry=true` (admin) devolve
+  a cobertura, o tamanho e o alcance da tabela, as últimas fatias e o último
+  erro. É o primeiro lugar pra olhar quando o modal disser algo estranho;
 - **custo recorrente:** cada rodada lê as partições do dia (1–2), não o
   histórico. Não cresce com o tempo de vida do lake.
 
 `MA_SURVEY_MATERIALIZE=0` volta a ler a view direto. É o modo que quebra;
 existe pra emergência.
+
+**Incidente de 29/09 (lição registrada):** a primeira versão do sync andava
+pra frente a partir da partição mais antiga e servia a tabela parcial como
+completa. No primeiro uso o modal da PPV8JF disse "nenhum criativo registrou
+resposta... confira a coleta" com a DIAGEO Selo recebendo resposta. O vazio era
+da cópia, não da coleta. Os testes `test_backfill_curto_ja_traz_o_recente_*`,
+`test_retoma_backfill_de_log_antigo_*` e `cópia incompleta: vazio NÃO vira
+problema de coleta` (front) travam as duas regras.
+
+**O diagnóstico no CI não roda hoje:** `check-ma-survey.yml` autentica como
+`deploy-report-data@site-hypr.iam.gserviceaccount.com`, que não tem
+`bigquery.jobs.create` no projeto. Com `roles/bigquery.jobUser` no projeto e
+`roles/bigquery.dataViewer` em `prod_analytics` e `prod_assets`, o workflow
+passa a responder sozinho, sem depender de print do modal.
 
 ### O que vinha antes
 

@@ -3186,7 +3186,11 @@ def report_data(request):
                 # refresh=true também fura o cache do ramo amplo (horas).
                 refresh=request.args.get("refresh") == "true",
             )
-            _cache_set(_ma_creatives_cache, cache_key, payload)
+            # Lista lida com a tabela ainda sem cobertura da janela (backfill
+            # em andamento) não entra no cache: senão o vazio da CÓPIA seria
+            # servido por 10 min depois de a cópia terminar.
+            if payload.get("window_covered", True):
+                _cache_set(_ma_creatives_cache, cache_key, payload)
             return (jsonify(payload), 200, headers)
         except maxattention.NotConfigured as e:
             return (jsonify({"error": str(e), "configured": False}), 501, headers)
@@ -3211,6 +3215,8 @@ def report_data(request):
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
         try:
+            if request.args.get("dry") == "true":
+                return (jsonify(maxattention.status_report()), 200, headers)
             deep = request.args.get("deep") == "true"
             r = maxattention.sync_answers(
                 force=True,
@@ -3221,8 +3227,13 @@ def report_data(request):
                 with _cache_lock:
                     _ma_creatives_cache.clear()
                     _ma_results_cache.clear()
-            t = r["synced_through"]
-            return (jsonify({**r, "synced_through": t.isoformat() if t else None}), 200, headers)
+            iso = lambda t: t.isoformat() if t else None  # noqa: E731
+            return (jsonify({
+                **r,
+                "synced_through": iso(r.get("synced_through")),
+                "covered_from": iso(r.get("covered_from")),
+                "state": maxattention.sync_status(),
+            }), 200, headers)
         except maxattention.NotConfigured as e:
             return (jsonify({"error": str(e), "configured": False}), 501, headers)
         except Exception as e:
@@ -3274,7 +3285,10 @@ def report_data(request):
                 date_from=date_from,
                 date_to=date_to,
             )
-            _cache_set(_ma_results_cache, cache_key, data)
+            # Mesmo critério da listagem: contagem de tabela com histórico
+            # incompleto não fica 5 min em cache.
+            if data.get("sync_complete", True):
+                _cache_set(_ma_results_cache, cache_key, data)
             return (jsonify(data), 200, headers)
         except maxattention.NotConfigured as e:
             return (jsonify({"error": str(e), "configured": False}), 501, headers)

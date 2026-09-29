@@ -133,3 +133,38 @@ test("vazio com ramo amplo de fora explica a campanha E avisa que o amplo não v
   assert.match(r.detail, /843 criativos/);
   assert.match(r.detail, /teto de custo do BigQuery/);
 });
+
+// PPV8JF, 29/09/2026: primeira abertura depois de materializar. A tabela
+// copiada ainda não cobria a janela, e o modal afirmou "nenhum criativo
+// registrou resposta... confira a coleta" — com a peça recebendo respostas.
+
+test("cópia incompleta: vazio NÃO vira problema de coleta", () => {
+  const r = describeMaEmptyList(broad({
+    window_covered: false,
+    diagnostics: { reason: "sync_pending", dim_matched: 55 },
+    sync: { covered_from: "2026-09-22T15:00:00+00:00", synced_through: "2026-09-29T15:00:00+00:00", complete: false },
+  }), { shortToken: "PPV8JF" });
+  assert.equal(r.reason, MA_EMPTY_REASONS.SYNC_PENDING);
+  assert.doesNotMatch(`${r.title} ${r.detail} ${r.hint}`, /coleta na plataforma|campanha nenhuma/);
+  assert.match(r.detail, /Já copiado/);
+});
+
+test("cópia incompleta mostra o erro da última rodada", () => {
+  const r = describeMaEmptyList(broad({ window_covered: false, sync: { error: "Access Denied: prod_assets" } }));
+  assert.match(r.detail, /Access Denied: prod_assets/);
+});
+
+test("janela coberta mantém o diagnóstico de sempre", () => {
+  const r = describeMaEmptyList(broad({ window_covered: true, diagnostics: { reason: "no_dim_match", dim_rows: 843 } }), { shortToken: "PPV8JF" });
+  assert.equal(r.reason, "all_empty");
+});
+
+test("lista parcial sem peça da campanha durante a cópia avisa a cópia, não a nomenclatura", () => {
+  const r = describeMaCampaignNote(broad({
+    creatives: [{ creative_id: "z9", match: null }],
+    window_covered: false,
+    diagnostics: { reason: "sync_pending", dim_matched: 55 },
+  }), { shortToken: "PPV8JF" });
+  assert.equal(r.reason, MA_EMPTY_REASONS.SYNC_PENDING);
+  assert.equal(r.shown, 1);
+});
