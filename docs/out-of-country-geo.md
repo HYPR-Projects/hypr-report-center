@@ -31,6 +31,20 @@ até o último dia com geo. Abaixo de 80% (com 100 mil+ imps no mês) vira aviso
 
 `geo_backend` no payload diz qual base foi lida (`unified` ou `dv360`).
 
+## Agregado × por DSP
+
+O hover abre sempre no **Agregado** (todas as DSPs somadas) e tem um toggle
+com uma aba por DSP. A aba de DSP é o payload inteiro recalculado só com ela
+(`by_source`): taxa, gráfico diário, países, alerta e ranking dela.
+
+O agregado para no último dia que TODAS as DSPs ativas têm. Sem esse corte,
+com a Yahoo chegando um dia depois do DV360, o último ponto seria só DV360 e
+a taxa combinada "saltaria" sem salto real (e dispararia o alerta). Por isso
+o DV360 pode mostrar um dia a mais na aba dele do que no agregado; o
+cabeçalho diz quem está segurando a data (`lagging_sources`). DSP atrasada
+mais de 2 dias sai do corte, pra uma ingestão parada não congelar o box, e
+vira aviso (`source_stale`).
+
 ## Checklist de ativação
 
 1. Merge da branch no `hyprster` e deploy do Dagster+.

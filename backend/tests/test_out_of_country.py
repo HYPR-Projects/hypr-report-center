@@ -481,3 +481,72 @@ def test_save_override_empty_list_deletes_and_list_merges():
     assert params["countries"] == ["CL"]
     assert ooc.save_country_override(fake, "M4PWHT", []) == []
     assert fake.calls[1][0].startswith("DELETE")
+
+
+# ── Visão agregada × por DSP ───────────────────────────────────────────────
+
+def _two_sources(dv_days, yh_days, dv_rate=0.05, yh_rate=0.0, dv_total=1_000_000, yh_total=1_000_000):
+    rows = []
+    for d in dv_days:
+        rows.append(_r(d, "DIAGEO", "BR", "BR", int(dv_total * (1 - dv_rate))))
+        rows.append(_r(d, "DIAGEO", "IN", "UNEXPECTED", int(dv_total * dv_rate)))
+    for d in yh_days:
+        rows.append(_r(d, "LOREAL", "BR", "BR", int(yh_total * (1 - yh_rate)), source="YAHOO"))
+        if yh_rate:
+            rows.append(_r(d, "LOREAL", "US", "UNEXPECTED", int(yh_total * yh_rate), source="YAHOO"))
+    return rows
+
+
+def _days(end, n):
+    return [end - timedelta(days=n - 1 - i) for i in range(n)]
+
+
+def test_aggregate_cuts_at_last_day_all_sources_have():
+    end = date(2026, 9, 20)
+    # DV360 5% fora, Yahoo 0%: juntos 2,5%. A Yahoo ainda não chegou no dia 20.
+    rows = _two_sources(_days(end, 10), _days(end - timedelta(days=1), 9))
+    p = ooc.build_payload(rows, MS, ME, True)
+    # Sem o corte, o dia 20 seria só DV360 (5%) contra 2,5% da véspera:
+    # "salto" de 2,5 pp que não existe.
+    assert p["reference_date"] == "2026-09-19"
+    assert p["day_rate"] == 2.5 and p["previous_day_rate"] == 2.5
+    assert p["alert"] is False
+    assert all(d["date"] <= "2026-09-19" for d in p["daily"])
+    # A aba do DV360 tem o próprio dia de referência.
+    dv = p["by_source"]["DV360"]
+    assert dv["reference_date"] == "2026-09-20" and dv["rate"] == 5.0
+    assert p["by_source"]["YAHOO"]["reference_date"] == "2026-09-19"
+    assert p["lagging_sources"] == [{"source": "YAHOO", "label": "Yahoo", "last_date": "2026-09-19"}]
+
+
+def test_stale_source_leaves_the_cutoff_and_warns():
+    end = date(2026, 9, 20)
+    rows = _two_sources(_days(end, 10), _days(end - timedelta(days=6), 4))
+    p = ooc.build_payload(rows, MS, ME, True)
+    assert p["reference_date"] == "2026-09-20"  # não congela no dia 14
+    stale = [w for w in p["data_warnings"] if w["kind"] == "source_stale"]
+    assert stale == [{"kind": "source_stale", "source": "YAHOO", "label": "Yahoo", "last_date": "2026-09-14"}]
+
+
+def test_by_source_is_the_full_payload_per_dsp():
+    end = date(2026, 9, 20)
+    rows = _two_sources(_days(end, 3), _days(end, 3), dv_rate=0.40, yh_rate=0.10, yh_total=200_000)
+    delivered = {"DV360": {d: 1_000_000 for d in _days(end, 3)}, "YAHOO": {d: 400_000 for d in _days(end, 3)}}
+    p = ooc.build_payload(rows, MS, ME, True, delivered_daily=delivered)
+    dv, yh = p["by_source"]["DV360"], p["by_source"]["YAHOO"]
+    assert (dv["rate"], yh["rate"]) == (40.0, 10.0)
+    assert dv["impressions"] + yh["impressions"] == p["impressions"]
+    assert dv["unexpected_impressions"] + yh["unexpected_impressions"] == p["unexpected_impressions"]
+    assert [c["short_token"] for c in dv["campaigns"]] == ["DIAGEO"]
+    assert [c["short_token"] for c in yh["campaigns"]] == ["LOREAL"]
+    assert yh["top_countries"][0]["country"] == "US"
+    # cobertura e aviso ficam na aba da própria DSP
+    assert yh["sources"][0]["coverage"] == 50.0
+    assert [w["kind"] for w in yh["data_warnings"]] == ["geo_coverage"]
+    assert not [w for w in dv["data_warnings"] if w["kind"] == "geo_coverage"]
+    assert "by_source" not in dv
+
+
+def test_single_source_has_no_tabs():
+    p = ooc.build_payload(_two_sources(_days(date(2026, 9, 20), 3), []), MS, ME, True)
+    assert "by_source" not in p

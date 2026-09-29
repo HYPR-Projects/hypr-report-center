@@ -136,6 +136,13 @@ DQ_MAX_UNTRACKED_SHARE = 0.50
 DQ_MIN_GEO_COVERAGE = 0.80
 DQ_COVERAGE_MIN_IMPS = 100_000
 
+# Visão agregada: o dia de referência é o último dia com dado de TODAS as
+# DSPs ativas. Sem isso, com a Yahoo chegando um dia depois do DV360, o
+# último ponto do gráfico e o alerta seriam só DV360 e a taxa "saltaria"
+# sem salto nenhum. DSP que atrasa mais que isto sai do corte (senão uma
+# ingestão parada congelaria o box) e vira aviso de dado.
+SOURCE_LAG_TOLERANCE_DAYS = 2
+
 # DSPs que reportam geo. No caminho antigo só o DV360.
 GEO_SOURCES = ("DV360", "YAHOO")
 SOURCE_LABELS = {"DV360": "DV360", "YAHOO": "Yahoo", "XANDR": "Xandr",
@@ -500,10 +507,34 @@ def build_payload(rows, month_start, month_end, is_current, meta_by_token=None,
     payload do box. Pura — sem I/O — pra régua ser testável.
 
     `delivered_daily`: {source: {date: imps}} da unified de performance, pra
-    cobertura de geo. Conta do 1º dia do mês até o último dia com geo de
-    QUALQUER fonte: se a Yahoo parou e o DV360 seguiu, a Yahoo aparece
-    descoberta. None = não medido (sem aviso)."""
+    cobertura de geo. Conta do 1º dia do mês até o dia de referência: se a
+    Yahoo parou e o DV360 seguiu, a Yahoo aparece descoberta. None = não
+    medido (sem aviso).
+
+    Com mais de uma DSP, `by_source` traz o mesmo payload calculado só com
+    cada uma (a aba "por DSP" do box)."""
     meta_by_token = meta_by_token or {}
+    rows = [_normalize_row(r) for r in rows]
+    rows = [r for r in rows if r["imps"] > 0]
+
+    # Corte comum entre as DSPs (ver SOURCE_LAG_TOLERANCE_DAYS).
+    last_by_source = {}
+    for r in rows:
+        if r["date"] > last_by_source.get(r["source"], date.min):
+            last_by_source[r["source"]] = r["date"]
+    stale_sources = []
+    lagging_sources = []   # dentro da tolerância, mas segurando o corte
+    if len(last_by_source) > 1:
+        newest = max(last_by_source.values())
+        active = {s: d for s, d in last_by_source.items()
+                  if (newest - d).days <= SOURCE_LAG_TOLERANCE_DAYS}
+        cutoff = min(active.values())
+        stale_sources = sorted((s, d) for s, d in last_by_source.items() if s not in active)
+        lagging_sources = sorted((s, d) for s, d in active.items() if d < newest)
+        rows_all = rows
+        rows = [r for r in rows if r["date"] <= cutoff]
+    else:
+        rows_all = rows
 
     month = _empty_buckets()
     daily = {}                 # date -> buckets (todas as datas da janela)
@@ -519,14 +550,10 @@ def build_payload(rows, month_start, month_end, is_current, meta_by_token=None,
 
     for r in rows:
         d = r["date"]
-        if isinstance(d, datetime):
-            d = d.date()
         token = r.get("short_token")
         bucket = r["bucket"]
         country = r["country"]
-        imps = int(r["imps"] or 0)
-        if imps <= 0:
-            continue
+        imps = r["imps"]
 
         _add(daily.setdefault(d, _empty_buckets()), bucket, imps)
         if token:
@@ -534,7 +561,7 @@ def build_payload(rows, month_start, month_end, is_current, meta_by_token=None,
 
         if not (month_start <= d <= month_end):
             continue
-        source = r.get("source") or "DV360"
+        source = r["source"]
         _add(month, bucket, imps)
         _add(by_source.setdefault(source, _empty_buckets()), bucket, imps)
         if bucket == "UNEXPECTED":
@@ -687,11 +714,22 @@ def build_payload(rows, month_start, month_end, is_current, meta_by_token=None,
                 "kind": "geo_coverage", "source": source, "label": _source_label(source),
                 "share": coverage or 0.0,
             })
+    for source, last in stale_sources:
+        data_warnings.append({
+            "kind": "source_stale", "source": source, "label": _source_label(source),
+            "last_date": last.isoformat(),
+        })
     with_geo = [s["label"] for s in sources if s["impressions"] > 0]
 
-    return {
+    payload = {
         "source": " + ".join(with_geo) or "DV360",
         "sources": sources,
+        # Por que o agregado para antes da DSP mais nova: quem ainda não tem
+        # os dias seguintes. Vazio quando todas estão no mesmo dia.
+        "lagging_sources": [
+            {"source": s, "label": _source_label(s), "last_date": d.isoformat()}
+            for s, d in lagging_sources
+        ],
         "month": month_start.strftime("%Y-%m"),
         "is_current_month": is_current,
         "impressions": month["total"],
@@ -721,6 +759,37 @@ def build_payload(rows, month_start, month_end, is_current, meta_by_token=None,
         "alert_reasons": reasons,
         "campaigns": campaigns[:RANKING_LIMIT],
         "campaigns_with_unexpected": sum(1 for b in by_token.values() if b["unexpected"] > 0),
+    }
+
+    # Aba por DSP: a régua inteira de novo, só com a DSP (cada uma com o
+    # próprio dia de referência, sem o corte comum). Só as que têm geo ou
+    # entregaram no mês; com uma DSP só não há o que separar.
+    tabs = [s["source"] for s in sources]
+    if len(tabs) > 1:
+        payload["by_source"] = {
+            source: build_payload(
+                [r for r in rows_all if r["source"] == source],
+                month_start, month_end, is_current, meta_by_token,
+                delivered_daily=({source: delivered_daily.get(source, {})}
+                                 if delivered_daily is not None else None),
+                geo_sources=(source,),
+            )
+            for source in tabs
+        }
+    return payload
+
+
+def _normalize_row(r):
+    d = r["date"]
+    if isinstance(d, datetime):
+        d = d.date()
+    return {
+        "date": d,
+        "source": r.get("source") or "DV360",
+        "short_token": r.get("short_token"),
+        "country": r["country"],
+        "bucket": r["bucket"],
+        "imps": int(r["imps"] or 0),
     }
 
 
