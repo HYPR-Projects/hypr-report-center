@@ -104,7 +104,7 @@ def test_name_tag(name, tag):
 # ── SQL ────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("build", [
-    da.build_series_sql, da.build_prev_sql, da.build_lines_sql, da.build_line_daily_sql,
+    da.build_series_sql, da.build_lines_sql, da.build_line_daily_sql,
 ])
 def test_sql_reads_treated_unified_never_staging(build):
     sql = build()
@@ -222,11 +222,14 @@ class _FakeBQ:
                                   io_name="IO", is_survey=False, abs_reason="fee", line_name="L",
                                   first_date=date(2026, 9, 1), last_date=date(2026, 9, 1),
                                   **_m(imp=100, cost=0.1, fee=0.05))])
-        if "WHERE date BETWEEN @prev_from AND @prev_to" in sql:
-            return _FakeJob([])
-        return _FakeJob([dict(date=date(2026, 9, 1), source="DV360", media="DISPLAY", is_abs=True,
-                              is_survey=False, short_token="AAA111", io_name="IO",
-                              **_m(imp=100, cost=0.1, fee=0.05))])
+        row = dict(source="DV360", media="DISPLAY", is_abs=True, is_survey=False,
+                   short_token="AAA111", io_name="IO")
+        return _FakeJob([
+            dict(date=date(2026, 9, 1), **row, **_m(imp=100, cost=0.1, fee=0.05)),
+            # período anterior (31/08): vai pro bloco prev, agregado sem data
+            dict(date=date(2026, 8, 31), **row, **_m(imp=40, cost=0.04)),
+            dict(date=date(2026, 8, 30), **row, **_m(imp=60, cost=0.06)),
+        ])
 
 
 class _FakeBigquery:
@@ -247,7 +250,26 @@ def test_query_dsp_analytics_end_to_end_with_fake_bq():
     bq = _FakeBQ()
     p = da.query_dsp_analytics(bq, _FakeBigquery, "2026-09-01", "2026-09-01", now=NOW)
     assert all(loc == "US" for _, loc in bq.calls)
-    assert len(bq.calls) == 4                     # série, anterior, lines, meta
+    assert len(bq.calls) == 3                     # série+anterior, lines, meta
     assert p["tokens"][0]["client"] == "Kenvue"
+    assert len(p["series"]) == 1
+    prev = dict(zip(p["prev_cols"], p["prev"][0]))
+    assert prev["imp"] == 100 and round(prev["cost"], 2) == 0.1
+    assert p["prev_from"] == "2026-08-31" and p["prev_to"] == "2026-08-31"
     line = dict(zip(p["line_cols"], p["lines"][0]))
     assert line["fee"] == 0.05 and line["reason"] == "fee"
+
+
+def test_split_series_separates_window_and_aggregates_prev():
+    base = dict(source="YAHOO", media="VIDEO", is_abs=False, is_survey=False, short_token="T", io_name="IO")
+    rows = [
+        dict(date=date(2026, 9, 2), **base, **_m(imp=10)),
+        dict(date=date(2026, 8, 20), **base, **_m(imp=3, cost=1.0)),
+        dict(date="2026-08-21", **base, **_m(imp=4, cost=2.0)),
+        dict(date=date(2026, 8, 21), **{**base, "is_abs": True}, **_m(imp=5)),
+    ]
+    series, prev = da.split_series(rows, date(2026, 9, 1))
+    assert [r["imp"] for r in series] == [10]
+    by_abs = {p["is_abs"]: p for p in prev}
+    assert by_abs[False]["imp"] == 7 and by_abs[False]["cost"] == 3.0
+    assert by_abs[True]["imp"] == 5

@@ -89,15 +89,16 @@ export function DspLinesTable({ lines, tab, onTabChange, search, onOpenReport, f
         <table className="w-full text-xs tabular-nums">
           <thead>
             <tr className="text-left text-fg-muted">
-              <th className="px-4 py-2 font-semibold min-w-[320px]">Line</th>
-              <th className="px-3 py-2 font-semibold">Formato</th>
-              <th className="px-3 py-2 font-semibold text-right">Impressões</th>
-              <th className="px-3 py-2 font-semibold text-right">Custo</th>
-              <th className="px-3 py-2 font-semibold text-right">eCPM</th>
-              <th className="px-3 py-2 font-semibold text-right">vCPM</th>
-              <th className="px-3 py-2 font-semibold text-right" title="CTR em display, VTR em vídeo">CTR / VTR</th>
-              <th className="px-3 py-2 font-semibold text-right">Viewability</th>
-              <th className="px-3 py-2 font-semibold text-right">Mensuração</th>
+              <th className="px-4 py-2 font-semibold min-w-[280px]">Line</th>
+              <th className="px-2.5 py-2 font-semibold">Formato</th>
+              <th className="px-2.5 py-2 font-semibold text-right">Impressões</th>
+              <th className="px-2.5 py-2 font-semibold text-right">Custo</th>
+              <th className="px-2.5 py-2 font-semibold text-right">eCPM</th>
+              <th className="px-2.5 py-2 font-semibold text-right">vCPM</th>
+              <th className="px-2.5 py-2 font-semibold text-right whitespace-nowrap" title="CTR em display, VTR em vídeo">CTR / VTR</th>
+              <th className="px-2.5 py-2 font-semibold text-right">Viewability</th>
+              <th className="px-2.5 py-2 font-semibold text-right">Mensuração</th>
+              <th className="px-2.5 py-2 font-semibold text-right whitespace-nowrap" title="Visíveis ÷ impressões totais">Visív. / Total</th>
             </tr>
           </thead>
           <tbody>
@@ -107,7 +108,7 @@ export function DspLinesTable({ lines, tab, onTabChange, search, onOpenReport, f
               const canOpen = l.token !== NO_TOKEN && onOpenReport;
               return (
                 <tr key={l.key} className="border-t border-border hover:bg-surface-strong/50 align-top">
-                  <td className="px-4 py-2 max-w-[460px]">
+                  <td className="px-4 py-2 max-w-[380px]">
                     <div className="flex items-start gap-2 min-w-0">
                       <span className="mt-1 size-2 rounded-full shrink-0" style={{ backgroundColor: dspColor(l.s) }} title={dspLabel(l.s)} aria-hidden />
                       <div className="min-w-0">
@@ -141,27 +142,28 @@ export function DspLinesTable({ lines, tab, onTabChange, search, onOpenReport, f
                       </div>
                     </div>
                   </td>
-                  <td className="px-3 py-2 whitespace-nowrap text-fg-muted">
+                  <td className="px-2.5 py-2 whitespace-nowrap text-fg-muted">
                     {video ? "Vídeo" : l.m === "DISPLAY" ? "Display" : "Outro"}
                     {l.abs && (
                       <span className="ml-1.5 px-1.5 py-px rounded bg-signature-soft text-signature text-[10px] font-bold" title={`ABS por ${REASON_LABEL[l.reason] || l.reason}`}>ABS</span>
                     )}
                     {l.sv && <span className="ml-1.5 text-[10px] text-fg-subtle">survey</span>}
                   </td>
-                  <td className="px-3 py-2 text-right text-fg" title={fmtMetricFull("imp", l.imp)}>{fmtMetric("imp", l.imp)}</td>
-                  <td className="px-3 py-2 text-right text-fg" title={fmtMetricFull("cost", l.cost)}>{fmtMetric("cost", l.cost)}</td>
-                  <td className={cn("px-3 py-2 text-right", toneFor("ecpm", l.ecpm, { media: l.m, abs: l.abs }) || "text-fg")}>{fmtMetric("ecpm", l.ecpm)}</td>
-                  <td className="px-3 py-2 text-right text-fg">{fmtMetric("vcpm", l.vcpm)}</td>
-                  <td className={cn("px-3 py-2 text-right", toneFor(video ? "vtr" : "ctr", eng, { media: l.m, abs: l.abs }) || "text-fg")}>
+                  <td className="px-2.5 py-2 text-right text-fg" title={fmtMetricFull("imp", l.imp)}>{fmtMetric("imp", l.imp)}</td>
+                  <td className="px-2.5 py-2 text-right text-fg" title={fmtMetricFull("cost", l.cost)}>{fmtMetric("cost", l.cost)}</td>
+                  <td className={cn("px-2.5 py-2 text-right", toneFor("ecpm", l.ecpm, { media: l.m, abs: l.abs }) || "text-fg")}>{fmtMetric("ecpm", l.ecpm)}</td>
+                  <td className="px-2.5 py-2 text-right text-fg">{fmtMetric("vcpm", l.vcpm)}</td>
+                  <td className={cn("px-2.5 py-2 text-right", toneFor(video ? "vtr" : "ctr", eng, { media: l.m, abs: l.abs }) || "text-fg")}>
                     {video ? fmtMetric("vtr", eng) : fmtMetric("ctr", eng)}
                   </td>
-                  <td className={cn("px-3 py-2 text-right", toneFor("viewability", l.viewability) || "text-fg")}>{fmtPct(l.viewability, 1)}</td>
-                  <td className={cn("px-3 py-2 text-right", toneFor("measRate", l.measRate) || "text-fg")}>{fmtPct(l.measRate, 0)}</td>
+                  <td className={cn("px-2.5 py-2 text-right", toneFor("viewability", l.viewability) || "text-fg")}>{fmtPct(l.viewability, 1)}</td>
+                  <td className={cn("px-2.5 py-2 text-right", toneFor("measRate", l.measRate) || "text-fg")}>{fmtPct(l.measRate, 0)}</td>
+                  <td className="px-2.5 py-2 text-right text-fg">{fmtPct(l.viewShare, 1)}</td>
                 </tr>
               );
             })}
             {rows.length === 0 && (
-              <tr><td colSpan={9} className="px-4 py-6 text-center text-fg-subtle">Nenhuma line no recorte.</td></tr>
+              <tr><td colSpan={10} className="px-4 py-6 text-center text-fg-subtle">Nenhuma line no recorte.</td></tr>
             )}
           </tbody>
         </table>

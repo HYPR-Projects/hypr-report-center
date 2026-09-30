@@ -224,3 +224,72 @@ test("série diária de lines", () => {
   assert.equal(rows[0].d, "2026-09-01");
   assert.equal(rows[0].cost, sum("cost", L.dvPlain));
 });
+
+// ── Rodada 2 ─────────────────────────────────────────────────────────────
+
+test("Visíveis / Total = visíveis ÷ impressões (mensuração × viewability)", () => {
+  const y = aggregate(filterRows(data.lines, F({ sources: ["YAHOO"] })));
+  assert.equal(y.viewShare, (73000 / 200000) * 100);
+  assert.ok(Math.abs(y.viewShare - (y.measRate * y.viewability) / 100) < 1e-9);
+});
+
+test("série traz quem puxou cada ponto (por impressão e por custo)", () => {
+  const rows = filterRows(data.series, F());
+  const daily = buildTimeseries(rows, data.dates, "day");
+  const d2 = daily.find((b) => b.key === "2026-09-02");
+  assert.equal(d2.topByImp[0].token, "BBB222");
+  assert.equal(d2.topByImp[0].imp, 400000);
+  assert.ok(d2.topByImp.length <= 3);
+  const d8 = daily.find((b) => b.key === "2026-09-08");
+  // 08/09: Yahoo (Kenvue) 200k imps e R$ 90 vs DV360 vídeo 50k imps e R$ 125
+  assert.equal(d8.topByImp[0].s, "YAHOO");
+  assert.equal(d8.topByCost[0].s, "DV360");
+});
+
+test("mês a mês: variação só entre meses inteiros e fatia de custo por DSP", async () => {
+  const { buildMonthly } = await import("./dspAnalytics.js");
+  const rows = [
+    { d: "2026-07-10", s: "DV360", m: "DISPLAY", imp: 1000, meas: 1000, view: 900, clk: 9, cost: 1, vst: 0, v100: 0, vcomp: 0, fee: 0 },
+    { d: "2026-08-10", s: "DV360", m: "DISPLAY", imp: 1000, meas: 1000, view: 900, clk: 9, cost: 2, vst: 0, v100: 0, vcomp: 0, fee: 0 },
+    { d: "2026-08-10", s: "YAHOO", m: "DISPLAY", imp: 1000, meas: 500, view: 400, clk: 9, cost: 2, vst: 0, v100: 0, vcomp: 0, fee: 0 },
+  ];
+  const dates = [];
+  for (let i = 1; i <= 31; i++) dates.push(`2026-07-${String(i).padStart(2, "0")}`, `2026-08-${String(i).padStart(2, "0")}`);
+  const mo = buildMonthly(rows, dates, "ecpm");
+  assert.deepEqual(mo.rows.map((r) => r.key), ["2026-07", "2026-08"]);
+  const aug = mo.rows[1];
+  assert.equal(aug.cells.DV360.value, 2);
+  assert.equal(Math.round(aug.cells.DV360.delta.value), 100);   // R$1 → R$2 = +100%
+  assert.equal(aug.cells.YAHOO.delta, null);                     // sem julho
+  assert.equal(aug.cells.DV360.costShare, 50);
+  // mês parcial: volume perde a variação, razão (eCPM) mantém
+  const cut = dates.filter((d) => d <= "2026-08-15");
+  const partialImp = buildMonthly(rows, cut, "imp");
+  assert.equal(partialImp.rows[1].partial, true);
+  assert.equal(partialImp.rows[1].cells.DV360.delta, null);
+  const partialEcpm = buildMonthly(rows, cut, "ecpm");
+  assert.equal(Math.round(partialEcpm.rows[1].cells.DV360.delta.value), 100);
+});
+
+test("variação em p.p. respeita a precisão da métrica", async () => {
+  const { fmtDelta } = await import("../components/dspAnalytics/dspFormat.js");
+  assert.equal(fmtDelta({ kind: "pp", value: 0.03 }, 2).dir, "up");      // CTR: 0,03 p.p. não é estável
+  assert.equal(fmtDelta({ kind: "pp", value: 0.03 }, 1).dir, "flat");    // viewability: é
+  assert.equal(fmtDelta({ kind: "pp", value: -0.03 }, 2).text, "0,03 p.p.");
+  assert.equal(fmtDelta({ kind: "pct", value: 0.3 }).dir, "flat");
+});
+
+test("export: linha da planilha com números crus e flags por extenso", async () => {
+  const { lineRowAoA, LINE_HEADERS } = await import("./dspAnalyticsExport.js");
+  const l = enrichLines(data.lines).find((x) => x.key === "DV360|1|0");
+  const row = lineRowAoA(l);
+  assert.equal(row.length, LINE_HEADERS.length);
+  const at = (h) => row[LINE_HEADERS.indexOf(h)];
+  assert.equal(at("DSP"), "DV360");
+  assert.equal(at("Motivo ABS"), "Fee DV");
+  assert.equal(at("Impressões").v, 100000);
+  assert.equal(at("Custo (R$)").v, 128);
+  assert.match(at("Red flags"), /ABS divergente/);
+  const orphan = lineRowAoA(enrichLines(data.lines).find((x) => x.key === "DV360|5|0"));
+  assert.equal(orphan[LINE_HEADERS.indexOf("Short token")], "");
+});

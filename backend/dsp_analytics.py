@@ -255,25 +255,43 @@ _METRIC_SUMS = """
 
 
 def build_series_sql():
+    """Dia × DSP × formato × ABS × survey × campanha × IO do período E do
+    anterior, numa varredura só: o Python separa a janela atual (série) e
+    agrega a anterior sem data (variações). Antes eram duas queries sobre a
+    mesma base, cada uma varrendo o consolidado inteiro da janela dupla."""
     return f"""
     WITH {_base_ctes()}
     SELECT date, source, media, abs_reason IS NOT NULL AS is_abs, is_survey,
            short_token, io_name,{_METRIC_SUMS}
     FROM base
-    WHERE date BETWEEN @from AND @to
+    WHERE date BETWEEN @prev_from AND @to
     GROUP BY date, source, media, is_abs, is_survey, short_token, io_name
     """
 
 
-def build_prev_sql():
-    return f"""
-    WITH {_base_ctes()}
-    SELECT source, media, abs_reason IS NOT NULL AS is_abs, is_survey,
-           short_token, io_name,{_METRIC_SUMS}
-    FROM base
-    WHERE date BETWEEN @prev_from AND @prev_to
-    GROUP BY source, media, is_abs, is_survey, short_token, io_name
-    """
+_PREV_DIMS = ("source", "media", "is_abs", "is_survey", "short_token", "io_name")
+_SUM_KEYS = ("imp", "meas", "view", "clk", "cost", "vst", "v100", "vcomp", "fee")
+
+
+def split_series(rows, d_from):
+    """Separa as rows diárias em (série do período, anterior agregado sem data)."""
+    series, prev = [], {}
+    for r in rows:
+        day = r["date"]
+        if not isinstance(day, date):
+            day = date.fromisoformat(str(day)[:10])
+        if day >= d_from:
+            series.append(r)
+            continue
+        key = tuple(r.get(k) for k in _PREV_DIMS)
+        acc = prev.get(key)
+        if acc is None:
+            acc = {k: r.get(k) for k in _PREV_DIMS}
+            acc.update({k: 0 for k in _SUM_KEYS})
+            prev[key] = acc
+        for k in _SUM_KEYS:
+            acc[k] += r.get(k) or 0
+    return series, list(prev.values())
 
 
 def build_lines_sql():
@@ -477,19 +495,20 @@ def query_dsp_analytics(bq, bigquery, from_s=None, to_s=None, submit=None, timeo
     """Lê o consolidado e devolve o payload. `bq` é o client compartilhado;
     `bigquery` o módulo google.cloud.bigquery (injetado pra teste). `submit`
     (opcional) = executor.submit do pool de queries do backend: as três
-    leituras são independentes e rodam em paralelo."""
+    leituras (série+anterior e lines) são independentes e rodam em paralelo."""
     window = resolve_window(from_s, to_s, now)
     cfg = _params(bigquery, window)
 
     def run(sql):
         return [dict(r) for r in bq.query(sql, job_config=cfg, location="US").result()]
 
-    sqls = [build_series_sql(), build_prev_sql(), build_lines_sql()]
+    sqls = [build_series_sql(), build_lines_sql()]
     if submit:
         futs = [submit(run, s) for s in sqls]
-        series_rows, prev_rows, line_rows = [f.result(timeout=timeout) for f in futs]
+        daily_rows, line_rows = [f.result(timeout=timeout) for f in futs]
     else:
-        series_rows, prev_rows, line_rows = [run(s) for s in sqls]
+        daily_rows, line_rows = [run(s) for s in sqls]
+    series_rows, prev_rows = split_series(daily_rows, window[0])
 
     tokens = sorted({r["short_token"] for r in series_rows + prev_rows + line_rows if r.get("short_token")})
     meta_rows = []

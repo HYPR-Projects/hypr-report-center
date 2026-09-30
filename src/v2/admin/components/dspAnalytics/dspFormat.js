@@ -1,8 +1,8 @@
 // Formatação das métricas do Analytics › Saúde das DSPs. Um lugar só pra
 // que KPI, card, tabela e tooltip do gráfico escrevam o mesmo número igual.
 
-import { METRICS, ecpmKind, VIEWABILITY_RED, MEAS_RED } from "../../lib/dspAnalytics";
-import { formatBRL, formatBrlShort, formatBrlCompact, ecpmToneClass, ctrColorClass, vtrColorClass } from "../../lib/format";
+import { METRICS, ecpmKind, VIEWABILITY_RED, MEAS_RED } from "../../lib/dspAnalytics.js";
+import { formatBRL, formatBrlShort, formatBrlCompact, ecpmToneClass, ctrColorClass, vtrColorClass } from "../../lib/format.js";
 
 const nfCompact = new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 });
 const nfInt = new Intl.NumberFormat("pt-BR");
@@ -41,13 +41,19 @@ export function fmtMetric(key, v, { compact = true } = {}) {
 export const fmtMetricFull = (key, v) => fmtMetric(key, v, { compact: false });
 
 /** Variação formatada: {text, dir} ou null. */
-export function fmtDelta(d) {
+/**
+ * Variação formatada: {text, dir} ou null. Em p.p. a régua de "estável" é a
+ * precisão da própria métrica: CTR (2 casas) que anda 0,03 p.p. sobre 0,80%
+ * é 4% de variação e não pode sair como "▬" (antes o corte era 0,05 p.p.
+ * pra todas as taxas).
+ */
+export function fmtDelta(d, digits = 1) {
   if (!d || !Number.isFinite(d.value)) return null;
-  const flat = d.kind === "pp" ? Math.abs(d.value) < 0.05 : Math.abs(d.value) < 0.5;
-  const dir = flat ? "flat" : d.value > 0 ? "up" : "down";
   const abs = Math.abs(d.value);
+  const flat = d.kind === "pp" ? abs < 0.5 * 10 ** -digits : abs < 0.5;
+  const dir = flat ? "flat" : d.value > 0 ? "up" : "down";
   const text = d.kind === "pp"
-    ? `${abs.toFixed(abs < 1 ? 2 : 1).replace(".", ",")} p.p.`
+    ? `${abs.toFixed(digits).replace(".", ",")} p.p.`
     : `${abs >= 100 ? Math.round(abs) : abs.toFixed(1).replace(".", ",")}%`;
   return { dir, text };
 }
@@ -91,4 +97,4 @@ export function bucketLabelLong(key, granularity) {
 }
 
 // Métricas selecionáveis no gráfico de evolução.
-export const CHART_METRICS = ["imp", "view", "cost", "ecpm", "vcpm", "ctr", "vtr", "viewability", "measRate"];
+export const CHART_METRICS = ["imp", "view", "viewShare", "cost", "ecpm", "vcpm", "ctr", "vtr", "viewability", "measRate"];

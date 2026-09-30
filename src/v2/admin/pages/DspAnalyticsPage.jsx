@@ -24,7 +24,7 @@ import { Switch } from "../components/AbsToggle";
 import { ANALYTICS_PERIOD_PRESETS, resolvePeriod } from "../lib/period";
 import {
   decodePayload, decodeLineDaily, DEFAULT_FILTERS, filterRows, hasLineFilter, aggregate,
-  buildTimeseries, autoGranularity, enrichLines, buildScorecards, buildAbsCost,
+  buildTimeseries, buildMonthly, autoGranularity, enrichLines, buildScorecards, buildAbsCost,
   buildFormatMatrix, buildDataQuality, buildFilterOptions, pruneFilters, sparkBySource,
 } from "../lib/dspAnalytics";
 import { getDspAnalytics, getDspAnalyticsLineDaily } from "../../../lib/api";
@@ -39,6 +39,8 @@ import {
 } from "../components/dspAnalytics/DspSummaryCards";
 import { DspEvolutionChart } from "../components/dspAnalytics/DspEvolutionChart";
 import { DspLinesTable } from "../components/dspAnalytics/DspLinesTable";
+import { DspMonthlyTable } from "../components/dspAnalytics/DspMonthlyTable";
+import { downloadDspAnalyticsXlsx } from "../lib/dspAnalyticsExport";
 import { fmtDay, fmtCompact } from "../components/dspAnalytics/dspFormat";
 import "../../v2.css";
 
@@ -153,6 +155,7 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
       buckets: buildTimeseries(seriesRows, data.dates, effGranularity),
       chartSources,
       spark: sparkBySource(seriesRows, data.dates),
+      seriesRows,
       cards: buildScorecards(lines, data.sources),
       absCost: buildAbsCost(filterRows(data.lines, filters, { abs: true })),
       matrix: buildFormatMatrix(lines),
@@ -160,6 +163,24 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
       options: buildFilterOptions(data.lines, filters),
     };
   }, [data, filters, lineScoped, lineDaily, effGranularity]);
+
+  // Mês a mês segue a métrica do gráfico; separado do modelo pra trocar de
+  // métrica não refazer o resto.
+  const monthly = useMemo(
+    () => (model ? buildMonthly(model.seriesRows, data.dates, metric) : null),
+    [model, data, metric],
+  );
+
+  const [exporting, setExporting] = useState(false);
+  const onExport = async () => {
+    if (!model || exporting) return;
+    setExporting(true);
+    try {
+      await downloadDspAnalyticsXlsx({ lines: model.enriched, cards: model.cards, from: data.from, to: data.to });
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const onRefresh = () => { refreshRef.current = true; setReloadKey((k) => k + 1); };
   const onPresetChange = (p) => { setPreset(p); setGranularity(null); };
@@ -244,9 +265,14 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
         user={user}
         onLogout={onLogout}
         actions={
-          <Button variant="ghost" size="sm" onClick={onRefresh} disabled={loading}>
-            Atualizar
-          </Button>
+          <>
+            <Button variant="ghost" size="sm" onClick={onExport} disabled={!model || exporting}>
+              {exporting ? "Exportando…" : "Exportar XLSX"}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={onRefresh} disabled={loading}>
+              Atualizar
+            </Button>
+          </>
         }
       >
         <PageHeader
@@ -342,6 +368,7 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
                   filename={`saude-dsps-${metric}-${data.from}-${data.to}`}
                   lineScoped={lineScoped}
                 />
+                <DspMonthlyTable monthly={monthly} metric={metric} />
                 <AbsCostCard rows={model.absCost} absClients={data.absClients} />
                 <FormatMatrix rows={model.matrix} absMode={filters.abs} />
                 <div ref={linesRef} className="scroll-mt-24">

@@ -155,6 +155,8 @@ export function derive(a) {
     ...a,
     measRate: ratio(a.meas, a.imp, 100),
     viewability: ratio(a.view, a.meas, 100),
+    // Visíveis ÷ total: o rendimento da compra (o que a HYPR entrega é
+    // impressão visível contabilizada). É mensuração × viewability.
     viewShare: ratio(a.view, a.imp, 100),
     ctr: ratio(a.clk, a.view, 100),
     vtr: ratio(a.vcomp, a.vview, 100),
@@ -201,6 +203,7 @@ export const METRICS = {
   vtr:         { label: "VTR",               kind: "rate",  better: "up",   digits: 1 },
   viewability: { label: "Viewability",       kind: "rate",  better: "up",   digits: 1 },
   measRate:    { label: "Taxa de mensuração", kind: "rate", better: "up",   digits: 1 },
+  viewShare:   { label: "Visíveis / Total",  kind: "rate",  better: "up",   digits: 1 },
 };
 
 /**
@@ -251,19 +254,31 @@ export function autoGranularity(from, to) {
  * `dates` garante bucket pra dia sem entrega (linha cai a zero, não some).
  */
 export function buildTimeseries(rows, dates, granularity) {
-  const keys = [...new Set((dates || []).map((d) => bucketOf(d, granularity)))];
+  const keySet = new Set((dates || []).map((d) => bucketOf(d, granularity)));
   const total = new Map();
   const bySource = new Map();
+  // Quem puxou cada ponto: impressão e custo por campanha dentro do bucket.
+  // É o que explica um pico (ex.: 09/09/26, uma campanha fez 33 mi no DV360).
+  const byToken = new Map();
   for (const r of rows) {
     const k = bucketOf(r.d, granularity);
+    keySet.add(k);
     if (!total.has(k)) total.set(k, emptyAgg());
     addInto(total.get(k), r);
     const sk = `${k}|${r.s}`;
     if (!bySource.has(sk)) bySource.set(sk, emptyAgg());
     addInto(bySource.get(sk), r);
-    if (!keys.includes(k)) keys.push(k);
+    if (r.token != null) {
+      if (!byToken.has(k)) byToken.set(k, new Map());
+      const tm = byToken.get(k);
+      const tk = `${r.token}|${r.s}`;
+      const cur = tm.get(tk) || { token: r.token, campaign: r.campaign, client: r.client, s: r.s, imp: 0, cost: 0 };
+      cur.imp += r.imp || 0;
+      cur.cost += r.cost || 0;
+      tm.set(tk, cur);
+    }
   }
-  keys.sort();
+  const keys = [...keySet].sort();
   const sources = [...new Set(rows.map((r) => r.s))];
   // Dias do período em cada bucket: semana/mês cortado pela janela vira
   // "parcial" — soma de volume dele não é comparável com a dos vizinhos.
@@ -280,11 +295,45 @@ export function buildTimeseries(rows, dates, granularity) {
     }
     const days = daysIn.get(k) || 0;
     const full = granularity === "day" ? 1 : granularity === "week" ? 7 : daysInMonth(k);
+    const contributors = [...(byToken.get(k)?.values() || [])];
     return {
       key: k, total: derive(total.get(k) || emptyAgg()), bySource: src,
       days, partial: granularity !== "day" && days > 0 && days < full,
+      topByImp: topN(contributors, "imp"),
+      topByCost: topN(contributors, "cost"),
     };
   });
+}
+
+function topN(list, key, n = 3) {
+  return list.filter((x) => x[key] > 0).sort((a, b) => b[key] - a[key]).slice(0, n);
+}
+
+/**
+ * Mês a mês por DSP: valor da métrica em cada mês e a variação contra o mês
+ * anterior da MESMA DSP (a leitura de "a DSP melhorou ou piorou?").
+ */
+export function buildMonthly(rows, dates, metric) {
+  const buckets = buildTimeseries(rows, dates, "month");
+  // Mês parcial distorce SOMA (volume, custo), não razão: eCPM, CTR ou
+  // viewability de 12 dias se comparam com o mês cheio. Só volume perde a
+  // variação quando um dos dois meses está cortado.
+  const isSum = METRICS[metric]?.kind === "count" || metric === "cost";
+  const sources = sortSources([...new Set(rows.map((r) => r.s))]);
+  return {
+    sources,
+    rows: buckets.map((b, i) => {
+      const prevB = buckets[i - 1];
+      const cells = {};
+      for (const s of [...sources, "__total__"]) {
+        const cur = s === "__total__" ? b.total : b.bySource[s];
+        const prv = prevB ? (s === "__total__" ? prevB.total : prevB.bySource[s]) : null;
+        cells[s] = { value: cur?.[metric] ?? null, delta: prv && !(isSum && (b.partial || prevB.partial)) ? delta(cur, prv, metric) : null, costShare: null };
+        if (s !== "__total__" && cur && b.total.cost > 0) cells[s].costShare = (cur.cost / b.total.cost) * 100;
+      }
+      return { key: b.key, partial: b.partial, days: b.days, cells };
+    }),
+  };
 }
 
 function daysInMonth(ym) {
@@ -442,7 +491,9 @@ export function buildDataQuality(lines, landings, to) {
   const lowMeasurement = [...bySource]
     .filter(([, m]) => m.measRate != null && m.measRate < MEAS_RED && m.imp > 0)
     .map(([s, m]) => ({ source: s, measRate: m.measRate }));
-  const freshness = (landings || []).map((l) => ({
+  // Só as DSPs do recorte: com filtro de DSP, atraso de outra fonte é ruído.
+  const present = new Set(lines.map((l) => l.s));
+  const freshness = (landings || []).filter((l) => present.has(String(l.source || "").toUpperCase())).map((l) => ({
     source: String(l.source || "").toUpperCase(),
     maxDate: l.max_date || null,
     daysBehind: l.max_date && to

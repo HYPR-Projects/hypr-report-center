@@ -52,6 +52,8 @@ export function DspEvolutionChart({
   const colors = useThemeColors();
   const keys = useMemo(() => (mode === "total" ? [TOTAL_KEY] : sources), [mode, sources]);
 
+  const bucketsByKey = useMemo(() => new Map(buckets.map((b) => [b.key, b])), [buckets]);
+
   const data = useMemo(() => buckets.map((b) => {
     const row = {
       key: b.key, partial: b.partial, days: b.days,
@@ -96,7 +98,8 @@ export function DspEvolutionChart({
     );
   };
 
-  const metricOptions = CHART_METRICS.map((k) => ({ value: k, label: METRICS[k].label === "Taxa de mensuração" ? "Mensuração" : METRICS[k].label }));
+  const SHORT = { measRate: "Mensuração", viewShare: "Visíveis/Total" };
+  const metricOptions = CHART_METRICS.map((k) => ({ value: k, label: SHORT[k] || METRICS[k].label }));
 
   return (
     <ChartCardV2
@@ -143,21 +146,7 @@ export function DspEvolutionChart({
               />
               <Tooltip
                 cursor={{ stroke: neutral.grid, strokeWidth: 1 }}
-                formatter={(value, name) => [fmtMetricFull(metric, value), name === TOTAL_KEY ? "Total" : dspLabel(name)]}
-                labelFormatter={(_, payload) => {
-                  const row = payload?.[0]?.payload;
-                  if (!row?.key) return "";
-                  const base = bucketLabelLong(row.key, granularity);
-                  return row.partial ? `${base} · parcial, ${row.days} dia${row.days > 1 ? "s" : ""}` : base;
-                }}
-                itemSorter={(item) => -(item.value ?? 0)}
-                contentStyle={{
-                  backgroundColor: colors.canvasElevated || "#232F39",
-                  border: `1px solid ${colors.border || "#333"}`,
-                  borderRadius: 8,
-                  fontSize: 12,
-                }}
-                labelStyle={{ color: neutral.label, marginBottom: 4 }}
+                content={<EvolutionTooltip metric={metric} granularity={granularity} bucketsByKey={bucketsByKey} />}
               />
               {keys.length > 1 && (
                 <Legend
@@ -192,5 +181,57 @@ export function DspEvolutionChart({
         </p>
       )}
     </ChartCardV2>
+  );
+}
+
+// Tooltip do ponto: valor por DSP e, embaixo, as campanhas que mais pesaram
+// no bucket (por custo quando a métrica é de custo, por impressão no resto).
+// É o que responde "o que foi esse pico?" sem sair do gráfico.
+function EvolutionTooltip({ active, payload, metric, granularity, bucketsByKey }) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0]?.payload;
+  if (!row?.key) return null;
+  const bucket = bucketsByKey.get(row.key);
+  const byCost = ["cost", "ecpm", "vcpm", "cpcv"].includes(metric);
+  const top = (byCost ? bucket?.topByCost : bucket?.topByImp) || [];
+  const title = bucketLabelLong(row.key, granularity);
+  const items = [...payload].filter((p) => p.value != null).sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
+  return (
+    <div className="rounded-lg border border-border bg-canvas-elevated px-3 py-2.5 text-xs shadow-lg max-w-[320px]">
+      <div className="text-fg-muted mb-1.5">
+        {title}
+        {row.partial && <span className="text-fg-subtle"> · parcial, {row.days} dia{row.days > 1 ? "s" : ""}</span>}
+      </div>
+      <ul className="space-y-0.5">
+        {items.map((p) => (
+          <li key={p.dataKey} className="flex items-center justify-between gap-4">
+            <span className="inline-flex items-center gap-1.5 text-fg-muted">
+              <span className="size-2 rounded-full" style={{ backgroundColor: p.color }} aria-hidden />
+              {p.dataKey === TOTAL_KEY ? "Total" : dspLabel(p.dataKey)}
+            </span>
+            <span className="font-semibold tabular-nums text-fg">{fmtMetricFull(metric, p.value)}</span>
+          </li>
+        ))}
+      </ul>
+      {top.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-border">
+          <div className="text-[10.5px] uppercase tracking-wider text-fg-subtle mb-1">
+            Maior {byCost ? "custo" : "volume"} no ponto
+          </div>
+          <ul className="space-y-0.5">
+            {top.map((t) => (
+              <li key={`${t.token}|${t.s}`} className="flex items-baseline justify-between gap-3">
+                <span className="truncate text-fg-muted" title={`${t.client} · ${t.campaign}`}>
+                  <span className="text-fg">{t.client}</span> · {dspLabel(t.s)}
+                </span>
+                <span className="tabular-nums text-fg shrink-0">
+                  {byCost ? fmtMetric("cost", t.cost) : fmtMetric("imp", t.imp)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
