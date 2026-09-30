@@ -74,12 +74,13 @@ import RmndV2 from "./RmndV2";
 import PdoohV2 from "./PdoohV2";
 import SurveyV2 from "./SurveyV2";
 import MaxAttentionV2 from "./MaxAttentionV2";
+import QualityV2 from "./QualityV2";
 import { prefetchMaReport } from "../hooks/useMaReport";
 import DspHealthV2 from "./DspHealthV2";
 
 // ─── Helpers de URL ────────────────────────────────────────────────────
 
-const VALID_TABS = ["overview", "display", "video", "max-attention", "base", "rmnd", "pdooh", "survey", "dsps"];
+const VALID_TABS = ["overview", "display", "video", "max-attention", "quality", "base", "rmnd", "pdooh", "survey", "dsps"];
 const VALID_TACTICS = ["O2O", "OOH", "GROUNDFLOW"];
 
 function readTabFromUrl() {
@@ -875,6 +876,14 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   const hasMaxAttention = maLinks.length > 0;
   const showMaxAttention = adminUi || hasMaxAttention;
 
+  // Quality (DoubleVerify): cliente vê quando o admin conectou campanhas da
+  // DV. Admin vê em campanha com ABS — e também quando o sinal ainda não
+  // chegou (has_abs null) ou já existe conexão, pra nunca esconder o lugar
+  // onde se conecta/desconecta.
+  const quality = data.quality || {};
+  const hasQuality = !!quality.linked;
+  const showQuality = hasQuality || (adminUi && quality.has_abs !== false);
+
   // Display/Video escondem pra todos (cliente + admin) quando a campanha
   // NÃO tem nem contrato nem entrega da mídia. Contracts são denormalizados
   // em todas as rows de totals (lidos via totals[0]).
@@ -900,6 +909,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
     (tab === "display" && !showDisplay) ||
     (tab === "video" && !showVideo) ||
     (tab === "max-attention" && !showMaxAttention) ||
+    (tab === "quality" && !showQuality) ||
     (tab === "rmnd" && !showRmnd) ||
     (tab === "pdooh" && !showPdooh) ||
     (tab === "survey" && !showSurvey) ||
@@ -1025,6 +1035,11 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                     Max Attention
                   </TabsTrigger>
                 )}
+                {showQuality && (
+                  <TabsTrigger value="quality" iconLeft={<ShieldCheckIcon />}>
+                    Quality
+                  </TabsTrigger>
+                )}
 
                 {hasAnySecondary && (
                   <span className="self-center mx-2 h-6 w-px bg-border shrink-0" aria-hidden />
@@ -1071,14 +1086,28 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                   a linha rola na horizontal em vez de empilhar — a barra é
                   fixa e não pode crescer. */}
               <div className="flex items-center gap-2 py-2.5 overflow-x-auto scrollbar-hidden md:flex-wrap md:overflow-visible">
-                <DateRangeFilterV2
-                  value={mainRange}
-                  presetId={mainPresetId}
-                  campaignStart={camp.start_date}
-                  campaignEnd={camp.early_end_date || camp.end_date}
-                  availableDates={aggregates.availableDates}
-                  onChange={setMainRange}
-                />
+                {/* Quality tem período próprio (o da conexão DV, escolhido pelo
+                    admin) — um seletor de datas ali pareceria filtrar e não
+                    filtra nada. */}
+                {effectiveTab === "quality" ? (
+                  quality.linked && quality.date_from ? (
+                    <span className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full border border-border text-[12px] text-fg-muted whitespace-nowrap">
+                      Período da análise DV:
+                      <span className="font-semibold text-fg tabular-nums">
+                        {quality.date_from.split("-").reverse().join("/")} → {quality.date_to.split("-").reverse().join("/")}
+                      </span>
+                    </span>
+                  ) : null
+                ) : (
+                  <DateRangeFilterV2
+                    value={mainRange}
+                    presetId={mainPresetId}
+                    campaignStart={camp.start_date}
+                    campaignEnd={camp.early_end_date || camp.end_date}
+                    availableDates={aggregates.availableDates}
+                    onChange={setMainRange}
+                  />
+                )}
                 {effectiveTab === "overview" && showCoreFilter && (
                   <CoreProductFilterV2
                     value={effectiveMainCore}
@@ -1171,6 +1200,19 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                   view={view}
                   data={data}
                   range={mainRange}
+                  isAdmin={adminUi}
+                  adminJwt={adminJwt}
+                  onLinksChanged={reloadReport}
+                />
+              </TabsContent>
+            )}
+
+            {showQuality && (
+              <TabsContent value="quality">
+                <QualityV2
+                  token={token}
+                  view={view}
+                  data={data}
                   isAdmin={adminUi}
                   adminJwt={adminJwt}
                   onLinksChanged={reloadReport}
@@ -1400,6 +1442,23 @@ function MapPinIcon() {
     >
       <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
       <circle cx="12" cy="10" r="3" />
+    </svg>
+  );
+}
+
+function ShieldCheckIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6l8-3z" />
+      <path d="m8.5 12 2.5 2.5 4.5-5" />
     </svg>
   );
 }
