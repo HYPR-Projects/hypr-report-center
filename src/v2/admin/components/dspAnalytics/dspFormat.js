@@ -98,3 +98,5 @@ export function bucketLabelLong(key, granularity) {
 
 // Métricas selecionáveis no gráfico de evolução.
 export const CHART_METRICS = ["imp", "view", "viewShare", "cost", "ecpm", "vcpm", "ctr", "vtr", "viewability", "measRate"];
+
+export const formatLabel = (media) => (media === "VIDEO" ? "Vídeo" : media === "DISPLAY" ? "Display" : "Outro");

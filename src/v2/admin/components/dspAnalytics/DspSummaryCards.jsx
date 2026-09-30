@@ -6,11 +6,12 @@
 // lib/dspAnalytics.js — aqui só se desenha.
 
 import { cn } from "../../../../ui/cn";
+import { FormatBadge, FormatIcon } from "./FormatBadge";
 import { SparklineV2 } from "../../../components/SparklineV2";
 import { dspColor, dspLabel } from "../../../../shared/dspMeta";
 import { METRICS, delta, FLAG_DEFS } from "../../lib/dspAnalytics";
 import {
-  fmtMetric, fmtMetricFull, fmtDelta, fmtMoney, fmtPct, fmtCompact, toneFor, fmtDay,
+  fmtMetric, fmtMetricFull, fmtDelta, fmtMoney, fmtPct, fmtCompact, toneFor, fmtDay, formatLabel,
 } from "./dspFormat";
 
 // ─── Variação ────────────────────────────────────────────────────────────
@@ -240,7 +241,7 @@ export function AbsCostCard({ rows, absClients }) {
                     <span className="inline-flex items-center gap-2">
                       <span className="size-2 rounded-full" style={{ backgroundColor: dspColor(r.source) }} aria-hidden />
                       <span className="font-semibold text-fg">{dspLabel(r.source)}</span>
-                      <span className="text-fg-subtle">{r.media === "VIDEO" ? "Vídeo" : "Display"}</span>
+                      <FormatBadge media={r.media} size="sm" />
                     </span>
                   </td>
                   <td className={cn("px-3 py-2 text-right", toneFor("ecpm", r.without?.ecpm, { media: r.media, abs: false }))}>
@@ -272,65 +273,104 @@ export function AbsCostCard({ rows, absClients }) {
 }
 
 // ─── Formato × DSP ───────────────────────────────────────────────────────
-const DISPLAY_COLS = [["imp", "Imps"], ["ecpm", "eCPM"], ["vcpm", "vCPM"], ["ctr", "CTR"], ["viewability", "Viewab."]];
-const VIDEO_COLS = [["imp", "Imps"], ["ecpm", "eCPM"], ["cpcv", "CPCV"], ["vtr", "VTR"], ["viewability", "Viewab."]];
+// Um card por formato, lado a lado: cabeçalho com ícone e o total do formato,
+// uma linha por DSP com a fatia dela no formato (barra) e as métricas que
+// importam NAQUELE formato (CTR em display; VTR e CPCV em vídeo).
+const FORMAT_COLS = {
+  DISPLAY: [["ecpm", "eCPM"], ["vcpm", "vCPM"], ["ctr", "CTR"], ["viewability", "Viewab."], ["viewShare", "Visív./Total"]],
+  VIDEO: [["ecpm", "eCPM"], ["cpcv", "CPCV"], ["vtr", "VTR"], ["viewability", "Viewab."], ["viewShare", "Visív./Total"]],
+};
 
 export function FormatMatrix({ rows, absMode }) {
   const abs = absMode === "abs";
+  const note = abs
+    ? "Cores pela régua de ABS do admin."
+    : absMode === "noabs"
+      ? "Cores pela régua sem ABS do admin."
+      : "Cores pela régua sem ABS (mais rigorosa): o recorte mistura lines com e sem ABS. Use o filtro de ABS para comparar na régua certa.";
+  const formats = ["DISPLAY", "VIDEO"].filter((f) => rows.some((r) => r[f]));
+  if (!formats.length) return null;
   return (
-    <section className="rounded-xl border border-border bg-surface overflow-hidden">
-      <div className="px-5 py-3 border-b border-border">
+    <section aria-label="Formato por DSP" className="space-y-2">
+      <div className="flex items-baseline justify-between gap-3 flex-wrap px-1">
         <div className="text-[11px] font-bold uppercase tracking-widest text-signature">Formato × DSP</div>
-        <p className="mt-0.5 text-[11px] text-fg-subtle">
-          {abs
-            ? "Cores pela régua de ABS do admin."
-            : absMode === "noabs"
-              ? "Cores pela régua sem ABS do admin."
-              : "Cores pela régua sem ABS (mais rigorosa) porque o recorte mistura lines com e sem ABS. Use o filtro de ABS para comparar na régua certa."}
-        </p>
+        <p className="text-[11px] text-fg-subtle">{note}</p>
       </div>
+      <div className={cn("grid gap-4", formats.length > 1 && "xl:grid-cols-2")}>
+        {formats.map((f) => (
+          <FormatCard key={f} media={f} rows={rows.filter((r) => r[f])} abs={abs} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function FormatCard({ media, rows, abs }) {
+  const totalImp = rows.reduce((a, r) => a + (r[media].imp || 0), 0);
+  const totalCost = rows.reduce((a, r) => a + (r[media].cost || 0), 0);
+  const cols = FORMAT_COLS[media];
+  return (
+    <article className="rounded-xl border border-border bg-surface overflow-hidden">
+      <header className="px-5 py-3.5 border-b border-border flex items-center gap-3">
+        <span
+          className={cn(
+            "grid place-items-center size-9 rounded-lg shrink-0",
+            media === "VIDEO" ? "bg-signature-soft text-signature" : "bg-surface-strong text-fg",
+          )}
+        >
+          <FormatIcon media={media} className="size-5" />
+        </span>
+        <div className="min-w-0">
+          <div className="text-sm font-bold text-fg">{formatLabel(media)}</div>
+          <div className="text-[11px] text-fg-subtle tabular-nums">
+            {fmtCompact(totalImp)} impressões · {fmtMetric("cost", totalCost)}
+          </div>
+        </div>
+      </header>
       <div className="overflow-x-auto scrollbar-thin">
         <table className="w-full text-xs tabular-nums">
           <thead>
-            <tr className="text-fg-muted">
-              <th rowSpan={2} className="px-4 py-2 font-semibold text-left align-bottom">DSP</th>
-              <th colSpan={DISPLAY_COLS.length} className="px-3 pt-2 font-semibold text-center border-l border-border">Display</th>
-              <th colSpan={VIDEO_COLS.length} className="px-3 pt-2 font-semibold text-center border-l border-border">Vídeo</th>
-            </tr>
             <tr className="text-fg-subtle">
-              {DISPLAY_COLS.map(([k, l], i) => (
-                <th key={`d${k}`} className={cn("px-3 pb-2 font-medium text-right", i === 0 && "border-l border-border")}>{l}</th>
-              ))}
-              {VIDEO_COLS.map(([k, l], i) => (
-                <th key={`v${k}`} className={cn("px-3 pb-2 font-medium text-right", i === 0 && "border-l border-border")}>{l}</th>
+              <th className="px-5 py-2 font-medium text-left">DSP</th>
+              <th className="px-2.5 py-2 font-medium text-right whitespace-nowrap">Imps · share</th>
+              {cols.map(([k, l]) => (
+                <th key={k} className="px-2.5 py-2 font-medium text-right whitespace-nowrap">{l}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.source} className="border-t border-border">
-                <td className="px-4 py-2 whitespace-nowrap">
-                  <span className="inline-flex items-center gap-2">
-                    <span className="size-2 rounded-full" style={{ backgroundColor: dspColor(r.source) }} aria-hidden />
-                    <span className="font-semibold text-fg">{dspLabel(r.source)}</span>
-                  </span>
-                </td>
-                {DISPLAY_COLS.map(([k], i) => (
-                  <td key={`d${k}`} className={cn("px-3 py-2 text-right", i === 0 && "border-l border-border", toneFor(k, r.DISPLAY?.[k], { media: "DISPLAY", abs }) || "text-fg")}>
-                    {r.DISPLAY ? fmtMetric(k, r.DISPLAY[k]) : "·"}
+            {rows.map((r) => {
+              const m = r[media];
+              const share = totalImp ? (m.imp / totalImp) * 100 : 0;
+              return (
+                <tr key={r.source} className="border-t border-border">
+                  <td className="px-5 py-2.5 whitespace-nowrap">
+                    <span className="inline-flex items-center gap-2">
+                      <span className="size-2 rounded-full" style={{ backgroundColor: dspColor(r.source) }} aria-hidden />
+                      <span className="font-semibold text-fg">{dspLabel(r.source)}</span>
+                    </span>
                   </td>
-                ))}
-                {VIDEO_COLS.map(([k], i) => (
-                  <td key={`v${k}`} className={cn("px-3 py-2 text-right", i === 0 && "border-l border-border", toneFor(k, r.VIDEO?.[k], { media: "VIDEO", abs }) || "text-fg")}>
-                    {r.VIDEO ? fmtMetric(k, r.VIDEO[k]) : "·"}
+                  <td className="px-2.5 py-2.5 text-right">
+                    <div className="text-fg" title={fmtMetricFull("imp", m.imp)}>{fmtMetric("imp", m.imp)}</div>
+                    <div className="mt-1 flex items-center justify-end gap-1.5">
+                      <div className="h-1 w-14 rounded-full bg-canvas-deeper overflow-hidden" aria-hidden>
+                        <div className="h-full rounded-full" style={{ width: `${Math.max(2, share)}%`, backgroundColor: dspColor(r.source) }} />
+                      </div>
+                      <span className="text-[10.5px] text-fg-subtle w-8 text-right">{fmtPct(share, 0)}</span>
+                    </div>
                   </td>
-                ))}
-              </tr>
-            ))}
+                  {cols.map(([k]) => (
+                    <td key={k} className={cn("px-2.5 py-2.5 text-right align-top", toneFor(k, m[k], { media, abs }) || "text-fg")}>
+                      {fmtMetric(k, m[k])}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
-    </section>
+    </article>
   );
 }
 

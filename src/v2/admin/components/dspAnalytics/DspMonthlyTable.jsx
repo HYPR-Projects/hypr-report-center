@@ -11,6 +11,7 @@
 
 import { cn } from "../../../../ui/cn";
 import { dspColor, dspLabel } from "../../../../shared/dspMeta";
+import { tacticColor, tacticLabel } from "../../../../shared/tacticMeta";
 import { METRICS } from "../../lib/dspAnalytics";
 import { fmtMetric, fmtMetricFull, fmtDelta, fmtPct, bucketLabelLong } from "./dspFormat";
 
@@ -31,15 +32,18 @@ function DeltaCell({ d, metric }) {
 export function DspMonthlyTable({ monthly, metric }) {
   if (!monthly || monthly.rows.length < 2) return null;
   const cols = [...monthly.sources, TOTAL];
+  const byTactic = monthly.by === "tactic";
+  const colLabel = (c) => (byTactic ? tacticLabel(c) : dspLabel(c));
+  const colColor = (c) => (byTactic ? tacticColor(c) : dspColor(c));
   const rows = [...monthly.rows].reverse(); // mais recente em cima
   return (
     <section className="rounded-xl border border-border bg-surface overflow-hidden">
       <div className="px-5 py-3 border-b border-border">
         <div className="text-[11px] font-bold uppercase tracking-widest text-signature">
-          Mês a mês · {METRICS[metric].label}
+          Mês a mês · {METRICS[metric].label} · por {byTactic ? "tática" : "DSP"}
         </div>
         <p className="mt-0.5 text-[11px] text-fg-subtle">
-          Variação contra o mês anterior da mesma DSP e fatia do custo no mês. Segue a métrica do gráfico.
+          Variação contra o mês anterior da mesma {byTactic ? "tática" : "DSP"} e fatia do custo no mês. Segue a métrica e a visão do gráfico.
         </p>
       </div>
       <div className="overflow-x-auto scrollbar-thin">
@@ -51,8 +55,8 @@ export function DspMonthlyTable({ monthly, metric }) {
                 <th key={c} className="px-3 py-2 font-semibold text-right whitespace-nowrap">
                   {c === TOTAL ? "Total" : (
                     <span className="inline-flex items-center gap-1.5">
-                      <span className="size-2 rounded-full" style={{ backgroundColor: dspColor(c) }} aria-hidden />
-                      {dspLabel(c)}
+                      <span className="size-2 rounded-full" style={{ backgroundColor: colColor(c) }} aria-hidden />
+                      {colLabel(c)}
                     </span>
                   )}
                 </th>

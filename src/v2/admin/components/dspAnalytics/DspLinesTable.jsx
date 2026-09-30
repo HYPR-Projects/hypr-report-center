@@ -8,6 +8,8 @@
 import { useMemo, useState } from "react";
 import { cn } from "../../../../ui/cn";
 import { dspColor, dspLabel } from "../../../../shared/dspMeta";
+import { tacticColor, tacticLabel, chartTacticKey } from "../../../../shared/tacticMeta";
+import { FormatBadge } from "./FormatBadge";
 import { LINE_TABS, FLAG_DEFS, rankLines, MIN_LINE_IMPS, NO_TOKEN } from "../../lib/dspAnalytics";
 import { fmtMetric, fmtMetricFull, fmtPct, toneFor, fmtDay } from "./dspFormat";
 
@@ -29,7 +31,7 @@ export function DspLinesTable({ lines, tab, onTabChange, search, onOpenReport, f
       r = r.filter((l) =>
         l.name.toLowerCase().includes(q) || l.campaign.toLowerCase().includes(q)
         || l.client.toLowerCase().includes(q) || l.io.toLowerCase().includes(q)
-        || l.token.toLowerCase().includes(q));
+        || l.token.toLowerCase().includes(q) || tacticLabel(l.tactic).toLowerCase().includes(q));
     }
     return r;
   }, [lines, tab, flagFilter, search]);
@@ -127,8 +129,12 @@ export function DspLinesTable({ lines, tab, onTabChange, search, onOpenReport, f
                         <div className="text-[11px] text-fg-subtle truncate" title={`${l.client} · ${l.campaign} · IO ${l.io}`}>
                           {dspLabel(l.s)} · {l.client} · {l.campaign}{l.io ? ` · ${l.io}` : ""}
                         </div>
-                        <div className="text-[10.5px] text-fg-subtle/80">
-                          {fmtDay(l.first)} → {fmtDay(l.last)}
+                        <div className="text-[10.5px] text-fg-subtle/80 flex items-center gap-1.5 flex-wrap">
+                          <span className="inline-flex items-center gap-1 text-fg-muted">
+                            <span className="size-1.5 rounded-full" style={{ backgroundColor: tacticColor(chartTacticKey(l.tactic)) }} aria-hidden />
+                            {tacticLabel(l.tactic)}
+                          </span>
+                          <span>· {fmtDay(l.first)} → {fmtDay(l.last)}</span>
                         </div>
                         {l.flags.length > 0 && (
                           <div className="mt-1 flex flex-wrap gap-1">
@@ -142,12 +148,16 @@ export function DspLinesTable({ lines, tab, onTabChange, search, onOpenReport, f
                       </div>
                     </div>
                   </td>
-                  <td className="px-2.5 py-2 whitespace-nowrap text-fg-muted">
-                    {video ? "Vídeo" : l.m === "DISPLAY" ? "Display" : "Outro"}
-                    {l.abs && (
-                      <span className="ml-1.5 px-1.5 py-px rounded bg-signature-soft text-signature text-[10px] font-bold" title={`ABS por ${REASON_LABEL[l.reason] || l.reason}`}>ABS</span>
-                    )}
-                    {l.sv && <span className="ml-1.5 text-[10px] text-fg-subtle">survey</span>}
+                  <td className="px-2.5 py-2 whitespace-nowrap">
+                    <div className="flex flex-col items-start gap-1">
+                      <FormatBadge media={l.m} size="sm" />
+                      <div className="flex items-center gap-1">
+                        {l.abs && (
+                          <span className="px-1.5 py-px rounded bg-signature-soft text-signature text-[10px] font-bold" title={`ABS por ${REASON_LABEL[l.reason] || l.reason}`}>ABS</span>
+                        )}
+                        {l.sv && <span className="text-[10px] text-fg-subtle">survey</span>}
+                      </div>
+                    </div>
                   </td>
                   <td className="px-2.5 py-2 text-right text-fg" title={fmtMetricFull("imp", l.imp)}>{fmtMetric("imp", l.imp)}</td>
                   <td className="px-2.5 py-2 text-right text-fg" title={fmtMetricFull("cost", l.cost)}>{fmtMetric("cost", l.cost)}</td>

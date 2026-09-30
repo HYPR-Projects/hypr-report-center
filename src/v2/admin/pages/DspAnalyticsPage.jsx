@@ -25,10 +25,11 @@ import { ANALYTICS_PERIOD_PRESETS, resolvePeriod } from "../lib/period";
 import {
   decodePayload, decodeLineDaily, DEFAULT_FILTERS, filterRows, hasLineFilter, aggregate,
   buildTimeseries, buildMonthly, autoGranularity, enrichLines, buildScorecards, buildAbsCost,
-  buildFormatMatrix, buildDataQuality, buildFilterOptions, pruneFilters, sparkBySource,
+  buildFormatMatrix, buildDataQuality, buildFilterOptions, pruneFilters, sparkBySource, buildTactics,
 } from "../lib/dspAnalytics";
 import { getDspAnalytics, getDspAnalyticsLineDaily } from "../../../lib/api";
 import { sortSources, dspLabel } from "../../../shared/dspMeta";
+import { sortTactics, chartTacticKey, tacticLabel } from "../../../shared/tacticMeta";
 import { SegmentedControlV2 } from "../../components/SegmentedControlV2";
 import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
@@ -40,14 +41,22 @@ import {
 import { DspEvolutionChart } from "../components/dspAnalytics/DspEvolutionChart";
 import { DspLinesTable } from "../components/dspAnalytics/DspLinesTable";
 import { DspMonthlyTable } from "../components/dspAnalytics/DspMonthlyTable";
+import { DspTacticsCard } from "../components/dspAnalytics/DspTacticsCard";
+import { FormatIcon } from "../components/dspAnalytics/FormatBadge";
 import { downloadDspAnalyticsXlsx } from "../lib/dspAnalyticsExport";
 import { fmtDay, fmtCompact } from "../components/dspAnalytics/dspFormat";
 import "../../v2.css";
 
+const withIcon = (media, text) => (
+  <span className="inline-flex items-center gap-1.5">
+    <FormatIcon media={media} className="size-3.5" />
+    {text}
+  </span>
+);
 const MEDIA_OPTIONS = [
   { value: "all", label: "Todos" },
-  { value: "DISPLAY", label: "Display" },
-  { value: "VIDEO", label: "Vídeo" },
+  { value: "DISPLAY", label: withIcon("DISPLAY", "Display") },
+  { value: "VIDEO", label: withIcon("VIDEO", "Vídeo") },
 ];
 const ABS_OPTIONS = [
   { value: "all", label: "Todos" },
@@ -142,17 +151,22 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
       const byKey = new Map(data.lines.map((l) => [l.key, l]));
       seriesRows = (lineDaily?.rows || [])
         .filter((r) => byKey.has(r.key))
-        .map((r) => ({ ...r, s: byKey.get(r.key).s, m: byKey.get(r.key).m }));
+        .map((r) => ({ ...r, s: byKey.get(r.key).s, m: byKey.get(r.key).m, tactic: byKey.get(r.key).tactic }));
     } else {
       seriesRows = filterRows(data.series, filters);
     }
-    const chartSources = sortSources([...new Set(seriesRows.map((r) => r.s))]);
+    const byTactic = mode === "tactic";
+    const chartSources = byTactic
+      ? sortTactics([...new Set(seriesRows.map((r) => chartTacticKey(r.tactic)))])
+      : sortSources([...new Set(seriesRows.map((r) => r.s))]);
+    const enriched = enrichLines(lines);
     return {
       lines,
-      enriched: enrichLines(lines),
+      enriched,
+      tactics: buildTactics(enriched),
       totals,
       prev,
-      buckets: buildTimeseries(seriesRows, data.dates, effGranularity),
+      buckets: buildTimeseries(seriesRows, data.dates, effGranularity, byTactic ? "tactic" : "source"),
       chartSources,
       spark: sparkBySource(seriesRows, data.dates),
       seriesRows,
@@ -162,13 +176,13 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
       quality: buildDataQuality(lines, data.landings, data.to),
       options: buildFilterOptions(data.lines, filters),
     };
-  }, [data, filters, lineScoped, lineDaily, effGranularity]);
+  }, [data, filters, lineScoped, lineDaily, effGranularity, mode]);
 
   // Mês a mês segue a métrica do gráfico; separado do modelo pra trocar de
   // métrica não refazer o resto.
   const monthly = useMemo(
-    () => (model ? buildMonthly(model.seriesRows, data.dates, metric) : null),
-    [model, data, metric],
+    () => (model ? buildMonthly(model.seriesRows, data.dates, metric, mode === "tactic" ? "tactic" : "source") : null),
+    [model, data, metric, mode],
   );
 
   const [exporting, setExporting] = useState(false);
@@ -215,6 +229,7 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
     },
     searchableChip("client", "Cliente", "clients", opts?.clients, "Buscar cliente…", 340),
     searchableChip("campaign", "Campanha", "campaigns", opts?.campaigns, "Buscar campanha ou token…", 420),
+    searchableChip("tactic", "Tática", "tactics", opts?.tactics, "Buscar tática…", 320),
     searchableChip("io", "IO / Campaign DSP", "ios", opts?.ios, "Buscar IO…", 420),
     searchableChip("line", "Line", "lines", opts?.lines, "Buscar line…", 520),
   ] : [];
@@ -245,6 +260,7 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
     ...(!filters.includeSurvey ? [{ id: "sv", label: "Sem survey", onClear: () => setF({ includeSurvey: true }) }] : []),
     ...filters.clients.map((c) => ({ id: `c${c}`, label: `Cliente · ${c}`, onClear: () => toggleIn("clients", c) })),
     ...filters.campaigns.map((c) => ({ id: `k${c}`, label: `Campanha · ${labelOf(opts?.campaigns, c)}`, onClear: () => toggleIn("campaigns", c) })),
+    ...filters.tactics.map((c) => ({ id: `t${c}`, label: `Tática · ${tacticLabel(c)}`, onClear: () => toggleIn("tactics", c) })),
     ...filters.ios.map((c) => ({ id: `i${c}`, label: `IO · ${c || "(sem IO)"}`, onClear: () => toggleIn("ios", c) })),
     ...filters.lines.map((c) => ({ id: `l${c}`, label: `Line · ${labelOf(opts?.lines, c)}`, onClear: () => toggleIn("lines", c) })),
   ];
@@ -369,6 +385,11 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
                   lineScoped={lineScoped}
                 />
                 <DspMonthlyTable monthly={monthly} metric={metric} />
+                <DspTacticsCard
+                  rows={model.tactics}
+                  selected={filters.tactics}
+                  onToggleTactic={(t) => toggleIn("tactics", t)}
+                />
                 <AbsCostCard rows={model.absCost} absClients={data.absClients} />
                 <FormatMatrix rows={model.matrix} absMode={filters.abs} />
                 <div ref={linesRef} className="scroll-mt-24">

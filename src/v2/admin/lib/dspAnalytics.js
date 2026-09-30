@@ -28,6 +28,7 @@
 
 import { ECPM_TIERS } from "./format.js";
 import { sortSources } from "../../../shared/dspMeta.js";
+import { sortTactics, chartTacticKey, tacticLabel } from "../../../shared/tacticMeta.js";
 
 export const METRIC_KEYS = ["imp", "meas", "view", "clk", "cost", "vst", "v100", "vcomp", "fee"];
 export const NO_TOKEN = "__none__";
@@ -47,6 +48,7 @@ function decodeRows(rows, cols, ctx, withDate) {
       client: tok.client || "Sem cliente",
       campaign: tok.campaign || tok.t || "Sem campanha",
       io: ctx.ios[r[idx.io]] ?? "",
+      tactic: (idx.tc != null && r[idx.tc]) || "none",
     };
     if (withDate) out.d = ctx.dates[r[idx.d]];
     for (const k of METRIC_KEYS) out[k] = Number(r[idx[k]]) || 0;
@@ -74,6 +76,7 @@ export function decodePayload(p) {
     from: p.from, to: p.to, prevFrom: p.prev_from, prevTo: p.prev_to,
     dates: ctx.dates, sources, series, prev, lines,
     absClients: p.abs_clients || [],
+    tactics: p.tactics || [],
     landings: p.landings || [],
     generatedAt: p.generated_at || null,
   };
@@ -101,6 +104,7 @@ export const DEFAULT_FILTERS = Object.freeze({
   clients: [],
   campaigns: [],        // short_tokens (NO_TOKEN = entrega sem campanha)
   ios: [],
+  tactics: [],          // chaves de tática (tp_high, premium_list…)
   lines: [],            // chaves SOURCE|line_id|survey
 });
 
@@ -117,6 +121,7 @@ export function matchRow(r, f, skip = {}) {
   if (!skip.clients && f.clients.length && !f.clients.includes(r.client)) return false;
   if (!skip.campaigns && f.campaigns.length && !f.campaigns.includes(r.token)) return false;
   if (!skip.ios && f.ios.length && !f.ios.includes(r.io)) return false;
+  if (!skip.tactics && f.tactics.length && !f.tactics.includes(r.tactic)) return false;
   if (!skip.lines && f.lines.length && r.key != null && !f.lines.includes(r.key)) return false;
   return true;
 }
@@ -253,7 +258,13 @@ export function autoGranularity(from, to) {
  *   [{ key, total: derived, bySource: { DV360: derived, ... } }]
  * `dates` garante bucket pra dia sem entrega (linha cai a zero, não some).
  */
-export function buildTimeseries(rows, dates, granularity) {
+/**
+ * `by`: "source" (uma série por DSP) ou "tactic" (uma por tática, com as
+ * menores dobradas em "Outras"). O agregado fica em `bySource` nos dois
+ * casos, pra o gráfico não precisar saber qual é.
+ */
+export function buildTimeseries(rows, dates, granularity, by = "source") {
+  const groupOf = by === "tactic" ? (r) => chartTacticKey(r.tactic) : (r) => r.s;
   const keySet = new Set((dates || []).map((d) => bucketOf(d, granularity)));
   const total = new Map();
   const bySource = new Map();
@@ -265,7 +276,7 @@ export function buildTimeseries(rows, dates, granularity) {
     keySet.add(k);
     if (!total.has(k)) total.set(k, emptyAgg());
     addInto(total.get(k), r);
-    const sk = `${k}|${r.s}`;
+    const sk = `${k}|${groupOf(r)}`;
     if (!bySource.has(sk)) bySource.set(sk, emptyAgg());
     addInto(bySource.get(sk), r);
     if (r.token != null) {
@@ -279,7 +290,7 @@ export function buildTimeseries(rows, dates, granularity) {
     }
   }
   const keys = [...keySet].sort();
-  const sources = [...new Set(rows.map((r) => r.s))];
+  const sources = [...new Set(rows.map(groupOf))];
   // Dias do período em cada bucket: semana/mês cortado pela janela vira
   // "parcial" — soma de volume dele não é comparável com a dos vizinhos.
   const daysIn = new Map();
@@ -313,14 +324,16 @@ function topN(list, key, n = 3) {
  * Mês a mês por DSP: valor da métrica em cada mês e a variação contra o mês
  * anterior da MESMA DSP (a leitura de "a DSP melhorou ou piorou?").
  */
-export function buildMonthly(rows, dates, metric) {
-  const buckets = buildTimeseries(rows, dates, "month");
+export function buildMonthly(rows, dates, metric, by = "source") {
+  const buckets = buildTimeseries(rows, dates, "month", by);
   // Mês parcial distorce SOMA (volume, custo), não razão: eCPM, CTR ou
   // viewability de 12 dias se comparam com o mês cheio. Só volume perde a
   // variação quando um dos dois meses está cortado.
   const isSum = METRICS[metric]?.kind === "count" || metric === "cost";
-  const sources = sortSources([...new Set(rows.map((r) => r.s))]);
+  const groups = [...new Set(rows.map(by === "tactic" ? (r) => chartTacticKey(r.tactic) : (r) => r.s))];
+  const sources = by === "tactic" ? sortTactics(groups) : sortSources(groups);
   return {
+    by,
     sources,
     rows: buckets.map((b, i) => {
       const prevB = buckets[i - 1];
@@ -533,24 +546,64 @@ export function buildFilterOptions(lines, f) {
   const lvl2 = filterRows(lines, f, { campaigns: true, ios: true, lines: true });
   const lvl3 = filterRows(lines, f, { ios: true, lines: true });
   const lvl4 = filterRows(lines, f, { lines: true });
+  const lvlTac = filterRows(lines, f, { tactics: true, lines: true });
   return {
     clients: optionList(lvl1, (r) => r.client, (r) => r.client),
     campaigns: optionList(lvl2, (r) => r.token, (r) => r.campaign, (r) => (r.token === NO_TOKEN ? "sem short_token" : `${r.client} · ${r.token}`)),
     ios: optionList(lvl3, (r) => r.io, (r) => r.io || "(sem IO)", (r) => r.s),
+    tactics: sortTacticOptions(optionList(lvlTac, (r) => r.tactic, (r) => tacticLabel(r.tactic))),
     lines: optionList(lvl4, (r) => r.key, (r) => r.name || r.key, (r) => `${r.s} · ${r.m === "VIDEO" ? "Vídeo" : "Display"}${r.sv ? " · survey" : ""}`),
   };
+}
+
+function sortTacticOptions(list) {
+  const order = sortTactics(list.map((o) => o.id));
+  return order.map((id) => list.find((o) => o.id === id));
+}
+
+/**
+ * Quebra por tática: métricas de cada tática no recorte, share de impressão e
+ * custo, nº de lines e de lines com red flag. `bySource` abre cada tática nas
+ * DSPs (a mesma tática rende diferente no DV360 e na Yahoo).
+ */
+export function buildTactics(enriched) {
+  const total = aggregate(enriched);
+  const by = groupAggregate(enriched, (l) => l.tactic);
+  const bySrc = groupAggregate(enriched, (l) => `${l.tactic}|${l.s}`);
+  const count = new Map();
+  const flagged = new Map();
+  for (const l of enriched) {
+    count.set(l.tactic, (count.get(l.tactic) || 0) + 1);
+    if (l.flags?.length) flagged.set(l.tactic, (flagged.get(l.tactic) || 0) + 1);
+  }
+  const sources = sortSources([...new Set(enriched.map((l) => l.s))]);
+  return sortTactics([...by.keys()]).map((t) => {
+    const m = by.get(t);
+    return {
+      tactic: t,
+      metrics: m,
+      lines: count.get(t) || 0,
+      flagged: flagged.get(t) || 0,
+      shareImp: ratio(m.imp, total.imp, 100),
+      shareCost: ratio(m.cost, total.cost, 100),
+      bySource: sources
+        .filter((s) => bySrc.has(`${t}|${s}`))
+        .map((s) => ({ source: s, metrics: bySrc.get(`${t}|${s}`) })),
+    };
+  });
 }
 
 /** Remove da seleção o que não existe mais no payload novo (troca de período). */
 export function pruneFilters(f, lines) {
   const has = (key) => new Set(lines.map((l) => l[key]));
   const clients = has("client"); const tokens = has("token");
-  const ios = has("io"); const keys = has("key");
+  const ios = has("io"); const keys = has("key"); const tactics = has("tactic");
   return {
     ...f,
     clients: f.clients.filter((x) => clients.has(x)),
     campaigns: f.campaigns.filter((x) => tokens.has(x)),
     ios: f.ios.filter((x) => ios.has(x)),
+    tactics: (f.tactics || []).filter((x) => tactics.has(x)),
     lines: f.lines.filter((x) => keys.has(x)),
   };
 }

@@ -100,6 +100,46 @@ ABS_CLIENTS = [
 ]
 ABS_CLIENT_RE = "|".join(f"(?:{rx})" for _, rx in ABS_CLIENTS)
 
+# Tática da line (taxonomia de nomenclatura da HYPR). Vem no fim do nome,
+# quase sempre depois de `LI-` ("..._LI-TOP-PERFORMANCE-HIGH"), mas também
+# sem o prefixo ("..._TOP-PERFORMANCE-HIGH"), dobrado ("LI-LI-TOP-...") ou
+# com sufixo ("-LOW2", "PREMIUM-LIST-CPM"). A regra casa a palavra da tática
+# em qualquer ponto, e a ORDEM decide: faixa (HIGH/LOW) antes do Top
+# Performance genérico, "Premium List" antes de "Premium". "LI-STANDARD"
+# exige o prefixo porque STANDARD sozinho aparece como formato de criativo.
+# Line só numerada ("LI-1") ou sem tática cai em "none".
+# Mix jun-set/26: TP High 421 mi imps, TP 317 mi, TP Low 261 mi, Standard
+# 183 mi, Premium List 181 mi, Max Viewable 125 mi, Boost CPM 43 mi.
+_SEP = r"(?:^|[^A-Z0-9])"
+TACTICS = [
+    ("tp_high",      "Top Performance High", _SEP + r"TOP[-_ ]?PERFORMANCE[-_ ]?HIGH"),
+    ("tp_low",       "Top Performance Low",  _SEP + r"TOP[-_ ]?PERFORMANCE[-_ ]?LOW"),
+    ("tp",           "Top Performance",      _SEP + r"TOP[-_ ]?PERFORMANCE"),
+    ("premium_list", "Premium List",         _SEP + r"(?:PREMIUM[-_ ]?LIST|LI-PL(?:[^A-Z0-9]|$))"),
+    ("max_viewable", "Max Viewable",         _SEP + r"MAX[-_ ]?VIEWABLE"),
+    ("max_views",    "Max Views",            _SEP + r"MAX[-_ ]?VIEWS"),
+    ("standard",     "Standard",             r"LI-STANDARD"),
+    ("boost_cpm",    "Boost CPM",            _SEP + r"BOOST[-_ ]?CPM"),
+    ("premium",      "Premium",              r"LI-(?:SITELIST-)?PREMIUM"),
+]
+TACTIC_NONE = "none"
+
+
+def tactic_of(line_name):
+    """Mesma regra do SQL, em Python (teste e conferência)."""
+    up = (line_name or "").upper()
+    for key, _, rx in TACTICS:
+        if re.search(rx, up):
+            return key
+    return TACTIC_NONE
+
+
+def _tactic_sql(col):
+    whens = "\n".join(
+        f"          WHEN REGEXP_CONTAINS({col}, r'{rx}') THEN '{key}'" for key, _, rx in TACTICS
+    )
+    return f"CASE\n{whens}\n          ELSE '{TACTIC_NONE}'\n        END"
+
 MAX_RANGE_DAYS = 400
 DEFAULT_RANGE_DAYS = 30
 MAX_LINE_KEYS = 50
@@ -108,9 +148,9 @@ BRT = timezone(timedelta(hours=-3))
 
 # Colunas posicionais. Métricas iguais nos três blocos, na mesma ordem.
 METRIC_COLS = ["imp", "meas", "view", "clk", "cost", "vst", "v100", "vcomp", "fee"]
-SERIES_COLS = ["d", "s", "m", "abs", "sv", "tk", "io"] + METRIC_COLS
-PREV_COLS = ["s", "m", "abs", "sv", "tk", "io"] + METRIC_COLS
-LINE_COLS = ["key", "s", "m", "abs", "reason", "sv", "tk", "io", "name", "tag",
+SERIES_COLS = ["d", "s", "m", "abs", "sv", "tk", "io", "tc"] + METRIC_COLS
+PREV_COLS = ["s", "m", "abs", "sv", "tk", "io", "tc"] + METRIC_COLS
+LINE_COLS = ["key", "s", "m", "abs", "reason", "sv", "tk", "io", "tc", "name", "tag",
              "first", "last"] + METRIC_COLS
 LINE_DAILY_COLS = ["key", "d"] + METRIC_COLS
 
@@ -200,6 +240,7 @@ def _base_ctes():
         client_name AS dsp_client,
         (REGEXP_CONTAINS(UPPER(IFNULL(line_name, '')), r'{SURVEY_LINE_RE}')
           OR UPPER(IFNULL(creative_name, '')) LIKE '%SURVEY%') AS is_survey,
+        {_tactic_sql("UPPER(IFNULL(line_name, ''))")} AS tactic,
         impressions, measurable_impressions, viewable_impressions, clicks,
         total_cost, video_starts, video_view_100_complete,
         IF(impressions > 0 AND UPPER(media_type) = 'VIDEO',
@@ -209,7 +250,7 @@ def _base_ctes():
     ),
     line_day AS (
       SELECT
-        date, source, media, short_token, io_name, line_id, is_survey,
+        date, source, media, short_token, io_name, line_id, is_survey, tactic,
         ANY_VALUE(line_name)  AS line_name,
         ANY_VALUE(dsp_client) AS dsp_client,
         SUM(impressions)             AS imp,
@@ -221,7 +262,7 @@ def _base_ctes():
         SUM(video_view_100_complete) AS v100,
         SUM(vcomp)                   AS vcomp
       FROM raw
-      GROUP BY date, source, media, short_token, io_name, line_id, is_survey
+      GROUP BY date, source, media, short_token, io_name, line_id, is_survey, tactic
     ),
     base AS (
       SELECT
@@ -262,14 +303,14 @@ def build_series_sql():
     return f"""
     WITH {_base_ctes()}
     SELECT date, source, media, abs_reason IS NOT NULL AS is_abs, is_survey,
-           short_token, io_name,{_METRIC_SUMS}
+           short_token, io_name, tactic,{_METRIC_SUMS}
     FROM base
     WHERE date BETWEEN @prev_from AND @to
-    GROUP BY date, source, media, is_abs, is_survey, short_token, io_name
+    GROUP BY date, source, media, is_abs, is_survey, short_token, io_name, tactic
     """
 
 
-_PREV_DIMS = ("source", "media", "is_abs", "is_survey", "short_token", "io_name")
+_PREV_DIMS = ("source", "media", "is_abs", "is_survey", "short_token", "io_name", "tactic")
 _SUM_KEYS = ("imp", "meas", "view", "clk", "cost", "vst", "v100", "vcomp", "fee")
 
 
@@ -298,6 +339,10 @@ def build_lines_sql():
     return f"""
     WITH {_base_ctes()}
     SELECT source, media, line_id, short_token, io_name, is_survey,
+           -- ANY_VALUE e não GROUP BY: a chave da line tem de ser única no
+           -- payload. Line renomeada de uma tática pra outra (raro) fica com
+           -- uma só aqui; na série cada dia leva a tática do nome daquele dia.
+           ANY_VALUE(tactic) AS tactic,
            ANY_VALUE(abs_reason) AS abs_reason,
            ANY_VALUE(line_name)  AS line_name,
            MIN(date) AS first_date, MAX(date) AS last_date,{_METRIC_SUMS}
@@ -428,7 +473,7 @@ def build_payload(series_rows, prev_rows, line_rows, meta_rows, window, generate
         series.append([
             date_idx[_iso(r["date"])], r["source"], _MEDIA.get(r["media"], "OUTRO"),
             1 if r.get("is_abs") else 0, 1 if r.get("is_survey") else 0,
-            tk(r.get("short_token")), io(r.get("io_name")),
+            tk(r.get("short_token")), io(r.get("io_name")), r.get("tactic") or TACTIC_NONE,
         ] + _metrics(r))
     series.sort(key=lambda x: (x[0], x[1]))
 
@@ -440,7 +485,7 @@ def build_payload(series_rows, prev_rows, line_rows, meta_rows, window, generate
         prev.append([
             r["source"], _MEDIA.get(r["media"], "OUTRO"),
             1 if r.get("is_abs") else 0, 1 if r.get("is_survey") else 0,
-            tk(r.get("short_token")), io(r.get("io_name")),
+            tk(r.get("short_token")), io(r.get("io_name")), r.get("tactic") or TACTIC_NONE,
         ] + _metrics(r))
 
     lines = []
@@ -452,7 +497,7 @@ def build_payload(series_rows, prev_rows, line_rows, meta_rows, window, generate
             r["source"], _MEDIA.get(r["media"], "OUTRO"),
             1 if r.get("abs_reason") else 0, r.get("abs_reason"),
             1 if r.get("is_survey") else 0,
-            tk(r.get("short_token")), io(r.get("io_name")),
+            tk(r.get("short_token")), io(r.get("io_name")), r.get("tactic") or TACTIC_NONE,
             r.get("line_name") or "", name_tag(r.get("line_name")),
             _iso(r.get("first_date")), _iso(r.get("last_date")),
         ] + _metrics(r))
@@ -465,6 +510,8 @@ def build_payload(series_rows, prev_rows, line_rows, meta_rows, window, generate
         "prev_to": prev_to.isoformat(),
         "generated_at": (generated_at or datetime.now(timezone.utc)).isoformat(),
         "abs_clients": [label for label, _ in ABS_CLIENTS],
+        "tactics": [{"key": k, "label": label} for k, label, _ in TACTICS]
+                   + [{"key": TACTIC_NONE, "label": "Sem tática"}],
         "sources": sorted(sources),
         "dates": dates,
         "tokens": tokens,

@@ -10,6 +10,7 @@
 
 import { FLAG_DEFS } from "./dspAnalytics.js";
 import { dspLabel } from "../../../shared/dspMeta.js";
+import { tacticLabel } from "../../../shared/tacticMeta.js";
 
 const NUM_INT = "#,##0";
 const NUM_PCT1 = '0.0"%"';
@@ -22,7 +23,7 @@ const cell = (v, z) => (v == null || !Number.isFinite(v) ? null : { v, t: "n", z
 const REASON = { fee: "Fee DV", cliente: "Lista de clientes", override: "Marcação manual" };
 
 export const LINE_HEADERS = [
-  "DSP", "Cliente", "Campanha", "Short token", "IO / Campaign DSP", "Line", "Formato",
+  "DSP", "Cliente", "Campanha", "Short token", "IO / Campaign DSP", "Line", "Tática", "Formato",
   "ABS", "Motivo ABS", "Survey", "Primeiro dia", "Último dia",
   "Impressões", "Mensuráveis", "Visíveis", "Cliques", "Completions visíveis",
   "Custo (R$)", "Fee DV (R$)", "eCPM", "vCPM", "CPCV",
@@ -32,6 +33,7 @@ export const LINE_HEADERS = [
 export function lineRowAoA(l) {
   return [
     dspLabel(l.s), l.client, l.campaign, l.token === "__none__" ? "" : l.token, l.io, l.name,
+    tacticLabel(l.tactic || "none"),
     l.m === "VIDEO" ? "Vídeo" : l.m === "DISPLAY" ? "Display" : "Outro",
     l.abs ? "Sim" : "Não", REASON[l.reason] || "", l.sv ? "Sim" : "Não", l.first || "", l.last || "",
     cell(l.imp, NUM_INT), cell(l.meas, NUM_INT), cell(l.view, NUM_INT), cell(l.clk, NUM_INT),
@@ -72,7 +74,7 @@ export async function downloadDspAnalyticsXlsx({ lines, cards, from, to }) {
   const sorted = [...lines].sort((a, b) => b.cost - a.cost);
   utils.book_append_sheet(
     wb,
-    sheet(LINE_HEADERS, sorted.map(lineRowAoA), [10, 18, 28, 10, 26, 60, 8, 6, 16, 7, 11, 11, ...LINE_HEADERS.slice(12).map(() => 12)]),
+    sheet(LINE_HEADERS, sorted.map(lineRowAoA), [10, 18, 28, 10, 26, 60, 20, 8, 6, 16, 7, 11, 11, ...LINE_HEADERS.slice(13).map(() => 12)]),
     "Lines",
   );
   writeFile(wb, `saude-dsps_${from}_${to}.xlsx`);
