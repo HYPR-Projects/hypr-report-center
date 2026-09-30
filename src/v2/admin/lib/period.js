@@ -33,6 +33,20 @@ export const PERIOD_PRESETS = [
   { id: "custom",     label: "Personalizado", shortLabel: "Custom"   },
 ];
 
+// Presets do Analytics › Saúde das DSPs: acompanhamento mês a mês pede
+// janelas maiores (mês corrente, 6 e 12 meses). Lista à parte pra não mudar
+// as pills do Top Performers/Diagnóstico.
+export const ANALYTICS_PERIOD_PRESETS = [
+  { id: "7d",         label: "Últimos 7 dias",   shortLabel: "7d"          },
+  { id: "30d",        label: "Últimos 30 dias",  shortLabel: "30d"         },
+  { id: "this_month", label: "Mês atual",        shortLabel: "Mês atual"   },
+  { id: "last_month", label: "Mês passado",      shortLabel: "Mês passado" },
+  { id: "90d",        label: "Últimos 90 dias",  shortLabel: "90d"         },
+  { id: "6m",         label: "Últimos 6 meses",  shortLabel: "6m"          },
+  { id: "12m",        label: "Últimos 12 meses", shortLabel: "12m"         },
+  { id: "custom",     label: "Personalizado",    shortLabel: "Custom"      },
+];
+
 /**
  * Resolve preset → { from, to } em ISO local. Retorna { from: null, to: null }
  * pro preset "now" (modo snapshot atual, sem fetch). Pra "custom", devolve
@@ -45,6 +59,14 @@ export function resolvePeriod(preset, custom = {}) {
   if (preset === "7d")  return { from: toLocalISO(addDays(today, -6)),  to: toLocalISO(today) };
   if (preset === "30d") return { from: toLocalISO(addDays(today, -29)), to: toLocalISO(today) };
   if (preset === "90d") return { from: toLocalISO(addDays(today, -89)), to: toLocalISO(today) };
+  if (preset === "this_month") {
+    return { from: toLocalISO(new Date(today.getFullYear(), today.getMonth(), 1)), to: toLocalISO(today) };
+  }
+  // 6m/12m começam no dia 1º: o gráfico mensal não abre com um mês picado.
+  if (preset === "6m" || preset === "12m") {
+    const back = preset === "6m" ? 5 : 11;
+    return { from: toLocalISO(new Date(today.getFullYear(), today.getMonth() - back, 1)), to: toLocalISO(today) };
+  }
   if (preset === "last_month") {
     const firstOfThisMonth = new Date(today.getFullYear(), today.getMonth(), 1);
     const lastOfPrev       = addDays(firstOfThisMonth, -1);
@@ -60,7 +82,8 @@ export function resolvePeriod(preset, custom = {}) {
  * presets fixos usa o `label`; pra "custom" reflete o range escolhido.
  */
 export function formatPeriodLabel(preset, from, to) {
-  const p = PERIOD_PRESETS.find((x) => x.id === preset);
+  const p = PERIOD_PRESETS.find((x) => x.id === preset)
+    || ANALYTICS_PERIOD_PRESETS.find((x) => x.id === preset);
   if (!p) return "";
   if (preset !== "custom") return p.label;
   if (!from || !to) return "Personalizado";

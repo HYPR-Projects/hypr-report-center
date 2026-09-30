@@ -20,6 +20,7 @@
 //   /admin/reports/:slug   → CampaignMenuV2 na view correspondente
 //   /admin/pmp/:slug       → PmpDealsPage na view correspondente
 //   /admin/dv/:slug        → DoubleVerifyPage (KQIs do Pinnacle)
+//   /admin/analytics/:slug → DspAnalyticsPage (Saúde das DSPs)
 //   /admin/client/:slug    → ClientDetailPage (drilldown, sem view interna)
 //
 // Rotas legadas continuam válidas e são normalizadas por `parseAdminPath`:
@@ -34,6 +35,7 @@ import {
 export const SECTION_REPORTS = "reports";
 export const SECTION_PMP     = "pmp";
 export const SECTION_DV      = "dv";
+export const SECTION_ANALYTICS = "analytics";
 export const SECTION_CLIENT  = "client";
 
 // ── Views de Reports ─────────────────────────────────────────────────────
@@ -67,9 +69,18 @@ export const DV_VIEWS = [
   { layout: "quality", slug: "qualidade", label: "Qualidade de mídia", icon: ShieldIcon, wide: true },
 ];
 
+// ── Views de Analytics ───────────────────────────────────────────────────
+// Leituras transversais (todas as campanhas, recortadas por DSP/formato/ABS),
+// não o acompanhamento campanha a campanha de Reports. Nasce com a Saúde das
+// DSPs; outras análises do mesmo tipo entram aqui.
+export const ANALYTICS_VIEWS = [
+  { layout: "dsps", slug: "dsps", label: "Saúde das DSPs", icon: ChartIcon, wide: true },
+];
+
 export const NAV_GROUPS = [
   { id: SECTION_REPORTS, label: "Reports",      base: "/admin/reports", views: REPORT_VIEWS },
   { id: SECTION_PMP,     label: "PMP Deals",    base: "/admin/pmp",     views: PMP_VIEWS    },
+  { id: SECTION_ANALYTICS, label: "Analytics",  base: "/admin/analytics", views: ANALYTICS_VIEWS },
   { id: SECTION_DV,      label: "DoubleVerify", base: "/admin/dv",      views: DV_VIEWS     },
 ];
 
@@ -79,6 +90,7 @@ export const DEFAULT_VIEW = {
   [SECTION_REPORTS]: "month",
   [SECTION_PMP]:     "list",
   [SECTION_DV]:      "quality",
+  [SECTION_ANALYTICS]: "dsps",
 };
 
 // ── localStorage ─────────────────────────────────────────────────────────
@@ -90,11 +102,13 @@ export const DEFAULT_VIEW = {
 const LS_REPORTS_VIEW = "hypr.admin.layout";
 const LS_PMP_VIEW     = "hypr.admin.pmpLayout";
 const LS_DV_VIEW      = "hypr.admin.dvLayout";
+const LS_ANALYTICS_VIEW = "hypr.admin.analyticsLayout";
 
 const LS_KEY_BY_SECTION = {
   [SECTION_REPORTS]: LS_REPORTS_VIEW,
   [SECTION_PMP]:     LS_PMP_VIEW,
   [SECTION_DV]:      LS_DV_VIEW,
+  [SECTION_ANALYTICS]: LS_ANALYTICS_VIEW,
 };
 
 function groupOf(section) {
@@ -181,6 +195,9 @@ export function parseAdminPath(pathname) {
 
   const dvMatch = path.match(/^\/admin\/dv(?:\/([a-z0-9-]+))?$/i);
   if (dvMatch) return sectionResult(SECTION_DV, dvMatch[1]);
+
+  const analyticsMatch = path.match(/^\/admin\/analytics(?:\/([a-z0-9-]+))?$/i);
+  if (analyticsMatch) return sectionResult(SECTION_ANALYTICS, analyticsMatch[1]);
 
   return null;
 }

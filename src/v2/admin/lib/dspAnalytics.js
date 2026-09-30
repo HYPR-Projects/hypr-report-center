@@ -1,0 +1,505 @@
+// src/v2/admin/lib/dspAnalytics.js
+//
+// Pipeline de dados do Analytics › Saúde das DSPs. Funções puras: a página
+// só desenha. Ver dspAnalytics.test.js.
+//
+// Régua de consistência (a mesma do Analytics do PMP): os filtros reduzem o
+// CONJUNTO de linhas; KPIs, cards por DSP, custo do ABS, matriz formato × DSP
+// e tabela de lines somam as MESMAS linhas sobreviventes, então tudo reage
+// junto e nenhum número de um bloco contradiz o de outro.
+//
+// Três blocos do payload (backend/dsp_analytics.py):
+//   series — dia × DSP × formato × ABS × survey × campanha × IO → gráfico;
+//   prev   — o período anterior sem data                          → variações;
+//   lines  — lines agregadas no período                           → todo o resto.
+// `lines` e `series` saem da mesma base no backend, então a soma de um bate
+// com a do outro para qualquer recorte que não seja por line.
+//
+// Fórmulas (padrão HYPR, iguais às do report e das réguas do admin):
+//   CTR          = cliques ÷ impressões visíveis
+//   VTR          = completions visíveis ÷ impressões visíveis (só vídeo)
+//   Viewability  = visíveis ÷ mensuráveis (MRC)
+//   Mensuração   = mensuráveis ÷ impressões
+//   eCPM         = custo ÷ impressões × 1000
+//   vCPM         = custo ÷ visíveis × 1000
+//   CPCV         = custo de vídeo ÷ completions visíveis
+// O custo é o que a DSP cobrou, com todas as fees, em BRL (DV360: Total Media
+// Cost; Yahoo: Advertiser Spending).
+
+import { ECPM_TIERS } from "./format.js";
+import { sortSources } from "../../../shared/dspMeta.js";
+
+export const METRIC_KEYS = ["imp", "meas", "view", "clk", "cost", "vst", "v100", "vcomp", "fee"];
+export const NO_TOKEN = "__none__";
+
+// ── Decodificação ─────────────────────────────────────────────────────────
+
+function decodeRows(rows, cols, ctx, withDate) {
+  const idx = Object.fromEntries(cols.map((c, i) => [c, i]));
+  return (rows || []).map((r) => {
+    const tok = ctx.tokens[r[idx.tk]] || {};
+    const out = {
+      s: r[idx.s],
+      m: r[idx.m],
+      abs: r[idx.abs] === 1,
+      sv: r[idx.sv] === 1,
+      token: tok.t || NO_TOKEN,
+      client: tok.client || "Sem cliente",
+      campaign: tok.campaign || tok.t || "Sem campanha",
+      io: ctx.ios[r[idx.io]] ?? "",
+    };
+    if (withDate) out.d = ctx.dates[r[idx.d]];
+    for (const k of METRIC_KEYS) out[k] = Number(r[idx[k]]) || 0;
+    if (idx.key != null) {
+      out.key = r[idx.key];
+      out.reason = r[idx.reason] || null;
+      out.name = r[idx.name] || "";
+      out.tag = r[idx.tag] || null;
+      out.first = r[idx.first] || null;
+      out.last = r[idx.last] || null;
+    }
+    return out;
+  });
+}
+
+/** Payload do backend → objetos. Tolerante a bloco ausente. */
+export function decodePayload(p) {
+  if (!p) return null;
+  const ctx = { tokens: p.tokens || [], ios: p.ios || [], dates: p.dates || [] };
+  const series = decodeRows(p.series, p.series_cols || [], ctx, true);
+  const prev = decodeRows(p.prev, p.prev_cols || [], ctx, false);
+  const lines = decodeRows(p.lines, p.line_cols || [], ctx, false);
+  const sources = sortSources(p.sources || [...new Set(lines.map((l) => l.s))]);
+  return {
+    from: p.from, to: p.to, prevFrom: p.prev_from, prevTo: p.prev_to,
+    dates: ctx.dates, sources, series, prev, lines,
+    absClients: p.abs_clients || [],
+    landings: p.landings || [],
+    generatedAt: p.generated_at || null,
+  };
+}
+
+/** Série diária de lines (endpoint dsp_analytics_line_daily) → objetos. */
+export function decodeLineDaily(p) {
+  if (!p) return [];
+  const cols = p.cols || [];
+  const idx = Object.fromEntries(cols.map((c, i) => [c, i]));
+  return (p.rows || []).map((r) => {
+    const out = { key: r[idx.key], d: (p.dates || [])[r[idx.d]] };
+    for (const k of METRIC_KEYS) out[k] = Number(r[idx[k]]) || 0;
+    return out;
+  });
+}
+
+// ── Filtros ───────────────────────────────────────────────────────────────
+
+export const DEFAULT_FILTERS = Object.freeze({
+  sources: [],          // [] = todas
+  media: "all",         // all | DISPLAY | VIDEO
+  abs: "all",           // all | abs | noabs
+  includeSurvey: true,  // custo de survey é custo real da DSP; a tela deixa tirar
+  clients: [],
+  campaigns: [],        // short_tokens (NO_TOKEN = entrega sem campanha)
+  ios: [],
+  lines: [],            // chaves SOURCE|line_id|survey
+});
+
+/**
+ * A linha passa no filtro? `skip` ignora dimensões — usado no custo do ABS
+ * (compara com × sem, então ignora o filtro de ABS) e na cascata de opções.
+ */
+export function matchRow(r, f, skip = {}) {
+  if (!skip.sources && f.sources.length && !f.sources.includes(r.s)) return false;
+  if (!skip.media && f.media !== "all" && r.m !== f.media) return false;
+  if (!skip.abs && f.abs === "abs" && !r.abs) return false;
+  if (!skip.abs && f.abs === "noabs" && r.abs) return false;
+  if (!f.includeSurvey && r.sv) return false;
+  if (!skip.clients && f.clients.length && !f.clients.includes(r.client)) return false;
+  if (!skip.campaigns && f.campaigns.length && !f.campaigns.includes(r.token)) return false;
+  if (!skip.ios && f.ios.length && !f.ios.includes(r.io)) return false;
+  if (!skip.lines && f.lines.length && r.key != null && !f.lines.includes(r.key)) return false;
+  return true;
+}
+
+export function hasLineFilter(f) {
+  return f.lines.length > 0;
+}
+
+export function filterRows(rows, f, skip) {
+  return rows.filter((r) => matchRow(r, f, skip));
+}
+
+// ── Agregação ─────────────────────────────────────────────────────────────
+
+export function emptyAgg() {
+  const a = { vview: 0, vcost: 0, vimp: 0, dview: 0, dclk: 0 };
+  for (const k of METRIC_KEYS) a[k] = 0;
+  return a;
+}
+
+export function addInto(a, r) {
+  for (const k of METRIC_KEYS) a[k] += r[k] || 0;
+  if (r.m === "VIDEO") {
+    a.vview += r.view || 0;
+    a.vcost += r.cost || 0;
+    a.vimp += r.imp || 0;
+  }
+  return a;
+}
+
+const ratio = (num, den, mult = 1) => (den > 0 ? (num / den) * mult : null);
+
+/** Métricas derivadas de um agregado. null = sem denominador. */
+export function derive(a) {
+  return {
+    ...a,
+    measRate: ratio(a.meas, a.imp, 100),
+    viewability: ratio(a.view, a.meas, 100),
+    viewShare: ratio(a.view, a.imp, 100),
+    ctr: ratio(a.clk, a.view, 100),
+    vtr: ratio(a.vcomp, a.vview, 100),
+    ecpm: ratio(a.cost, a.imp, 1000),
+    vcpm: ratio(a.cost, a.view, 1000),
+    cpcv: ratio(a.vcost, a.vcomp),
+    feeCpm: ratio(a.fee, a.imp, 1000),
+  };
+}
+
+export function aggregate(rows) {
+  const a = emptyAgg();
+  for (const r of rows) addInto(a, r);
+  return derive(a);
+}
+
+export function groupAggregate(rows, keyFn) {
+  const map = new Map();
+  for (const r of rows) {
+    const k = keyFn(r);
+    let a = map.get(k);
+    if (!a) { a = emptyAgg(); map.set(k, a); }
+    addInto(a, r);
+  }
+  const out = new Map();
+  for (const [k, a] of map) out.set(k, derive(a));
+  return out;
+}
+
+// ── Métricas exibidas ─────────────────────────────────────────────────────
+// kind: count | money | rate (pp) — decide o formato e o tipo de variação.
+// better: up | down | null (neutro: volume não é bom nem ruim por si).
+export const METRICS = {
+  imp:         { label: "Impressões",        kind: "count", better: null },
+  meas:        { label: "Mensuráveis",       kind: "count", better: null },
+  view:        { label: "Visíveis",          kind: "count", better: null },
+  clk:         { label: "Cliques",           kind: "count", better: null },
+  vcomp:       { label: "Completions",       kind: "count", better: null },
+  cost:        { label: "Custo total",       kind: "money", better: null },
+  ecpm:        { label: "eCPM",              kind: "money", better: "down", digits: 2 },
+  vcpm:        { label: "vCPM",              kind: "money", better: "down", digits: 2 },
+  cpcv:        { label: "CPCV",              kind: "money", better: "down", digits: 3 },
+  ctr:         { label: "CTR",               kind: "rate",  better: "up",   digits: 2 },
+  vtr:         { label: "VTR",               kind: "rate",  better: "up",   digits: 1 },
+  viewability: { label: "Viewability",       kind: "rate",  better: "up",   digits: 1 },
+  measRate:    { label: "Taxa de mensuração", kind: "rate", better: "up",   digits: 1 },
+};
+
+/**
+ * Variação atual × anterior. Volume e dinheiro: % relativa. Taxas: pontos
+ * percentuais. null quando não há base de comparação.
+ */
+export function delta(cur, prev, key) {
+  const def = METRICS[key];
+  const c = cur?.[key];
+  const p = prev?.[key];
+  if (c == null || p == null || !def) return null;
+  if (def.kind === "rate") return { kind: "pp", value: c - p };
+  if (p === 0) return null;
+  return { kind: "pct", value: ((c - p) / p) * 100 };
+}
+
+// ── Série temporal ────────────────────────────────────────────────────────
+
+const pad = (n) => String(n).padStart(2, "0");
+
+/** Segunda-feira da semana (ISO) de um "YYYY-MM-DD", em UTC pra não escorregar. */
+export function weekStart(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const dow = (dt.getUTCDay() + 6) % 7; // 0 = segunda
+  dt.setUTCDate(dt.getUTCDate() - dow);
+  return `${dt.getUTCFullYear()}-${pad(dt.getUTCMonth() + 1)}-${pad(dt.getUTCDate())}`;
+}
+
+export function bucketOf(iso, granularity) {
+  if (granularity === "month") return iso.slice(0, 7);
+  if (granularity === "week") return weekStart(iso);
+  return iso;
+}
+
+/** Granularidade padrão pro tamanho da janela. */
+export function autoGranularity(from, to) {
+  if (!from || !to) return "day";
+  const days = Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1;
+  if (days > 120) return "month";
+  if (days > 45) return "week";
+  return "day";
+}
+
+/**
+ * Buckets ordenados com o agregado total e por DSP:
+ *   [{ key, total: derived, bySource: { DV360: derived, ... } }]
+ * `dates` garante bucket pra dia sem entrega (linha cai a zero, não some).
+ */
+export function buildTimeseries(rows, dates, granularity) {
+  const keys = [...new Set((dates || []).map((d) => bucketOf(d, granularity)))];
+  const total = new Map();
+  const bySource = new Map();
+  for (const r of rows) {
+    const k = bucketOf(r.d, granularity);
+    if (!total.has(k)) total.set(k, emptyAgg());
+    addInto(total.get(k), r);
+    const sk = `${k}|${r.s}`;
+    if (!bySource.has(sk)) bySource.set(sk, emptyAgg());
+    addInto(bySource.get(sk), r);
+    if (!keys.includes(k)) keys.push(k);
+  }
+  keys.sort();
+  const sources = [...new Set(rows.map((r) => r.s))];
+  // Dias do período em cada bucket: semana/mês cortado pela janela vira
+  // "parcial" — soma de volume dele não é comparável com a dos vizinhos.
+  const daysIn = new Map();
+  for (const d of dates || []) {
+    const k = bucketOf(d, granularity);
+    daysIn.set(k, (daysIn.get(k) || 0) + 1);
+  }
+  return keys.map((k) => {
+    const src = {};
+    for (const s of sources) {
+      const a = bySource.get(`${k}|${s}`);
+      src[s] = a ? derive(a) : null;
+    }
+    const days = daysIn.get(k) || 0;
+    const full = granularity === "day" ? 1 : granularity === "week" ? 7 : daysInMonth(k);
+    return {
+      key: k, total: derive(total.get(k) || emptyAgg()), bySource: src,
+      days, partial: granularity !== "day" && days > 0 && days < full,
+    };
+  });
+}
+
+function daysInMonth(ym) {
+  const [y, m] = ym.split("-").map(Number);
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+// ── Réguas e red flags ────────────────────────────────────────────────────
+// Réguas do admin (format.js / CampaignLines): quem muda uma muda a outra.
+export const MIN_LINE_IMPS = 5000;
+export const CTR_RED = { plain: 0.5, abs: 0.3 };      // ctrColorClass: vermelho abaixo
+export const CTR_GOOD = { plain: 0.7, abs: 0.5 };
+export const VTR_RED = 70;                            // vtrColorClass
+export const VTR_GOOD = 80;
+export const VIEWABILITY_RED = 60;                    // CampaignLines (MRC)
+export const MEAS_RED = 70;                           // nova: abaixo disso CTR/VTR inflam
+
+export function ecpmKind(media, abs) {
+  if (media === "VIDEO") return "video";
+  return abs ? "displayAbs" : "display";
+}
+
+export const FLAG_DEFS = {
+  ecpm_high:     { label: "eCPM alto",        hint: "Acima da régua de eCPM do admin (display R$ 0,80 · display ABS R$ 1,80 · vídeo R$ 3,50)" },
+  ctr_low:       { label: "CTR baixo",        hint: "Display abaixo de 0,50% (0,30% com ABS)" },
+  vtr_low:       { label: "VTR baixo",        hint: "Vídeo abaixo de 70%" },
+  view_low:      { label: "Viewability baixa", hint: "Abaixo de 60% das mensuráveis" },
+  meas_low:      { label: "Mensuração baixa", hint: "Menos de 70% das impressões mensuradas: CTR e VTR sobre visíveis ficam inflados" },
+  abs_divergent: { label: "ABS divergente",   hint: "Pagou fee pré-bid da DV numa line nomeada NO-ABS" },
+};
+
+/** Flags de UMA line já derivada. Line sem volume não é avaliada. */
+export function lineFlags(l) {
+  const flags = [];
+  if (l.tag === "NO-ABS" && l.fee > 0) flags.push("abs_divergent");
+  if ((l.imp || 0) < MIN_LINE_IMPS) return flags;
+  const tier = ECPM_TIERS[ecpmKind(l.m, l.abs)];
+  if (l.ecpm != null && tier && l.ecpm >= tier.warning) flags.push("ecpm_high");
+  if (l.m === "DISPLAY" && l.ctr != null && l.ctr < (l.abs ? CTR_RED.abs : CTR_RED.plain)) flags.push("ctr_low");
+  if (l.m === "VIDEO" && l.vtr != null && l.vtr < VTR_RED) flags.push("vtr_low");
+  if (l.viewability != null && l.viewability < VIEWABILITY_RED) flags.push("view_low");
+  if (l.measRate != null && l.measRate < MEAS_RED) flags.push("meas_low");
+  return flags;
+}
+
+/**
+ * Índice de engajamento: métrica ÷ régua "verde" da mídia (CTR em display,
+ * VTR em vídeo). 1,0 = no alvo. Deixa comparar display com vídeo no mesmo
+ * ranking sem somar maçã com laranja.
+ */
+export function engagementIndex(l) {
+  if (l.m === "VIDEO") return l.vtr != null ? l.vtr / VTR_GOOD : null;
+  if (l.ctr == null) return null;
+  return l.ctr / (l.abs ? CTR_GOOD.abs : CTR_GOOD.plain);
+}
+
+/** Lines derivadas, com flags e índice de engajamento. */
+export function enrichLines(lines) {
+  return lines.map((l) => {
+    const d = derive(addInto(emptyAgg(), l));
+    const out = { ...l, ...d };
+    out.flags = lineFlags(out);
+    out.engagement = engagementIndex(out);
+    return out;
+  });
+}
+
+export const LINE_TABS = {
+  volume:     { label: "Mais entregam",      sort: (a, b) => b.imp - a.imp },
+  cost:       { label: "Maior custo",        sort: (a, b) => b.cost - a.cost },
+  engagement: { label: "Melhor engajamento", sort: (a, b) => (b.engagement ?? -1) - (a.engagement ?? -1) },
+  flags:      { label: "Red flags",          sort: (a, b) => b.cost - a.cost },
+};
+
+export function rankLines(enriched, tab) {
+  const def = LINE_TABS[tab] || LINE_TABS.volume;
+  let rows = enriched;
+  if (tab === "engagement") rows = rows.filter((l) => l.imp >= MIN_LINE_IMPS && l.engagement != null);
+  if (tab === "flags") rows = rows.filter((l) => l.flags.length > 0);
+  return [...rows].sort(def.sort);
+}
+
+// ── Blocos da página ──────────────────────────────────────────────────────
+
+/** Cards por DSP: métricas + share de impressões e custo. */
+export function buildScorecards(lines, sources) {
+  const by = groupAggregate(lines, (l) => l.s);
+  const total = aggregate(lines);
+  return sortSources(sources.filter((s) => by.has(s))).map((s) => {
+    const m = by.get(s);
+    return {
+      source: s,
+      metrics: m,
+      shareImp: ratio(m.imp, total.imp, 100),
+      shareCost: ratio(m.cost, total.cost, 100),
+    };
+  });
+}
+
+/**
+ * Custo do ABS: por DSP × formato, com vs sem ABS. Ignora o filtro de ABS
+ * (a pergunta é a diferença) e respeita todos os outros.
+ */
+export function buildAbsCost(lines) {
+  const by = groupAggregate(lines, (l) => `${l.s}|${l.m}|${l.abs ? 1 : 0}`);
+  const out = [];
+  const pairs = new Set(lines.filter((l) => l.m !== "OUTRO").map((l) => `${l.s}|${l.m}`));
+  for (const p of pairs) {
+    const [s, m] = p.split("|");
+    const withAbs = by.get(`${p}|1`) || null;
+    const without = by.get(`${p}|0`) || null;
+    const d = withAbs?.ecpm != null && without?.ecpm != null ? withAbs.ecpm - without.ecpm : null;
+    out.push({ source: s, media: m, withAbs, without, ecpmDelta: d });
+  }
+  const order = sortSources([...new Set(out.map((r) => r.source))]);
+  return out.sort((a, b) =>
+    order.indexOf(a.source) - order.indexOf(b.source) || a.media.localeCompare(b.media));
+}
+
+/** Matriz formato × DSP. */
+export function buildFormatMatrix(lines) {
+  const by = groupAggregate(lines.filter((l) => l.m !== "OUTRO"), (l) => `${l.s}|${l.m}`);
+  const sources = sortSources([...new Set(lines.map((l) => l.s))]);
+  return sources.map((s) => ({
+    source: s,
+    DISPLAY: by.get(`${s}|DISPLAY`) || null,
+    VIDEO: by.get(`${s}|VIDEO`) || null,
+  }));
+}
+
+/** Sparkline de impressões por DSP (dia a dia da série filtrada). */
+export function sparkBySource(seriesRows, dates) {
+  const map = new Map();
+  for (const r of seriesRows) {
+    if (!map.has(r.s)) map.set(r.s, new Map());
+    const m = map.get(r.s);
+    m.set(r.d, (m.get(r.d) || 0) + r.imp);
+  }
+  const out = {};
+  for (const [s, m] of map) out[s] = (dates || []).map((d) => m.get(d) || 0);
+  return out;
+}
+
+/**
+ * Qualidade do dado: entrega sem campanha, divergência de ABS, mensuração
+ * baixa por DSP e frescor (aterrissagem vs ontem).
+ */
+export function buildDataQuality(lines, landings, to) {
+  const noToken = lines.filter((l) => l.token === NO_TOKEN);
+  const unattributed = aggregate(noToken);
+  const total = aggregate(lines);
+  const divergent = lines.filter((l) => l.tag === "NO-ABS" && l.fee > 0);
+  const nameVsList = lines.filter((l) => l.tag === "NO-ABS" && l.reason === "cliente");
+  const bySource = groupAggregate(lines, (l) => l.s);
+  const lowMeasurement = [...bySource]
+    .filter(([, m]) => m.measRate != null && m.measRate < MEAS_RED && m.imp > 0)
+    .map(([s, m]) => ({ source: s, measRate: m.measRate }));
+  const freshness = (landings || []).map((l) => ({
+    source: String(l.source || "").toUpperCase(),
+    maxDate: l.max_date || null,
+    daysBehind: l.max_date && to
+      ? Math.round((Date.parse(to) - Date.parse(l.max_date)) / 86_400_000)
+      : null,
+  }));
+  return {
+    unattributed: { ...unattributed, shareCost: ratio(unattributed.cost, total.cost, 100) },
+    divergent: { count: divergent.length, fee: divergent.reduce((a, l) => a + l.fee, 0) },
+    nameVsList: { count: nameVsList.length },
+    lowMeasurement,
+    freshness,
+  };
+}
+
+// ── Opções dos filtros (cascata) ──────────────────────────────────────────
+
+function optionList(rows, keyFn, labelFn, subFn) {
+  const map = new Map();
+  for (const r of rows) {
+    const k = keyFn(r);
+    const cur = map.get(k) || { id: k, label: labelFn(r), sub: subFn?.(r), volume: 0 };
+    cur.volume += r.imp;
+    map.set(k, cur);
+  }
+  return [...map.values()].sort((a, b) => b.volume - a.volume);
+}
+
+/**
+ * Cliente → Campanha → IO → Line. Cada nível respeita os de cima e os
+ * filtros de DSP/formato/ABS/survey, nunca o próprio (senão a seleção
+ * esconderia as irmãs).
+ */
+export function buildFilterOptions(lines, f) {
+  const base = { clients: true, campaigns: true, ios: true, lines: true };
+  const lvl1 = filterRows(lines, f, base);
+  const lvl2 = filterRows(lines, f, { campaigns: true, ios: true, lines: true });
+  const lvl3 = filterRows(lines, f, { ios: true, lines: true });
+  const lvl4 = filterRows(lines, f, { lines: true });
+  return {
+    clients: optionList(lvl1, (r) => r.client, (r) => r.client),
+    campaigns: optionList(lvl2, (r) => r.token, (r) => r.campaign, (r) => (r.token === NO_TOKEN ? "sem short_token" : `${r.client} · ${r.token}`)),
+    ios: optionList(lvl3, (r) => r.io, (r) => r.io || "(sem IO)", (r) => r.s),
+    lines: optionList(lvl4, (r) => r.key, (r) => r.name || r.key, (r) => `${r.s} · ${r.m === "VIDEO" ? "Vídeo" : "Display"}${r.sv ? " · survey" : ""}`),
+  };
+}
+
+/** Remove da seleção o que não existe mais no payload novo (troca de período). */
+export function pruneFilters(f, lines) {
+  const has = (key) => new Set(lines.map((l) => l[key]));
+  const clients = has("client"); const tokens = has("token");
+  const ios = has("io"); const keys = has("key");
+  return {
+    ...f,
+    clients: f.clients.filter((x) => clients.has(x)),
+    campaigns: f.campaigns.filter((x) => tokens.has(x)),
+    ios: f.ios.filter((x) => ios.has(x)),
+    lines: f.lines.filter((x) => keys.has(x)),
+  };
+}

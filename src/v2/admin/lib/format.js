@@ -150,7 +150,7 @@ export function vtrColorClass(vtr) {
  * `kind`: "display" (default) | "displayAbs" | "video"
  * Sem dado → bg-surface neutro (não polui visualmente).
  */
-const ECPM_TIERS = {
+export const ECPM_TIERS = {
   display:    { healthy: 0.70, warning: 0.80 },
   displayAbs: { healthy: 1.50, warning: 1.80 },
   video:      { healthy: 3.00, warning: 3.50 },

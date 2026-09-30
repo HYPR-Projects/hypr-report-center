@@ -2261,6 +2261,52 @@ export async function getDvQuality({ from = null, to = null, refresh = false } =
   return d;
 }
 
+/**
+ * Analytics › Saúde das DSPs. Série diária (dia × DSP × formato × ABS ×
+ * survey × campanha × IO), o período anterior sem data (pras variações) e as
+ * lines agregadas no período — em arrays posicionais (ver `series_cols`,
+ * `prev_cols`, `line_cols`). O front decodifica, filtra e agrega
+ * (src/v2/admin/lib/dspAnalytics.js). `from`/`to` em YYYY-MM-DD (null = 30
+ * dias fechados); `refresh` fura o cache de 10 min do backend.
+ */
+export async function getDspAnalytics({ from = null, to = null, refresh = false } = {}) {
+  const jwt = await getOrIssueAdminJwt();
+  const qs = new URLSearchParams({ action: "dsp_analytics" });
+  if (from) qs.set("from", from);
+  if (to) qs.set("to", to);
+  if (refresh) qs.set("refresh", "1");
+  const r = await fetch(`${API_URL}?${qs}`, {
+    headers: adminAuthHeaders(jwt),
+    signal: timeoutSignal(READ_TIMEOUT_SLOW_MS),
+  });
+  if (r.status === 401 || r.status === 403) throw adminSessionLost("getDspAnalytics", jwt);
+  const d = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  if (!Array.isArray(d?.series) || !Array.isArray(d?.lines)) {
+    throw new Error("malformed response: series missing");
+  }
+  return d;
+}
+
+/**
+ * Série diária das lines escolhidas no filtro de Line (o payload principal
+ * não tem line × dia). `keys` = chaves `SOURCE|line_id|survey` do payload.
+ */
+export async function getDspAnalyticsLineDaily({ keys, from = null, to = null }) {
+  const jwt = await getOrIssueAdminJwt();
+  const qs = new URLSearchParams({ action: "dsp_analytics_line_daily", keys: keys.join(",") });
+  if (from) qs.set("from", from);
+  if (to) qs.set("to", to);
+  const r = await fetch(`${API_URL}?${qs}`, {
+    headers: adminAuthHeaders(jwt),
+    signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
+  });
+  if (r.status === 401 || r.status === 403) throw adminSessionLost("getDspAnalyticsLineDaily", jwt);
+  const d = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  return d;
+}
+
 // ── Quality (aba do report, DoubleVerify por campanha) ─────────────────────
 //
 // Público como o resto do report (o short_token é o ticket; só saem as
