@@ -9,6 +9,8 @@
 // vai entregar do contrato"):
 //
 //   • Verificar Under    → projeção <  100%   (ritmo recente não bate o contrato)
+//                          — com mais de 7 dias de voo, só abaixo de 90%
+//   • Atenção Under      → projeção entre 90% e 100% com mais de 7 dias de voo
 //   • Ok                 → projeção entre 100% e 125%  (até 25% over)
 //   • Over               → projeção entre 125% e 150%  (25–50% over)
 //   • Possível Super Over → projeção >  150%   (>50% over)
@@ -37,6 +39,9 @@ const TODAY = () => new Date();
 // ────────────────────────────────────────────────────────────────────────
 export const STATUS = {
   UNDER:      "under",
+  // Faixa 90–100% longe do fim do voo: fica visível, mas não é Under. Ver
+  // classifyProjectedStatus.
+  WATCH:      "watch",
   OK:         "ok",
   OVER:       "over",
   SUPER_OVER: "super_over",
@@ -54,6 +59,7 @@ export const STATUS_ORDER = [
   STATUS.SUPER_OVER,
   STATUS.OVER,
   STATUS.UNDER,
+  STATUS.WATCH,
   STATUS.OK,
   STATUS.TECH_HIGH,
   STATUS.TECH_AT_RISK,
@@ -84,12 +90,22 @@ export const STATUS_META = {
   [STATUS.UNDER]: {
     label:     "Verificar Under",
     shortLabel: "Under",
-    description: "Ritmo diário atual não supre o volume contratado",
+    description: "Ritmo recente não fecha o contrato (projeção < 100% na última semana do voo, < 90% antes disso)",
     tone:      "danger",
     textClass: "text-danger",
     bgClass:   "bg-danger/8",
     borderClass: "border-danger/40",
     dotClass:  "bg-danger",
+  },
+  [STATUS.WATCH]: {
+    label:     "Atenção Under",
+    shortLabel: "Atenção",
+    description: "Projeção entre 90% e 100% com mais de 7 dias de voo — a entrega costuma acelerar no fim; acompanhar",
+    tone:      "warning",
+    textClass: "text-warning",
+    bgClass:   "bg-warning/12",
+    borderClass: "border-warning/40",
+    dotClass:  "bg-warning",
   },
   [STATUS.OK]: {
     label:     "Ok",
@@ -169,6 +185,35 @@ export function classifyStatus(pacing) {
   if (pacing < 125) return STATUS.OK;
   if (pacing < 150) return STATUS.OVER;
   return STATUS.SUPER_OVER;
+}
+
+// Régua de Under por horizonte. Longe do fim do voo, projeção entre 90% e
+// 100% quase sempre fecha no alvo: a entrega acelera no fim (catch-up do
+// pacing do DSP e ajuste da operação). Backtest set/2026, ~900 voos
+// encerrados abr–set, projeção max(7d, D-1):
+//   • 8–14 dias pro fim: 174 projeções na faixa 90–100%, só 6 fecharam Under
+//   • 15–21 dias:        127 na faixa, 1 fechou Under
+//   • 5–7 dias:           78 na faixa, 8 fecharam Under (10%) → mantém 100%
+//   • 3–4 dias:           37 na faixa, 10 fecharam Under (27%) → mantém 100%
+// Então, com mais de UNDER_EARLY_HORIZON_DAYS restantes, a faixa vira
+// "Atenção Under" (visível, filtrável, mas fora do Verificar Under) e o
+// Under só dispara abaixo de UNDER_EARLY_FLOOR.
+export const UNDER_EARLY_HORIZON_DAYS = 7;
+export const UNDER_EARLY_FLOOR = 90;
+
+/**
+ * Status a partir da PROJEÇÃO, considerando quanto falta de voo.
+ * `daysRemaining` = dias que ainda vão entregar (inclui hoje). Sem ele,
+ * cai na régua simples (classifyStatus).
+ */
+export function classifyProjectedStatus(projetadaPct, daysRemaining) {
+  const base = classifyStatus(projetadaPct);
+  if (base !== STATUS.UNDER) return base;
+  if (daysRemaining != null && daysRemaining > UNDER_EARLY_HORIZON_DAYS
+      && projetadaPct >= UNDER_EARLY_FLOOR) {
+    return STATUS.WATCH;
+  }
+  return base;
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -436,7 +481,8 @@ export function deriveMediaMetrics({
     // se Projetada diz 333%, Status diz "Super Over" — não uma
     // classificação baseada num pacing histórico que pode estar
     // desatualizado.
-    status: classifyStatus(projetadaPct),
+    status: classifyProjectedStatus(projetadaPct, daysRemainingProj),
+    diasRestantes: daysRemainingProj,
     pacing: pacing ?? null,                   // pacing histórico (cru) — não usado na UI, fica pra debug
     // colunas da tabela
     totalEntreguePct,
@@ -464,12 +510,13 @@ export function deriveMediaMetrics({
  * independente de em qual mídia tá o problema.
  *
  * Ordem de prioridade (do mais alarmante pro mais saudável):
- *   super_over > over > under > ok
+ *   super_over > over > under > watch > ok
  */
 const STATUS_RANK = {
   [STATUS.SUPER_OVER]: 3,
   [STATUS.OVER]:       2,
   [STATUS.UNDER]:      1,
+  [STATUS.WATCH]:      0.5,
   [STATUS.OK]:         0,
 };
 
@@ -1018,6 +1065,7 @@ export function countByStatus(rows) {
     [STATUS.SUPER_OVER]:   0,
     [STATUS.OVER]:         0,
     [STATUS.UNDER]:        0,
+    [STATUS.WATCH]:        0,
     [STATUS.OK]:           0,
     [STATUS.TECH_HIGH]:    0,
     [STATUS.TECH_AT_RISK]: 0,
@@ -1215,7 +1263,7 @@ export function d1VsFaltaInfo(d1, falta) {
 // decidir se precisa agir.
 //
 // Regras:
-//   • Under + D-1 >= Falta/Dia        → "↗ recuperando"
+//   • Under/Atenção + D-1 >= Falta/Dia → "↗ recuperando"
 //   • Over/Super Over + D-1 < Média   → "↘ desacelerando"
 //   • Caso contrário                   → sem modifier
 //
@@ -1228,7 +1276,8 @@ export function buildVerdict({ status, deliveredD1, minDiariaContratada, mediaDi
   let trendLabel = null;
   let trendTone = null;
 
-  if (status === STATUS.UNDER && deliveredD1 != null && minDiariaContratada != null
+  if ((status === STATUS.UNDER || status === STATUS.WATCH)
+      && deliveredD1 != null && minDiariaContratada != null
       && deliveredD1 >= minDiariaContratada) {
     trendLabel = "↗ recuperando";
     trendTone = "text-success";

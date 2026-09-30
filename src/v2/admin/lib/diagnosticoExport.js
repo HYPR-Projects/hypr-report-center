@@ -26,6 +26,7 @@ const STATUS_LABELS = {
   super_over:   "Possível Super Over",
   over:         "Over",
   under:        "Verificar Under",
+  watch:        "Atenção Under",
   ok:           "Ok",
   tech_high:    "Tech Cost Alto",
   tech_at_risk: "Possível Tech Alto",

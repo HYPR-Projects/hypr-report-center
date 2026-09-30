@@ -25,7 +25,7 @@ import {
 import { Button } from "../../../ui/Button";
 import { cn } from "../../../ui/cn";
 import { getCampaignStatus, ecpmToneClass, localPartFromEmail } from "../lib/format";
-import { STATUS_META, techCostToneClass, formatBrlRow, formatPctRow, formatIntRow } from "../lib/diagnostico";
+import { STATUS_META, classifyProjectedStatus, techCostToneClass, formatBrlRow, formatPctRow, formatIntRow } from "../lib/diagnostico";
 import { enrichCampaign } from "../lib/alerts/derive";
 import { SEVERITY, TARGET_PACING_PCT } from "../lib/alerts/constants";
 import { getCampaignLines } from "../../../lib/api";
@@ -114,13 +114,8 @@ function buildNarrative(alerts) {
 // ────────────────────────────────────────────────────────────────────────
 // Status badge — mesma régua do diagnostico
 // ────────────────────────────────────────────────────────────────────────
-function StatusBadge({ pacing }) {
-  if (pacing == null || !Number.isFinite(pacing)) return null;
-  let status;
-  if (pacing < 100) status = "under";
-  else if (pacing < 125) status = "ok";
-  else if (pacing < 150) status = "over";
-  else status = "super_over";
+function StatusBadge({ pacing, daysRemaining }) {
+  const status = classifyProjectedStatus(pacing, daysRemaining);
   const meta = STATUS_META[status];
   if (!meta) return null;
   return (
@@ -217,7 +212,7 @@ function MediaMetricsGrid({ mediaName, m, hasAbs }) {
         <h4 className="lbl-metric">
           {mediaName}
         </h4>
-        <StatusBadge pacing={m.projected_pacing} />
+        <StatusBadge pacing={m.projected_pacing} daysRemaining={m.days_remaining} />
         {hasAbs && (
           <span className="lbl-section px-1.5 py-0.5 rounded bg-surface-strong border border-border">
             ABS

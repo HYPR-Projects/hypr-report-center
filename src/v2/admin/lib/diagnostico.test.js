@@ -8,7 +8,7 @@
 // dia de hoje.
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import { deriveMediaMetrics, STATUS } from "./diagnostico.js";
+import { deriveMediaMetrics, classifyProjectedStatus, buildVerdict, countByStatus, STATUS } from "./diagnostico.js";
 import { enrichCampaign } from "./alerts/derive.js";
 import { pacingRunway } from "../../../shared/aggregations.js";
 
@@ -104,4 +104,48 @@ test("alertas/drawer projetam o mesmo número da coluna Projetada", () => {
   const m = withClock(() => deriveMediaMetrics(mastercard));
   assert.equal(e.display.days_remaining, 1);
   assert.equal(e.display.projected_pacing.toFixed(3), m.projetadaPct.toFixed(3));
+});
+
+test("régua por horizonte: 90–100% com mais de 7 dias vira Atenção, não Under", () => {
+  assert.equal(classifyProjectedStatus(95, 8), STATUS.WATCH);
+  assert.equal(classifyProjectedStatus(90, 20), STATUS.WATCH);
+  assert.equal(classifyProjectedStatus(89.9, 20), STATUS.UNDER);
+  // Na última semana do voo a faixa volta a ser Under.
+  assert.equal(classifyProjectedStatus(95, 7), STATUS.UNDER);
+  assert.equal(classifyProjectedStatus(99.9, 1), STATUS.UNDER);
+  // Sem horizonte conhecido, régua simples.
+  assert.equal(classifyProjectedStatus(95, null), STATUS.UNDER);
+  // Faixas de cima não mudam.
+  assert.equal(classifyProjectedStatus(110, 20), STATUS.OK);
+  assert.equal(classifyProjectedStatus(130, 20), STATUS.OVER);
+  assert.equal(classifyProjectedStatus(160, 20), STATUS.SUPER_OVER);
+  assert.equal(classifyProjectedStatus(null, 20), null);
+});
+
+test("deriveMediaMetrics aplica a régua com os dias restantes do voo", () => {
+  // Voo 16/09–15/10 visto em 30/09: 14 dias fechados, 16 restantes.
+  const base = {
+    negotiatedTotal:  30_000,
+    startDate:        "2026-09-16",
+    actualStartDate:  "2026-09-16",
+    endDate:          "2026-10-15",
+    delivered:        12_000,  // 14 dias fechados
+    lastDayDelivered: 800,
+  };
+  // 12.000 + 16 × 1.000 = 28.000 → 93,3% com 16 dias pela frente → Atenção
+  const atencao = withClock(() => deriveMediaMetrics({ ...base, last7dDelivered: 7_000 }));
+  assert.equal(atencao.diasRestantes, 16);
+  assert.equal(atencao.status, STATUS.WATCH);
+  // 12.000 + 16 × 800 = 24.800 → 82,7% → Under mesmo longe do fim
+  const under = withClock(() => deriveMediaMetrics({ ...base, last7dDelivered: 5_000 }));
+  assert.equal(under.status, STATUS.UNDER);
+});
+
+test("Atenção entra na contagem e ganha o modificador de recuperação", () => {
+  const counts = countByStatus([{ status: STATUS.WATCH }, { status: STATUS.WATCH }, { status: STATUS.UNDER }]);
+  assert.equal(counts[STATUS.WATCH], 2);
+  assert.equal(counts[STATUS.UNDER], 1);
+  const v = buildVerdict({ status: STATUS.WATCH, deliveredD1: 1_200, minDiariaContratada: 1_100, mediaDiariaAtual: 900 });
+  assert.equal(v.label, "Atenção");
+  assert.equal(v.trendLabel, "↗ recuperando");
 });

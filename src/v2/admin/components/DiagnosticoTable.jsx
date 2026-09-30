@@ -312,7 +312,7 @@ export function DiagnosticoTable({
       }
       // Status: ordena pelo rank dele (super_over no topo quando desc).
       if (sortKey === "status") {
-        const RANK = { super_over: 3, over: 2, under: 1, ok: 0 };
+        const RANK = { super_over: 3, over: 2, under: 1, watch: 0.5, ok: 0 };
         const av = RANK[a.status] ?? -1;
         const bv = RANK[b.status] ?? -1;
         return sortDir === "asc" ? av - bv : bv - av;
