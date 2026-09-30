@@ -35,3 +35,17 @@ test("sugestão prioriza campanhas que dividem palavras com o nome", () => {
   );
   assert.deepEqual(rankDvCampaigns(names, ""), names);
 });
+
+test("Blocking Trends da aba: série diária no período, somando as campanhas", async () => {
+  const { qualityBlocking } = await import("./dvQualityReport.js");
+  const s = qualityBlocking({
+    from: "2026-09-20", to: "2026-09-21",
+    columns: ["requests", "blocks"],
+    rows: [[0, "2026-09-20", 100, 10], [1, "2026-09-20", 100, 30], [0, "2026-09-21", 50, 50]],
+  });
+  assert.deepEqual(s.map((d) => d.day), ["2026-09-20", "2026-09-21"]);
+  assert.equal(s[0].requests, 200);
+  assert.equal(s[0].block_rate, 40 / 200);
+  assert.equal(s[1].block_rate, null); // < 100 requests no dia
+  assert.deepEqual(qualityBlocking(null), []);
+});
