@@ -7,7 +7,7 @@
 // regra do admin (lib/dvQuality.js): taxa = soma(num) / soma(den), nunca
 // média de taxas — as definições das taxas vêm de lá pra que admin e
 // cliente leiam o mesmo número.
-import { deriveRates } from "../v2/admin/lib/dvQuality.js";
+import { deriveRates, dailyBlocking } from "../v2/admin/lib/dvQuality.js";
 
 export {
   KQI_DEFS, GLANCE_DEFS, formatRate, formatCompact,
@@ -45,6 +45,21 @@ export function summarizeQuality(payload) {
     .map(([ci, t]) => ({ id: ci, name: names[ci] ?? "", totals: t, rates: deriveRates(t) }))
     .sort((a, b) => b.totals.monitored_ads - a.totals.monitored_ads);
   return { totals, rates: deriveRates(totals), campaigns, dayCount: days.size };
+}
+
+/**
+ * Série diária do Blocking Trends pro recorte conectado. Reusa o cálculo do
+ * admin (mesmas taxas, mesmo corte de 100 requests/dia) adaptando as linhas
+ * Campaign × Dia ao formato Brand × Campaign × Dia que ele espera.
+ */
+export function qualityBlocking(payload) {
+  if (!payload?.from || !payload?.to || !payload?.rows) return [];
+  return dailyBlocking({
+    from: payload.from,
+    to: payload.to,
+    columns: payload.columns || [],
+    rows: payload.rows.map((r) => [0, ...r]),
+  });
 }
 
 /**

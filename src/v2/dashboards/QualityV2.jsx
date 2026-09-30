@@ -13,13 +13,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { getQualityReport } from "../../lib/api";
 import {
-  KQI_DEFS, formatRate, formatCompact, summarizeQuality,
+  KQI_DEFS, formatRate, formatCompact, summarizeQuality, qualityBlocking,
 } from "../../shared/dvQualityReport";
 import { Button } from "../../ui/Button";
 import { Skeleton } from "../../ui/Skeleton";
 import { KqiRing } from "../components/dv/KqiRing";
 import { QualityLinksModalV2 } from "../components/dv/QualityLinksModalV2";
 import { PoweredByDV } from "../components/dv/PoweredByDV";
+import { BlockingTrendsChart } from "../components/dv/BlockingTrendsChart";
 
 const nf = new Intl.NumberFormat("pt-BR");
 
@@ -80,6 +81,7 @@ export default function QualityV2({ token, view = null, data, isAdmin = false, a
     () => (state.payload?.rows ? summarizeQuality(state.payload) : null),
     [state.payload],
   );
+  const blocking = useMemo(() => qualityBlocking(state.payload), [state.payload]);
 
   // Alvo da conexão: em report agrupado, o admin escolhe o mês.
   const members = data?.merge_meta?.members || [];
@@ -202,7 +204,7 @@ export default function QualityV2({ token, view = null, data, isAdmin = false, a
       />
     );
   } else {
-    body = <QualityBody summary={summary} />;
+    body = <QualityBody summary={summary} blocking={blocking} />;
   }
 
   return (
@@ -214,7 +216,7 @@ export default function QualityV2({ token, view = null, data, isAdmin = false, a
   );
 }
 
-function QualityBody({ summary }) {
+function QualityBody({ summary, blocking }) {
   const { totals, rates, campaigns } = summary;
   const stats = [
     { label: "Monitored Ads", value: formatCompact(totals.monitored_ads), title: nf.format(totals.monitored_ads) },
@@ -257,6 +259,8 @@ function QualityBody({ summary }) {
           </div>
         ))}
       </section>
+
+      <BlockingTrendsChart points={blocking} hideWhenEmpty />
 
       {campaigns.length > 1 && <CampaignTable campaigns={campaigns} />}
 

@@ -1,8 +1,9 @@
-// src/v2/admin/components/BlockingTrendsChart.jsx
+// src/v2/components/dv/BlockingTrendsChart.jsx
 //
-// "Blocking Trends" do Pinnacle na seção DoubleVerify: taxa de bloqueio por
-// dia (total e por motivo) e o volume de Requests, no período e nos filtros
-// de Brand/Campaign da página.
+// "Blocking Trends" do Pinnacle: taxa de bloqueio por dia (total e por
+// motivo) e o volume de Requests. Usado na seção DoubleVerify do admin (no
+// período e nos filtros de Brand/Campaign da página) e na aba Quality do
+// report (no período da conexão DV).
 //
 // O Pinnacle desenha tudo num gráfico só com dois eixos (% à esquerda,
 // Requests à direita). Aqui são dois gráficos empilhados com o mesmo eixo de
@@ -24,7 +25,7 @@ import {
 import { useTheme } from "../../hooks/useTheme";
 import { useThemeColors, useChartNeutral } from "../../hooks/useThemeColors";
 import { useUniformTicks } from "../../hooks/useUniformTicks";
-import { BLOCKING_DEFS, BLOCKING_MIN_REQUESTS, formatRate, formatCompact } from "../lib/dvQuality";
+import { BLOCKING_DEFS, BLOCKING_MIN_REQUESTS, formatRate, formatCompact } from "../../admin/lib/dvQuality";
 
 const SERIES = {
   dark:  { brand_rate: "#3987e5", fraud_rate: "#d95926", geo_rate: "#199e70" },
@@ -44,7 +45,9 @@ function dayLabel(iso) {
   return `${Number(d)} ${MESES[Number(m) - 1]}`;
 }
 
-export function BlockingTrendsChart({ points }) {
+// `hideWhenEmpty`: no report do cliente, sem nenhum request (campanha sem
+// bloqueio pre-bid da DV) o gráfico some — o card de Blocks já diz N/A.
+export function BlockingTrendsChart({ points, hideWhenEmpty = false }) {
   const [theme] = useTheme();
   const hypr = useThemeColors();
   const neutral = useChartNeutral();
@@ -97,6 +100,7 @@ export function BlockingTrendsChart({ points }) {
   }, [data, yMax, series.map((s) => s.key).join()]);
 
   if (!hasRequests) {
+    if (hideWhenEmpty) return null;
     return (
       <section className="rounded-xl border border-border bg-surface p-5">
         <h2 className="text-sm font-bold text-fg">Blocking Trends</h2>
@@ -151,7 +155,7 @@ export function BlockingTrendsChart({ points }) {
                 type="monotone"
                 stroke={color(s.key)}
                 strokeWidth={2}
-                dot={false}
+                dot={<IsolatedDot data={data} dataKey={s.key} color={color(s.key)} />}
                 activeDot={{ r: 4, strokeWidth: 2, stroke: hypr.canvas }}
                 connectNulls={false}
                 isAnimationActive={false}
@@ -180,6 +184,17 @@ export function BlockingTrendsChart({ points }) {
       </p>
     </section>
   );
+}
+
+// Sem marcador por ponto (a linha já é o dado), exceto no dia isolado —
+// vizinhos sem taxa deixam um segmento de comprimento zero, que não desenha.
+function IsolatedDot({ cx, cy, index, data, dataKey, color }) {
+  const v = data[index]?.[dataKey];
+  if (v == null || cx == null || cy == null) return null;
+  const prev = data[index - 1]?.[dataKey];
+  const next = data[index + 1]?.[dataKey];
+  if (prev != null || next != null) return null;
+  return <circle cx={cx} cy={cy} r={3} fill={color} />;
 }
 
 // Rótulo direto só no último ponto com dado de cada linha.

@@ -29,7 +29,7 @@ import { getDvQuality } from "../../../lib/api";
 import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
 import { KqiRing } from "../../components/dv/KqiRing";
-import { BlockingTrendsChart } from "../components/BlockingTrendsChart";
+import { BlockingTrendsChart } from "../../components/dv/BlockingTrendsChart";
 import { cn } from "../../../ui/cn";
 import { TooltipProvider } from "../../../ui/Tooltip";
 import "../../v2.css";
