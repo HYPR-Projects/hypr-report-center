@@ -10583,6 +10583,17 @@ def _fetch_contracts(token):
     return _apply_cp_override_to_contracts(rows[0], token)
 
 
+def _today_brt():
+    """Data de hoje em BRT (UTC-3 fixo, sem horário de verão desde 2019).
+
+    O container do Cloud Run roda em UTC: `date.today()` vira o dia seguinte
+    às 21h BRT. No pacing isso somava um dia de "esperado" toda noite (e, na
+    véspera do fim, já cobrava o contrato cheio). Mesmo racional do
+    `today_sp` de query_campaigns_list.
+    """
+    return datetime.now(timezone(timedelta(hours=-3))).date()
+
+
 def _compute_totals(perf_rows, c, campaign_info):
     """Calcula as linhas de `totals` (por frente×mídia) a partir da ENTREGA
     (`perf_rows`) e do CONTRATO (`c`, Row/dict de _fetch_contracts). Toda a
@@ -10614,7 +10625,11 @@ def _compute_totals(perf_rows, c, campaign_info):
     start = campaign_info.get("_start_date_raw")
     end   = campaign_info.get("_end_date_raw")
 
-    today = date.today()
+    # "Hoje" em BRT, não o UTC do container. Com `date.today()` o dia virava
+    # às 21h BRT: elapsed_days ganhava +1 e, no último dia do voo, o
+    # `billing_end < today` já dava True → over travava no budget CHEIO
+    # durante a noite (CPM efetivo/rentabilidade pulavam e voltavam às 00h).
+    today = _today_brt()
     if hasattr(start, "date"): start = start.date()
     if hasattr(end,   "date"): end   = end.date()
 
@@ -10704,6 +10719,11 @@ def _compute_totals(perf_rows, c, campaign_info):
         row_elapsed_days = max(0, (today - row_start).days) if row_start else elapsed_days
         # `billing_end` (≤ end original) antecipa o "acabou" do faturamento em
         # encerramento antecipado. Só alimenta budget_prop — pacing usa `end`.
+        # ESTRITO de propósito: no último dia o dado de entrega ainda vai só
+        # até D-1, então o budget segue pró-rata (elapsed = total−1); o budget
+        # cheio só vale a partir do dia seguinte ao fim, quando o dado já
+        # inclui o último dia. Espelhado no front (billingWindow em
+        # src/shared/aggregations.js) e em effective_cost_front.
         row_is_ended     = billing_end < today if billing_end else False
 
 
@@ -12224,7 +12244,10 @@ def query_campaigns_list():
         # (servido verbatim), setado por _apply_frozen_delivery_override.
         _start_dt = _coerce_date(start_date)
         _end_dt   = _coerce_date(end_date)
-        _today    = date.today()
+        # BRT (`today_sp`), não o UTC do container — mesma régua do report
+        # (_compute_totals usa _today_brt). Com date.today() o card e o report
+        # divergiam entre 21h e 00h BRT.
+        _today    = today_sp
         # Encerramento antecipado → billing_end no effective_cost_front
         # (mesma régua do report: over trava no budget cheio assim que o
         # encerramento real passa, não no término original).
