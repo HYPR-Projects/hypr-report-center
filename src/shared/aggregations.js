@@ -18,7 +18,7 @@
  * sem mudança.
  */
 
-import { enrichDetailCosts, distributeLargestRemainder } from "./enrichDetail";
+import { enrichDetailCosts, distributeLargestRemainder } from "./enrichDetail.js";
 import {
   inRange,
   daysBetween,
@@ -26,7 +26,7 @@ import {
   formatRangeShort,
   parseYmd,
   ymd,
-} from "./dateFilter";
+} from "./dateFilter.js";
 
 /**
  * `range` engloba inteiramente a janela [startStr, endStr]?
@@ -497,9 +497,11 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp, chec
   const cpc      = clks > 0 && cpmEf ? cpmEf / 1000 * (viAll / clks) : 0;
   const rentab   = notStarted ? null : (cpmNeg > 0 ? (cpmNeg - cpmEf) / cpmNeg * 100 : 0);
 
-  const pac      = totalNeg > 0
-    ? (today > end ? viAll / totalNeg * 100 : expected > 0 ? viAll / expected * 100 : 0)
-    : 0;
+  // Pacing com o runway de pacingRunway (eDays já vira tDays depois do fim),
+  // sem o atalho `today > end` do over/faturamento acima — senão o último dia
+  // do voo volta a comparar entrega até D-1 com o contrato cheio.
+  const expectedPac = totalNeg > 0 && tDays > 0 ? totalNeg / tDays * eDays : 0;
+  const pac      = expectedPac > 0 ? viAll / expectedPac * 100 : 0;
   const pacBase  = Math.min(pac, 100);
   const pacOver  = Math.max(0, pac - 100);
 
@@ -605,7 +607,13 @@ export function pacingRunway(actualStartISO, campStartISO, campEndISO, now = new
   if (start < campStart) start = campStart; // clamp ao início contratual
 
   const tDays = (end - start) / 864e5 + 1;
-  const eDays = now < start ? 0 : now > end ? tDays : Math.floor((now - start) / 864e5);
+  // Decorrido = dias INTEIROS antes de hoje (o dado de entrega vai até D-1),
+  // capado no total. No último dia do voo isso dá tDays−1; o esperado só vira
+  // o contrato cheio depois do fim. A regra antiga (`now > end ? tDays`, e
+  // `end` é meia-noite, então valia o dia inteiro do fim) cobrava o contrato
+  // cheio contra uma entrega que ainda não tinha o dia de hoje → Under falso
+  // em toda campanha no alvo no último dia. Espelha main.py:_pacing_elapsed_days.
+  const eDays = now < start ? 0 : Math.min(tDays, Math.floor((now - start) / 864e5));
   return { start, end, tDays, eDays };
 }
 

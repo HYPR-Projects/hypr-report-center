@@ -4,8 +4,9 @@
 // CampaignMenuV2. Recebe uma campanha crua do payload de listCampaigns e
 // devolve as métricas derivadas + classificação de status.
 //
-// Status (4 bandas, baseadas na projeção rolling 7 dias — "se o ritmo
-// médio da última semana se mantiver, quanto vai entregar do contrato"):
+// Status (4 bandas, baseadas na projeção pelo ritmo recente — maior entre a
+// média dos últimos 7 dias e o D-1, "se o ritmo recente se mantiver, quanto
+// vai entregar do contrato"):
 //
 //   • Verificar Under    → projeção <  100%   (ritmo recente não bate o contrato)
 //   • Ok                 → projeção entre 100% e 125%  (até 25% over)
@@ -24,10 +25,10 @@
 //           `<media>_last7d_*`. CTE `last7d_delivery` no main.py.
 //
 //   D-1 ainda é exposto na coluna "Viewable Imps. D-1" pra ser sinal de
-//   spike no dia. A projeção usa 7d com cadeia de fallback:
-//   7d → D-1 → pacing histórico.
+//   spike no dia. A projeção usa max(7d, D-1) com cadeia de fallback:
+//   max(7d, D-1) → D-1 → pacing histórico.
 
-import { billableMediaValue, billableValue } from "./format";
+import { billableMediaValue, billableValue } from "./format.js";
 
 const TODAY = () => new Date();
 
@@ -302,15 +303,16 @@ export function deriveMediaMetrics({
     ? (delivered / negotiated) * 100
     : null;
 
-  // ── Projeção rolling 7 dias ─────────────────────────────────────────────
-  // "Se o ritmo médio da última semana se mantiver, quanto vai entregar?"
+  // ── Projeção: ritmo recente (máx. entre 7d e D-1) ──────────────────────
+  // "Se o ritmo recente se mantiver, quanto vai entregar?"
   //
   // Fórmula:
   //   daily_rate_7d  = last7dDelivered / min(7, elapsed_days)
-  //   projeção_total = delivered_acumulado + (daily_rate_7d × dias_restantes)
+  //   daily_rate     = max(daily_rate_7d, D-1)
+  //   projeção_total = delivered_acumulado + (daily_rate × dias_restantes)
   //   % projetada    = projeção_total / negotiated × 100
   //
-  // Por que 7 dias em vez de D-1:
+  // Por que 7 dias como base (e não D-1 puro):
   //   - D-1 puro é volátil: anomalia de DSP, fim de semana, spike pontual
   //     flipa o status entre Over/Under de um dia pro outro. Operação
   //     calibrada em D-1 vira "alarme falso constante".
@@ -318,7 +320,8 @@ export function deriveMediaMetrics({
   //     campanha (que é o problema do pacing histórico). Captura tendência
   //     recente sem ser refém de 1 ponto.
   //
-  // dias_restantes inclui HOJE (campanha ainda pode entregar hoje).
+  // dias_restantes = total − decorridos, e inclui HOJE (decorridos só conta
+  // dias fechados no dado, até D-1).
   //
   // min(7, elapsed_days): pra campanha com < 7 dias de vida, divide pelos
   // dias que existem. Sem isso, campanha de 3 dias com last7d cobrindo só 3
@@ -332,15 +335,29 @@ export function deriveMediaMetrics({
   //
   // Sem cap: deixa passar de 999% intencionalmente quando há spike real —
   // capar mascararia o sinal operacional que o CS precisa ver.
+  //
+  // Calibração (backtest set/2026 sobre ~900 voos encerrados abr–set, cada
+  // dia dos 15 finais simulado com o dado até D-1): o ritmo usado é o MAIOR
+  // entre D-1 e a média 7d. A média 7d pura subestimava o fechamento em todo
+  // horizonte (viés −2,6 p.p. no último dia, −9,7 p.p. a 8–15 dias do fim),
+  // porque a entrega ACELERA no fim do voo — catch-up do pacing do DSP e
+  // ajuste de lance/budget da operação. Uma campanha que acelerou ontem
+  // seguia "Verificar Under" por dias, carregando a semana lenta na média.
+  // Com max(D-1, 7d): falso Under cai ~25–35% em todos os horizontes, os
+  // Unders reais detectados ficam praticamente iguais (−1 caso a 1–2 dias
+  // do fim) e a acurácia das 4 bandas sobe (57,6% → 61,0% a 3–7 dias). O
+  // piso da média 7d segura o D-1 fraco de fim de semana — o que motivou
+  // sair do D-1 puro.
   const daysRemainingProj = Math.max(0, totalDays - elapsedDays);
   let projetadaPct = null;
   if (last7dDelivered != null && last7dDelivered > 0
       && negotiated != null && negotiated > 0
       && delivered != null && elapsedDays > 0) {
-    // Caminho feliz: ritmo médio dos últimos 7 dias
+    // Caminho feliz: maior entre ritmo médio 7d e ritmo de ontem
     const windowDays   = Math.min(7, elapsedDays);
     const dailyRate7d  = last7dDelivered / windowDays;
-    const projecaoTotal = delivered + (dailyRate7d * daysRemainingProj);
+    const dailyRate    = Math.max(dailyRate7d, lastDayDelivered > 0 ? lastDayDelivered : 0);
+    const projecaoTotal = delivered + (dailyRate * daysRemainingProj);
     projetadaPct = (projecaoTotal / negotiated) * 100;
   } else if (lastDayDelivered != null && lastDayDelivered > 0
       && negotiated != null && negotiated > 0
@@ -363,14 +380,17 @@ export function deriveMediaMetrics({
   //   • Sem dias restantes (campanha já acabou hoje)   → null → renderiza "—"
   //     (não dá pra entregar mais, end_date é hoje ou já passou)
   //   • Caso normal: (negotiated - delivered) / dias_restantes
-  //     onde dias_restantes inclui hoje (campanha ainda pode entregar hoje)
+  //     onde dias_restantes = totalDays − elapsedDays. Já inclui hoje:
+  //     elapsedDays conta só dias fechados no dado (até D-1). O `+ 1` que
+  //     havia aqui contava hoje duas vezes — no último dia dividia o que
+  //     falta por 2 e mostrava metade do ritmo necessário.
   //
   // Por que NÃO usar `negotiated / totalDays` (lógica antiga):
   //   Aquilo era a "mínima estática" do plano original — útil só no dia 1.
   //   Conforme a campanha evolui (over, under), o ritmo necessário pra fechar
   //   muda. Mostrar a mínima ESTÁTICA pra campanha 170% entregue confunde
   //   ("preciso entregar 12.801/dia?" — não, você já tem 70% de gordura).
-  const daysRemaining = Math.max(0, totalDays - elapsedDays + 1);
+  const daysRemaining = daysRemainingProj;
   let minDiariaContratada = null;
   if (negotiated != null && negotiated > 0 && delivered != null) {
     const remaining = negotiated - delivered;

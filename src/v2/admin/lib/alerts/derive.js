@@ -7,7 +7,7 @@
 //   • d1_rate por mídia (D-1)
 //   • velocity_ratio = d1_rate / daily_rate (detecta aceleração/desaceleração)
 //   • negotiated reconstruído (mesma matemática do diagnostico.js)
-//   • projected_final + projected_pacing (ritmo constante)
+//   • projected_final + projected_pacing (ritmo max(7d, D-1), igual ao diagnostico)
 //   • catch_up_multiplier (quanto a mais por dia precisa pra fechar)
 //   • projected_real_cost + projected_tech_cost_pct (Tech Cost futuro)
 //   • overspend_brl (prejuízo direto em super_over)
@@ -17,8 +17,8 @@
 // no array de enriched_media, pra regras avaliarem cada mídia
 // independentemente — espelha o que o buildDiagnosticoRows já faz.
 
-import { MAX_OK_PACING_RATIO, TARGET_PACING_PCT } from "./constants";
-import { billableValue } from "../format";
+import { MAX_OK_PACING_RATIO, TARGET_PACING_PCT } from "./constants.js";
+import { billableValue } from "../format.js";
 
 const MS_PER_DAY = 86_400_000;
 
@@ -46,9 +46,12 @@ function deriveMediaProjections({
   pacing,
   delivered,
   expectedToDate,
+  negotiatedTotal,     // <media>_negotiated — Σ contratado+bônus (fonte de verdade do backend)
   startDate,
+  actualStartDate,     // <media>_actual_start_date — mesmo runway do pacing do backend
   endDate,
   lastDayDelivered,
+  last7dDelivered,     // <media>_last7d_* — soma D-7..D-1
   realCost,            // custo COM survey (admin_total_cost_full) — base do tech cost
   realCostNoSurvey,    // custo SEM survey (admin_total_cost) — pra disclaimer da Atenção
   clientBudget,
@@ -57,29 +60,38 @@ function deriveMediaProjections({
 }) {
   if (!delivered && !pacing && !expectedToDate) return null;
 
-  const s = parseDateUTC(startDate);
+  const s = parseDateUTC(actualStartDate || startDate);
   const e = parseDateUTC(endDate);
   if (!s || !e) return null;
 
+  // Mesma régua de tempo do diagnostico.js (deriveMediaMetrics) e do pacing
+  // do backend: "decorrido" = dias fechados no dado (a entrega vai até D-1),
+  // capado no total; "restante" inclui hoje. Antes contava hoje como
+  // decorrido E como restante: o ritmo médio saía diluído (entrega até D-1 ÷
+  // dias até hoje) e o negociado reconstruído não batia com o esperado do
+  // backend — o drawer e as regras A* projetavam um número diferente da
+  // coluna Projetada da tabela para a mesma campanha.
   const today = todayUTC();
   const total_days   = daysBetween(s, e) + 1;
-  const elapsed_days = Math.max(0, Math.min(total_days, daysBetween(s, today) + 1));
+  const elapsed_days = Math.max(0, Math.min(total_days, daysBetween(s, today)));
   if (total_days <= 0 || elapsed_days <= 0) return null;
 
-  const days_remaining = Math.max(0, total_days - elapsed_days + 1);
+  const days_remaining = Math.max(0, total_days - elapsed_days);
   const elapsed_ratio  = elapsed_days / total_days;
 
-  // Reconstrói negotiated (volume contratado) a partir de expected_to_date,
-  // que o backend já manda pro-rata calendar. Fallback: usa pacing+delivered.
+  // Negociado: o valor real do backend quando disponível; reconstrução por
+  // expected_to_date só como fallback de payload antigo.
   let negotiated = null;
-  if (expectedToDate && expectedToDate > 0) {
+  if (negotiatedTotal != null && negotiatedTotal > 0) {
+    negotiated = negotiatedTotal;
+  } else if (expectedToDate && expectedToDate > 0) {
     negotiated = expectedToDate / elapsed_ratio;
   } else if (pacing && delivered && pacing > 0) {
     const expected = delivered / (pacing / 100);
     negotiated = expected / elapsed_ratio;
   }
 
-  // Ritmo médio realizado (constante implícito no `pacing`).
+  // Ritmo médio realizado desde o início (base do velocity_ratio).
   const daily_rate = delivered && delivered > 0 && elapsed_days > 0
     ? delivered / elapsed_days
     : null;
@@ -95,9 +107,17 @@ function deriveMediaProjections({
     ? d1_rate / daily_rate
     : null;
 
-  // Projeção forward-looking (ritmo constante = média histórica).
-  const projected_final = (daily_rate != null && days_remaining > 0)
-    ? delivered + daily_rate * days_remaining
+  // Projeção forward-looking com o MESMO ritmo da coluna Projetada do
+  // diagnóstico: max(média 7d, D-1), fallback D-1 → média histórica. Ver a
+  // calibração em diagnostico.js (deriveMediaMetrics).
+  const rate7d = last7dDelivered != null && last7dDelivered > 0
+    ? last7dDelivered / Math.min(7, elapsed_days)
+    : null;
+  const projection_rate = rate7d != null
+    ? Math.max(rate7d, d1_rate > 0 ? d1_rate : 0)
+    : (d1_rate > 0 ? d1_rate : daily_rate);
+  const projected_final = (projection_rate != null && days_remaining > 0)
+    ? delivered + projection_rate * days_remaining
     : delivered;
   const projected_pacing = (negotiated != null && negotiated > 0 && projected_final != null)
     ? (projected_final / negotiated) * 100
@@ -265,9 +285,12 @@ export function enrichCampaign(c, statusFn) {
     pacing:           c.display_pacing,
     delivered:        c.display_viewable_impressions,
     expectedToDate:   c.display_expected_impressions,
+    negotiatedTotal:  c.display_negotiated,
     startDate:        c.start_date,
+    actualStartDate:  c.display_actual_start_date,
     endDate:          c.end_date,
     lastDayDelivered: c.display_yesterday_viewable,
+    last7dDelivered:  c.display_last7d_viewable,
     realCost:         c.d_admin_total_cost_full ?? c.d_admin_total_cost,
     realCostNoSurvey: c.d_admin_total_cost,
     clientBudget:     c.d_client_budget,
@@ -279,9 +302,12 @@ export function enrichCampaign(c, statusFn) {
     pacing:           c.video_pacing,
     delivered:        c.video_viewable_completions,
     expectedToDate:   c.video_expected_completions,
+    negotiatedTotal:  c.video_negotiated,
     startDate:        c.start_date,
+    actualStartDate:  c.video_actual_start_date,
     endDate:          c.end_date,
     lastDayDelivered: c.video_yesterday_completions,
+    last7dDelivered:  c.video_last7d_completions,
     realCost:         c.v_admin_total_cost_full ?? c.v_admin_total_cost,
     realCostNoSurvey: c.v_admin_total_cost,
     clientBudget:     c.v_client_budget,
