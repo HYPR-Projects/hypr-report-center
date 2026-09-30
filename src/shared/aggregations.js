@@ -470,7 +470,7 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp, chec
   // deflacionado (ex: NO2015 22,5%) enquanto a Visão Geral mostrava o
   // correto (92,3%), pois só computeMediaPacing tinha o clamp.
   const today = new Date();
-  const { start, end, tDays, eDays } = pacingRunway(rows[0]?.actual_start_date, camp.start_date, camp.end_date, today);
+  const { start, tDays, eDays } = pacingRunway(rows[0]?.actual_start_date, camp.start_date, camp.end_date, today);
 
   const contracted = src[`contracted_${_f}_display_impressions`] || 0;
   const bonus      = src[`bonus_${_f}_display_impressions`]      || 0;
@@ -499,18 +499,17 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp, chec
   // → cliente via rentabilidade > 0 com pacing < 100%.
   const expectedBill = bill.ended ? totalNeg : (totalNeg > 0 && tDays > 0 ? totalNeg / tDays * bill.eDays : 0);
   const over     = viAll > expectedBill;
-  // Esperado do PACING (régua própria, pacingRunway) — fora do escopo do
-  // faturamento; só alimenta `pac` abaixo.
-  const expected = today > end ? totalNeg : (totalNeg > 0 && tDays > 0 ? totalNeg / tDays * eDays : 0);
   // Quando notStarted, cpmEf=null faz o Hero/Card mostrar "—" em vez de
   // duplicar o negociado (que dá impressão de já ter dado calculado).
   const cpmEf    = notStarted ? null : (cpmNeg > 0 ? (over && viAll > 0 ? budgetProp / viAll * 1000 : cpmNeg) : 0);
   const cpc      = clks > 0 && cpmEf ? cpmEf / 1000 * (viAll / clks) : 0;
   const rentab   = notStarted ? null : (cpmNeg > 0 ? (cpmNeg - cpmEf) / cpmNeg * 100 : 0);
 
-  const pac      = totalNeg > 0
-    ? (today > end ? viAll / totalNeg * 100 : expected > 0 ? viAll / expected * 100 : 0)
-    : 0;
+  // Esperado do PACING: régua própria (pacingRunway), fora do faturamento.
+  // eDays já vira tDays depois do fim; sem atalho `today > end`, senão o
+  // último dia do voo volta a comparar entrega até D-1 com o contrato cheio.
+  const expectedPac = totalNeg > 0 && tDays > 0 ? totalNeg / tDays * eDays : 0;
+  const pac      = expectedPac > 0 ? viAll / expectedPac * 100 : 0;
   const pacBase  = Math.min(pac, 100);
   const pacOver  = Math.max(0, pac - 100);
 
@@ -651,7 +650,13 @@ export function pacingRunway(actualStartISO, campStartISO, campEndISO, now = new
   if (start < campStart) start = campStart; // clamp ao início contratual
 
   const tDays = (end - start) / 864e5 + 1;
-  const eDays = now < start ? 0 : now > end ? tDays : Math.floor((now - start) / 864e5);
+  // Decorrido = dias INTEIROS antes de hoje (o dado de entrega vai até D-1),
+  // capado no total. No último dia do voo isso dá tDays−1; o esperado só vira
+  // o contrato cheio depois do fim. A regra antiga (`now > end ? tDays`, e
+  // `end` é meia-noite, então valia o dia inteiro do fim) cobrava o contrato
+  // cheio contra uma entrega que ainda não tinha o dia de hoje → Under falso
+  // em toda campanha no alvo no último dia. Espelha main.py:_pacing_elapsed_days.
+  const eDays = now < start ? 0 : Math.min(tDays, Math.floor((now - start) / 864e5));
   return { start, end, tDays, eDays };
 }
 

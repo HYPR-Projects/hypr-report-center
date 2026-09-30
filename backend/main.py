@@ -10637,6 +10637,25 @@ def _today_brt():
     return datetime.now(timezone(timedelta(hours=-3))).date()
 
 
+def _pacing_elapsed_days(start, total_days, today):
+    """Dias decorridos pro PACING: dias com entrega já fechada no dado.
+
+    O dado de entrega vai até D-1 (rollup diário), então "decorrido" é o
+    número de dias INTEIROS antes de hoje, capado no total do voo. No último
+    dia do voo isso dá total−1 (hoje ainda não entrou no dado); o esperado só
+    vira o contrato cheio depois que o voo acabou.
+
+    Antes a regra era `today >= end → total`: no último dia o denominador já
+    era o contrato inteiro enquanto o numerador ainda faltava o dia de hoje,
+    e toda campanha no alvo aparecia abaixo de 100% (déficit de 1/total_days:
+    −16,7% num voo de 6 dias, −3,3% num de 30). Como a maioria dos voos fecha
+    no fim do mês, o fim de mês virava uma parede de Under falso.
+    """
+    if not start or total_days <= 0:
+        return 0
+    return min(total_days, max(0, (today - start).days))
+
+
 def _compute_totals(perf_rows, c, campaign_info):
     """Calcula as linhas de `totals` (por frente×mídia) a partir da ENTREGA
     (`perf_rows`) e do CONTRATO (`c`, Row/dict de _fetch_contracts). Toda a
@@ -10809,16 +10828,11 @@ def _compute_totals(perf_rows, c, campaign_info):
         # Resultado: a coluna Pacing do Detalhamento e o Resumo por mídia
         # mostram o MESMO número que a barra Pacing da Visão Geral.
         #
-        # No último dia / após o fim, a campanha já decorreu por inteiro — o
-        # esperado é 100% do negociado. Espelha o front (`computeMediaPacing`:
-        # `now > end ? tDays`) e o `?list` (`pacing_expected_to_date`: `today >=
-        # e`). Sem isso, o per-row prorrateava 30/31 no dia 31 e mostrava OVER
-        # enquanto Visão Geral/Admin já mostravam UNDER (bug Video OOH 101,6% vs
-        # 98,4%). Usa `today >= end` (inclui o último dia) — `row_is_ended`
-        # acima usa `billing_end < today` (estrito) só pro budget_prop, não
-        # serve aqui.
-        pacing_elapsed = row_total_days if (end and today >= end) else row_elapsed_days
-        pacing_capped_elapsed = min(pacing_elapsed, row_total_days) if row_total_days > 0 else 0
+        # Decorrido = dias com entrega já no dado (até D-1), em BRT, capado no
+        # total — ver _pacing_elapsed_days. Mesma regra do `?list`
+        # (pacing_expected_to_date) e do front (pacingRunway): as três telas
+        # continuam batendo entre si, agora sem o Under falso do último dia.
+        pacing_capped_elapsed = _pacing_elapsed_days(row_start, row_total_days, _today_brt())
         pacing_expected = (neg / row_total_days * pacing_capped_elapsed) if (row_total_days > 0 and pacing_capped_elapsed > 0) else 0
 
         # Pacing: entregue vs esperado (fórmula canônica calendar-elapsed)
@@ -11911,8 +11925,8 @@ def query_campaigns_list():
     #
     # O per-row pacing (campo `pacing` em totals, consumido pelo Resumo
     # por mídia + Detalhamento + barra da aba Video) já foi alinhado em
-    # query_totals (~4671): calendar-elapsed com cap em row_total_days e a
-    # regra `today >= end → esperado = negociado cheio`, igual a esta.
+    # query_totals (_compute_totals): calendar-elapsed com cap em
+    # row_total_days via _pacing_elapsed_days, igual a esta.
     #
     # Retorna o "esperado até hoje" pra base do pacing.
     # delivered/expected × 100 dá a % de pacing — exposta como métrica
@@ -11934,18 +11948,13 @@ def query_campaigns_list():
         # entrega pré-voo não estica o runway pra trás. max() preserva o
         # caso de frente que começa DEPOIS (actual_start > s_camp).
         s = max(actual_start, s_camp) if actual_start else s_camp
-        today = date.today()
         total_days = (e - s).days + 1
         if total_days <= 0:
             return None
-        # No último dia (ou depois) a campanha já decorreu por inteiro —
-        # o esperado é 100% do negociado. Alinha com o front
-        # (computeMediaPacing: `now > end ? tDays`). Mid-flight conta só
-        # dias completos (dia corrente não entra), igual ao floor() do front.
-        if today >= e:
-            elapsed_days = total_days
-        else:
-            elapsed_days = max(0, (today - s).days)
+        # Só dias com entrega já no dado (até D-1), em BRT (`today_sp`, não o
+        # UTC do container). No último dia isso é total−1; o esperado só vira
+        # o negociado cheio depois do fim. Ver _pacing_elapsed_days.
+        elapsed_days = _pacing_elapsed_days(s, total_days, today_sp)
         if elapsed_days <= 0:
             return None
         return negotiated / total_days * elapsed_days
@@ -12113,7 +12122,7 @@ def query_campaigns_list():
         # O diagnóstico (front) usa ISSO direto como denominador da projeção em
         # vez de reconstruir negotiated via expected_to_date / elapsed_ratio.
         #
-        # Por que: a reconstrução do front quebrava no ÚLTIMO DIA. O backend usa
+        # Por que: a reconstrução do front quebrava no ÚLTIMO DIA. O backend usava
         # `today >= end` em pacing_expected_to_date → no fim, expected = negociado
         # CHEIO. Mas o front reconstruía `negotiated = expected / (elapsed/total)`
         # com `today > end` (estrito) → elapsed = total-1 → ratio < 1 → negociado

@@ -312,7 +312,7 @@ export function DiagnosticoTable({
       }
       // Status: ordena pelo rank dele (super_over no topo quando desc).
       if (sortKey === "status") {
-        const RANK = { super_over: 3, over: 2, under: 1, ok: 0 };
+        const RANK = { super_over: 3, over: 2, under: 1, watch: 0.5, ok: 0 };
         const av = RANK[a.status] ?? -1;
         const bv = RANK[b.status] ?? -1;
         return sortDir === "asc" ? av - bv : bv - av;
@@ -608,7 +608,7 @@ export function DiagnosticoTable({
                           align="right"
                           tabular
                           className={cn("font-semibold", projTone)}
-                          title="% que vai bater no final mantendo o ritmo médio da última semana (7 dias). Fallback pra D-1 ou pacing histórico quando não tem dado recente."
+                          title="% que vai bater no final mantendo o ritmo recente: o maior entre a média dos últimos 7 dias e o D-1 (a entrega costuma acelerar no fim do voo). Fallback pra D-1 ou pacing histórico quando não tem dado recente."
                         >
                           {formatPctRow(r.projetadaPct, 1)}
                         </Td>
