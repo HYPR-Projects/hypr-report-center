@@ -291,3 +291,59 @@ def fetch_quality(from_s=None, to_s=None) -> dict:
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     })
     return data
+
+
+# ─── Recorte por campanha (aba Quality do report do cliente) ────────────────
+# Lista de campanhas da DV. O caminho certo é /requestTypes/{rt}/dimensions/
+# {id}/values — a doc da DV mostra /{rt}/dimensions/..., que responde 401.
+# A conta HYPR tem ~90 campanhas, então a lista vem inteira e a busca é local.
+CAMPAIGN_VALUES_LIMIT = 5000
+
+
+def list_campaign_names() -> list:
+    data = _json(
+        "GET",
+        f"/requestTypes/{REQUEST_TYPE_STANDARD}/dimensions/{DIM_CAMPAIGN}/values?limit={CAMPAIGN_VALUES_LIMIT}",
+    )
+    if not isinstance(data, list):
+        raise DoubleVerifyError("Lista de campanhas da DV em formato inesperado")
+    return sorted({str(v).strip() for v in data if str(v).strip()}, key=str.lower)
+
+
+def build_campaign_request_body(names, from_d: date, to_d: date) -> dict:
+    """Campaign × Dia, filtrado (ExactMatch) às campanhas DV vinculadas."""
+    body = build_request_body(from_d, to_d)
+    body["dimensions"] = [
+        {
+            "id": DIM_CAMPAIGN,
+            "filterValues": list(names),
+            "includeFilterValues": True,
+            "filterValuesType": "ExactMatch",
+            "includeInReport": True,
+        },
+        {"id": DIM_DATE},
+    ]
+    return body
+
+
+def parse_campaign_csv(text: str, from_d: date, to_d: date) -> dict:
+    """CSV Campaign × Dia → {campaigns: [nome], columns, rows: [[ci, dia, *contagens]]}."""
+    reader = csv.DictReader(io.StringIO(text))
+    if reader.fieldnames is None or "Date" not in reader.fieldnames:
+        raise DoubleVerifyError("CSV da DV sem cabeçalho esperado")
+    campaigns, idx, rows = [], {}, []
+    lo, hi = from_d.isoformat(), to_d.isoformat()
+    for r in reader:
+        day = (r.get("Date") or "").strip()[:10]
+        if not (lo <= day <= hi):
+            continue
+        vals = [_num(r.get(name)) for _, _, name in METRICS]
+        if not any(vals):
+            continue
+        name = (r.get("Campaign Name") or "").strip() or "(sem campanha)"
+        if name not in idx:
+            idx[name] = len(campaigns)
+            campaigns.append(name)
+        rows.append([idx[name], day, *vals])
+    rows.sort(key=lambda x: x[1])
+    return {"campaigns": campaigns, "columns": METRIC_KEYS, "rows": rows}

@@ -64,6 +64,7 @@ import pmp_client_sheet
 import xandr_curate
 import pubmatic_curate
 import doubleverify
+import quality_report
 import pmp_alerts
 import pmp_sync_runs
 import audience_normalize
@@ -3367,6 +3368,84 @@ def report_data(request):
             logger.error(f"[ERROR maxattention_results] {creative_id}: {e}")
             return (jsonify({"error": "Erro ao buscar respostas do Max Attention"}), 502, headers)
 
+    # ── Endpoints: aba Quality do report (DoubleVerify por campanha) ─────────
+    # O admin conecta o token a campanhas da DV + período (quality_links_save);
+    # o report lê o recorte por token (quality_report, público como o resto do
+    # report: o short_token é o ticket, e só saem as campanhas vinculadas a ele).
+    if request.method == "GET" and request.args.get("action") == "quality_report":
+        token = (request.args.get("token") or "").strip()
+        if not quality_report.valid_token(token):
+            return (jsonify({"error": "token inválido"}), 400, headers)
+        view = (request.args.get("view") or "").strip()
+        try:
+            cfg = quality_report.config_for_tokens(_ma_tokens_for_view(token, view))
+            if not cfg:
+                return (jsonify({"linked": False}), 200, headers)
+            if not doubleverify.is_configured():
+                return (jsonify({"error": "DoubleVerify não configurado"}), 503, headers)
+            refresh = request.args.get("refresh") == "true" and bool(authenticate_admin(request))
+            payload = quality_report.build_report(cfg, force=refresh)
+            return (jsonify(payload), 200, {**headers, "Cache-Control": "private, max-age=300"})
+        except doubleverify.DoubleVerifyError as e:
+            logger.error(f"[ERROR quality_report] {token}: {e}")
+            return (jsonify({"error": "Dados do DoubleVerify indisponíveis no momento"}), 502, headers)
+        except Exception as e:
+            logger.error(f"[ERROR quality_report] {token}: {type(e).__name__}: {e}")
+            return (jsonify({"error": "Erro ao buscar a verificação de qualidade"}), 500, headers)
+
+    if request.method == "GET" and request.args.get("action") == "quality_links":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        token = (request.args.get("token") or "").strip()
+        if not quality_report.valid_token(token):
+            return (jsonify({"error": "token inválido"}), 400, headers)
+        try:
+            cfg = quality_report.config_for_token(token)
+            return (jsonify({**quality_report.public_config(cfg), "linked_by": (cfg or {}).get("linked_by"), "linked_at": (cfg or {}).get("linked_at"), "has_abs": _abs_hint(token)}), 200, headers)
+        except Exception as e:
+            logger.error(f"[ERROR quality_links] {token}: {e}")
+            return (jsonify({"error": "Erro ao ler a conexão"}), 500, headers)
+
+    if request.method == "POST" and request.args.get("action") == "quality_links_save":
+        admin = authenticate_admin(request)
+        if not admin:
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        body = request.get_json(silent=True) or {}
+        token = (body.get("short_token") or "").strip()
+        try:
+            saved = quality_report.save_config(
+                token, body.get("campaigns") or [], body.get("date_from"), body.get("date_to"),
+                linked_by=admin.get("email") or "admin",
+            )
+        except ValueError as e:
+            return (jsonify({"error": str(e)}), 400, headers)
+        except Exception as e:
+            logger.error(f"[ERROR quality_links_save] {token}: {e}")
+            return (jsonify({"error": f"Erro ao salvar a conexão: {e}"}), 500, headers)
+        audit_log.safe_write_event(
+            short_token=token.upper(),
+            event_type="quality_links_saved",
+            actor_email=admin.get("email"),
+            message=(
+                f"conectou {len(saved['campaigns'])} campanha(s) DV ({saved['date_from']} → {saved['date_to']})"
+                if saved.get("linked") else "desconectou o DoubleVerify"
+            ),
+            payload={"campaigns": saved.get("campaigns") or [], "date_from": saved.get("date_from"), "date_to": saved.get("date_to")},
+        )
+        return (jsonify(saved), 200, headers)
+
+    if request.method == "GET" and request.args.get("action") == "dv_campaigns":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        if not doubleverify.is_configured():
+            return (jsonify({"error": "DoubleVerify não configurado (DV_API_TOKEN)"}), 503, headers)
+        try:
+            names = quality_report.dv_campaigns(force=request.args.get("refresh") == "1")
+            return (jsonify({"campaigns": names}), 200, headers)
+        except doubleverify.DoubleVerifyError as e:
+            logger.error(f"[ERROR dv_campaigns] {e}")
+            return (jsonify({"error": f"DoubleVerify: {e}"}), 502, headers)
+
     # ── Endpoints: aba Max Attention do report ───────────────────────────────
     # Vínculo peça → campanha (admin), busca de peças na Platform (admin) e as
     # métricas das peças vinculadas (público, como o resto do report: o
@@ -5908,6 +5987,7 @@ def report_data(request):
                 if m.get("short_token")
             ]
             data = _attach_max_attention(data, member_tokens or [short_token])
+            data = _attach_quality(data, member_tokens or [short_token], short_token)
             data = _attach_data_freshness(data)
             total_ms = int((time.time() - t0) * 1000)
             resp_headers = {
@@ -5983,6 +6063,7 @@ def report_data(request):
         data = _attach_audience_overrides(data)
         data = _attach_label_overrides(data)
         data = _attach_max_attention(data, [target_token])
+        data = _attach_quality(data, [target_token], target_token)
         data = _attach_data_freshness(data)
 
         total_ms = int((time.time() - t0) * 1000)
@@ -6011,6 +6092,35 @@ def _attach_max_attention(data: dict, tokens) -> dict:
         }}
     except Exception as e:
         logger.warning(f"[WARN attach max_attention] {e}")
+        return data
+
+
+def _abs_hint(*tokens):
+    """A campanha tem ABS (brand safety) ativo? Lido da lista admin já em
+    memória (mesmo sinal do card: fee pre-bid DV no DV360, data provider DV/IAS
+    no Xandr ou override manual) — sem query nova no caminho do report.
+    None = a instância ainda não tem a lista; o front trata como "talvez"."""
+    wanted = {(t or "").upper() for t in tokens if t}
+    for store, ttl in ((_list_cache, _LIST_CACHE_TTL), (_list_stale, _LIST_STALE_MAX_AGE)):
+        data = _cache_get(store, "all", ttl)
+        if not data:
+            continue
+        return any(
+            (c.get("display_has_abs") or c.get("video_has_abs"))
+            for c in data if (c.get("short_token") or "").upper() in wanted
+        )
+    return None
+
+
+def _attach_quality(data: dict, tokens, token: str) -> dict:
+    """Anexa a conexão DoubleVerify (aba Quality) na camada de serving, como
+    o Max Attention: conectar não precisa refazer o report cacheado/congelado.
+    Falha aqui nunca derruba o report."""
+    try:
+        cfg = quality_report.config_for_tokens(tokens)
+        return {**data, "quality": {**quality_report.public_config(cfg), "has_abs": _abs_hint(token, *tokens)}}
+    except Exception as e:
+        logger.warning(f"[WARN attach quality] {e}")
         return data
 
 
