@@ -19,26 +19,10 @@ import { AdminRailRow, StatusDot } from "../shell/AdminNavItem";
 import { cn } from "../../../ui/cn";
 import { getDspHealth } from "../../../lib/api";
 import { SparklineV2 } from "../../components/SparklineV2";
+import { dspColor, dspLabel } from "../../../shared/dspMeta";
 
 const REFETCH_MS = 5 * 60 * 1000;
 
-const DSP_COLORS = {
-  DV360: "#4285F4",
-  XANDR: "#8B5CF6",
-  AMAZON: "#FF9900",
-  STACKADAPT: "#14B8A6",
-  YAHOO: "#D946EF",
-};
-const dspColor = (s) => DSP_COLORS[String(s || "").toUpperCase()] || "#3397B9";
-
-const DSP_LABELS = {
-  DV360: "DV360",
-  XANDR: "Xandr",
-  AMAZON: "Amazon",
-  STACKADAPT: "StackAdapt",
-  YAHOO: "Yahoo",
-};
-const dspLabel = (s) => DSP_LABELS[String(s || "").toUpperCase()] || s;
 
 const TONE_CLASSES = {
   ok: { dot: "bg-success", text: "text-success" },
@@ -325,11 +309,25 @@ export function DspHealthPanel({ className, onOpenReport, variant = "icon" }) {
             Volume entregue por fonte (consolidado) · referência{" "}
             <span className="font-medium">ontem</span> vs média 7d. Campanha
             listada = entregou na semana, zerou ontem e segue ativa.
+            <button
+              type="button"
+              onClick={openAnalytics}
+              className="block mt-1.5 text-[11.5px] font-semibold text-signature hover:underline cursor-pointer bg-transparent border-0 p-0"
+            >
+              Abrir análise completa (Analytics) →
+            </button>
           </div>
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
   );
+}
+
+// Navegação client-side do App (pushState + popstate), sem prop drilling:
+// o painel mora no header de duas páginas diferentes.
+function openAnalytics() {
+  window.history.pushState({}, "", "/admin/analytics/dsps");
+  window.dispatchEvent(new PopStateEvent("popstate"));
 }
 
 function PulseIcon() {

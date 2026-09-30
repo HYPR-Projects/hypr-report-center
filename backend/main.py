@@ -73,6 +73,7 @@ import maxattention
 import ma_report
 import ma_matching
 import out_of_country
+import dsp_analytics
 import geo_exclusions
 import bq_client
 
@@ -287,6 +288,12 @@ def _run_pubmatic_sync(actor):
 _DSP_HEALTH_CACHE_TTL = 300
 _dsp_health_cache = {}      # "all" -> (timestamp, payload)
 _dsp_breakdown_cache = {}   # short_token -> (timestamp, payload)
+# Analytics › Saúde das DSPs. O consolidado é D-1 (build das 06h), então 10 min
+# por período só poupa a varredura (≈1 GB num ano) de quem troca de filtro e
+# volta; o recorte fino (DSP, formato, ABS, campanha, IO, survey) é no front.
+_DSP_ANALYTICS_CACHE_TTL = 600
+_dsp_analytics_cache = {}   # "from|to" -> (timestamp, payload)
+_dsp_line_daily_cache = {}  # "from|to|keys" -> (timestamp, payload)
 # Entrega fora do BR (box das big metrics). A tabela de regiões do DV360
 # atualiza 1×/dia de madrugada; 30 min segura o custo (a query varre o mês
 # da tabela de regiões) sem deixar o box velho depois que o dado aterrissa.
@@ -4598,6 +4605,66 @@ def report_data(request):
         except Exception as e:
             logger.error(f"[ERROR dsp_health] {e}")
             return (jsonify({"error": "Erro ao buscar saúde das DSPs"}), 500, headers)
+
+    # GET ?action=dsp_analytics[&from=YYYY-MM-DD&to=YYYY-MM-DD][&refresh=1] —
+    # admin-only. Analytics › Saúde das DSPs: série diária + período anterior +
+    # lines agregadas, com ABS por line e survey marcado (não excluído). Filtro
+    # e agregação no front. Ver backend/dsp_analytics.py.
+    if request.method == "GET" and request.args.get("action") == "dsp_analytics":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        from_s = (request.args.get("from") or "").strip() or None
+        to_s = (request.args.get("to") or "").strip() or None
+        try:
+            window = dsp_analytics.resolve_window(from_s, to_s)
+        except ValueError as e:
+            return (jsonify({"error": f"Período inválido: {e}"}), 400, headers)
+        cache_key = f"{window[0]}|{window[1]}"
+        try:
+            payload = None
+            if request.args.get("refresh") != "1":
+                payload = _cache_get(_dsp_analytics_cache, cache_key, _DSP_ANALYTICS_CACHE_TTL)
+            if payload is None:
+                payload = dsp_analytics.query_dsp_analytics(
+                    bq, bigquery, window[0].isoformat(), window[1].isoformat(),
+                    submit=_query_pool.submit, timeout=_POOL_RESULT_TIMEOUT_S,
+                )
+                try:
+                    payload["landings"] = query_source_landings()
+                except Exception as e:  # noqa: BLE001 — frescor é acessório
+                    logger.warning(f"[dsp_analytics] landings indisponível: {e}")
+                    payload["landings"] = []
+                _cache_set(_dsp_analytics_cache, cache_key, payload)
+            return _gzip_json(payload, request, headers)
+        except Exception as e:
+            logger.error(f"[ERROR dsp_analytics] {e}")
+            return (jsonify({"error": "Erro ao buscar analytics das DSPs"}), 500, headers)
+
+    # GET ?action=dsp_analytics_line_daily&keys=SRC|LINE|0,...[&from&to] —
+    # série diária das lines escolhidas no filtro (o payload principal não tem
+    # line × dia, que num ano passaria de 300 mil linhas).
+    if request.method == "GET" and request.args.get("action") == "dsp_analytics_line_daily":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            window = dsp_analytics.resolve_window(
+                (request.args.get("from") or "").strip() or None,
+                (request.args.get("to") or "").strip() or None,
+            )
+            keys = dsp_analytics.parse_line_keys(request.args.get("keys"))
+        except ValueError as e:
+            return (jsonify({"error": str(e)}), 400, headers)
+        cache_key = f"{window[0]}|{window[1]}|{','.join(keys)}"
+        try:
+            payload = _cache_get(_dsp_line_daily_cache, cache_key, _DSP_ANALYTICS_CACHE_TTL)
+            if payload is None:
+                payload = dsp_analytics.query_line_daily(
+                    bq, bigquery, keys, window[0].isoformat(), window[1].isoformat())
+                _cache_set(_dsp_line_daily_cache, cache_key, payload)
+            return _gzip_json(payload, request, headers)
+        except Exception as e:
+            logger.error(f"[ERROR dsp_analytics_line_daily] {e}")
+            return (jsonify({"error": "Erro ao buscar série das lines"}), 500, headers)
 
     # GET ?action=dv_quality[&from=YYYY-MM-DD&to=YYYY-MM-DD][&refresh=1] —
     # aberto a QUALQUER admin @hypr.mobi (sem FEATURE_ADMINS/PMP_EDITORS).

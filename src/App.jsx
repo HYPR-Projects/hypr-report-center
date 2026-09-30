@@ -23,7 +23,7 @@ import { lookupShare } from "./lib/api";
 import { isDemoToken } from "./shared/demoData";
 import {
   parseAdminPath, pathFor, writeStoredView,
-  SECTION_PMP, SECTION_DV, SECTION_CLIENT,
+  SECTION_PMP, SECTION_DV, SECTION_ANALYTICS, SECTION_CLIENT,
 } from "./v2/admin/shell/navConfig";
 
 // ── Code-splitting ──────────────────────────────────────────────────────
@@ -45,6 +45,7 @@ const ClientDetailPage     = lazy(() => import("./v2/admin/pages/ClientDetailPag
 const ClientDashboard      = lazy(() => import("./v2/dashboards/ClientDashboardV2"));
 const PmpDealsPage         = lazy(() => import("./v2/admin/pages/PmpDealsPage"));
 const DoubleVerifyPage     = lazy(() => import("./v2/admin/pages/DoubleVerifyPage"));
+const DspAnalyticsPage     = lazy(() => import("./v2/admin/pages/DspAnalyticsPage"));
 const ClientPortalPage     = lazy(() => import("./v2/portal/ClientPortalPage"));
 
 /**
@@ -521,6 +522,21 @@ function AppRoutes() {
           onLogout={onLogout}
           layout={adminRoute.layout}
           onNavigateView={goToView}
+        />
+      </Suspense>
+    );
+  }
+
+  // Rota /admin/analytics/:view — Saúde das DSPs (somente leitura).
+  if (adminRoute?.section === SECTION_ANALYTICS) {
+    return (
+      <Suspense fallback={<RouteSuspense />}>
+        <DspAnalyticsPage
+          user={user}
+          onLogout={onLogout}
+          layout={adminRoute.layout}
+          onNavigateView={goToView}
+          onOpenReport={onOpenReport}
         />
       </Suspense>
     );

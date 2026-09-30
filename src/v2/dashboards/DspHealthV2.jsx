@@ -29,29 +29,8 @@ import { ChartCardV2 } from "../components/ChartCardV2";
 import { useThemeColors } from "../hooks/useThemeColors";
 import { useUniformTicks } from "../hooks/useUniformTicks";
 import { formatBRL } from "../admin/lib/format";
+import { dspColor, dspLabel } from "../../shared/dspMeta";
 
-// Cores fixas por DSP (literais: recharts/SVG não leem CSS var em prop).
-// Hues escolhidos pra funcionarem em dark e light e serem distinguíveis
-// entre si num gráfico empilhado.
-const DSP_COLORS = {
-  DV360: "#4285F4",
-  XANDR: "#8B5CF6",
-  AMAZON: "#FF9900",
-  STACKADAPT: "#14B8A6",
-  YAHOO: "#D946EF",
-};
-const dspColor = (source) =>
-  DSP_COLORS[String(source || "").toUpperCase()] || "#3397B9";
-
-const DSP_LABELS = {
-  DV360: "DV360",
-  XANDR: "Xandr",
-  AMAZON: "Amazon",
-  STACKADAPT: "StackAdapt",
-  YAHOO: "Yahoo",
-};
-const dspLabel = (source) =>
-  DSP_LABELS[String(source || "").toUpperCase()] || source;
 
 const TONE = {
   ok: { dot: "bg-success", text: "text-success", label: "Entregando" },
