@@ -407,7 +407,8 @@ export default function OverviewV2({
       {/* ─── 0. Guardrail: volumetria contratada incoerente (ADMIN-ONLY) ──
           O contrato de entrega registrado (Σ volume × tarifa, base da aba
           Display) supera o investimento da campanha (base da Visão Geral) →
-          volumetria stale no checklist do Command. NUNCA mostrar pro cliente.
+          volumetria e investimento incoerentes no checklist do Force. NUNCA
+          mostrar pro cliente.
           Backend: campaign.contract_inconsistency (_emit_contract_consistency). */}
       {isAdmin && camp?.contract_inconsistency && (
         <div className="flex items-start gap-2.5 rounded-lg border border-danger/40 bg-danger-soft px-3.5 py-2.5 text-[12px] leading-snug text-fg-muted">
@@ -416,13 +417,12 @@ export default function OverviewV2({
             <span className="font-semibold text-fg">
               Volumetria contratada incoerente com o investimento.
             </span>{" "}
-            O contrato de entrega registrado ({fmtR(camp.contract_inconsistency.implied_budget)})
+            A volumetria contratada × tarifa ({fmtR(camp.contract_inconsistency.implied_budget)})
             supera o investimento da campanha ({fmtR(camp.contract_inconsistency.declared_budget)})
-            em {fmt(camp.contract_inconsistency.pct, 0)}% — sinal de volumetria
-            desatualizada no <span className="font-semibold text-fg">Command</span>.
-            A aba Display está exibindo o volume antigo; corrija a volumetria no
-            checklist do Command para os números baterem. (Aviso interno — o
-            cliente não vê esta mensagem.)
+            em {fmt(camp.contract_inconsistency.pct, 0)}%. Volume e investimento
+            não batem no checklist do <span className="font-semibold text-fg">Force</span>:
+            confira os dois campos lá para a Visão Geral e a aba Display ficarem
+            coerentes. (Aviso interno — o cliente não vê esta mensagem.)
           </span>
         </div>
       )}

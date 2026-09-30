@@ -6089,15 +6089,17 @@ def _emit_contract_consistency(campaign_info):
     """Camada 3 do diagnóstico de volumetria stale (ver memory
     project_command_volume_stale_derived_ui).
 
-    Compara o BUDGET declarado (campo dinheiro `total_invested` — o que a Visão
-    Geral mostra) com o CONTRATO IMPLÍCITO (Σ volume_contratado × tarifa — o que
-    a aba Display mostra). Quando o implícito EXCEDE o declarado além da
-    tolerância, o checklist do Command está internamente incoerente: o contrato
-    entregável, precificado na tarifa negociada, custa MAIS que o investimento
-    total da campanha — logicamente impossível, marcador inequívoco de
-    volumetria gravada stale (tipicamente investimento reduzido sem recomputar o
-    volume). Emite `campaign.contract_inconsistency` pro front avisar o operador
-    HYPR (admin-only na UI) apontando pro Command.
+    Compara o BUDGET declarado (investimento do checklist do Force, via
+    `_apply_live_budget` — o que a Visão Geral mostra) com o CONTRATO IMPLÍCITO
+    (Σ volume_contratado × tarifa — o que a aba Display mostra). Os dois vêm da
+    MESMA leitura ao vivo do checklist_info, então a defasagem do build diário
+    da campaign_results não gera mais falso positivo. Quando o implícito EXCEDE
+    o declarado além da tolerância, o checklist do Force está internamente
+    incoerente: o contrato entregável, precificado na tarifa negociada, custa
+    MAIS que o investimento total da campanha — logicamente impossível
+    (tipicamente investimento editado sem recomputar o volume, ou o inverso).
+    Emite `campaign.contract_inconsistency` pro front avisar o operador HYPR
+    (admin-only na UI) apontando pro checklist do Force.
 
     Só o EXCESSO importa: implícito < declarado é split multi-produto legítimo
     (features/survey/RMND/OOH têm budget no investimento mas não nos campos
@@ -6252,7 +6254,7 @@ def fetch_campaign_data(short_token, src=None):
         result["totals"] = []
     # Guardrail Camada 3: `totals` já resolveu (bloqueou acima), então
     # _compute_totals já gravou `_implied_contract_budget` em campaign_info.
-    # Detecta checklist incoerente do Command (volumetria stale) sem tocar no BQ.
+    # Detecta checklist incoerente no Force (volume × investimento) sem tocar no BQ.
     _emit_contract_consistency(campaign_info)
     for key, future in aux_tasks.items():
         # Falha em uma query auxiliar não deve derrubar o report inteiro.
@@ -10435,12 +10437,33 @@ def query_totals(token, campaign_info, unified_src=None, win_from=None, win_to=N
 
     if check_row is None:
         return []
+    _apply_live_budget(campaign_info, check_row)
     return _compute_totals(perf_rows, check_row, campaign_info)
+
+
+def _apply_live_budget(campaign_info, check_row):
+    """Investimento contratado lido AO VIVO do checklist do Force
+    (`checklist_info.total_value`), a mesma fonte e o mesmo instante da
+    volumetria que `_fetch_contracts` devolve. `campaign_results.total_invested`
+    é materializada 1x/dia pelo job das 06h: edição no Force feita depois do
+    build ficava com volume novo × investimento velho até o dia seguinte (ou
+    mais, quando o build trava) — Visão Geral com o budget antigo e o guardrail
+    de coerência disparando falso positivo (Kérastase 8SGU8O, 30/09: Force
+    R$180k, campaign_results R$150k). Sem total_value > 0 no checklist, mantém
+    o `campaign_results` (fallback)."""
+    if not isinstance(campaign_info, dict) or check_row is None:
+        return
+    try:
+        live = float(check_row.get("total_value") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return
+    if live > 0:
+        campaign_info["budget_contracted"] = live
 
 
 def _fetch_contracts(token):
     """Lê a linha de contratos (volumetria contratada, bônus, CPM/CPCV
-    negociado) de checklist_info pro token. Fonte ÚNICA do contrato — usada
+    negociado, investimento total) de checklist_info pro token. Fonte ÚNICA do contrato — usada
     por query_totals e pelo overlay de contratos ao vivo em report congelado.
     Retorna a Row do BQ, ou None se o token não está no checklist_info."""
     sql = """
@@ -10458,7 +10481,8 @@ def _fetch_contracts(token):
             MAX(contracted_groundflow_display_impressions)    AS contracted_groundflow_display_impressions,
             MAX(contracted_groundflow_video_completions)      AS contracted_groundflow_video_completions,
             MAX(bonus_groundflow_display_impressions)         AS bonus_groundflow_display_impressions,
-            MAX(bonus_groundflow_video_completions)           AS bonus_groundflow_video_completions
+            MAX(bonus_groundflow_video_completions)           AS bonus_groundflow_video_completions,
+            MAX(total_value)                            AS total_value
         FROM `site-hypr.hyprops_mart.checklist_info`
         WHERE short_token = @token
     """
