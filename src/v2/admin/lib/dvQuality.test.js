@@ -66,3 +66,29 @@ test("formatação estilo Pinnacle", () => {
   assert.equal(formatCompact(23_400_000), "23.4M");
   assert.equal(formatCompact(8_300), "8.3K");
 });
+
+test("série diária de bloqueio: um ponto por dia, taxa sobre requests, dia vazio = null", async () => {
+  const { dailyBlocking } = await import("./dvQuality.js");
+  const p = {
+    from: "2026-09-10", to: "2026-09-12", prev_from: "2026-09-07", prev_to: "2026-09-09",
+    brands: ["A", "B"], campaigns: [{ name: "a", brand: 0 }, { name: "b", brand: 1 }],
+    columns: ["requests", "blocks", "fraud_blocks"],
+    rows: [
+      [0, 0, "2026-09-08", 100, 100, 100],   // período anterior: fora
+      [0, 0, "2026-09-10", 100, 40, 10],
+      [1, 1, "2026-09-10", 100, 0, 0],
+      [0, 0, "2026-09-12", 50, 5, 0],
+    ],
+  };
+  const s = dailyBlocking(p, {}, { minRequests: 0 });
+  assert.deepEqual(s.map((d) => d.day), ["2026-09-10", "2026-09-11", "2026-09-12"]);
+  assert.equal(s[0].requests, 200);
+  assert.equal(s[0].block_rate, 40 / 200);
+  assert.equal(s[0].fraud_rate, 10 / 200);
+  assert.equal(s[0].geo_rate, 0);          // coluna ausente = 0 bloqueios
+  assert.equal(s[1].block_rate, null);     // dia sem request
+  assert.equal(dailyBlocking(p, { brands: [1] })[0].block_rate, 0);
+  // Padrão: dia com menos de 100 requests fica sem taxa.
+  assert.equal(dailyBlocking(p)[2].block_rate, null);
+  assert.equal(dailyBlocking(p)[2].requests, 50);
+});

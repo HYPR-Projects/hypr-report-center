@@ -115,6 +115,54 @@ export function summarize(payload, filters = {}) {
   return { totals: cur, prevTotals: prev, rates, prevRates, deltas, campaigns: campaignRows };
 }
 
+// "Blocking Trends" do Pinnacle: bloqueio por dia, total e por motivo.
+// Todas sobre Requests — mesma base do Block Rate (conferido contra a DV).
+export const BLOCKING_DEFS = [
+  { key: "block_rate",     label: "Block Rate",                 num: "blocks" },
+  { key: "brand_rate",     label: "Brand Suitability Block Rate", num: "brand_suitability_blocks" },
+  { key: "fraud_rate",     label: "Fraud/SIVT Block Rate",      num: "fraud_blocks" },
+  { key: "geo_rate",       label: "Out of Geo Block Rate",      num: "out_of_geo_blocks" },
+];
+
+/**
+ * Série diária de bloqueio do recorte (período atual, mesmos filtros do
+ * resto da página). Um ponto por dia do período — dia sem request entra com
+ * taxa null (buraco na linha), não 0% (que leria como "nada bloqueado").
+ * Dia com menos de `minRequests` também fica sem taxa: 8 requests com 8
+ * bloqueios viram um pico de 100% ao lado de uma barra invisível.
+ */
+export const BLOCKING_MIN_REQUESTS = 100;
+
+export function dailyBlocking(payload, filters = {}, { minRequests = BLOCKING_MIN_REQUESTS } = {}) {
+  const { columns, rows, from, to } = payload;
+  const idx = columnIndex(columns);
+  const match = rowMatcher(payload, filters);
+  const byDay = new Map();
+  for (const row of rows) {
+    const day = row[2];
+    if (day < from || day > to || !match(row)) continue;
+    let d = byDay.get(day);
+    if (!d) { d = { requests: 0, blocks: 0, brand_suitability_blocks: 0, fraud_blocks: 0, out_of_geo_blocks: 0 }; byDay.set(day, d); }
+    for (const k of Object.keys(d)) d[k] += idx[k] != null ? Number(row[idx[k]]) || 0 : 0;
+  }
+  const out = [];
+  for (let day = from; day <= to; day = nextDay(day)) {
+    const d = byDay.get(day) || { requests: 0, blocks: 0, brand_suitability_blocks: 0, fraud_blocks: 0, out_of_geo_blocks: 0 };
+    const point = { day, requests: d.requests, blocks: d.blocks };
+    for (const def of BLOCKING_DEFS) {
+      point[def.key] = d.requests >= Math.max(1, minRequests) ? ratio(d[def.num], d.requests) : null;
+    }
+    out.push(point);
+  }
+  return out;
+}
+
+function nextDay(iso) {
+  const d = new Date(`${iso}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
 /**
  * Opções dos filtros. Campanhas se restringem às brands escolhidas (escolher
  * "Pepsi" e ver campanhas da Quaker na lista seria ruído). Ordenadas por
