@@ -237,6 +237,7 @@ export function DiagnosticoLayout({
       [STATUS.SUPER_OVER]:   d[STATUS.SUPER_OVER]   + v[STATUS.SUPER_OVER],
       [STATUS.OVER]:         d[STATUS.OVER]         + v[STATUS.OVER],
       [STATUS.UNDER]:        d[STATUS.UNDER]        + v[STATUS.UNDER],
+      [STATUS.WATCH]:        d[STATUS.WATCH]        + v[STATUS.WATCH],
       [STATUS.OK]:           d[STATUS.OK]           + v[STATUS.OK],
       [STATUS.TECH_HIGH]:    techTokens[STATUS.TECH_HIGH].size,
       [STATUS.TECH_AT_RISK]: techTokens[STATUS.TECH_AT_RISK].size,

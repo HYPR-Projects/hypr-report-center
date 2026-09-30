@@ -935,12 +935,24 @@ def warmup_caches(force_refresh=True, max_reports=150, deadline_s=480):
     try:
         if maxattention.is_configured() and maxattention.materialized():
             # Antes do ramo amplo: ele lê a tabela que este sync alimenta.
-            # Sobreposição de 1 dia (não as 2h da leitura) pra pegar evento que
-            # chegou atrasado no lake; orçamento maior pro backfill inicial.
-            r = maxattention.sync_answers(
-                force=True, overlap=maxattention.DEEP_SYNC_OVERLAP, budget_s=240,
-            )
-            summary["ma_answers_synced"] = {"inserted": r["inserted"], "complete": r["complete"]}
+            #
+            # O primeiro warmup do dia (06h30) reconcilia 3 dias do lake, pra
+            # pegar resposta que chegou atrasada, e fecha buraco de histórico.
+            # Os demais fazem só um tick: a ponta já anda a cada 5 min pelo
+            # Scheduler, e reabrir 1 dia a cada 3h custava ~5 GB por rodada
+            # sem trazer nada que o tick não trouxesse.
+            brt_hour = datetime.now(timezone(timedelta(hours=-3))).hour
+            if brt_hour < 9:
+                r = maxattention.reconcile_daily()
+            else:
+                r = maxattention.sync_tick()
+            summary["ma_answers_synced"] = {
+                "status": r.get("status"), "inserted": r.get("inserted", 0),
+                "complete": r.get("complete"),
+            }
+            if r.get("inserted"):
+                with _cache_lock:
+                    _ma_results_cache.clear()
     except Exception as e:
         logger.warning(f"[WARN warmup maxattention sync] {e}")
         summary["ma_answers_synced"] = False
@@ -3277,6 +3289,30 @@ def report_data(request):
                 headers,
             )
 
+    # Tick do sync (Cloud Scheduler a cada 5 min em horário comercial, ver
+    # deploy.sh). Cron via X-Cron-Secret, ou admin. Só a ponta, com teto por
+    # MERGE e orçamento diário — ver `maxattention.sync_tick`. 200 mesmo quando
+    # pula (orçamento, busy): o Scheduler não deve re-tentar o que foi decisão.
+    if request.method in ("GET", "POST") and request.args.get("action") == "maxattention_sync_tick":
+        provided = request.headers.get("X-Cron-Secret", "")
+        expected = os.environ.get("CRON_SECRET", "")
+        is_cron = bool(expected) and hmac.compare_digest(provided, expected)
+        if not (is_cron or authenticate_admin(request)):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            r = maxattention.sync_tick()
+            if r.get("inserted"):
+                with _cache_lock:
+                    _ma_creatives_cache.clear()
+                    _ma_results_cache.clear()
+            iso = lambda t: t.isoformat() if isinstance(t, datetime) else t  # noqa: E731
+            return (jsonify({k: iso(v) for k, v in r.items()}), 200, headers)
+        except maxattention.NotConfigured as e:
+            return (jsonify({"error": str(e), "configured": False}), 501, headers)
+        except Exception as e:
+            logger.error(f"[ERROR maxattention_sync_tick] {e}")
+            return (jsonify({"error": "Erro no tick do sync do Max Attention"}), 502, headers)
+
     # Sync manual da tabela materializada de respostas (admin). Pro primeiro
     # backfill depois do deploy e pra conferir a marca d'água sem abrir o
     # BigQuery. `deep=true` usa a sobreposição de 1 dia do warmup.
@@ -3341,7 +3377,13 @@ def report_data(request):
         # Sem credencial o parâmetro é IGNORADO, não recusado: o cliente que
         # herdar uma URL com `refresh=true` continua vendo o report, servido
         # do cache, em vez de um 401 no meio de uma pergunta.
+        #
+        # E o refresh também força um tick do sync (`maxattention.force_fresh`,
+        # dentro do orçamento diário): furar só o cache relia a mesma tabela
+        # parada, e a resposta recém-dada continuava no lake.
+        fresh = False
         if request.args.get("refresh") == "true" and authenticate_admin(request):
+            fresh = True
             with _cache_lock:
                 _ma_results_cache.pop(cache_key, None)
         cached = _cache_get(_ma_results_cache, cache_key, _MA_RESULTS_TTL)
@@ -3353,6 +3395,7 @@ def report_data(request):
                 question=question,
                 date_from=date_from,
                 date_to=date_to,
+                fresh=fresh,
             )
             # Mesmo critério da listagem: contagem de tabela com histórico
             # incompleto não fica 5 min em cache.
@@ -10594,6 +10637,25 @@ def _today_brt():
     return datetime.now(timezone(timedelta(hours=-3))).date()
 
 
+def _pacing_elapsed_days(start, total_days, today):
+    """Dias decorridos pro PACING: dias com entrega já fechada no dado.
+
+    O dado de entrega vai até D-1 (rollup diário), então "decorrido" é o
+    número de dias INTEIROS antes de hoje, capado no total do voo. No último
+    dia do voo isso dá total−1 (hoje ainda não entrou no dado); o esperado só
+    vira o contrato cheio depois que o voo acabou.
+
+    Antes a regra era `today >= end → total`: no último dia o denominador já
+    era o contrato inteiro enquanto o numerador ainda faltava o dia de hoje,
+    e toda campanha no alvo aparecia abaixo de 100% (déficit de 1/total_days:
+    −16,7% num voo de 6 dias, −3,3% num de 30). Como a maioria dos voos fecha
+    no fim do mês, o fim de mês virava uma parede de Under falso.
+    """
+    if not start or total_days <= 0:
+        return 0
+    return min(total_days, max(0, (today - start).days))
+
+
 def _compute_totals(perf_rows, c, campaign_info):
     """Calcula as linhas de `totals` (por frente×mídia) a partir da ENTREGA
     (`perf_rows`) e do CONTRATO (`c`, Row/dict de _fetch_contracts). Toda a
@@ -10766,16 +10828,11 @@ def _compute_totals(perf_rows, c, campaign_info):
         # Resultado: a coluna Pacing do Detalhamento e o Resumo por mídia
         # mostram o MESMO número que a barra Pacing da Visão Geral.
         #
-        # No último dia / após o fim, a campanha já decorreu por inteiro — o
-        # esperado é 100% do negociado. Espelha o front (`computeMediaPacing`:
-        # `now > end ? tDays`) e o `?list` (`pacing_expected_to_date`: `today >=
-        # e`). Sem isso, o per-row prorrateava 30/31 no dia 31 e mostrava OVER
-        # enquanto Visão Geral/Admin já mostravam UNDER (bug Video OOH 101,6% vs
-        # 98,4%). Usa `today >= end` (inclui o último dia) — `row_is_ended`
-        # acima usa `billing_end < today` (estrito) só pro budget_prop, não
-        # serve aqui.
-        pacing_elapsed = row_total_days if (end and today >= end) else row_elapsed_days
-        pacing_capped_elapsed = min(pacing_elapsed, row_total_days) if row_total_days > 0 else 0
+        # Decorrido = dias com entrega já no dado (até D-1), em BRT, capado no
+        # total — ver _pacing_elapsed_days. Mesma regra do `?list`
+        # (pacing_expected_to_date) e do front (pacingRunway): as três telas
+        # continuam batendo entre si, agora sem o Under falso do último dia.
+        pacing_capped_elapsed = _pacing_elapsed_days(row_start, row_total_days, _today_brt())
         pacing_expected = (neg / row_total_days * pacing_capped_elapsed) if (row_total_days > 0 and pacing_capped_elapsed > 0) else 0
 
         # Pacing: entregue vs esperado (fórmula canônica calendar-elapsed)
@@ -11868,8 +11925,8 @@ def query_campaigns_list():
     #
     # O per-row pacing (campo `pacing` em totals, consumido pelo Resumo
     # por mídia + Detalhamento + barra da aba Video) já foi alinhado em
-    # query_totals (~4671): calendar-elapsed com cap em row_total_days e a
-    # regra `today >= end → esperado = negociado cheio`, igual a esta.
+    # query_totals (_compute_totals): calendar-elapsed com cap em
+    # row_total_days via _pacing_elapsed_days, igual a esta.
     #
     # Retorna o "esperado até hoje" pra base do pacing.
     # delivered/expected × 100 dá a % de pacing — exposta como métrica
@@ -11891,18 +11948,13 @@ def query_campaigns_list():
         # entrega pré-voo não estica o runway pra trás. max() preserva o
         # caso de frente que começa DEPOIS (actual_start > s_camp).
         s = max(actual_start, s_camp) if actual_start else s_camp
-        today = date.today()
         total_days = (e - s).days + 1
         if total_days <= 0:
             return None
-        # No último dia (ou depois) a campanha já decorreu por inteiro —
-        # o esperado é 100% do negociado. Alinha com o front
-        # (computeMediaPacing: `now > end ? tDays`). Mid-flight conta só
-        # dias completos (dia corrente não entra), igual ao floor() do front.
-        if today >= e:
-            elapsed_days = total_days
-        else:
-            elapsed_days = max(0, (today - s).days)
+        # Só dias com entrega já no dado (até D-1), em BRT (`today_sp`, não o
+        # UTC do container). No último dia isso é total−1; o esperado só vira
+        # o negociado cheio depois do fim. Ver _pacing_elapsed_days.
+        elapsed_days = _pacing_elapsed_days(s, total_days, today_sp)
         if elapsed_days <= 0:
             return None
         return negotiated / total_days * elapsed_days
@@ -12070,7 +12122,7 @@ def query_campaigns_list():
         # O diagnóstico (front) usa ISSO direto como denominador da projeção em
         # vez de reconstruir negotiated via expected_to_date / elapsed_ratio.
         #
-        # Por que: a reconstrução do front quebrava no ÚLTIMO DIA. O backend usa
+        # Por que: a reconstrução do front quebrava no ÚLTIMO DIA. O backend usava
         # `today >= end` em pacing_expected_to_date → no fim, expected = negociado
         # CHEIO. Mas o front reconstruía `negotiated = expected / (elapsed/total)`
         # com `today > end` (estrito) → elapsed = total-1 → ratio < 1 → negociado
@@ -13132,26 +13184,31 @@ _typeform_meta_cache = {}  # form_id -> (timestamp, payload)
 #   2. O TOTAL SOMADO fica coerente no tempo. O Max Attention já cacheava 5
 #      min; o Typeform não cacheava nada. Somar os dois entregava um número
 #      cujas metades eram de momentos diferentes, e ninguém conseguia dizer
-#      "esse total é de quando". Mesmo TTL nos dois = as duas metades são do
-#      mesmo instante.
+#      "esse total é de quando". Com TTL nos dois, as metades ficam no
+#      máximo um TTL (5 min) defasadas entre si.
 #
 # Chave inclui a janela (since/until) porque o filtro de período do admin não
 # pode contaminar a visão do cliente — mesma regra do cache do Max Attention.
-_TYPEFORM_RESULTS_TTL = 300  # 5 min — igual ao _MA_RESULTS_TTL, de propósito
+_TYPEFORM_RESULTS_TTL = 300  # 5 min (o _MA_RESULTS_TTL caiu pra 2 min, ver lá)
 _typeform_results_cache = {}  # "form_id|since|until" -> (timestamp, payload)
 
 # ── Cache do Max Attention ──────────────────────────────────────────────────
 # `maxattention_results` é chamado no RENDER do report, por cliente, por
 # pergunta — não é um fluxo de admin. Sem cache, cada abertura de report vira
 # N queries no BigQuery, e a conta cresce com audiência em vez de crescer com
-# dado novo. Com 5 min, uma campanha vista 200×/dia custa ~pouquíssimas
-# queries, e a defasagem é irrelevante pra uma pesquisa que acumula resposta
-# ao longo de semanas.
+# dado novo. Com cache, uma campanha vista 200×/dia custa poucas queries na
+# tabela pequena — o custo acompanha o TTL, não a audiência.
 #
 # O cache de resultado é keyed por (criativo, pergunta, período): dois clientes
 # vendo o mesmo report batem na mesma entrada, e o filtro de período do admin
 # não contamina a visão do cliente.
-_MA_RESULTS_TTL = 300     # 5 min
+#
+# 2 min (era 5): o sync agora anda a cada 5 min (tick do Scheduler), e com 5
+# min aqui em cima a resposta nova levava até ~11 min pra aparecer. A leitura
+# é na tabela pequena (mínimo de 10 MB por query), então o TTL menor custa
+# centavos. O Typeform segue em 5 min por causa do rate limit da API: as duas
+# metades do total somado ficam no máximo 5 min defasadas entre si.
+_MA_RESULTS_TTL = 120     # 2 min
 _MA_CREATIVES_TTL = 600   # 10 min — listagem é admin, e a dimensão recarrega ~1×/h
 _ma_results_cache = {}    # "creative|question|from|to" -> (timestamp, payload)
 _ma_creatives_cache = {}  # "token|days" -> (timestamp, payload)

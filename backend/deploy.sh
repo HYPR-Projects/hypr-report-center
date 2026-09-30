@@ -732,6 +732,42 @@ if [ -n "$CRON_SECRET" ]; then
   echo "  ✓ Job recriado (30 6-18/3 * * * America/Sao_Paulo → action=warmup)"
 fi
 
+# ── 5d. Cloud Scheduler: ma-survey-sync-tick ─────────────────────────────────
+# A cada 5 min, 08h–21h55 BRT, copia a PONTA do lake de eventos do Max
+# Attention pra tabela pequena que o Brand Lift lê. Sem isto a resposta do Tap
+# to Choose só aparecia no report quando alguém abria o report depois de 60
+# min de cópia parada, ou no warmup de 3h. Custo com teto no código:
+# MA_SURVEY_TICK_MAX_GB por MERGE e MA_SURVEY_DAILY_GB por dia (ver
+# backend/maxattention.py, "Tick: custo com teto"). Só roda com MA_SURVEY_VIEW.
+if [ -n "$CRON_SECRET" ] && [ -n "$MA_SURVEY_VIEW" ]; then
+  echo ""
+  echo "▸ Garantindo Cloud Scheduler ma-survey-sync-tick..."
+
+  MT_JOB="ma-survey-sync-tick"
+  MT_URI="https://${REGION}-site-hypr.cloudfunctions.net/${FUNCTION_NAME}?action=maxattention_sync_tick"
+
+  if gcloud scheduler jobs describe "$MT_JOB" \
+        --location="$REGION" --project=site-hypr >/dev/null 2>&1; then
+    gcloud scheduler jobs delete "$MT_JOB" \
+      --location="$REGION" --project=site-hypr --quiet >/dev/null
+  fi
+
+  gcloud scheduler jobs create http "$MT_JOB" \
+    --location="$REGION" \
+    --project=site-hypr \
+    --schedule="*/5 8-21 * * *" \
+    --time-zone="America/Sao_Paulo" \
+    --uri="$MT_URI" \
+    --http-method=POST \
+    --headers="Content-Type=application/json,X-Cron-Secret=${CRON_SECRET}" \
+    --message-body='{}' \
+    --attempt-deadline=120s \
+    --max-retry-attempts=0 \
+    --description="Sync curto das respostas de survey do Max Attention (so a ponta, com orcamento diario)" \
+    >/dev/null
+  echo "  ✓ Job recriado (*/5 8-21 * * * America/Sao_Paulo → action=maxattention_sync_tick)"
+fi
+
 # ── 6. Output final ──────────────────────────────────────────────────────────
 echo ""
 echo "✓ Deploy concluído. URL pública:"

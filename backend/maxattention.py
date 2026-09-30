@@ -437,12 +437,17 @@ def _job_config(params, max_bytes=None):
 #     diz que a cópia está em andamento, e o erro do sync vai junto.
 #
 # Quem roda o sync:
-#   - o warmup do main.py (a cada 3h, horário comercial), com sobreposição de
-#     1 dia pra pegar evento que chegou atrasado no lake;
+#   - o tick agendado (`sync_tick`, Cloud Scheduler a cada 5 min em horário
+#     comercial): só a ponta, com teto por MERGE e orçamento diário. É o
+#     caminho que deixa a resposta nova visível em minutos;
+#   - o warmup do main.py: o primeiro do dia reconcilia 3 dias pra trás
+#     (`reconcile_daily`), pra pegar evento que chegou atrasado no lake; os
+#     demais fazem só um tick;
 #   - a própria leitura, quando a última rodada tem mais de
-#     `MA_SURVEY_SYNC_MIN` (default 60) — best-effort: se o sync falhar, a
-#     leitura serve o que já está na tabela e o erro vai pro log;
-#   - `refresh=true` do admin, que força.
+#     `MA_SURVEY_SYNC_MIN` (default 60) — rede de segurança pra quando o tick
+#     não roda (fora do horário, orçamento esgotado). Best-effort: se o sync
+#     falhar, a leitura serve o que já está na tabela e o erro vai pro log;
+#   - `refresh=true` do admin, que força um tick (também dentro do orçamento).
 #
 # `MA_SURVEY_MATERIALIZE=0` volta ao modo antigo (lendo a view direto). Existe
 # pra emergência, não pra uso: é o modo que quebra.
@@ -476,6 +481,54 @@ READ_SYNC_BUDGET_S = 20
 RESULTS_SYNC_BUDGET_S = 8
 # Intervalo mínimo entre rodadas de backfill disparadas por leitura.
 _BACKFILL_RETRY_S = 30
+
+# ── Tick: custo com teto ─────────────────────────────────────────────────────
+#
+# Cada MERGE lê a partição INTEIRA do dia no lake, não só a janela pedida: o
+# dado recente mora no streaming buffer, que não é clusterizado, então o
+# filtro por event_type não poda. Medido em 30/09: 0,7 GB às 08h46 BRT, 1,8 GB
+# às 16h49 — cresce ao longo do dia UTC, e cresce com o lake. Rodar a cada 5
+# min é barato, mas não é de graça, e "não é de graça" sem teto é como a conta
+# vira surpresa. Três travas:
+#
+#   1. o tick só copia a PONTA (marca d'água → agora). Buraco de histórico é
+#      trabalho do warmup e da leitura, nunca do tick — um backfill disparado
+#      por agendamento de 5 min seria a conta bizarra;
+#   2. teto de bytes por MERGE (`MA_SURVEY_TICK_MAX_GB`, default 8): rodada
+#      fora do padrão falha sem cobrar;
+#   3. orçamento DIÁRIO compartilhado entre instâncias
+#      (`MA_SURVEY_DAILY_GB`, default 200 ≈ US$ 1,25/dia no on-demand). O
+#      gasto vem do próprio log de fatias (`bytes_billed`), então vale pra
+#      todas as instâncias da função. Esgotado, o tick para e o report volta
+#      pra cadência da leitura (60 min) até o dia virar.
+#
+# O que conta no orçamento: tudo que o sync cobrou no dia (tick, warmup,
+# admin). O que ele BLOQUEIA: só o tick e o refresh do admin — a reconciliação
+# diária e a rede de segurança da leitura já têm cadência limitada.
+TICK_MAX_GB_DEFAULT = 8
+DAILY_GB_DEFAULT = 200
+# Reconciliação do primeiro warmup do dia. Na amostra de 30/09 havia resposta
+# chegando ao lake 48h depois do `occurred_at`; com a sobreposição de 2h do
+# tick (ou 1 dia do warmup antigo) ela nunca era copiada.
+DAILY_RECONCILE_OVERLAP = timedelta(days=3)
+# Refresh do admin: se alguém sincronizou há menos que isto, não repete.
+FORCED_MIN_INTERVAL_S = 60
+
+
+def _env_gb(name, default):
+    try:
+        v = float(os.environ.get(name, "") or default)
+    except ValueError:
+        v = float(default)
+    return int(max(0.0, v) * 1024 ** 3)
+
+
+def tick_max_bytes():
+    return _env_gb("MA_SURVEY_TICK_MAX_GB", TICK_MAX_GB_DEFAULT)
+
+
+def daily_budget_bytes():
+    return _env_gb("MA_SURVEY_DAILY_GB", DAILY_GB_DEFAULT)
 
 _SYNC_LOCK = threading.Lock()
 LOCK_WAIT_S = 25
@@ -524,7 +577,7 @@ def events_raw_table():
     return _qualified_env("MA_EVENTS_RAW", f"{project}.{dataset}.creative_events_raw")
 
 
-def _source(view):
+def _source(view, with_dim=True):
     """O que vai depois do FROM nas leituras: a view (modo legado) ou a tabela
     materializada com o MESMO contrato de colunas da view.
 
@@ -535,6 +588,16 @@ def _source(view):
     tabela pequena, função de janela custa nada."""
     if not materialized():
         return f"`{view}`"
+    if not with_dim:
+        # Sem a dimensão: o detalhe do report não usa nome nem token, e o
+        # BigQuery cobra no mínimo 10 MB por tabela referenciada — o join
+        # dobrava o custo de cada leitura do report sem trazer nada.
+        return f"""(
+          SELECT creative_id, session_id, question, option, responded_at
+          FROM `{answers_table()}`
+          WHERE TRUE
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY event_id ORDER BY synced_at) = 1
+        )"""
     return f"""(
           SELECT
             a.creative_id,
@@ -577,9 +640,12 @@ def _ensure_tables():
           synced_from    TIMESTAMP,
           synced_through TIMESTAMP NOT NULL,
           inserted       INT64,
-          ran_at         TIMESTAMP
+          ran_at         TIMESTAMP,
+          bytes_billed   INT64
         )
         OPTIONS (description = "Marca d'água do sync de ma_survey_answers. Uma linha por fatia.");
+        -- Tabela criada antes do orçamento diário não tem a coluna.
+        ALTER TABLE `{log}` ADD COLUMN IF NOT EXISTS bytes_billed INT64;
     """).result()
     _TABLES_READY.add(answers)
 
@@ -687,9 +753,10 @@ def _has_partition(days, since, until):
     return False
 
 
-def _merge_range(since, until):
+def _merge_range(since, until, max_bytes=None):
     """Copia as respostas de [since, until) do lake pra tabela. Idempotente
-    (casa por event_id), então sobreposição entre rodadas é segura.
+    (casa por event_id), então sobreposição entre rodadas é segura. Devolve
+    (linhas inseridas, bytes cobrados) — o segundo alimenta o orçamento diário.
 
     Aqui o dedupe PODE ser por QUALIFY, ao contrário da view: a janela roda
     sobre o scan que já tem o filtro de partição constante, sem o otimizador
@@ -728,27 +795,56 @@ def _merge_range(since, until):
         bigquery.ScalarQueryParameter("since", "TIMESTAMP", since),
         bigquery.ScalarQueryParameter("until", "TIMESTAMP", until),
     ]
-    job = _client().query(sql, job_config=_job_config(params))
+    job = _client().query(sql, job_config=_job_config(params, max_bytes=max_bytes))
     job.result()
-    return int(getattr(job, "num_dml_affected_rows", None) or 0)
+    return (int(getattr(job, "num_dml_affected_rows", None) or 0),
+            int(getattr(job, "total_bytes_billed", None) or 0))
 
 
-def _log_sync(since, until, inserted):
+def _log_sync(since, until, inserted, billed=0):
     _client().query(
         f"""
-        INSERT INTO `{_sync_log_table()}` (synced_from, synced_through, inserted, ran_at)
-        VALUES (@since, @until, @inserted, CURRENT_TIMESTAMP())
+        INSERT INTO `{_sync_log_table()}` (synced_from, synced_through, inserted, ran_at, bytes_billed)
+        VALUES (@since, @until, @inserted, CURRENT_TIMESTAMP(), @billed)
         """,
         job_config=_job_config([
             bigquery.ScalarQueryParameter("since", "TIMESTAMP", since),
             bigquery.ScalarQueryParameter("until", "TIMESTAMP", until),
             bigquery.ScalarQueryParameter("inserted", "INT64", int(inserted)),
+            bigquery.ScalarQueryParameter("billed", "INT64", int(billed)),
         ], max_bytes=READ_MAX_BYTES_BILLED),
     ).result()
 
 
-def sync_answers(force=False, overlap=SYNC_OVERLAP, budget_s=SYNC_BUDGET_S, wait=True):
+def _day_start_brt(now):
+    """Meia-noite de hoje em BRT, em UTC. O orçamento vira junto com o dia de
+    quem olha a conta, não com o dia UTC (21h BRT)."""
+    brt = timezone(timedelta(hours=-3))
+    local = now.astimezone(brt)
+    return local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+
+def spent_today_bytes():
+    """Bytes que o sync cobrou hoje (BRT), somando TODAS as instâncias — vem
+    do log de fatias, não de memória. Erro sobe: quem chama decide (o tick
+    falha fechado: sem saber o gasto, não gasta)."""
+    _ensure_tables()
+    rows = list(_client().query(
+        f"SELECT IFNULL(SUM(bytes_billed), 0) AS b FROM `{_sync_log_table()}` WHERE ran_at >= @since",
+        job_config=_job_config(
+            [bigquery.ScalarQueryParameter("since", "TIMESTAMP", _day_start_brt(_now()))],
+            max_bytes=READ_MAX_BYTES_BILLED,
+        ),
+    ).result())
+    return int(rows[0]["b"] or 0) if rows else 0
+
+
+def sync_answers(force=False, overlap=SYNC_OVERLAP, budget_s=SYNC_BUDGET_S, wait=True,
+                 max_bytes=None, tail_only=False):
     """Traz o que chegou no lake e completa o histórico. Erro sobe.
+
+    `tail_only` copia só a ponta e deixa os buracos pra outra rodada (é o modo
+    do tick). `max_bytes` é o teto de cada MERGE.
 
     Ordem de trabalho, sempre do RECENTE pro antigo:
       1. a ponta: da última marca (menos a sobreposição) até agora;
@@ -760,7 +856,7 @@ def sync_answers(force=False, overlap=SYNC_OVERLAP, budget_s=SYNC_BUDGET_S, wait
     em meses vazios enquanto a tabela parcial era servida como completa.
 
     Devolve `{status, synced_through, covered_from, complete, inserted,
-    chunks}`. `covered_from` é o início do trecho CONTÍNUO que termina em
+    chunks, bytes_billed}`. `covered_from` é o início do trecho CONTÍNUO que termina em
     `synced_through`: é o que dá pra afirmar sobre "não houve resposta".
     `complete` = não sobrou buraco entre o piso e agora.
 
@@ -776,9 +872,9 @@ def sync_answers(force=False, overlap=SYNC_OVERLAP, budget_s=SYNC_BUDGET_S, wait
     # e o payload diz que a cópia está em andamento.
     acquired = _SYNC_LOCK.acquire(timeout=LOCK_WAIT_S) if wait else _SYNC_LOCK.acquire(blocking=False)
     if not acquired:
-        return {**_sync_snapshot(), "status": "busy", "inserted": 0, "chunks": 0}
+        return {**_sync_snapshot(), "status": "busy", "inserted": 0, "chunks": 0, "bytes_billed": 0}
     try:
-        return _sync_locked(force, overlap, budget_s, ttl)
+        return _sync_locked(force, overlap, budget_s, ttl, max_bytes=max_bytes, tail_only=tail_only)
     except Exception as e:
         _SYNC_STATE["last_error"] = f"{type(e).__name__}: {e}"[:500]
         raise
@@ -815,11 +911,11 @@ def _publish_state(covered, floor, now, days):
     )
 
 
-def _sync_locked(force, overlap, budget_s, ttl):
+def _sync_locked(force, overlap, budget_s, ttl, max_bytes=None, tail_only=False):
     checked = _SYNC_STATE["checked_at"]
     if (not force and checked is not None and _SYNC_STATE["complete"]
             and (time.monotonic() - checked) < ttl):
-        return {**_sync_snapshot(), "status": "fresh", "inserted": 0, "chunks": 0}
+        return {**_sync_snapshot(), "status": "fresh", "inserted": 0, "chunks": 0, "bytes_billed": 0}
 
     # Histórico incompleto com a ponta fresca: leitura não-forçada só volta a
     # gastar orçamento de backfill a cada `_BACKFILL_RETRY_S`. Sem isso, cada
@@ -829,7 +925,7 @@ def _sync_locked(force, overlap, budget_s, ttl):
     through_known = _SYNC_STATE["synced_through"]
     if (not force and last is not None and (time.monotonic() - last) < _BACKFILL_RETRY_S
             and through_known is not None and (_now() - through_known).total_seconds() < ttl):
-        return {**_sync_snapshot(), "status": "fresh", "inserted": 0, "chunks": 0}
+        return {**_sync_snapshot(), "status": "fresh", "inserted": 0, "chunks": 0, "bytes_billed": 0}
 
     _ensure_tables()
     now = _now()
@@ -840,7 +936,13 @@ def _sync_locked(force, overlap, budget_s, ttl):
     if (not force and _SYNC_STATE["complete"] and through is not None
             and (now - through).total_seconds() < ttl):
         _SYNC_STATE["checked_at"] = time.monotonic()
-        return {**_sync_snapshot(), "status": "fresh", "inserted": 0, "chunks": 0}
+        return {**_sync_snapshot(), "status": "fresh", "inserted": 0, "chunks": 0, "bytes_billed": 0}
+
+    # Tick sem marca d'água seria um backfill de 730 dias disparado por
+    # agendamento — exatamente o gasto que o modo existe pra impedir. O
+    # primeiro backfill é da leitura/warmup.
+    if tail_only and through is None:
+        return {**_sync_snapshot(), "status": "no_watermark", "inserted": 0, "chunks": 0, "bytes_billed": 0}
 
     # Fila de trabalho, do recente pro antigo: a ponta primeiro (reabre a
     # sobreposição, onde pode ter chegado evento atrasado), depois os buracos.
@@ -848,10 +950,10 @@ def _sync_locked(force, overlap, budget_s, ttl):
         work = [(floor, now)]
     else:
         tail = (max(floor, through - overlap), now)
-        work = [tail] + _gaps(_merge_intervals(covered + [tail]), floor, now)
+        work = [tail] if tail_only else [tail] + _gaps(_merge_intervals(covered + [tail]), floor, now)
 
     t0 = time.monotonic()
-    inserted = chunks = 0
+    inserted = chunks = billed = 0
     done = []            # o que esta rodada de fato cobriu
     skip = None          # trecho contíguo sem partição, logado numa linha só
     out_of_budget = False
@@ -876,15 +978,16 @@ def _sync_locked(force, overlap, budget_s, ttl):
                 out_of_budget = True
                 break
             try:
-                n = _merge_range(start, end)
+                n, b = _merge_range(start, end, max_bytes=max_bytes)
             except Exception as e:  # noqa: BLE001 — só o teto é tratado
-                if _is_bytes_limit_error(e) and step > timedelta(days=1):
+                if _is_bytes_limit_error(e) and step > timedelta(days=1) and end - start > timedelta(days=1):
                     step = max(timedelta(days=1), step / 2)
                     continue
                 raise
-            _log_sync(start, end, n)
+            _log_sync(start, end, n, b)
             done.append((start, end))
             inserted += n
+            billed += b
             chunks += 1
             end = start
         if out_of_budget:
@@ -904,12 +1007,13 @@ def _sync_locked(force, overlap, budget_s, ttl):
         _RECENT_CACHE.clear()
     snap = _sync_snapshot()
     logger.info(
-        f"[maxattention] sync: {inserted} respostas novas em {chunks} fatia(s); cobertura "
+        f"[maxattention] sync: {inserted} respostas novas em {chunks} fatia(s), "
+        f"{billed / 1024 ** 3:.2f} GB cobrados; cobertura "
         f"{snap['covered_from'].isoformat() if snap['covered_from'] else '—'} → "
         f"{snap['synced_through'].isoformat() if snap['synced_through'] else '—'}"
         f"{'' if snap['complete'] else ' (histórico incompleto, continua na próxima)'}"
     )
-    return {**snap, "status": "synced", "inserted": inserted, "chunks": chunks}
+    return {**snap, "status": "synced", "inserted": inserted, "chunks": chunks, "bytes_billed": billed}
 
 
 def _ensure_fresh(force=False, budget_s=READ_SYNC_BUDGET_S):
@@ -932,6 +1036,47 @@ def _ensure_fresh(force=False, budget_s=READ_SYNC_BUDGET_S):
             raise
         logger.warning(f"[maxattention] sync falhou, servindo a tabela como está: {e}")
         return None
+
+
+def sync_tick():
+    """Rodada curta agendada: só a ponta, com teto por MERGE e dentro do
+    orçamento diário. Não espera outra thread (`busy` se o warmup estiver
+    sincronizando nesta instância). Erro sobe — o endpoint registra.
+
+    Falha fechado no orçamento: sem conseguir ler o gasto do dia, não gasta."""
+    if not materialized():
+        return {"status": "legacy", "inserted": 0, "chunks": 0, "bytes_billed": 0}
+    budget = daily_budget_bytes()
+    spent = spent_today_bytes()
+    if spent >= budget:
+        logger.warning(
+            f"[maxattention] tick pulado: orçamento do dia esgotado "
+            f"({spent / 1024 ** 3:.1f} de {budget / 1024 ** 3:.1f} GB)"
+        )
+        return {**_sync_snapshot(), "status": "over_budget", "inserted": 0, "chunks": 0,
+                "bytes_billed": 0, "spent_bytes": spent, "budget_bytes": budget}
+    r = sync_answers(force=True, overlap=SYNC_OVERLAP, budget_s=SYNC_BUDGET_S, wait=False,
+                     max_bytes=tick_max_bytes(), tail_only=True)
+    return {**r, "spent_bytes": spent + int(r.get("bytes_billed") or 0), "budget_bytes": budget}
+
+
+def reconcile_daily():
+    """Primeiro warmup do dia: reabre 3 dias do lake pra pegar resposta que
+    chegou atrasada (visto: 48h). Completa buracos de histórico também. Fora
+    do orçamento de propósito: é uma rodada por dia, e é o que garante que o
+    total não perde resposta."""
+    return sync_answers(force=True, overlap=DAILY_RECONCILE_OVERLAP, budget_s=240)
+
+
+def force_fresh():
+    """`refresh=true` do admin: um tick agora, a menos que a cópia tenha menos
+    de `FORCED_MIN_INTERVAL_S`. Antes o refresh só furava o cache de 5 min e
+    lia a mesma tabela parada — quem testava a coleta respondendo no preview
+    não via o número mexer, com razão."""
+    through = _SYNC_STATE["synced_through"]
+    if through is not None and (_now() - through).total_seconds() < FORCED_MIN_INTERVAL_S:
+        return {**_sync_snapshot(), "status": "fresh", "inserted": 0, "chunks": 0, "bytes_billed": 0}
+    return sync_tick()
 
 
 def sync_status():
@@ -1395,7 +1540,7 @@ def _view_columns(view):
 _COLUMNS_CACHE = {}
 
 
-def fetch_results(creative_id, question=None, date_from=None, date_to=None):
+def fetch_results(creative_id, question=None, date_from=None, date_to=None, fresh=False):
     """
     Contagens por opção de UM criativo, no mesmo contrato do proxy do
     Typeform — `{type, counts, total, first_response_at, last_response_at}` —
@@ -1405,8 +1550,16 @@ def fetch_results(creative_id, question=None, date_from=None, date_to=None):
     Datas em 'YYYY-MM-DD' e interpretadas em BRT, como no Typeform: o admin
     digita pensando no fuso de Brasília e as duas bases precisam responder
     ao mesmo filtro, senão a soma compara períodos diferentes.
+
+    `fresh` (só admin, via `refresh=true`) força um tick antes de ler. Falha
+    dele não derruba a leitura: serve a tabela como está.
     """
     view = survey_view()
+    if fresh and materialized():
+        try:
+            force_fresh()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[maxattention] refresh do admin não sincronizou: {e}")
     _ensure_fresh(budget_s=RESULTS_SYNC_BUDGET_S)
     _, has_responses_col, _, has_question_col, has_session_col = _view_columns(view)
     weight = _weight_expr(has_session_col, has_responses_col)
@@ -1429,7 +1582,7 @@ def fetch_results(creative_id, question=None, date_from=None, date_to=None):
           {weight}          AS n,
           MIN(responded_at) AS first_at,
           MAX(responded_at) AS last_at
-        FROM {_source(view)}
+        FROM {_source(view, with_dim=False)}
         WHERE {' AND '.join(where)}
         GROUP BY option
         ORDER BY n DESC
