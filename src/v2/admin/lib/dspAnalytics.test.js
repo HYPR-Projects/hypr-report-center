@@ -224,3 +224,124 @@ test("série diária de lines", () => {
   assert.equal(rows[0].d, "2026-09-01");
   assert.equal(rows[0].cost, sum("cost", L.dvPlain));
 });
+
+// ── Rodada 2 ─────────────────────────────────────────────────────────────
+
+test("Visíveis / Total = visíveis ÷ impressões (mensuração × viewability)", () => {
+  const y = aggregate(filterRows(data.lines, F({ sources: ["YAHOO"] })));
+  assert.equal(y.viewShare, (73000 / 200000) * 100);
+  assert.ok(Math.abs(y.viewShare - (y.measRate * y.viewability) / 100) < 1e-9);
+});
+
+test("série traz quem puxou cada ponto (por impressão e por custo)", () => {
+  const rows = filterRows(data.series, F());
+  const daily = buildTimeseries(rows, data.dates, "day");
+  const d2 = daily.find((b) => b.key === "2026-09-02");
+  assert.equal(d2.topByImp[0].token, "BBB222");
+  assert.equal(d2.topByImp[0].imp, 400000);
+  assert.ok(d2.topByImp.length <= 3);
+  const d8 = daily.find((b) => b.key === "2026-09-08");
+  // 08/09: Yahoo (Kenvue) 200k imps e R$ 90 vs DV360 vídeo 50k imps e R$ 125
+  assert.equal(d8.topByImp[0].s, "YAHOO");
+  assert.equal(d8.topByCost[0].s, "DV360");
+});
+
+test("mês a mês: variação só entre meses inteiros e fatia de custo por DSP", async () => {
+  const { buildMonthly } = await import("./dspAnalytics.js");
+  const rows = [
+    { d: "2026-07-10", s: "DV360", m: "DISPLAY", imp: 1000, meas: 1000, view: 900, clk: 9, cost: 1, vst: 0, v100: 0, vcomp: 0, fee: 0 },
+    { d: "2026-08-10", s: "DV360", m: "DISPLAY", imp: 1000, meas: 1000, view: 900, clk: 9, cost: 2, vst: 0, v100: 0, vcomp: 0, fee: 0 },
+    { d: "2026-08-10", s: "YAHOO", m: "DISPLAY", imp: 1000, meas: 500, view: 400, clk: 9, cost: 2, vst: 0, v100: 0, vcomp: 0, fee: 0 },
+  ];
+  const dates = [];
+  for (let i = 1; i <= 31; i++) dates.push(`2026-07-${String(i).padStart(2, "0")}`, `2026-08-${String(i).padStart(2, "0")}`);
+  const mo = buildMonthly(rows, dates, "ecpm");
+  assert.deepEqual(mo.rows.map((r) => r.key), ["2026-07", "2026-08"]);
+  const aug = mo.rows[1];
+  assert.equal(aug.cells.DV360.value, 2);
+  assert.equal(Math.round(aug.cells.DV360.delta.value), 100);   // R$1 → R$2 = +100%
+  assert.equal(aug.cells.YAHOO.delta, null);                     // sem julho
+  assert.equal(aug.cells.DV360.costShare, 50);
+  // mês parcial: volume perde a variação, razão (eCPM) mantém
+  const cut = dates.filter((d) => d <= "2026-08-15");
+  const partialImp = buildMonthly(rows, cut, "imp");
+  assert.equal(partialImp.rows[1].partial, true);
+  assert.equal(partialImp.rows[1].cells.DV360.delta, null);
+  const partialEcpm = buildMonthly(rows, cut, "ecpm");
+  assert.equal(Math.round(partialEcpm.rows[1].cells.DV360.delta.value), 100);
+});
+
+test("variação em p.p. respeita a precisão da métrica", async () => {
+  const { fmtDelta } = await import("../components/dspAnalytics/dspFormat.js");
+  assert.equal(fmtDelta({ kind: "pp", value: 0.03 }, 2).dir, "up");      // CTR: 0,03 p.p. não é estável
+  assert.equal(fmtDelta({ kind: "pp", value: 0.03 }, 1).dir, "flat");    // viewability: é
+  assert.equal(fmtDelta({ kind: "pp", value: -0.03 }, 2).text, "0,03 p.p.");
+  assert.equal(fmtDelta({ kind: "pct", value: 0.3 }).dir, "flat");
+});
+
+test("export: linha da planilha com números crus e flags por extenso", async () => {
+  const { lineRowAoA, LINE_HEADERS } = await import("./dspAnalyticsExport.js");
+  const l = enrichLines(data.lines).find((x) => x.key === "DV360|1|0");
+  const row = lineRowAoA(l);
+  assert.equal(row.length, LINE_HEADERS.length);
+  const at = (h) => row[LINE_HEADERS.indexOf(h)];
+  assert.equal(at("DSP"), "DV360");
+  assert.equal(at("Motivo ABS"), "Fee DV");
+  assert.equal(at("Impressões").v, 100000);
+  assert.equal(at("Custo (R$)").v, 128);
+  assert.match(at("Red flags"), /ABS divergente/);
+  const orphan = lineRowAoA(enrichLines(data.lines).find((x) => x.key === "DV360|5|0"));
+  assert.equal(orphan[LINE_HEADERS.indexOf("Short token")], "");
+});
+
+// ── Rodada 3: táticas ────────────────────────────────────────────────────
+
+const TAC = decodePayload({
+  ...PAYLOAD,
+  series_cols: [...SERIES_COLS.slice(0, 7), "tc", ...METRICS],
+  line_cols: [...LINE_COLS.slice(0, 8), "tc", ...LINE_COLS.slice(8)],
+  series: PAYLOAD.series.map((r, i) => [...r.slice(0, 7), ["tp_high", "tp_low", "max_viewable", "tp_high", "none", "max_views"][i], ...r.slice(7)]),
+  lines: PAYLOAD.lines.map((r, i) => [...r.slice(0, 8), ["tp_high", "tp_low", "max_viewable", "tp_high", "none", "max_views"][i], ...r.slice(8)]),
+});
+
+test("tática: decodifica, filtra série e lines igual e soma certo", async () => {
+  const { buildTactics } = await import("./dspAnalytics.js");
+  assert.equal(TAC.lines[0].tactic, "tp_high");
+  assert.equal(data.lines[0].tactic, "none");               // payload antigo, sem coluna
+  const f = F({ tactics: ["tp_high"] });
+  assert.equal(aggregate(filterRows(TAC.lines, f)).imp, 300000);
+  assert.equal(aggregate(filterRows(TAC.series, f)).imp, 300000);
+  const rows = buildTactics(enrichLines(TAC.lines));
+  assert.deepEqual(rows.map((r) => r.tactic), ["tp_high", "tp_low", "max_viewable", "max_views", "none"]);
+  const high = rows[0];
+  assert.equal(high.lines, 2);
+  assert.deepEqual(high.bySource.map((s) => s.source), ["DV360", "YAHOO"]);
+  assert.ok(Math.abs(rows.reduce((a, r) => a + r.shareImp, 0) - 100) < 1e-9);
+});
+
+test("tática: gráfico dobra as menores em Outras e mês a mês segue a visão", async () => {
+  const { buildMonthly } = await import("./dspAnalytics.js");
+  const ts = buildTimeseries(TAC.series, TAC.dates, "day", "tactic");
+  const keys = new Set(ts.flatMap((b) => Object.keys(b.bySource)));
+  assert.ok(keys.has("tp_high") && keys.has("other"));
+  assert.ok(!keys.has("max_views") && !keys.has("none"));
+  const total = ts.reduce((a, b) => a + b.total.imp, 0);
+  const summed = ts.reduce((a, b) => a + Object.values(b.bySource).reduce((x, m) => x + (m?.imp || 0), 0), 0);
+  assert.equal(total, summed);
+  const mo = buildMonthly(TAC.series, TAC.dates, "imp", "tactic");
+  assert.equal(mo.by, "tactic");
+  assert.equal(mo.sources[0], "tp_high");
+  assert.equal(mo.sources.at(-1), "other");
+});
+
+test("tática: opção de filtro com rótulo e export com coluna", async () => {
+  const opts = buildFilterOptions(TAC.lines, F());
+  assert.equal(opts.tactics[0].id, "tp_high");
+  assert.equal(opts.tactics[0].label, "Top Performance High");
+  const pruned = pruneFilters(F({ tactics: ["tp_high", "premium_list"] }), TAC.lines);
+  assert.deepEqual(pruned.tactics, ["tp_high"]);
+  const { lineRowAoA, LINE_HEADERS } = await import("./dspAnalyticsExport.js");
+  const row = lineRowAoA(enrichLines(TAC.lines)[1]);
+  assert.equal(row[LINE_HEADERS.indexOf("Tática")], "Top Performance Low");
+  assert.equal(row.length, LINE_HEADERS.length);
+});

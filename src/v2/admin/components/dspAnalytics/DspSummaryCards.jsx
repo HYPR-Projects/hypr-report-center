@@ -6,11 +6,12 @@
 // lib/dspAnalytics.js — aqui só se desenha.
 
 import { cn } from "../../../../ui/cn";
+import { FormatBadge, FormatIcon } from "./FormatBadge";
 import { SparklineV2 } from "../../../components/SparklineV2";
 import { dspColor, dspLabel } from "../../../../shared/dspMeta";
 import { METRICS, delta, FLAG_DEFS } from "../../lib/dspAnalytics";
 import {
-  fmtMetric, fmtMetricFull, fmtDelta, fmtMoney, fmtPct, fmtCompact, toneFor, fmtDay,
+  fmtMetric, fmtMetricFull, fmtDelta, fmtMoney, fmtPct, fmtCompact, toneFor, fmtDay, formatLabel,
 } from "./dspFormat";
 
 // ─── Variação ────────────────────────────────────────────────────────────
@@ -18,7 +19,7 @@ import {
 // de volume (better = null) fica neutra: mais impressão não é "bom" por si.
 export function DeltaBadge({ metricKey, cur, prev, disabled }) {
   if (disabled) return <span className="text-[11px] text-fg-subtle">—</span>;
-  const d = fmtDelta(delta(cur, prev, metricKey));
+  const d = fmtDelta(delta(cur, prev, metricKey), METRICS[metricKey]?.kind === "rate" ? (METRICS[metricKey].digits ?? 1) : 1);
   if (!d) {
     return <span className="text-[11px] text-fg-subtle" title="Sem dado no período anterior">sem histórico</span>;
   }
@@ -39,37 +40,59 @@ export function DeltaBadge({ metricKey, cur, prev, disabled }) {
 }
 
 // ─── KPIs do recorte ─────────────────────────────────────────────────────
-const KPI_KEYS = ["imp", "meas", "view", "clk", "cost", "ctr", "vtr", "viewability", "ecpm", "vcpm"];
+// Duas linhas: volume e dinheiro em cima, qualidade e eficiência embaixo.
+// "Visíveis / Total" e "Mensuração" ganham tile próprio: são as duas que
+// explicam por que eCPM e CTR de DSPs diferentes não se comparam direto.
+const KPI_ROWS = [
+  ["imp", "meas", "view", "viewShare", "clk", "cost"],
+  ["measRate", "viewability", "ctr", "vtr", "ecpm", "vcpm"],
+];
 const KPI_HINT = {
   meas: "Impressões que a DSP conseguiu medir",
   view: "Impressões visíveis (padrão MRC)",
+  viewShare: "Visíveis ÷ impressões totais: quanto do que foi comprado virou impressão visível contabilizada",
+  measRate: "Mensuráveis ÷ impressões totais",
   ctr: "Cliques ÷ impressões visíveis (padrão HYPR)",
   vtr: "Completions visíveis ÷ impressões visíveis de vídeo",
-  viewability: "Visíveis ÷ mensuráveis",
+  viewability: "Visíveis ÷ mensuráveis (MRC)",
   ecpm: "Custo total da DSP ÷ impressões × 1000",
   vcpm: "Custo total da DSP ÷ visíveis × 1000. Compara DSPs com mensuração diferente",
   cost: "Custo cobrado pela DSP com todas as fees, em BRL",
 };
 
+// Linha de apoio sob o valor: o numerador e o denominador das taxas de volume.
+function kpiSub(k, t) {
+  if (k === "viewShare" && t.imp) return `${fmtCompact(t.view)} de ${fmtCompact(t.imp)}`;
+  if (k === "measRate" && t.imp) return `${fmtCompact(t.meas)} de ${fmtCompact(t.imp)}`;
+  if (k === "vtr" && t.vview) return `${fmtCompact(t.vcomp)} completions`;
+  if (k === "cost" && t.fee > 0) return `${fmtMetric("cost", t.fee)} de fee DV`;
+  return null;
+}
+
 export function KpiGrid({ totals, prev, noDelta }) {
   return (
-    <section aria-label="Totais do recorte" className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-px rounded-xl border border-border bg-border overflow-hidden">
-      {KPI_KEYS.map((k) => (
-        <div key={k} className="bg-surface px-4 py-3.5 min-w-0">
-          <div className="text-[11px] text-fg-muted truncate" title={KPI_HINT[k]}>{METRICS[k].label}</div>
-          <div className="mt-0.5 text-xl font-extrabold tabular-nums text-fg truncate" title={fmtMetricFull(k, totals[k])}>
-            {fmtMetric(k, totals[k])}
+    <section aria-label="Totais do recorte" className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-px rounded-xl border border-border bg-border overflow-hidden">
+      {KPI_ROWS.flat().map((k) => {
+        const sub = kpiSub(k, totals);
+        const tone = k === "viewShare" || k === "measRate" || k === "viewability"
+          ? toneFor(k === "viewShare" ? "viewability" : k, totals[k])
+          : "";
+        return (
+          <div key={k} className="bg-surface px-4 py-3.5 min-w-0">
+            <div className="text-[11px] text-fg-muted truncate" title={KPI_HINT[k]}>{METRICS[k].label}</div>
+            <div
+              className={cn("mt-0.5 text-xl font-extrabold tabular-nums truncate", tone || "text-fg")}
+              title={fmtMetricFull(k, totals[k])}
+            >
+              {fmtMetric(k, totals[k])}
+            </div>
+            <div className="mt-0.5 flex items-center gap-1.5 min-w-0">
+              <DeltaBadge metricKey={k} cur={totals} prev={prev} disabled={noDelta} />
+              {sub && <span className="text-[10.5px] text-fg-subtle tabular-nums truncate">· {sub}</span>}
+            </div>
           </div>
-          <div className="mt-0.5 flex items-center gap-1.5 min-w-0">
-            <DeltaBadge metricKey={k} cur={totals} prev={prev} disabled={noDelta} />
-            {k === "viewability" && totals.measRate != null && (
-              <span className={cn("text-[10.5px] tabular-nums truncate", toneFor("measRate", totals.measRate) || "text-fg-subtle")} title="Taxa de mensuração">
-                · {fmtPct(totals.measRate, 0)} mensurado
-              </span>
-            )}
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </section>
   );
 }
@@ -150,6 +173,7 @@ export function DspScorecards({ cards, spark, freshness, selected, onToggleSourc
               <Stat label="CTR" value={fmtMetric("ctr", m.ctr)} />
               <Stat label="Viewability" value={fmtMetric("viewability", m.viewability)} tone={toneFor("viewability", m.viewability)} />
               <Stat label="Mensuração" value={fmtMetric("measRate", m.measRate)} tone={toneFor("measRate", m.measRate)} />
+              <Stat label="Visíveis / Total" value={fmtMetric("viewShare", m.viewShare)} title={`${fmtMetricFull("view", m.view)} visíveis de ${fmtMetricFull("imp", m.imp)}`} />
               {hasVideo && <Stat label="VTR" value={fmtMetric("vtr", m.vtr)} tone={toneFor("vtr", m.vtr)} />}
               {hasVideo && <Stat label="CPCV" value={fmtMetric("cpcv", m.cpcv)} />}
               {m.fee > 0 && <Stat label="Fee DV (CPM)" value={fmtMoney(m.feeCpm)} title={`Fee pré-bid DV no período: ${fmtMoney(m.fee)}`} />}
@@ -217,7 +241,7 @@ export function AbsCostCard({ rows, absClients }) {
                     <span className="inline-flex items-center gap-2">
                       <span className="size-2 rounded-full" style={{ backgroundColor: dspColor(r.source) }} aria-hidden />
                       <span className="font-semibold text-fg">{dspLabel(r.source)}</span>
-                      <span className="text-fg-subtle">{r.media === "VIDEO" ? "Vídeo" : "Display"}</span>
+                      <FormatBadge media={r.media} size="sm" />
                     </span>
                   </td>
                   <td className={cn("px-3 py-2 text-right", toneFor("ecpm", r.without?.ecpm, { media: r.media, abs: false }))}>
@@ -249,59 +273,104 @@ export function AbsCostCard({ rows, absClients }) {
 }
 
 // ─── Formato × DSP ───────────────────────────────────────────────────────
-const DISPLAY_COLS = [["imp", "Imps"], ["ecpm", "eCPM"], ["vcpm", "vCPM"], ["ctr", "CTR"], ["viewability", "Viewab."]];
-const VIDEO_COLS = [["imp", "Imps"], ["ecpm", "eCPM"], ["cpcv", "CPCV"], ["vtr", "VTR"], ["viewability", "Viewab."]];
+// Um card por formato, lado a lado: cabeçalho com ícone e o total do formato,
+// uma linha por DSP com a fatia dela no formato (barra) e as métricas que
+// importam NAQUELE formato (CTR em display; VTR e CPCV em vídeo).
+const FORMAT_COLS = {
+  DISPLAY: [["ecpm", "eCPM"], ["vcpm", "vCPM"], ["ctr", "CTR"], ["viewability", "Viewab."], ["viewShare", "Visív./Total"]],
+  VIDEO: [["ecpm", "eCPM"], ["cpcv", "CPCV"], ["vtr", "VTR"], ["viewability", "Viewab."], ["viewShare", "Visív./Total"]],
+};
 
 export function FormatMatrix({ rows, absMode }) {
   const abs = absMode === "abs";
+  const note = abs
+    ? "Cores pela régua de ABS do admin."
+    : absMode === "noabs"
+      ? "Cores pela régua sem ABS do admin."
+      : "Cores pela régua sem ABS (mais rigorosa): o recorte mistura lines com e sem ABS. Use o filtro de ABS para comparar na régua certa.";
+  const formats = ["DISPLAY", "VIDEO"].filter((f) => rows.some((r) => r[f]));
+  if (!formats.length) return null;
   return (
-    <section className="rounded-xl border border-border bg-surface overflow-hidden">
-      <div className="px-5 py-3 border-b border-border">
+    <section aria-label="Formato por DSP" className="space-y-2">
+      <div className="flex items-baseline justify-between gap-3 flex-wrap px-1">
         <div className="text-[11px] font-bold uppercase tracking-widest text-signature">Formato × DSP</div>
-        <p className="mt-0.5 text-[11px] text-fg-subtle">Cores pela régua do admin{abs ? " (régua de ABS)" : ""}.</p>
+        <p className="text-[11px] text-fg-subtle">{note}</p>
       </div>
+      <div className={cn("grid gap-4", formats.length > 1 && "xl:grid-cols-2")}>
+        {formats.map((f) => (
+          <FormatCard key={f} media={f} rows={rows.filter((r) => r[f])} abs={abs} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function FormatCard({ media, rows, abs }) {
+  const totalImp = rows.reduce((a, r) => a + (r[media].imp || 0), 0);
+  const totalCost = rows.reduce((a, r) => a + (r[media].cost || 0), 0);
+  const cols = FORMAT_COLS[media];
+  return (
+    <article className="rounded-xl border border-border bg-surface overflow-hidden">
+      <header className="px-5 py-3.5 border-b border-border flex items-center gap-3">
+        <span
+          className={cn(
+            "grid place-items-center size-9 rounded-lg shrink-0",
+            media === "VIDEO" ? "bg-signature-soft text-signature" : "bg-surface-strong text-fg",
+          )}
+        >
+          <FormatIcon media={media} className="size-5" />
+        </span>
+        <div className="min-w-0">
+          <div className="text-sm font-bold text-fg">{formatLabel(media)}</div>
+          <div className="text-[11px] text-fg-subtle tabular-nums">
+            {fmtCompact(totalImp)} impressões · {fmtMetric("cost", totalCost)}
+          </div>
+        </div>
+      </header>
       <div className="overflow-x-auto scrollbar-thin">
         <table className="w-full text-xs tabular-nums">
           <thead>
-            <tr className="text-fg-muted">
-              <th rowSpan={2} className="px-4 py-2 font-semibold text-left align-bottom">DSP</th>
-              <th colSpan={DISPLAY_COLS.length} className="px-3 pt-2 font-semibold text-center border-l border-border">Display</th>
-              <th colSpan={VIDEO_COLS.length} className="px-3 pt-2 font-semibold text-center border-l border-border">Vídeo</th>
-            </tr>
             <tr className="text-fg-subtle">
-              {DISPLAY_COLS.map(([k, l], i) => (
-                <th key={`d${k}`} className={cn("px-3 pb-2 font-medium text-right", i === 0 && "border-l border-border")}>{l}</th>
-              ))}
-              {VIDEO_COLS.map(([k, l], i) => (
-                <th key={`v${k}`} className={cn("px-3 pb-2 font-medium text-right", i === 0 && "border-l border-border")}>{l}</th>
+              <th className="px-5 py-2 font-medium text-left">DSP</th>
+              <th className="px-2.5 py-2 font-medium text-right whitespace-nowrap">Imps · share</th>
+              {cols.map(([k, l]) => (
+                <th key={k} className="px-2.5 py-2 font-medium text-right whitespace-nowrap">{l}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.source} className="border-t border-border">
-                <td className="px-4 py-2 whitespace-nowrap">
-                  <span className="inline-flex items-center gap-2">
-                    <span className="size-2 rounded-full" style={{ backgroundColor: dspColor(r.source) }} aria-hidden />
-                    <span className="font-semibold text-fg">{dspLabel(r.source)}</span>
-                  </span>
-                </td>
-                {DISPLAY_COLS.map(([k], i) => (
-                  <td key={`d${k}`} className={cn("px-3 py-2 text-right", i === 0 && "border-l border-border", toneFor(k, r.DISPLAY?.[k], { media: "DISPLAY", abs }) || "text-fg")}>
-                    {r.DISPLAY ? fmtMetric(k, r.DISPLAY[k]) : "·"}
+            {rows.map((r) => {
+              const m = r[media];
+              const share = totalImp ? (m.imp / totalImp) * 100 : 0;
+              return (
+                <tr key={r.source} className="border-t border-border">
+                  <td className="px-5 py-2.5 whitespace-nowrap">
+                    <span className="inline-flex items-center gap-2">
+                      <span className="size-2 rounded-full" style={{ backgroundColor: dspColor(r.source) }} aria-hidden />
+                      <span className="font-semibold text-fg">{dspLabel(r.source)}</span>
+                    </span>
                   </td>
-                ))}
-                {VIDEO_COLS.map(([k], i) => (
-                  <td key={`v${k}`} className={cn("px-3 py-2 text-right", i === 0 && "border-l border-border", toneFor(k, r.VIDEO?.[k], { media: "VIDEO", abs }) || "text-fg")}>
-                    {r.VIDEO ? fmtMetric(k, r.VIDEO[k]) : "·"}
+                  <td className="px-2.5 py-2.5 text-right">
+                    <div className="text-fg" title={fmtMetricFull("imp", m.imp)}>{fmtMetric("imp", m.imp)}</div>
+                    <div className="mt-1 flex items-center justify-end gap-1.5">
+                      <div className="h-1 w-14 rounded-full bg-canvas-deeper overflow-hidden" aria-hidden>
+                        <div className="h-full rounded-full" style={{ width: `${Math.max(2, share)}%`, backgroundColor: dspColor(r.source) }} />
+                      </div>
+                      <span className="text-[10.5px] text-fg-subtle w-8 text-right">{fmtPct(share, 0)}</span>
+                    </div>
                   </td>
-                ))}
-              </tr>
-            ))}
+                  {cols.map(([k]) => (
+                    <td key={k} className={cn("px-2.5 py-2.5 text-right align-top", toneFor(k, m[k], { media, abs }) || "text-fg")}>
+                      {fmtMetric(k, m[k])}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
-    </section>
+    </article>
   );
 }
 

@@ -104,7 +104,7 @@ def test_name_tag(name, tag):
 # ── SQL ────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("build", [
-    da.build_series_sql, da.build_prev_sql, da.build_lines_sql, da.build_line_daily_sql,
+    da.build_series_sql, da.build_lines_sql, da.build_line_daily_sql,
 ])
 def test_sql_reads_treated_unified_never_staging(build):
     sql = build()
@@ -222,11 +222,14 @@ class _FakeBQ:
                                   io_name="IO", is_survey=False, abs_reason="fee", line_name="L",
                                   first_date=date(2026, 9, 1), last_date=date(2026, 9, 1),
                                   **_m(imp=100, cost=0.1, fee=0.05))])
-        if "WHERE date BETWEEN @prev_from AND @prev_to" in sql:
-            return _FakeJob([])
-        return _FakeJob([dict(date=date(2026, 9, 1), source="DV360", media="DISPLAY", is_abs=True,
-                              is_survey=False, short_token="AAA111", io_name="IO",
-                              **_m(imp=100, cost=0.1, fee=0.05))])
+        row = dict(source="DV360", media="DISPLAY", is_abs=True, is_survey=False,
+                   short_token="AAA111", io_name="IO")
+        return _FakeJob([
+            dict(date=date(2026, 9, 1), **row, **_m(imp=100, cost=0.1, fee=0.05)),
+            # período anterior (31/08): vai pro bloco prev, agregado sem data
+            dict(date=date(2026, 8, 31), **row, **_m(imp=40, cost=0.04)),
+            dict(date=date(2026, 8, 30), **row, **_m(imp=60, cost=0.06)),
+        ])
 
 
 class _FakeBigquery:
@@ -247,7 +250,82 @@ def test_query_dsp_analytics_end_to_end_with_fake_bq():
     bq = _FakeBQ()
     p = da.query_dsp_analytics(bq, _FakeBigquery, "2026-09-01", "2026-09-01", now=NOW)
     assert all(loc == "US" for _, loc in bq.calls)
-    assert len(bq.calls) == 4                     # série, anterior, lines, meta
+    assert len(bq.calls) == 3                     # série+anterior, lines, meta
     assert p["tokens"][0]["client"] == "Kenvue"
+    assert len(p["series"]) == 1
+    prev = dict(zip(p["prev_cols"], p["prev"][0]))
+    assert prev["imp"] == 100 and round(prev["cost"], 2) == 0.1
+    assert p["prev_from"] == "2026-08-31" and p["prev_to"] == "2026-08-31"
     line = dict(zip(p["line_cols"], p["lines"][0]))
     assert line["fee"] == 0.05 and line["reason"] == "fee"
+
+
+def test_split_series_separates_window_and_aggregates_prev():
+    base = dict(source="YAHOO", media="VIDEO", is_abs=False, is_survey=False, short_token="T", io_name="IO")
+    rows = [
+        dict(date=date(2026, 9, 2), **base, **_m(imp=10)),
+        dict(date=date(2026, 8, 20), **base, **_m(imp=3, cost=1.0)),
+        dict(date="2026-08-21", **base, **_m(imp=4, cost=2.0)),
+        dict(date=date(2026, 8, 21), **{**base, "is_abs": True}, **_m(imp=5)),
+    ]
+    series, prev = da.split_series(rows, date(2026, 9, 1))
+    assert [r["imp"] for r in series] == [10]
+    by_abs = {p["is_abs"]: p for p in prev}
+    assert by_abs[False]["imp"] == 7 and by_abs[False]["cost"] == 3.0
+    assert by_abs[True]["imp"] == 5
+
+
+# ── Tática da line ─────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("name,tactic", [
+    # formas reais vistas no consolidado (jun-set/26)
+    ("ID-5BIBN3_HYPR_ABBRACCIO-V2_CPG_NO-ABS_DISPLAY_O2O_ITALIAN-FOOD_LI-TOP-PERFORMANCE-HIGH", "tp_high"),
+    ("ID-KQXFS2_HYPR_ZAMP_DISPLAY_O2O_RETARGETING BK_LI-TOP-PERFORMANCE-HIGH-2", "tp_high"),
+    ("ID-A4M4JN_HYPR_O-BOTICÁRIO_DISPLAY_O2O_STANDARD_TAP TO SCRATCH_TOP-PERFORMANCE-HIGH", "tp_high"),
+    ("ID-0DM7HQ_HYPR_AUDI-V2_NO-ABS_DISPLAY_O2O_F1-FANS_LI-TOP-PERFORMANCE-LOW", "tp_low"),
+    ("ID-M66HS0_HYPR_AUDI-V2_DISPLAY_O2O_DOWNLOADED-APPS_LI-LI-TOP-PERFORMANCE-LOW", "tp_low"),
+    ("ID-L4QXCI_HYPR_KFC-V2_DISPLAY_O2O_GEOFENCING_LI-TOP-PERFORMANCE-LOW2", "tp_low"),
+    ("ID-L9BFZB_HYPR_AMAZON-V2_ABS_DISPLAY_O2O_PROMO-SEEKERS_LI-TOP-PERFORMANCE", "tp"),
+    ("ID-WD8B7S_HYPR_VOLVO-V2_DISPLAY_O2O_INVENTARIO-AUTO_LI-TOP-PERFORMANCE-MID", "tp"),
+    ("ID-OZ2OAD_HYPR_B3-V2_DISPLAY_O2O_AUTOMOTIVO_LI-PREMIUM-LIST", "premium_list"),
+    ("ID-WWI076_HYPR_JLR-V2_DISPLAY_O2O_SEE-ACADEMIAS_LI-PREMIUM-LIST-CPM", "premium_list"),
+    ("ID-JAI424_HYPR_PANCO-V2_DISPLAY_O2O_SUPERMERCADOS_LI-PL", "premium_list"),
+    ("ID-ER60LZ_HYPR_GWM-V2_DISPLAY_O2O_GWM VISITORS_LI-MAX-VIEWABLE", "max_viewable"),
+    ("ID-1G4I1C_HYPR_PATRIA_DISPLAY_O2O_DOWNLOADED-APPS_LI-1-MAX-VIEWS", "max_views"),
+    ("ID-N4Z46P_HYPR_AVON-V2_VIDEO_O2O_SELFCARE_LI-STANDARD", "standard"),
+    ("ID-GWQHMC_HYPR_ITAU-V2_DISPLAY_O2O_GROWTH-INVESTORS_LI-BOOST-CPM", "boost_cpm"),
+    ("ID-31QHTN_HYPR_GRUPO-NOS_DISPLAY_O2O_GEOFENCING_LI-SITELIST-PREMIUM", "premium"),
+    # sem tática
+    ("ID-L9BFZB_HYPR_AMAZON-V2_ABS_DISPLAY_O2O_TECNOLOGIA_LI-1", "none"),
+    ("ID-X_HYPR_MARCA_DISPLAY_O2O_STANDARD_LI-2", "none"),       # STANDARD de formato
+    ("ID-X_HYPR_MARCA_DISPLAY_O2O_LI-PLUS", "none"),              # PL não é prefixo
+    ("ID-X_HYPR_DESKTOP-PERFORMANCE", "none"),
+    ("", "none"),
+    (None, "none"),
+])
+def test_tactic_of(name, tactic):
+    assert da.tactic_of(name) == tactic
+
+
+def test_tactic_sql_follows_python_rules_in_order():
+    sql = da.build_series_sql()
+    assert "AS tactic" in sql
+    positions = [sql.index(f"THEN '{k}'") for k, _, _ in da.TACTICS]
+    assert positions == sorted(positions)          # High/Low antes do TP genérico
+    assert "ELSE 'none'" in sql
+    # a tática entra no GROUP BY da série e do período anterior
+    assert "GROUP BY date, source, media, is_abs, is_survey, short_token, io_name, tactic" in sql
+    assert "tactic" in da._PREV_DIMS
+
+
+def test_payload_carries_tactic_and_catalog():
+    series = [dict(date=date(2026, 9, 1), source="DV360", media="DISPLAY", is_abs=False, is_survey=False,
+                   short_token="A", io_name="IO", tactic="tp_high", **_m(imp=10, cost=1.0))]
+    lines = [dict(source="DV360", media="DISPLAY", line_id="1", short_token="A", io_name="IO",
+                  is_survey=False, abs_reason=None, tactic=None, line_name="L",
+                  first_date=date(2026, 9, 1), last_date=date(2026, 9, 1), **_m(imp=10, cost=1.0))]
+    p = da.build_payload(series, [], lines, [], WINDOW)
+    assert dict(zip(p["series_cols"], p["series"][0]))["tc"] == "tp_high"
+    assert dict(zip(p["line_cols"], p["lines"][0]))["tc"] == "none"
+    keys = [t["key"] for t in p["tactics"]]
+    assert keys[:4] == ["tp_high", "tp_low", "tp", "premium_list"] and keys[-1] == "none"
