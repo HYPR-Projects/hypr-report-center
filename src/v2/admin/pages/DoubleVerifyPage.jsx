@@ -22,13 +22,14 @@ import {
 import { PeriodPicker } from "../components/PeriodPicker";
 import { PERIOD_PRESETS, resolvePeriod } from "../lib/period";
 import {
-  KQI_DEFS, GLANCE_DEFS, summarize, filterOptions,
+  KQI_DEFS, GLANCE_DEFS, summarize, filterOptions, dailyBlocking,
   formatRate, formatDelta, formatCompact,
 } from "../lib/dvQuality";
 import { getDvQuality } from "../../../lib/api";
 import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
 import { KqiRing } from "../../components/dv/KqiRing";
+import { BlockingTrendsChart } from "../components/BlockingTrendsChart";
 import { cn } from "../../../ui/cn";
 import { TooltipProvider } from "../../../ui/Tooltip";
 import "../../v2.css";
@@ -83,6 +84,10 @@ export default function DoubleVerifyPage({ user, onLogout, layout, onNavigateVie
   const data = state.data;
   const summary = useMemo(
     () => (data ? summarize(data, { brands, campaigns }) : null),
+    [data, brands, campaigns],
+  );
+  const blocking = useMemo(
+    () => (data ? dailyBlocking(data, { brands, campaigns }) : []),
     [data, brands, campaigns],
   );
   const options = useMemo(
@@ -244,6 +249,7 @@ export default function DoubleVerifyPage({ user, onLogout, layout, onNavigateVie
                   <GlanceCard summary={summary} />
                   <KqiCard summary={summary} />
                 </div>
+                <BlockingTrendsChart points={blocking} />
                 <CampaignTable rows={tableRows} />
               </>
             )}
