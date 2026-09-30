@@ -233,10 +233,14 @@ somadas, e só uma delas é deste repo:
 
 | Camada | Defasagem | Onde |
 |---|---|---|
-| evento → `creative_events_raw` | quem escreve é o Worker de ingestão (o2o-platform) | fora deste repo |
-| lake → `prod_assets.ma_survey_answers` | até **60 min** (sync incremental; `refresh=true` do admin força) | `MA_SURVEY_SYNC_MIN`, `backend/maxattention.py` |
-| cache de resultado do backend | **5 min** por criativo × pergunta × período | `_MA_RESULTS_TTL`, `_TYPEFORM_RESULTS_TTL` |
+| evento → `creative_events_raw` | **~5s** (p95, medido em 30/09; máximo 88s) | Worker `events-ingest` (o2o-platform) |
+| lake → `prod_assets.ma_survey_answers` | até **5 min** das 08h às 22h BRT (tick do Scheduler); fora disso, ou com orçamento do dia esgotado, até 60 min | `sync_tick`, `MA_SURVEY_SYNC_MIN`, `backend/maxattention.py` |
+| cache de resultado do backend | **2 min** (Max Attention) / **5 min** (Typeform) por criativo × pergunta × período | `_MA_RESULTS_TTL`, `_TYPEFORM_RESULTS_TTL` |
 | frontend | ciclo de **60s** enquanto a aba estiver aberta e visível | `POLL_INTERVAL_MS` em `SurveyTab.jsx` |
+
+Pior caso em horário comercial: ~8 min (5 + 2 + 1). Antes do tick (até 30/09)
+a cópia só andava no warmup de 3h ou quando alguém abria o report depois de 60
+min parada: em 30/09 ficou de 06h31 a 08h46 sem cópia.
 
 O cache do report (3h) **não** entra na conta: ele guarda a *config* da survey
 (qual criativo está amarrado), não as contagens.
@@ -244,9 +248,8 @@ O cache do report (3h) **não** entra na conta: ele guarda a *config* da survey
 **A aba atualiza sozinha.** Não há botão de "Atualizar" e não deve haver: botão
 transfere pro leitor um trabalho que a máquina faz melhor, e quem não souber
 que ele existe fica olhando número velho sem saber. A idade do dado é
-governada pelo TTL do backend (5 min) — o ciclo só garante que, assim que o
-cache vira, a tela pega na volta seguinte. Então: **dado no máximo ~5 min
-velho, sem ninguém fazer nada.**
+governada pelo tick e pelo TTL do backend — o ciclo só garante que, assim que
+o cache vira, a tela pega na volta seguinte.
 
 O ciclo é silencioso de propósito: não mostra spinner e não apaga o que está na
 tela. Falha transitória de uma fonte não vira erro — mantém o último número bom
@@ -260,18 +263,19 @@ Duas armadilhas na hora de conferir a olho:
    report: a sua sessão conta 1 vez por opção. Comparar os dois números lado a
    lado sem isso parece bug e não é. Esta é a armadilha que sobra depois do
    auto-refresh, e nenhuma mudança de cache resolve.
-2. **Nem F5 nem o ciclo furam o cache de 5 min** — os dois servem do cache. Pra
-   forçar query nova na hora existe `refresh=true`, admin-only:
+2. **Nem F5 nem o ciclo furam o cache** — os dois servem do cache. Pra forçar
+   cópia do lake + query nova na hora existe `refresh=true`, admin-only (dentro
+   do orçamento diário; não repete se a cópia tem menos de 1 min):
 
        ...?action=maxattention_results&creative_id=<id>&ak=<chave>&refresh=true
 
    Sem credencial o parâmetro é ignorado (não recusado), pra que uma URL com
    `refresh=true` herdada por um cliente continue abrindo o report.
 
-Se 5 min for muito pro seu caso, o knob é um só: `_MA_RESULTS_TTL` em
-`main.py`. Ele é o que impede que audiência de report vire query no BigQuery, e
-o custo escala com **tempo**, não com audiência (o cache é compartilhado entre
-leitores) — baixar pra 120s multiplica a conta de query por ~2,5×.
+O `_MA_RESULTS_TTL` é o que impede que audiência de report vire query no
+BigQuery: o custo escala com **tempo**, não com audiência (o cache é
+compartilhado entre leitores). A leitura é na tabela pequena (mínimo de 10 MB
+cobrados por query), então 2 min custam centavos.
 
 ## Custo
 
@@ -304,10 +308,12 @@ Como anda:
   cópia não cobre a janela, o modal diz "ainda copiando" (e não "confira a
   coleta"), mostra a última falha da cópia e pede outra rodada sozinho a cada
   poucos segundos. Resultado lido sem cobertura não entra em cache;
-- **quem dispara:** o warmup (a cada 3h, com 1 dia de sobreposição pra evento
-  atrasado), a própria leitura quando a última rodada tem mais de
-  `MA_SURVEY_SYNC_MIN` (default 60, com 2h de sobreposição), o `refresh=true`
-  do admin ("Atualizar lista") e `?action=maxattention_sync` (admin; `deep=true`
+- **quem dispara:** o tick (`?action=maxattention_sync_tick`, Cloud Scheduler
+  `ma-survey-sync-tick`, a cada 5 min das 08h às 21h55 BRT, só a ponta); o
+  primeiro warmup do dia (06h30, reconcilia 3 dias pra evento atrasado; os
+  demais warmups fazem só um tick); a própria leitura quando a última rodada
+  tem mais de `MA_SURVEY_SYNC_MIN` (default 60, rede de segurança); o
+  `refresh=true` do admin; e `?action=maxattention_sync` (admin; `deep=true`
   pra sobreposição de 1 dia);
 - **falha do sync não derruba leitura:** serve a tabela como está e loga. A
   exceção é tabela que nunca teve rodada boa, que responderia "zero" com cara
@@ -322,7 +328,84 @@ Como anda:
   a cobertura, o tamanho e o alcance da tabela, as últimas fatias e o último
   erro. É o primeiro lugar pra olhar quando o modal disser algo estranho;
 - **custo recorrente:** cada rodada lê as partições do dia (1–2), não o
-  histórico. Não cresce com o tempo de vida do lake.
+  histórico. Não cresce com o tempo de vida do lake, mas cresce com o volume
+  diário dele. Ver "Tick: teto de custo" abaixo.
+
+### Tick: teto de custo
+
+Cada MERGE lê a partição **inteira** do dia no lake: o dado recente está no
+streaming buffer, sem clustering, então o filtro por `event_type` não poda.
+Custo real (`INFORMATION_SCHEMA.JOBS`, 30/09): 0,7 GB às 08h46 BRT, 1,8 GB às
+16h49, 4,4–5,1 GB nos warmups antigos (1 dia de sobreposição). O tick de 5 min
+em horário comercial fica em torno de 200 GB/dia no volume de set/2026
+(≈ US$ 1,25/dia no on-demand).
+
+Três travas, todas no código (`backend/maxattention.py`) e travadas por teste:
+
+| Trava | Default | Env |
+|---|---|---|
+| tick só copia a ponta (nunca backfill) e não roda sem marca d'água | — | — |
+| teto de bytes por MERGE do tick (falha sem cobrar) | 8 GB | `MA_SURVEY_TICK_MAX_GB` |
+| orçamento diário (dia BRT), somado do log `ma_survey_answers_sync.bytes_billed`, vale pra todas as instâncias | 200 GB | `MA_SURVEY_DAILY_GB` |
+
+Esgotado o orçamento, o tick para e a cópia volta pra cadência da leitura
+(60 min) até meia-noite BRT. Sem conseguir ler o gasto, o tick não roda (falha
+fechado). O orçamento conta tudo que o sync cobrou no dia, mas só bloqueia o
+tick e o `refresh=true` do admin; a reconciliação diária e a rede de segurança
+da leitura têm cadência própria e limitada. Pior caso por dia: orçamento +
+1 reconciliação (~10 GB) + no máximo 1 rodada por hora pela leitura.
+
+### Próximo passo: gravação direta pelo Worker
+
+O jeito de tirar o custo e a latência do sync é o Worker `events-ingest`
+(o2o-platform, `src/index.ts` → `buildAndInsert`) gravar o `survey_answer`
+também em `prod_assets.ma_survey_answers`, no mesmo request em que grava o
+lake. Resposta visível em segundos, custo de streaming insert de centavos por
+mês, e o tick vira desnecessário (desligar o job `ma-survey-sync-tick`; a
+reconciliação diária continua como rede).
+
+Contrato da linha (colunas da tabela, `insertId` = `event_id`):
+
+    event_id      = r.eventId            (pular a linha se vier nulo)
+    creative_id   = r.creativeId
+    session_id    = r.sessionId
+    question      = r.metadata?.questionText ?? null
+    option        = r.metadata?.optionLabel  (pular se vazio)
+    responded_at  = r.occurredAt
+    synced_at     = agora
+
+Esboço, depois de `insertLakeRows(env, rows)` em `buildAndInsert`:
+
+```ts
+const answers = rows
+  .filter((r) => r.json.event_type === "survey_answer" && r.json.event_id)
+  .map((r) => {
+    const md = r.json.metadata ? JSON.parse(r.json.metadata) : {};
+    const option = (md.optionLabel ?? "").trim();
+    return option ? {
+      insertId: r.json.event_id,
+      json: {
+        event_id: r.json.event_id, creative_id: r.json.creative_id,
+        session_id: r.json.session_id, question: md.questionText ?? null,
+        option, responded_at: r.json.occurred_at, synced_at: new Date().toISOString(),
+      },
+    } : null;
+  })
+  .filter(Boolean);
+if (answers.length) {
+  // Best-effort: falha aqui não pode derrubar a gravação do lake, que já
+  // foi feita. A reconciliação diária do Report Center cobre o que faltar.
+  await postInsertAllTo(env, "prod_assets", "ma_survey_answers", answers)
+    .catch((e) => console.warn("[events-ingest] ma_survey_answers", String(e)));
+}
+```
+
+`postInsertAllTo` é o `postInsertAll` de hoje com dataset/tabela como
+parâmetro. A service account do `GCP_SA_KEY_JSON` precisa de
+`bigquery.tables.updateData` em `prod_assets.ma_survey_answers` (ex.:
+`roles/bigquery.dataEditor` só nessa tabela). O MERGE do Report Center casa
+por `event_id` e não duplica o que o Worker já gravou; a leitura também
+deduplica por `event_id`.
 
 `MA_SURVEY_MATERIALIZE=0` volta a ler a view direto. É o modo que quebra;
 existe pra emergência.

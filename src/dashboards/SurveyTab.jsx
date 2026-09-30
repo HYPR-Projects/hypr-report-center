@@ -18,8 +18,8 @@ import { liftSignificance, significanceLabel } from "../shared/surveyStats";
 // seria pior: transfere pro leitor um trabalho que a máquina faz melhor, e
 // quem não souber que o botão existe continua olhando número velho sem saber.
 //
-// 60s é o intervalo do CICLO, não a idade do dado: as duas fontes cacheiam 5
-// min no backend (`_MA_RESULTS_TTL` / `_TYPEFORM_RESULTS_TTL`), então o ciclo
+// 60s é o intervalo do CICLO, não a idade do dado: as fontes cacheiam no
+// backend (`_MA_RESULTS_TTL` 2 min / `_TYPEFORM_RESULTS_TTL` 5 min), então o ciclo
 // mais frequente só garante que, assim que o cache vira, a tela pega na
 // próxima volta. Polling mais rápido que o TTL não deixaria o dado mais novo
 // — só gastaria invocação de Cloud Function.
