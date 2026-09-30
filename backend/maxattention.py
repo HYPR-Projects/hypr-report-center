@@ -231,26 +231,20 @@ def token_in_name(creative_name, short_token):
 
 # ── Queries ─────────────────────────────────────────────────────────────────
 
-def _weight_expr(has_session_col, has_responses_col):
+def _weight_expr(has_responses_col):
     """Como uma resposta é CONTADA.
 
-    Sessão distinta primeiro, e não é detalhe: contar evento infla a base
-    porque quem recarrega a peça emite `survey_answer` de novo. Medido na
-    campanha FXR5US: 383 eventos contra 265 respondentes — 45% a mais.
+    Cada `survey_answer` conta: recarregar a peça e responder de novo soma
+    mais uma resposta. A unidade é EVENTO, não sessão distinta. Duplicata de
+    gravação (mesmo event_id) já sai no dedupe da fonte, então aqui só sobra
+    resposta de fato emitida pela peça.
 
-    Isso desce direto no lift (proporção de PESSOAS, não de toques) e na
-    significância, que assume n de respondentes independentes: com n inflado
-    a confiança sai superestimada, que é o erro pior dos dois. A régua é a
-    mesma do brand lift do AdBolt (`surveyLift.ts`): "o denominador correto
-    da proporção é respondentes — usar a soma inflaria n".
+    Troca consciente: a base fica maior que o número de pessoas (na FXR5US,
+    383 eventos contra 265 sessões), e o teste de significância, que assume
+    n de respondentes independentes, sai mais confiante do que deveria.
 
-    Sessão que responde duas coisas diferentes (recarregou e mudou de ideia)
-    conta uma vez em cada opção. Pegar só a primeira exigiria função de
-    janela, que derruba a poda de partição da view — troca ruim por um caso
-    de borda raro.
+    View já agregada (coluna `responses`) continua mandando no peso.
     """
-    if has_session_col:
-        return "COUNT(DISTINCT session_id)"
     if has_responses_col:
         return "SUM(COALESCE(responses, 1))"
     return "COUNT(*)"
@@ -583,9 +577,9 @@ def _source(view, with_dim=True):
 
     Dedupe por event_id aqui, na leitura: MERGE só de INSERT pode rodar em
     paralelo entre instâncias, e duas rodadas simultâneas gravariam a mesma
-    resposta duas vezes. A contagem por sessão distinta já absorveria isso,
-    mas contagem certa não deveria depender de qual unidade está em uso. Na
-    tabela pequena, função de janela custa nada."""
+    resposta duas vezes. A contagem é por evento, então sem este dedupe a
+    corrida viraria resposta a mais no relatório. Na tabela pequena, função
+    de janela custa nada."""
     if not materialized():
         return f"`{view}`"
     if not with_dim:
@@ -1235,10 +1229,10 @@ def list_creatives_payload(short_token=None, days=DEFAULT_LOOKBACK_DAYS, limit=2
     # A view pode ou não ter short_token/responses. Em vez de duas versões
     # do SQL, resolvemos com SELECT * num CTE e checagem de coluna no
     # schema — assim a mesma query serve pros dois contratos.
-    has_token_col, has_responses_col, has_name_col, has_question_col, has_session_col = _view_columns(view)
+    has_token_col, has_responses_col, has_name_col, has_question_col, _ = _view_columns(view)
 
     token_expr = "ANY_VALUE(short_token)" if has_token_col else "CAST(NULL AS STRING)"
-    weight = _weight_expr(has_session_col, has_responses_col)
+    weight = _weight_expr(has_responses_col)
     # Sem nome, o criativo se identifica pelo id — a UI ainda lista, só não
     # consegue sugerir campanha/lado sozinha.
     name_expr = "ANY_VALUE(creative_name)" if has_name_col else "CAST(NULL AS STRING)"
@@ -1410,7 +1404,7 @@ def _recent_rows(recent_days, force=False):
         if hit and not force and (time.monotonic() - hit[0]) < _RECENT_TTL_S:
             return hit[1]
         view = survey_view()
-        has_token_col, has_responses_col, has_name_col, has_question_col, has_session_col = _view_columns(view)
+        has_token_col, has_responses_col, has_name_col, has_question_col, _ = _view_columns(view)
         sql = _listing_sql(
             view,
             [f"""
@@ -1421,7 +1415,7 @@ def _recent_rows(recent_days, force=False):
             "ANY_VALUE(creative_name)" if has_name_col else "CAST(NULL AS STRING)",
             "ANY_VALUE(short_token)" if has_token_col else "CAST(NULL AS STRING)",
             "ARRAY_AGG(DISTINCT question IGNORE NULLS ORDER BY question)" if has_question_col else "CAST([] AS ARRAY<STRING>)",
-            _weight_expr(has_session_col, has_responses_col),
+            _weight_expr(has_responses_col),
             1000,
         )
         params = [bigquery.ScalarQueryParameter(
@@ -1561,8 +1555,8 @@ def fetch_results(creative_id, question=None, date_from=None, date_to=None, fres
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[maxattention] refresh do admin não sincronizou: {e}")
     _ensure_fresh(budget_s=RESULTS_SYNC_BUDGET_S)
-    _, has_responses_col, _, has_question_col, has_session_col = _view_columns(view)
-    weight = _weight_expr(has_session_col, has_responses_col)
+    _, has_responses_col, _, has_question_col, _ = _view_columns(view)
+    weight = _weight_expr(has_responses_col)
 
     where = ["creative_id = @creative_id"]
     params = [bigquery.ScalarQueryParameter("creative_id", "STRING", str(creative_id))]

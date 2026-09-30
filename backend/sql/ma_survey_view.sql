@@ -94,13 +94,12 @@ WITH answers AS (
   SELECT DISTINCT
     event_id,
     creative_id,
-    -- Sessão do respondente. Existe porque contar EVENTO infla a base: um
-    -- respondente que recarrega a peça emite `survey_answer` de novo (o
-    -- guard da origem é por montagem, não por sessão). Medido na campanha
-    -- FXR5US: 383 eventos contra 265 respondentes — 45% a mais.
-    -- Quem consome decide a unidade; o report conta sessão distinta, porque
-    -- lift é proporção de PESSOAS e o teste de significância assume n de
-    -- respondentes independentes.
+    -- Sessão do respondente. Quem recarrega a peça emite `survey_answer` de
+    -- novo (o guard da origem é por montagem, não por sessão). Medido na
+    -- campanha FXR5US: 383 eventos contra 265 sessões.
+    -- Quem consome decide a unidade; o report conta EVENTO (cada resposta,
+    -- recarga inclusive). A sessão fica exposta pra quem quiser contar
+    -- pessoas.
     session_id,
     JSON_VALUE(metadata, '$.questionText') AS question,
     JSON_VALUE(metadata, '$.optionLabel')  AS option,
