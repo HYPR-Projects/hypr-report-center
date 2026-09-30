@@ -29,7 +29,8 @@ def test_unidade_de_contagem_prefere_sessao(session, responses, esperado):
 def clean_env(monkeypatch):
     monkeypatch.delenv("MA_SURVEY_VIEW", raising=False)
     monkeypatch.delenv("MA_CREATIVES_DIM", raising=False)
-    for k in ("MA_SURVEY_MATERIALIZE", "MA_SURVEY_ANSWERS_TABLE", "MA_EVENTS_RAW", "MA_SURVEY_SYNC_MIN"):
+    for k in ("MA_SURVEY_MATERIALIZE", "MA_SURVEY_ANSWERS_TABLE", "MA_EVENTS_RAW", "MA_SURVEY_SYNC_MIN",
+              "MA_SURVEY_DAILY_GB", "MA_SURVEY_TICK_MAX_GB"):
         monkeypatch.delenv(k, raising=False)
     ma._COLUMNS_CACHE.clear()
     ma._RECENT_CACHE.clear()
@@ -760,7 +761,8 @@ def test_leituras_vao_na_tabela_pequena_com_teto_baixo(mat_env, monkeypatch):
     (sql, _, jc), = client.reads()
     assert "creative_events_raw" not in sql
     assert "ma_survey_responses" not in sql       # a view não entra mais na leitura
-    assert "creatives_dim" in sql                 # nome/token vêm da dimensão
+    # O detalhe não usa nome/token: sem join, 10 MB mínimos em vez de 20.
+    assert "creatives_dim" not in sql
     assert jc.maximum_bytes_billed == int(ma.READ_MAX_BYTES_BILLED)
     assert client.merges() == []
 
@@ -962,3 +964,162 @@ def test_information_schema_vazio_nao_vira_lake_vazio(mat_env, monkeypatch, sim_
     r = ma.sync_answers(budget_s=15)
     assert set(sim.answers) == {"e1"}
     assert r["complete"] is False            # sem metadata, 730 dias não cabem numa rodada
+
+
+# ── Tick: custo com teto ─────────────────────────────────────────────────────
+#
+# O caso real (30/09): o sync só rodava no warmup de 3h ou quando alguém abria
+# o report depois de 60 min de cópia parada — 06h31 → 08h46 sem cópia, e a
+# resposta dada no Tap to Choose ficava no lake. O tick de 5 min resolve a
+# latência; estes testes travam o que impede ele de virar conta: só a ponta,
+# teto por MERGE, orçamento diário lido do log (vale pra todas as instâncias).
+
+class _BilledDML(_FakeDML):
+    def __init__(self, n, billed):
+        super().__init__(n)
+        self.total_bytes_billed = billed
+
+
+class _TickClient(_SyncClient):
+    def __init__(self, spent=0, billed=700 * 1024 ** 2, fail_spent=None, **kw):
+        super().__init__(**kw)
+        self.spent = spent
+        self.billed = billed
+        self.fail_spent = fail_spent
+
+    def query(self, sql, job_config=None):
+        if "SUM(bytes_billed)" in sql:
+            params = {p.name: p.value for p in job_config.query_parameters}
+            self.calls.append((sql, params, job_config))
+            if self.fail_spent:
+                raise self.fail_spent
+            return _FakeJob([{"b": self.spent}])
+        if sql.lstrip().startswith("MERGE"):
+            params = {p.name: p.value for p in job_config.query_parameters}
+            self.calls.append((sql, params, job_config))
+            return _BilledDML(self.merge_rows, self.billed)
+        return super().query(sql, job_config)
+
+    def merge_configs(self):
+        return [jc for s, _, jc in self.calls if s.lstrip().startswith("MERGE")]
+
+    def logs(self):
+        return [p for s, p, _ in self.calls if "INSERT INTO" in s]
+
+
+def test_tick_copia_so_a_ponta_com_teto_por_merge(mat_env, monkeypatch):
+    client = _install(monkeypatch, _TickClient(through=mat_env - timedelta(minutes=5), merge_rows=4))
+    r = ma.sync_tick()
+    (sql, params), = client.merges()
+    assert params["since"] == mat_env - timedelta(minutes=5) - ma.SYNC_OVERLAP
+    assert params["until"] == mat_env
+    (jc,) = client.merge_configs()
+    assert int(jc.maximum_bytes_billed) == ma.tick_max_bytes()
+    assert r["inserted"] == 4
+    assert r["bytes_billed"] == 700 * 1024 ** 2
+    # O gasto vai pro log: é de lá que as outras instâncias leem o orçamento.
+    assert client.logs()[-1]["billed"] == 700 * 1024 ** 2
+
+
+def test_tick_nao_faz_backfill_de_buraco(mat_env, monkeypatch, sim_clock):
+    now = mat_env
+    ev = [_answer(1, now - timedelta(minutes=30)), _answer(2, now - timedelta(days=20))]
+    sim = _install(monkeypatch, _LakeSim(ev, partitions=None, clock=sim_clock))
+    # Log com a ponta coberta até 10 min atrás e um buraco de 30 dias antes.
+    sim.log = [(now - timedelta(days=5), now - timedelta(minutes=10), 0)]
+    monkeypatch.setattr(ma, "spent_today_bytes", lambda: 0)
+    ma.sync_tick()
+    assert set(sim.answers) == {"e1"}
+    assert len(sim.merges) == 1
+
+
+def test_tick_sem_marca_dagua_nao_vira_backfill(mat_env, monkeypatch):
+    client = _install(monkeypatch, _TickClient(through=None))
+    r = ma.sync_tick()
+    assert r["status"] == "no_watermark"
+    assert client.merges() == []
+
+
+def test_tick_para_quando_o_orcamento_do_dia_acaba(mat_env, monkeypatch):
+    monkeypatch.setenv("MA_SURVEY_DAILY_GB", "50")
+    client = _install(monkeypatch, _TickClient(through=mat_env - timedelta(minutes=5),
+                                               spent=50 * 1024 ** 3))
+    r = ma.sync_tick()
+    assert r["status"] == "over_budget"
+    assert client.merges() == []
+
+
+def test_orcamento_conta_desde_a_meia_noite_brt(mat_env, monkeypatch):
+    client = _install(monkeypatch, _TickClient(through=mat_env - timedelta(minutes=5)))
+    ma.sync_tick()
+    (params,) = [p for s, p, _ in client.calls if "SUM(bytes_billed)" in s]
+    # 29/09 15h UTC = 12h BRT → dia começou 29/09 03h UTC.
+    assert params["since"] == datetime(2026, 9, 29, 3, 0, tzinfo=timezone.utc)
+
+
+def test_tick_falha_fechado_sem_ler_o_gasto(mat_env, monkeypatch):
+    client = _install(monkeypatch, _TickClient(through=mat_env - timedelta(minutes=5),
+                                               fail_spent=RuntimeError("Access Denied")))
+    with pytest.raises(RuntimeError):
+        ma.sync_tick()
+    assert client.merges() == []
+
+
+def test_tick_com_merge_acima_do_teto_falha_sem_retentar(mat_env, monkeypatch):
+    calls = []
+
+    def fail(params):
+        calls.append(params)
+        return RuntimeError("Query exceeded limit for bytes billed: 8589934592.")
+
+    client = _install(monkeypatch, _TickClient(through=mat_env - timedelta(minutes=5), fail_merge=fail))
+    client.query = _SyncClient.query.__get__(client)   # MERGE pelo caminho que falha
+    with pytest.raises(RuntimeError, match="bytes billed"):
+        ma.sync_tick()
+    assert len(calls) == 1
+
+
+def test_refresh_do_admin_forca_tick_mesmo_com_tabela_fresca(mat_env, monkeypatch):
+    rows = [{"option": "Sim", "n": 3, "first_at": mat_env, "last_at": mat_env}]
+    client = _install(monkeypatch, _TickClient(through=mat_env - timedelta(minutes=10), lake_rows=rows))
+    ma.fetch_results("c1")
+    assert client.merges() == []                  # leitura normal: 10 min < TTL
+    ma.fetch_results("c1", fresh=True)
+    assert len(client.merges()) == 1
+
+
+def test_refresh_do_admin_nao_repete_sync_de_menos_de_um_minuto(mat_env, monkeypatch):
+    client = _install(monkeypatch, _TickClient(through=mat_env - timedelta(seconds=20)))
+    ma._SYNC_STATE["synced_through"] = mat_env - timedelta(seconds=20)
+    r = ma.force_fresh()
+    assert r["status"] == "fresh"
+    assert client.merges() == []
+
+
+def test_reconciliacao_diaria_reabre_tres_dias(mat_env, monkeypatch):
+    client = _install(monkeypatch, _TickClient(through=mat_env - timedelta(hours=1)))
+    ma.reconcile_daily()
+    params = [p for _, p in client.merges()]
+    assert params[0]["since"] == mat_env - timedelta(hours=1) - timedelta(days=3)
+
+
+def _main_source():
+    return open(os.path.join(os.path.dirname(__file__), "..", "main.py"), encoding="utf-8").read()
+
+
+def test_endpoint_do_tick_exige_cron_ou_admin():
+    src = _main_source()
+    start = src.index('request.args.get("action") == "maxattention_sync_tick"')
+    block = src[start: start + 1500]
+    guard = block[: block.index("maxattention.sync_tick()")]
+    assert "hmac.compare_digest" in guard and "authenticate_admin" in guard
+
+
+def test_warmup_nao_reabre_um_dia_a_cada_rodada():
+    # Reabrir 1 dia a cada 3h custava ~5 GB por warmup; a reconciliação é
+    # uma vez por dia e o resto é tick.
+    src = _main_source()
+    start = src.index("def warmup_caches")
+    block = src[start: start + 6000]
+    assert "DEEP_SYNC_OVERLAP" not in block
+    assert "maxattention.reconcile_daily()" in block and "maxattention.sync_tick()" in block

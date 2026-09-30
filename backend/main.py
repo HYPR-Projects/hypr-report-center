@@ -934,12 +934,24 @@ def warmup_caches(force_refresh=True, max_reports=150, deadline_s=480):
     try:
         if maxattention.is_configured() and maxattention.materialized():
             # Antes do ramo amplo: ele lê a tabela que este sync alimenta.
-            # Sobreposição de 1 dia (não as 2h da leitura) pra pegar evento que
-            # chegou atrasado no lake; orçamento maior pro backfill inicial.
-            r = maxattention.sync_answers(
-                force=True, overlap=maxattention.DEEP_SYNC_OVERLAP, budget_s=240,
-            )
-            summary["ma_answers_synced"] = {"inserted": r["inserted"], "complete": r["complete"]}
+            #
+            # O primeiro warmup do dia (06h30) reconcilia 3 dias do lake, pra
+            # pegar resposta que chegou atrasada, e fecha buraco de histórico.
+            # Os demais fazem só um tick: a ponta já anda a cada 5 min pelo
+            # Scheduler, e reabrir 1 dia a cada 3h custava ~5 GB por rodada
+            # sem trazer nada que o tick não trouxesse.
+            brt_hour = datetime.now(timezone(timedelta(hours=-3))).hour
+            if brt_hour < 9:
+                r = maxattention.reconcile_daily()
+            else:
+                r = maxattention.sync_tick()
+            summary["ma_answers_synced"] = {
+                "status": r.get("status"), "inserted": r.get("inserted", 0),
+                "complete": r.get("complete"),
+            }
+            if r.get("inserted"):
+                with _cache_lock:
+                    _ma_results_cache.clear()
     except Exception as e:
         logger.warning(f"[WARN warmup maxattention sync] {e}")
         summary["ma_answers_synced"] = False
@@ -3276,6 +3288,30 @@ def report_data(request):
                 headers,
             )
 
+    # Tick do sync (Cloud Scheduler a cada 5 min em horário comercial, ver
+    # deploy.sh). Cron via X-Cron-Secret, ou admin. Só a ponta, com teto por
+    # MERGE e orçamento diário — ver `maxattention.sync_tick`. 200 mesmo quando
+    # pula (orçamento, busy): o Scheduler não deve re-tentar o que foi decisão.
+    if request.method in ("GET", "POST") and request.args.get("action") == "maxattention_sync_tick":
+        provided = request.headers.get("X-Cron-Secret", "")
+        expected = os.environ.get("CRON_SECRET", "")
+        is_cron = bool(expected) and hmac.compare_digest(provided, expected)
+        if not (is_cron or authenticate_admin(request)):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            r = maxattention.sync_tick()
+            if r.get("inserted"):
+                with _cache_lock:
+                    _ma_creatives_cache.clear()
+                    _ma_results_cache.clear()
+            iso = lambda t: t.isoformat() if isinstance(t, datetime) else t  # noqa: E731
+            return (jsonify({k: iso(v) for k, v in r.items()}), 200, headers)
+        except maxattention.NotConfigured as e:
+            return (jsonify({"error": str(e), "configured": False}), 501, headers)
+        except Exception as e:
+            logger.error(f"[ERROR maxattention_sync_tick] {e}")
+            return (jsonify({"error": "Erro no tick do sync do Max Attention"}), 502, headers)
+
     # Sync manual da tabela materializada de respostas (admin). Pro primeiro
     # backfill depois do deploy e pra conferir a marca d'água sem abrir o
     # BigQuery. `deep=true` usa a sobreposição de 1 dia do warmup.
@@ -3340,7 +3376,13 @@ def report_data(request):
         # Sem credencial o parâmetro é IGNORADO, não recusado: o cliente que
         # herdar uma URL com `refresh=true` continua vendo o report, servido
         # do cache, em vez de um 401 no meio de uma pergunta.
+        #
+        # E o refresh também força um tick do sync (`maxattention.force_fresh`,
+        # dentro do orçamento diário): furar só o cache relia a mesma tabela
+        # parada, e a resposta recém-dada continuava no lake.
+        fresh = False
         if request.args.get("refresh") == "true" and authenticate_admin(request):
+            fresh = True
             with _cache_lock:
                 _ma_results_cache.pop(cache_key, None)
         cached = _cache_get(_ma_results_cache, cache_key, _MA_RESULTS_TTL)
@@ -3352,6 +3394,7 @@ def report_data(request):
                 question=question,
                 date_from=date_from,
                 date_to=date_to,
+                fresh=fresh,
             )
             # Mesmo critério da listagem: contagem de tabela com histórico
             # incompleto não fica 5 min em cache.
@@ -12999,26 +13042,31 @@ _typeform_meta_cache = {}  # form_id -> (timestamp, payload)
 #   2. O TOTAL SOMADO fica coerente no tempo. O Max Attention já cacheava 5
 #      min; o Typeform não cacheava nada. Somar os dois entregava um número
 #      cujas metades eram de momentos diferentes, e ninguém conseguia dizer
-#      "esse total é de quando". Mesmo TTL nos dois = as duas metades são do
-#      mesmo instante.
+#      "esse total é de quando". Com TTL nos dois, as metades ficam no
+#      máximo um TTL (5 min) defasadas entre si.
 #
 # Chave inclui a janela (since/until) porque o filtro de período do admin não
 # pode contaminar a visão do cliente — mesma regra do cache do Max Attention.
-_TYPEFORM_RESULTS_TTL = 300  # 5 min — igual ao _MA_RESULTS_TTL, de propósito
+_TYPEFORM_RESULTS_TTL = 300  # 5 min (o _MA_RESULTS_TTL caiu pra 2 min, ver lá)
 _typeform_results_cache = {}  # "form_id|since|until" -> (timestamp, payload)
 
 # ── Cache do Max Attention ──────────────────────────────────────────────────
 # `maxattention_results` é chamado no RENDER do report, por cliente, por
 # pergunta — não é um fluxo de admin. Sem cache, cada abertura de report vira
 # N queries no BigQuery, e a conta cresce com audiência em vez de crescer com
-# dado novo. Com 5 min, uma campanha vista 200×/dia custa ~pouquíssimas
-# queries, e a defasagem é irrelevante pra uma pesquisa que acumula resposta
-# ao longo de semanas.
+# dado novo. Com cache, uma campanha vista 200×/dia custa poucas queries na
+# tabela pequena — o custo acompanha o TTL, não a audiência.
 #
 # O cache de resultado é keyed por (criativo, pergunta, período): dois clientes
 # vendo o mesmo report batem na mesma entrada, e o filtro de período do admin
 # não contamina a visão do cliente.
-_MA_RESULTS_TTL = 300     # 5 min
+#
+# 2 min (era 5): o sync agora anda a cada 5 min (tick do Scheduler), e com 5
+# min aqui em cima a resposta nova levava até ~11 min pra aparecer. A leitura
+# é na tabela pequena (mínimo de 10 MB por query), então o TTL menor custa
+# centavos. O Typeform segue em 5 min por causa do rate limit da API: as duas
+# metades do total somado ficam no máximo 5 min defasadas entre si.
+_MA_RESULTS_TTL = 120     # 2 min
 _MA_CREATIVES_TTL = 600   # 10 min — listagem é admin, e a dimensão recarrega ~1×/h
 _ma_results_cache = {}    # "creative|question|from|to" -> (timestamp, payload)
 _ma_creatives_cache = {}  # "token|days" -> (timestamp, payload)
