@@ -19,6 +19,7 @@ import { Button } from "../../ui/Button";
 import { Skeleton } from "../../ui/Skeleton";
 import { KqiRing } from "../components/dv/KqiRing";
 import { QualityLinksModalV2 } from "../components/dv/QualityLinksModalV2";
+import { PoweredByDV } from "../components/dv/PoweredByDV";
 
 const nf = new Intl.NumberFormat("pt-BR");
 
@@ -106,9 +107,13 @@ export default function QualityV2({ token, view = null, data, isAdmin = false, a
   const header = (
     <div className="flex flex-wrap items-end justify-between gap-3">
       <div className="min-w-0">
-        <h2 className="text-lg font-bold text-fg leading-tight">Quality</h2>
-        <p className="text-[12px] text-fg-subtle mt-0.5">
-          Verificação DoubleVerify
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+          <h2 className="text-lg font-bold text-fg leading-tight">Quality</h2>
+          <span aria-hidden="true" className="h-4 w-px bg-border-strong" />
+          <PoweredByDV />
+        </div>
+        <p className="text-[12px] text-fg-subtle mt-1">
+          Verificação de mídia
           {periodLabel ? ` · ${periodLabel}` : ""}
           {summary?.dayCount ? ` · ${summary.dayCount} ${summary.dayCount === 1 ? "dia" : "dias"} com dado` : ""}
         </p>
@@ -256,7 +261,7 @@ function QualityBody({ summary }) {
       {campaigns.length > 1 && <CampaignTable campaigns={campaigns} />}
 
       <p className="text-[11px] text-fg-subtle">
-        Fonte: DoubleVerify (Pinnacle). Dados até o último dia fechado pela DV (D-1).
+        Dados até o último dia fechado pela DoubleVerify (D-1).
         Viewable e Authentic Viewable sobre Measured Impressions; demais taxas sobre Monitored Ads.
       </p>
     </>
