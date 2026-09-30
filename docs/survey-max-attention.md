@@ -57,27 +57,27 @@ base, dois rótulos são duas opções distintas por construção.
 Testes em `src/shared/surveySources.test.js` (`npm test`), incluindo os casos
 que precisam **falhar** em fundir.
 
-## A unidade é RESPONDENTE, não toque
+## A unidade é RESPOSTA (evento)
 
 O evento `survey_answer` é emitido por montagem da peça, não por sessão:
-quem recarrega responde de novo. Medido na campanha FXR5US: **383 eventos
-contra 265 respondentes**, 45% a mais. O painel do Max Attention mostra os
-dois números em telas diferentes — o funil diz respondentes, a distribuição
-por opção conta evento.
+quem recarrega responde de novo. O report conta **cada evento**
+(`COUNT(*)`, depois do dedupe por `event_id`): recarregar a peça e responder
+de novo soma mais uma resposta, no mesmo preview ou na mesma aba.
 
-O report conta **sessão distinta**, por dois motivos:
+Até set/2026 a unidade era sessão distinta (`COUNT(DISTINCT session_id)`),
+que é o número de pessoas. A troca foi decisão de produto, e tem custo que
+convém ter em mente ao ler o lift:
 
-- lift é proporção de **pessoas**, não de toques;
-- o teste de significância assume `n` de respondentes independentes — com
-  `n` inflado a confiança sai superestimada, que é o pior dos dois erros,
-  porque faz ruído parecer resultado.
+- a base fica maior que o número de pessoas. Na campanha FXR5US, **383
+  eventos contra 265 sessões**, 45% a mais;
+- o teste de significância assume `n` de respondentes independentes. Com
+  `n` inflado a margem sai mais estreita do que é, e ruído pode aparecer
+  como "significante a 95%";
+- resposta de teste (preview de DSP, tag tester) entra no total do
+  criativo, e cada recarga soma.
 
-É a mesma régua do brand lift do AdBolt (`surveyLift.ts`): *"o denominador
-correto da proporção é respondentes — usar a soma inflaria n"*.
-
-Sessão que responde duas coisas diferentes (recarregou e mudou de ideia)
-conta uma vez em cada opção. Pegar só a primeira exigiria função de janela,
-que derruba a poda de partição da view — troca ruim por um caso raro.
+Duplicata de gravação (o mesmo evento re-exportado) continua fora: o dedupe
+por `event_id` é o que separa resposta repetida de fato de linha repetida.
 
 ## O lift diz se é real
 
@@ -258,11 +258,10 @@ e tenta de novo no ciclo seguinte. Guardado por teste em
 
 Duas armadilhas na hora de conferir a olho:
 
-1. **A unidade é sessão, não clique** (ver "A unidade é RESPONDENTE" acima).
-   Responder 5× no mesmo preview move o painel da plataforma e **não** move o
-   report: a sua sessão conta 1 vez por opção. Comparar os dois números lado a
-   lado sem isso parece bug e não é. Esta é a armadilha que sobra depois do
-   auto-refresh, e nenhuma mudança de cache resolve.
+1. **A unidade é resposta, não pessoa** (ver "A unidade é RESPOSTA" acima).
+   Responder 5× no mesmo preview soma 5 no report, igual ao painel da
+   plataforma. O funil do painel, que conta respondentes, fica menor que o
+   report, e isso não é bug.
 2. **Nem F5 nem o ciclo furam o cache** — os dois servem do cache. Pra forçar
    cópia do lake + query nova na hora existe `refresh=true`, admin-only (dentro
    do orçamento diário; não repete se a cópia tem menos de 1 min):
