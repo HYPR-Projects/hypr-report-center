@@ -470,7 +470,7 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp, chec
   // deflacionado (ex: NO2015 22,5%) enquanto a Visão Geral mostrava o
   // correto (92,3%), pois só computeMediaPacing tinha o clamp.
   const today = new Date();
-  const { end, tDays, eDays } = pacingRunway(rows[0]?.actual_start_date, camp.start_date, camp.end_date, today);
+  const { start, tDays, eDays } = pacingRunway(rows[0]?.actual_start_date, camp.start_date, camp.end_date, today);
 
   const contracted = src[`contracted_${_f}_display_impressions`] || 0;
   const bonus      = src[`bonus_${_f}_display_impressions`]      || 0;
@@ -481,7 +481,15 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp, chec
   // do empty state genérico.
   const notStarted = rows.length === 0 && detailAll.length === 0 && cpmNeg > 0 && totalNeg > 0;
 
-  const budgetProp    = today > end ? budget : budget / tDays * eDays;
+  // Régua de tempo do FATURAMENTO (budgetProp / over / CPM efetivo) — a
+  // mesma do backend (_compute_totals / effective_cost_front): data BRT e
+  // "encerrada" só DEPOIS do último dia (billing_end < hoje). No último dia o
+  // budget segue pró-rata (total−1 dias, o dado vai até D-1). Antes usava
+  // `today > end` com `today` = agora (com horário) e `end` = meia-noite →
+  // no último dia inteiro já faturava o budget cheio e o CPM efetivo/rentab
+  // desta aba divergiam do backend.
+  const bill       = billingWindow(camp.start_date, camp.end_date, camp.early_end_date, start, tDays, today);
+  const budgetProp = bill.ended ? budget : (tDays > 0 ? budget / tDays * bill.eDays : 0);
 
   // CPM Efetivo / Rentabilidade — espelha backend (main.py:4582-4590).
   // Over-detection contra meta total (contracted+bonus) proporcional aos
@@ -489,17 +497,17 @@ export const computeDisplayKpis = ({ rows, detail, detailAll, tactic, camp, chec
   // pacing ideal. Sem isso o front rentabilizava quando viAll > contracted
   // × eDays/tDays (ignorava o bonus), enquanto o pacing usa contracted+bonus
   // → cliente via rentabilidade > 0 com pacing < 100%.
-  const expected = today > end ? totalNeg : (totalNeg > 0 && tDays > 0 ? totalNeg / tDays * eDays : 0);
-  const over     = viAll > expected;
+  const expectedBill = bill.ended ? totalNeg : (totalNeg > 0 && tDays > 0 ? totalNeg / tDays * bill.eDays : 0);
+  const over     = viAll > expectedBill;
   // Quando notStarted, cpmEf=null faz o Hero/Card mostrar "—" em vez de
   // duplicar o negociado (que dá impressão de já ter dado calculado).
   const cpmEf    = notStarted ? null : (cpmNeg > 0 ? (over && viAll > 0 ? budgetProp / viAll * 1000 : cpmNeg) : 0);
   const cpc      = clks > 0 && cpmEf ? cpmEf / 1000 * (viAll / clks) : 0;
   const rentab   = notStarted ? null : (cpmNeg > 0 ? (cpmNeg - cpmEf) / cpmNeg * 100 : 0);
 
-  // Pacing com o runway de pacingRunway (eDays já vira tDays depois do fim),
-  // sem o atalho `today > end` do over/faturamento acima — senão o último dia
-  // do voo volta a comparar entrega até D-1 com o contrato cheio.
+  // Esperado do PACING: régua própria (pacingRunway), fora do faturamento.
+  // eDays já vira tDays depois do fim; sem atalho `today > end`, senão o
+  // último dia do voo volta a comparar entrega até D-1 com o contrato cheio.
   const expectedPac = totalNeg > 0 && tDays > 0 ? totalNeg / tDays * eDays : 0;
   const pac      = expectedPac > 0 ? viAll / expectedPac * 100 : 0;
   const pacBase  = Math.min(pac, 100);
@@ -565,6 +573,41 @@ export const computeVideoKpis = ({ rows, detail, tactic, checklist }) => {
     notStarted,
   };
 };
+
+/** Hoje em BRT (UTC-3 fixo, sem horário de verão), "YYYY-MM-DD" — mesmo
+ * referencial do backend (main._today_brt), independente do fuso de quem
+ * abre o report. */
+export function todayBrtYmd(now = new Date()) {
+  return new Date(now.getTime() - 3 * 3600e3).toISOString().slice(0, 10);
+}
+
+/**
+ * Janela de FATURAMENTO de uma frente: se o budget já é o cheio (`ended`) e
+ * quantos dias entram no pró-rata (`eDays`). Espelha `row_is_ended` /
+ * `elapsed_days` do backend (_compute_totals, effective_cost_front):
+ *   • hoje = data BRT;
+ *   • billingEnd = min(early_end_date, end_date) — encerramento antecipado
+ *     antecipa o budget cheio (PR #153);
+ *   • ended = billingEnd < hoje (ESTRITO: o último dia ainda é pró-rata);
+ *   • eDays = dias inteiros de `start` até hoje, capado em [0, tDays].
+ * Comparação por string YYYY-MM-DD — sem horário, sem fuso do browser.
+ *
+ * `start`/`tDays` vêm do pacingRunway da frente (o runway da aba Display).
+ */
+export function billingWindow(campStartISO, campEndISO, earlyEndISO, start, tDays, now = new Date()) {
+  const today = todayBrtYmd(now);
+  const endISO = campEndISO ? String(campEndISO).slice(0, 10) : null;
+  const earlyISO = earlyEndISO ? String(earlyEndISO).slice(0, 10) : null;
+  const billingEnd = earlyISO && endISO ? (earlyISO < endISO ? earlyISO : endISO) : (earlyISO || endISO);
+  const ended = billingEnd ? billingEnd < today : false;
+  const [ty, tm, td] = today.split("-").map(Number);
+  const s = start || parseYmd(campStartISO);
+  const diff = s
+    ? Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(s.getFullYear(), s.getMonth(), s.getDate())) / 864e5)
+    : 0;
+  const eDays = Math.max(0, Math.min(tDays, diff));
+  return { today, billingEnd, ended, eDays };
+}
 
 /**
  * ─────────────────────────────────────────────────────────────────────

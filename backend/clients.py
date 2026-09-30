@@ -35,7 +35,7 @@ import logging
 import re
 import unicodedata
 from collections import Counter, defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import geo_exclusions
 
@@ -168,6 +168,13 @@ def _aggregate_health(health_list):
     return None
 
 
+def _today_brt():
+    """Hoje em BRT (UTC-3 fixo). O Cloud Run roda em UTC e `date.today()` vira
+    o dia às 21h BRT — campanha no último dia sumia de "ativas" à noite. Cópia
+    local do `main._today_brt` (importar main daqui seria circular)."""
+    return datetime.now(timezone(timedelta(hours=-3))).date()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Agregação principal
 # ─────────────────────────────────────────────────────────────────────────────
@@ -190,7 +197,7 @@ def aggregate_clients_from_campaigns(campaigns):
       - last_updated: max(updated_at)
       - health: agregada das campanhas ativas
     """
-    today = date.today()
+    today = _today_brt()
     groups = defaultdict(list)
 
     for c in campaigns:
@@ -351,7 +358,7 @@ def compute_worklist(campaigns):
                             Bucket fica no schema pra evitar mudança de
                             contrato quando for implementado.
     """
-    today = date.today()
+    today = _today_brt()
     in_seven_days = today + timedelta(days=7)
 
     pacing_critical = []
@@ -441,7 +448,7 @@ def query_client_timeseries(weeks=12):
                 DATE_TRUNC(date, WEEK(MONDAY)) AS week_start,
                 SUM(viewable_impressions)      AS vi
             FROM {unified}
-            WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL {int(weeks) * 7} DAY)
+            WHERE date >= DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL {int(weeks) * 7} DAY)
               AND UPPER(line_name) NOT LIKE '%SURVEY%'
               AND UPPER(creative_name) NOT LIKE '%SURVEY%'
               AND NOT REGEXP_CONTAINS(UPPER(line_name), r'DARK[ _-]?TEST')
@@ -459,7 +466,7 @@ def query_client_timeseries(weeks=12):
         return {}
 
     # Constrói série completa: precisa de N semanas exatas, com 0 pros gaps
-    today = date.today()
+    today = _today_brt()
     # Encontra a segunda-feira da semana atual
     monday_this_week = today - timedelta(days=today.weekday())
     week_starts = [monday_this_week - timedelta(weeks=(weeks - 1 - i)) for i in range(weeks)]

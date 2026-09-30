@@ -19,6 +19,14 @@ class _FrozenDate(date):
         return cls(2026, 7, 7)
 
 
+def _freeze(monkeypatch, date_cls):
+    """Congela o "hoje" do faturamento. _compute_totals lê a data BRT via
+    main._today_brt (não date.today(), que no Cloud Run é UTC); o `date`
+    congelado segue patchado pros demais callers de date.today()."""
+    monkeypatch.setattr(main, "date", date_cls)
+    monkeypatch.setattr(main, "_today_brt", date_cls.today)
+
+
 def _sum_totals_cost(totals, media):
     return round(sum(
         t["effective_total_cost"] for t in totals if t["media_type"] == media
@@ -80,7 +88,7 @@ def _card_delivered(perf, check, info, today):
 def test_i4u4hr_card_matches_report(monkeypatch):
     """Report (_compute_totals) e card (effective_cost_front) batem entre si e
     com o valor da tela (R$ 248.565,17). O card ANTIGO dava R$ 256.063,72."""
-    monkeypatch.setattr(main, "date", _FrozenDate)
+    _freeze(monkeypatch, _FrozenDate)
     totals = main._compute_totals(I4U4HR_PERF, I4U4HR_CHECK, I4U4HR_INFO)
     report_total = _sum_totals_cost(totals, "DISPLAY") + _sum_totals_cost(totals, "VIDEO")
     card_total = _card_delivered(I4U4HR_PERF, I4U4HR_CHECK, I4U4HR_INFO, _FrozenDate(2026, 7, 7))
@@ -96,7 +104,7 @@ def test_i4u4hr_card_matches_report(monkeypatch):
 def test_helper_matches_compute_totals_when_over(monkeypatch):
     """Guard anti-drift genérico: campanha ENDED multi-frente com vídeo em
     over-delivery. is_ended=True → determinístico independ? do date.today()."""
-    monkeypatch.setattr(main, "date", _FrozenDate)
+    _freeze(monkeypatch, _FrozenDate)
     perf = [
         dict(tactic_type="O2O", media_type="DISPLAY", actual_start_date=date(2025, 1, 1),
              days_with_delivery=30, impressions=1000000, viewable_impressions=900000,
@@ -127,7 +135,7 @@ def test_bonus_delivery_not_billed(monkeypatch):
     + bônus 15.625.000, entrega 30.355.085 (todo o contrato + parte do bônus).
     O efetivo trava no budget contratado (R$225.000), NÃO fatura a entrega do
     bônus (bug: dava R$437k = 30,3M × CPM). Regressão do fix de limiar do `over`."""
-    monkeypatch.setattr(main, "date", _FrozenDate)
+    _freeze(monkeypatch, _FrozenDate)
     perf = [
         dict(tactic_type="O2O", media_type="DISPLAY", actual_start_date=date(2026, 6, 1),
              days_with_delivery=30, impressions=31582463, viewable_impressions=30355085,
@@ -168,7 +176,7 @@ def test_early_end_over_bills_full_budget(monkeypatch):
         def today(cls):
             return cls(2026, 7, 13)
 
-    monkeypatch.setattr(main, "date", _Jul13)
+    _freeze(monkeypatch, _Jul13)
     cpm = 14.4
     contracted = 20725278   # × 14.4/1000 ≈ R$ 298.444 (budget contratado)
     perf = [
@@ -221,7 +229,7 @@ def test_early_end_under_bills_delivery(monkeypatch):
         def today(cls):
             return cls(2026, 7, 13)
 
-    monkeypatch.setattr(main, "date", _Jul13)
+    _freeze(monkeypatch, _Jul13)
     perf = [
         dict(tactic_type="O2O", media_type="DISPLAY", actual_start_date=date(2026, 6, 1),
              days_with_delivery=20, impressions=6000000, viewable_impressions=5000000,
@@ -242,7 +250,7 @@ def test_early_end_under_bills_delivery(monkeypatch):
 
 def test_helper_matches_compute_totals_when_under(monkeypatch):
     """Sub-delivery ended → custo = entrega × negociado (não o budget)."""
-    monkeypatch.setattr(main, "date", _FrozenDate)
+    _freeze(monkeypatch, _FrozenDate)
     perf = [
         dict(tactic_type="O2O", media_type="DISPLAY", actual_start_date=date(2025, 1, 1),
              days_with_delivery=30, impressions=800000, viewable_impressions=700000,

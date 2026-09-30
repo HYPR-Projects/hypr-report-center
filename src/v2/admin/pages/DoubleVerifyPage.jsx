@@ -28,10 +28,9 @@ import {
 import { getDvQuality } from "../../../lib/api";
 import { Button } from "../../../ui/Button";
 import { Skeleton } from "../../../ui/Skeleton";
+import { KqiRing } from "../../components/dv/KqiRing";
 import { cn } from "../../../ui/cn";
-import {
-  TooltipProvider, Tooltip, TooltipTrigger, TooltipContent,
-} from "../../../ui/Tooltip";
+import { TooltipProvider } from "../../../ui/Tooltip";
 import "../../v2.css";
 
 const DV_PRESETS = PERIOD_PRESETS.filter((p) => p.id !== "now");
@@ -357,10 +356,11 @@ function KqiCard({ summary }) {
               key={k.key}
               label={k.label}
               rate={summary.rates[k.key]}
-              delta={summary.deltas[k.key]}
+              badge={<Delta value={summary.deltas[k.key]} />}
               num={summary.totals[k.num] || 0}
               den={summary.totals[k.den] || 0}
               denLabel={k.den === "measured_impressions" ? "Measured Impressions" : "Monitored Ads"}
+              footnote="Variação em p.p. vs. período anterior"
             />
           ))}
         </div>
@@ -379,55 +379,6 @@ function FooterStat({ label, value, className }) {
       <div className="text-xs text-fg-muted">{label}</div>
       <div className="text-lg font-bold tabular-nums text-fg" title={nf.format(value)}>{formatCompact(value)}</div>
     </div>
-  );
-}
-
-// Anel = medidor de uma taxa contra 100%. Um matiz só (signature): os seis
-// anéis são a mesma grandeza, cor por KQI só inventaria identidade.
-function KqiRing({ label, rate, delta, num, den, denLabel }) {
-  const R = 34;
-  const C = 2 * Math.PI * R;
-  const pct = rate == null ? 0 : Math.max(0, Math.min(1, rate));
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <div
-          tabIndex={0}
-          className="flex flex-col items-center text-center rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-signature"
-          aria-label={`${label}: ${formatRate(rate)}`}
-        >
-          <div className="relative size-[92px]">
-            <svg viewBox="0 0 80 80" className="size-full -rotate-90" aria-hidden="true">
-              <circle cx="40" cy="40" r={R} fill="none" strokeWidth="6" className="stroke-surface-strong" />
-              {rate != null && (
-                <circle
-                  cx="40" cy="40" r={R} fill="none" strokeWidth="6" strokeLinecap="round"
-                  className="stroke-signature transition-[stroke-dashoffset] duration-500"
-                  strokeDasharray={C}
-                  strokeDashoffset={C * (1 - pct)}
-                />
-              )}
-            </svg>
-            <div className="absolute inset-0 flex flex-col items-center justify-center">
-              <span className="text-lg font-extrabold tabular-nums text-fg leading-none">{formatRate(rate)}</span>
-              {rate != null && <span className="mt-1"><Delta value={delta} /></span>}
-            </div>
-          </div>
-          <div className="mt-2 text-xs font-semibold text-fg leading-tight">{label}</div>
-        </div>
-      </TooltipTrigger>
-      <TooltipContent>
-        <div className="text-xs tabular-nums">
-          <div className="font-semibold mb-0.5">{label}</div>
-          {den ? (
-            <div>{nf.format(num)} de {nf.format(den)} {denLabel}</div>
-          ) : (
-            <div>Sem {denLabel.toLowerCase()} no recorte</div>
-          )}
-          <div className="text-fg-subtle mt-0.5">Variação em p.p. vs. período anterior</div>
-        </div>
-      </TooltipContent>
-    </Tooltip>
   );
 }
 

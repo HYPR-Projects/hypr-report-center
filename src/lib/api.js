@@ -2261,6 +2261,72 @@ export async function getDvQuality({ from = null, to = null, refresh = false } =
   return d;
 }
 
+// ── Quality (aba do report, DoubleVerify por campanha) ─────────────────────
+//
+// Público como o resto do report (o short_token é o ticket; só saem as
+// campanhas DV conectadas àquele token). Conexão e catálogo são admin.
+
+/** Contagens Campaign × Dia do recorte conectado ({linked:false} sem conexão). */
+export async function getQualityReport({ token, view = null, refresh = false, adminJwt = null }) {
+  if (isDemoToken(token)) return { linked: false };
+  const params = new URLSearchParams({ action: "quality_report", token });
+  if (view) params.set("view", view);
+  let headers = {};
+  let suffix = "";
+  if (refresh) {
+    params.set("refresh", "true");
+    headers = adminAuthHeaders(await adminJwtOr(adminJwt));
+    if (!headers.Authorization) suffix = legacyAkSuffix();
+  }
+  const r = await fetch(`${API_URL}?${params.toString()}${suffix}`, {
+    headers,
+    signal: timeoutSignal(READ_TIMEOUT_SLOW_MS),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  return d;
+}
+
+/** Conexão atual do token (admin): campanhas DV, período, quem conectou e has_abs. */
+export async function getQualityLinks({ short_token, adminJwt = null }) {
+  const headers = adminAuthHeaders(await adminJwtOr(adminJwt));
+  const suffix = headers.Authorization ? "" : legacyAkSuffix();
+  const r = await fetch(
+    `${API_URL}?action=quality_links&token=${encodeURIComponent(short_token)}${suffix}`,
+    { headers, signal: timeoutSignal(READ_TIMEOUT_LIGHT_MS) },
+  );
+  const d = await r.json().catch(() => ({}));
+  if (r.status === 401 || r.status === 403) throw adminSessionLost("getQualityLinks", headers.Authorization?.slice(7) || null);
+  if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  return d;
+}
+
+/** Substitui a conexão do token (campaigns vazio desconecta). */
+export async function saveQualityLinks({ short_token, campaigns, date_from, date_to, adminJwt = null }) {
+  const r = await postJson(
+    `${API_URL}?action=quality_links_save`,
+    { short_token, campaigns, date_from, date_to },
+    adminAuthHeaders(await adminJwtOr(adminJwt)),
+  );
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  return d;
+}
+
+/** Nomes de todas as campanhas da conta DV (admin; cache de 10 min no backend). */
+export async function getDvCampaigns({ adminJwt = null } = {}) {
+  const headers = adminAuthHeaders(await adminJwtOr(adminJwt));
+  const suffix = headers.Authorization ? "" : legacyAkSuffix();
+  const r = await fetch(`${API_URL}?action=dv_campaigns${suffix}`, {
+    headers,
+    signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.status === 401 || r.status === 403) throw adminSessionLost("getDvCampaigns", headers.Authorization?.slice(7) || null);
+  if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  return Array.isArray(d.campaigns) ? d.campaigns : [];
+}
+
 // ── Max Attention (aba do report) ────────────────────────────────────────────
 //
 // `getMaReport` é público como o resto do report (o short_token é o ticket e
