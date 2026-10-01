@@ -431,10 +431,20 @@ export default function SheetsIntegrationCardV2({
               </p>
             )}
             <p className="text-xs text-fg-muted mt-2">
-              {integration.status === "revoked"
-                ? "O Google recusou o acesso salvo (token expirado ou revogado) ou a planilha foi apagada. O sync automático segue re-tentando; se não voltar, reconecte. A mesma planilha é mantida quando ainda estiver acessível."
-                : "Falha no último sync — pode ter sido um erro temporário do Google (ex.: 502). O sync automático re-tenta sozinho; pra não esperar, sincronize de novo agora."}
+              {integration.status !== "revoked"
+                ? "Falha no último sync — pode ter sido um erro temporário do Google (ex.: 502). O sync automático re-tenta sozinho; pra não esperar, sincronize de novo agora."
+                : /invalid_rapt/.test(integration.last_error || "")
+                  // invalid_rapt = política de reautenticação do Workspace
+                  // derrubou o token. Retry nunca resolve; só consent novo.
+                  ? "A política de segurança do Google Workspace pediu reautenticação e invalidou o acesso salvo. Reconecte uma vez: a mesma planilha (e o link do cliente) é mantida, e o sync diário passa a não depender mais desse acesso."
+                  : "O Google recusou o acesso salvo (token expirado ou revogado) ou a planilha foi apagada. O sync automático segue re-tentando; se não voltar, reconecte. A mesma planilha é mantida quando ainda estiver acessível."}
             </p>
+            {integration.status === "revoked" && integration.created_by_email && (
+              <p className="text-xs text-fg-muted mt-1">
+                Reconecte com <span className="text-fg">{integration.created_by_email}</span> pra
+                garantir que a planilha atual seja mantida.
+              </p>
+            )}
             {error && <ErrorLine msg={error} />}
           </div>
           <div className="shrink-0 flex flex-col gap-2">

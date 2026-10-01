@@ -609,9 +609,7 @@ def sync(unit_key: str, all_lines: Optional[List[Dict]] = None) -> Dict:
                                           last_error=str(e)[:500])
         raise
 
-    refresh_token = sheets_integration._resolve_refresh_token(integ, unit_key, TARGET_PMP_LINE)
-    access_token  = sheets_integration._exchange_or_mark(refresh_token, unit_key, TARGET_PMP_LINE)
-    sheets_svc    = sheets_integration._build_sheets_client(access_token)
+    sheets_svc    = sheets_integration._sheets_client_for_sync(integ, unit_key, TARGET_PMP_LINE)
 
     sheets_integration._write_base_de_dados(
         sheets_svc, integ["spreadsheet_id"], payload,

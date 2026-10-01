@@ -1972,10 +1972,15 @@ def report_data(request):
                     try:
                         sheets_integration.sync_merge_sheet(target_id, members_payload)
                     except Exception as e:
-                        # Planilha existe mas não aceita o sync (ex.: aba de
-                        # dados apagada). Cai no comportamento antigo: recria.
-                        logger.warning(f"[WARN sheets_create reattach merge/{target_id}] {e} — recriando")
-                        result = None
+                        # Só recria quando a planilha não serve mais (aba de
+                        # dados apagada, sem acesso). Erro transiente mantém a
+                        # planilha e o link do cliente: o card mostra o erro e
+                        # o cron re-tenta. Antes qualquer falha recriava.
+                        if not sheets_integration.is_sheet_unusable(e):
+                            logger.warning(f"[WARN sheets_create reattach merge/{target_id}] sync falhou, planilha mantida: {e}")
+                        else:
+                            logger.warning(f"[WARN sheets_create reattach merge/{target_id}] {e} — recriando")
+                            result = None
                 if not result:
                     result = sheets_integration.create_sheet_for_merge(
                         merge_id=target_id,
@@ -2013,9 +2018,12 @@ def report_data(request):
                             target_id, detail_rows, totals_rows, campaign=campaign,
                         )
                     except Exception as e:
-                        # Ver nota no ramo merge: sem sync, recria a planilha.
-                        logger.warning(f"[WARN sheets_create reattach token/{target_id}] {e} — recriando")
-                        result = None
+                        # Ver nota no ramo merge: só recria se a planilha não serve mais.
+                        if not sheets_integration.is_sheet_unusable(e):
+                            logger.warning(f"[WARN sheets_create reattach token/{target_id}] sync falhou, planilha mantida: {e}")
+                        else:
+                            logger.warning(f"[WARN sheets_create reattach token/{target_id}] {e} — recriando")
+                            result = None
                 if not result:
                     result = sheets_integration.create_sheet_for_campaign(
                         short_token=target_id,
