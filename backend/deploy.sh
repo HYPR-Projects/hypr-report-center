@@ -18,7 +18,7 @@
 #
 # Flags de performance:
 #   --min-instances=1   elimina cold start (~US$0.40-1.20/mês)
-#   --memory=512MB      headroom pra payloads grandes
+#   --memory=4Gi        o warmup&refresh=true passava de 2Gi (OOM 1–4x/dia desde 24/09, 503s)
 #   --concurrency=10    múltiplos requests por instância (queries são I/O-bound)
 #
 # Pré-requisitos:
@@ -471,7 +471,7 @@ gcloud functions deploy "$FUNCTION_NAME" \
   --entry-point=report_data \
   --trigger-http \
   --allow-unauthenticated \
-  --memory=2Gi \
+  --memory=4Gi \
   --cpu=1 \
   --timeout=540s \
   --min-instances=1 \
