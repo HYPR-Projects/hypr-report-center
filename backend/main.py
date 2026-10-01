@@ -9092,6 +9092,42 @@ def _load_snapshot_payload(short_token):
         return None
 
 
+def _load_frozen_totals(tokens):
+    """{short_token: {"totals": [...]}} dos snapshots, numa query só.
+
+    A lista admin só precisa de `totals` pra sobrescrever a entrega do card
+    (_apply_frozen_delivery_override). Antes ela carregava o payload inteiro de
+    cada congelado, um job por token: com o auto-freeze a tabela passou de
+    "0-2 tokens" pra centenas (360 em 01/10, ~440 MB de JSON, `totals` ~0,7 MB).
+    Cada rebuild frio da lista virava ~360 jobs + ~440 MB desserializados na
+    instância de 2 GiB, e o menu ficava no skeleton até o deadline do front.
+
+    Token duplicado na tabela: fica o snapshot mais recente. Falha devolve {}
+    (o card cai na entrega ao vivo, como quando o token não está congelado)."""
+    if not tokens:
+        return {}
+    _ensure_snapshots_table()
+    sql = (
+        "SELECT short_token, JSON_QUERY(payload_json, '$.totals') AS totals_json "
+        f"FROM `{_snapshots_table_id()}` "
+        "WHERE short_token IN UNNEST(@tokens) "
+        "QUALIFY ROW_NUMBER() OVER (PARTITION BY short_token ORDER BY frozen_at DESC) = 1"
+    )
+    jc = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ArrayQueryParameter("tokens", "STRING", sorted(set(tokens)))
+    ])
+    try:
+        out = {}
+        for row in bq.query(sql, job_config=jc).result():
+            raw = row["totals_json"]
+            if raw:
+                out[row["short_token"]] = {"totals": json.loads(raw)}
+        return out
+    except Exception as e:
+        logger.warning(f"[WARN _load_frozen_totals] {e}")
+        return {}
+
+
 def _get_frozen_payload(short_token):
     """Se o token está congelado, devolve o payload do snapshot; senão None.
     O conjunto de frozen é cacheado (barato); o payload, após o 1º load, vive
@@ -11965,15 +12001,12 @@ def query_campaigns_list():
             _new_rows.append(rd)
         rows = _new_rows
 
-    # Tokens congelados presentes na lista: carrega o snapshot pra sobrescrever
-    # a ENTREGA do card (delivery ao vivo vaza via rename → diverge do report).
-    # Raro (0-2 tokens normalmente); load em paralelo. Ver
-    # _apply_frozen_delivery_override.
-    snap_payloads = {}
+    # Tokens congelados presentes na lista: carrega o `totals` do snapshot pra
+    # sobrescrever a ENTREGA do card (delivery ao vivo vaza via rename →
+    # diverge do report). Com o auto-freeze são centenas: uma query só, lendo
+    # só `totals` (ver _load_frozen_totals e _apply_frozen_delivery_override).
     _frozen_here = [r["short_token"] for r in rows if r["short_token"] in frozen_map]
-    if _frozen_here:
-        _snap_futs = {t: _query_pool.submit(_load_snapshot_payload, t) for t in _frozen_here}
-        snap_payloads = {t: f.result(timeout=_POOL_RESULT_TIMEOUT_S) for t, f in _snap_futs.items()}
+    snap_payloads = _load_frozen_totals(_frozen_here)
 
     # Helpers do loop abaixo — definidos UMA vez fora do loop (antes eram
     # redefinidos a cada iteração, ~270×/request). Funções puras: todo input
