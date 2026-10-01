@@ -11,6 +11,10 @@ Modelo de operação
   criar a sheet no Drive pessoal dele e sincronizar os dados diariamente.
 - A sheet vive no Drive do membro que ativou. Ele compartilha manualmente
   com o cliente (mesmo fluxo que ele usa hoje pra qualquer planilha).
+- Na criação a sheet também é compartilhada com a SA de runtime como
+  editora, e o sync diário escreve pela SA. O refresh_token do membro vira
+  só fallback (planilhas antigas) — ver "Service account como escritora do
+  sync" mais abaixo pra entender o porquê (invalid_rapt).
 - O SYNC para automaticamente 30 dias após `end_date` da campanha (janela
   `sync_until`), mas a INTEGRAÇÃO continua `active` pra sempre: campanha
   encerrada não gera dado novo, então não há o que sincronizar — só isso.
@@ -411,6 +415,138 @@ def _build_drive_client(access_token: str):
 def _build_sheets_client(access_token: str):
     creds = Credentials(token=access_token)
     return build_google_api("sheets", "v4", http=_authed_http(creds), cache_discovery=False)
+
+
+# ─── Service account como escritora do sync ──────────────────────────────────
+# Por que existe (incidente PPV8JF, 2ª vez em 01/10/2026)
+# -------------------------------------------------------
+# O refresh_token do membro morre por motivos que não controlamos: o
+# Workspace da HYPR tem política de reautenticação periódica, e o Google
+# passa a recusar o token com `invalid_grant: reauth related error
+# (invalid_rapt)`. Retry não adianta — só um consent novo. Com o sync
+# dependendo desse token, toda planilha de cliente quebrava de tempos em
+# tempos e alguém precisava reconectar.
+#
+# A SA de runtime da function não sofre reauth. Ela não pode CRIAR arquivo
+# (sem quota de Drive — ver docstring do módulo), mas pode EDITAR uma
+# planilha que outro usuário criou e compartilhou com ela: a quota é do
+# dono. Então: o membro cria a planilha via OAuth (como antes) e já
+# compartilha com a SA como editora; o sync diário escreve pela SA e só cai
+# no token do membro se a SA ainda não tiver acesso (planilhas antigas). Esse
+# fallback compartilha com a SA na hora, então as antigas migram sozinhas no
+# primeiro sync em que o token do membro ainda funciona.
+#
+# Escopo `spreadsheets` (não `drive`): a SA só enxerga o que foi
+# compartilhado com ela, e só precisa escrever valores.
+SA_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+# Override opcional. Sem ele, o e-mail vem da credencial default (SA de
+# runtime da function: <project_number>-compute@developer.gserviceaccount.com).
+SHEETS_SA_EMAIL = os.environ.get("SHEETS_SA_EMAIL", "")
+
+_sa_creds = None
+_sa_email: Optional[str] = None
+_sa_lock = threading.Lock()
+
+
+def _sa_credentials():
+    global _sa_creds
+    if _sa_creds is None:
+        with _sa_lock:
+            if _sa_creds is None:
+                _sa_creds, _ = google_auth_default(scopes=SA_SCOPES)
+    return _sa_creds
+
+
+def _service_account_email() -> str:
+    """E-mail da SA que escreve o sync. Credencial do metadata server só
+    sabe o e-mail depois do primeiro refresh (antes é "default")."""
+    global _sa_email
+    if _sa_email:
+        return _sa_email
+    if SHEETS_SA_EMAIL:
+        _sa_email = SHEETS_SA_EMAIL
+        return _sa_email
+    creds = _sa_credentials()
+    email = getattr(creds, "service_account_email", None)
+    if not email or email == "default":
+        creds.refresh(google_auth_httplib2.Request(httplib2.Http(timeout=GOOGLE_API_TIMEOUT_S)))
+        email = getattr(creds, "service_account_email", None)
+    if not email or email == "default":
+        raise RuntimeError("não deu pra descobrir o e-mail da service account")
+    _sa_email = email
+    return _sa_email
+
+
+def _build_sa_sheets_client():
+    return build_google_api("sheets", "v4", http=_authed_http(_sa_credentials()),
+                            cache_discovery=False)
+
+
+def _share_with_service_account(spreadsheet_id: str, access_token: str) -> bool:
+    """Dá acesso de editor à SA na planilha (com o token do membro, que é
+    dono do arquivo). Best-effort: se falhar, o sync segue pelo token do
+    membro como sempre foi. Idempotente — repetir não duplica a permissão."""
+    try:
+        _build_drive_client(access_token).permissions().create(
+            fileId=spreadsheet_id,
+            body={"role": "writer", "type": "user",
+                  "emailAddress": _service_account_email()},
+            sendNotificationEmail=False,
+            fields="id",
+        ).execute()
+        return True
+    except Exception as e:
+        logger.warning(f"[WARN share sheet {spreadsheet_id} com SA] {e}")
+        return False
+
+
+def _sa_sheets_client_if_shared(spreadsheet_id: str):
+    """Client da Sheets API autenticado como SA, ou None quando a SA ainda
+    não enxerga a planilha (não compartilhada) ou a credencial falhou.
+    Nunca levanta: qualquer falha aqui só significa "usa o token do membro"."""
+    try:
+        svc = _build_sa_sheets_client()
+        svc.spreadsheets().get(
+            spreadsheetId=spreadsheet_id, fields="spreadsheetId",
+        ).execute(num_retries=_SHEETS_NUM_RETRIES)
+        return svc
+    except HttpError as e:
+        status = getattr(e.resp, "status", None)
+        if status not in (403, 404):
+            logger.warning(f"[WARN SA sheets probe {spreadsheet_id}] HTTP {status}: {str(e)[:200]}")
+        return None
+    except Exception as e:
+        logger.warning(f"[WARN SA sheets probe {spreadsheet_id}] {e}")
+        return None
+
+
+def _sheets_client_for_sync(integ: Dict, target_id: str, target_type: str):
+    """Client pra escrever o sync: SA primeiro, token do membro como
+    fallback (e, no fallback, compartilha com a SA pra próxima vez).
+
+    Token do membro morto + SA sem acesso → `_exchange_or_mark` marca
+    revoked e levanta PermissionError, igual a antes."""
+    spreadsheet_id = integ["spreadsheet_id"]
+    svc = _sa_sheets_client_if_shared(spreadsheet_id)
+    if svc is not None:
+        return svc
+    refresh_token = _resolve_refresh_token(integ, target_id, target_type)
+    access_token  = _exchange_or_mark(refresh_token, target_id, target_type)
+    _share_with_service_account(spreadsheet_id, access_token)
+    return _build_sheets_client(access_token)
+
+
+def is_sheet_unusable(exc: Exception) -> bool:
+    """O erro do sync significa que a planilha não serve mais (apagada, sem
+    acesso, aba de dados sumiu)? Só nesses casos o reconnect deve criar
+    planilha nova. Transiente (5xx, timeout, token) mantém a planilha — o
+    cliente não perde o link por causa de um soluço do Google."""
+    if not isinstance(exc, HttpError):
+        return False
+    status = getattr(exc.resp, "status", None)
+    if status in (403, 404):
+        return True
+    return status == 400 and "Unable to parse range" in str(exc)
 
 
 # ─── BigQuery row ops ────────────────────────────────────────────────────────
@@ -1512,6 +1648,10 @@ def _create_spreadsheet_with_payload(
     except Exception as e:
         logger.warning(f"[WARN set anyone-link permission {spreadsheet_id}] {e}")
 
+    # SA como editora: o sync diário passa a não depender do refresh_token
+    # do membro (ver bloco "Service account como escritora do sync").
+    _share_with_service_account(spreadsheet_id, access_token)
+
     return spreadsheet_id, spreadsheet_url, base_sheet_id
 
 
@@ -1668,9 +1808,13 @@ def reattach_existing_sheet(
     o link antigo, parado, sem ninguém perceber.
 
     Retorna {spreadsheet_id, spreadsheet_url} quando reaproveitou, ou None
-    quando não há planilha anterior acessível (apagada, ou reconexão feita
-    por outra conta — `drive.file` só enxerga arquivos criados pra ela).
-    Nesse caso o caller cria uma nova. O caller roda o sync em seguida.
+    quando não há planilha anterior acessível. Nesse caso o caller cria uma
+    nova. O caller roda o sync em seguida.
+
+    Reconexão por OUTRA conta: `drive.file` só enxerga arquivos criados pra
+    ela, então o token novo não vê a planilha. Se a SA já tem acesso, a
+    planilha continua sendo mantida mesmo assim (o sync escreve pela SA).
+    Antes disso, trocar de conta sempre gerava planilha nova.
     """
     _validate_target_type(target_type)
     integ = get_integration(target_id, target_type=target_type)
@@ -1683,14 +1827,22 @@ def reattach_existing_sheet(
         _build_sheets_client(access_token).spreadsheets().get(
             spreadsheetId=spreadsheet_id, fields="spreadsheetId",
         ).execute(num_retries=_SHEETS_NUM_RETRIES)
+        # Planilhas antigas (pré-SA) ganham a SA como editora aqui, então o
+        # próximo invalid_rapt do membro não derruba mais o sync.
+        _share_with_service_account(spreadsheet_id, access_token)
     except HttpError as e:
-        if getattr(e.resp, "status", None) in (403, 404):
+        if getattr(e.resp, "status", None) not in (403, 404):
+            raise
+        if _sa_sheets_client_if_shared(spreadsheet_id) is None:
             logger.info(
                 f"[sheets reattach {target_type}/{target_id}] planilha "
-                f"{spreadsheet_id} inacessível com o token novo — recriando"
+                f"{spreadsheet_id} inacessível com o token novo e com a SA — recriando"
             )
             return None
-        raise
+        logger.info(
+            f"[sheets reattach {target_type}/{target_id}] token novo não vê "
+            f"{spreadsheet_id} (outra conta?), mas a SA vê — mantendo a planilha"
+        )
 
     sql = f"""
     UPDATE `{_table_id()}`
@@ -1995,8 +2147,9 @@ def sync_sheet(
 ) -> Dict:
     """
     Re-popula a aba Base de Dados de uma sheet single-token existente.
-    Usa refresh_token salvo. Atualiza last_synced_at; em caso de erro de
-    auth, marca como revoked; outros erros marcam como error.
+    Escreve pela SA quando ela tem acesso; senão usa o refresh_token salvo
+    (ver `_sheets_client_for_sync`). Atualiza last_synced_at; em caso de
+    erro de auth, marca como revoked; outros erros marcam como error.
 
     `campaign` (opcional, mas recomendado) é usado pra alinhar totals com
     `budget_contracted` em campanhas encerradas com over-delivery. Sem ele,
@@ -2008,9 +2161,7 @@ def sync_sheet(
     if not integ:
         raise ValueError(f"Integração token não encontrada para {short_token}")
 
-    refresh_token = _resolve_refresh_token(integ, short_token, TARGET_TOKEN)
-    access_token  = _exchange_or_mark(refresh_token, short_token, TARGET_TOKEN)
-    sheets_svc    = _build_sheets_client(access_token)
+    sheets_svc    = _sheets_client_for_sync(integ, short_token, TARGET_TOKEN)
     payload       = _build_sheet_payload(detail_rows)
 
     _write_base_de_dados(sheets_svc, integ["spreadsheet_id"], payload,
@@ -2047,9 +2198,7 @@ def sync_merge_sheet(merge_id: str, members: List[Dict]) -> Dict:
                        last_error="grupo sem membros")
         return {"spreadsheet_id": integ["spreadsheet_id"], "skipped": True}
 
-    refresh_token = _resolve_refresh_token(integ, merge_id, TARGET_MERGE)
-    access_token  = _exchange_or_mark(refresh_token, merge_id, TARGET_MERGE)
-    sheets_svc    = _build_sheets_client(access_token)
+    sheets_svc    = _sheets_client_for_sync(integ, merge_id, TARGET_MERGE)
 
     annotated_rows: List[Dict] = []
     for m in members:
