@@ -144,7 +144,10 @@ export function AdminShell({
 
   return (
     <ShellContext.Provider value={shellApi}>
-      <div className="flex h-screen w-full overflow-hidden bg-canvas text-fg">
+      {/* h-dvh, não h-screen: no celular 100vh é a altura com a barra de
+          endereço RECOLHIDA — com ela aberta, o fim do scroll interno (último
+          card, paginação) ficava escondido atrás da barra do navegador. */}
+      <div className="flex h-dvh w-full overflow-hidden bg-canvas text-fg">
 
         {/* ── Rail (desktop) ───────────────────────────────────────────── */}
         <aside
@@ -214,7 +217,7 @@ export function AdminShell({
 
           <main
             ref={scrollRef}
-            className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden scrollbar-thin"
+            className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden scrollbar-thin pb-safe"
           >
             <div className={cn(isWide ? "shell-wide" : "shell-col", "py-5 md:py-6")}>
               {children}

@@ -18,6 +18,7 @@
 //   24    chevron
 
 import { memo } from "react";
+import { EdgeFadeScroller } from "../../../ui/EdgeFadeScroller";
 import { cn } from "../../../ui/cn";
 import { Avatar } from "../../../ui/Avatar";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
@@ -89,7 +90,7 @@ export function CampaignListV2({ campaigns, onOpen, onOpenReport, teamMap = {} }
   // mobile (Linear, Notion, Stripe Dashboard fazem assim).
   return (
     <div className="rounded-xl border border-border bg-surface overflow-hidden">
-      <div className="overflow-x-auto scrollbar-hidden">
+      <EdgeFadeScroller className="scrollbar-hidden">
         <div className="min-w-[720px]">
           {/* Header */}
           <div
@@ -121,7 +122,7 @@ export function CampaignListV2({ campaigns, onOpen, onOpenReport, teamMap = {} }
             />
           ))}
         </div>
-      </div>
+      </EdgeFadeScroller>
     </div>
   );
 }

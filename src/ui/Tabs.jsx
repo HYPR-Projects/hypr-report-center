@@ -18,10 +18,11 @@
 //     <TabsContent value="overview">...</TabsContent>
 //   </Tabs>
 
-import { forwardRef } from "react";
+import { forwardRef, useLayoutEffect } from "react";
 import * as RadixTabs from "@radix-ui/react-tabs";
 import { cn } from "./cn";
 import { useSlidingThumbForActive } from "./useSlidingThumb";
+import { useEdgeFade } from "./useEdgeFade";
 
 export const Tabs = RadixTabs.Root;
 
@@ -33,6 +34,9 @@ export const TabsList = forwardRef(function TabsList(
   // MutationObserver — funciona com o controle de estado do Radix sem
   // precisar acoplar via context.
   const { containerRef, thumbStyle } = useSlidingThumbForActive();
+  // Bordas esmaecidas quando há abas escondidas pro lado + rola até a aba
+  // ativa quando ela muda por fora (link "Ver Vídeo →", deep link).
+  const fadeRef = useEdgeFade({ centerActive: '[role="tab"][data-state="active"]' });
 
   // Permite encaminhar a ref pro consumidor sem perder a do hook.
   const setRef = (el) => {
@@ -40,6 +44,10 @@ export const TabsList = forwardRef(function TabsList(
     if (typeof ref === "function") ref(el);
     else if (ref) ref.current = el;
   };
+  // Fade ligado por effect, não pelo ref: o RadixTabs.List passa por um Slot
+  // que recria o ref composto a cada render — via ref, os observers eram
+  // desmontados e remontados em todo re-render do report.
+  useLayoutEffect(() => fadeRef(containerRef.current), [fadeRef, containerRef]);
 
   // Scroll horizontal nativo quando os triggers estouram a largura
   // disponível (caso típico em mobile com 6+ tabs). `inline-flex` mantém
@@ -55,7 +63,7 @@ export const TabsList = forwardRef(function TabsList(
     <RadixTabs.List
       ref={setRef}
       className={cn(
-        "relative inline-flex items-center max-w-full overflow-x-auto scrollbar-hidden",
+        "relative inline-flex items-center max-w-full overflow-x-auto scrollbar-hidden edge-fade-x",
         variant === "underline"
           ? "gap-1 border-b border-border w-full md:w-auto"
           : "gap-1 p-1 rounded-lg bg-canvas-deeper border border-border",

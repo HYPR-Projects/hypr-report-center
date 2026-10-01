@@ -105,12 +105,12 @@ export function MaPieceDetailV2({
           perderem o foco de quem navega com "próxima" repetido. */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <nav aria-label="Você está em" className="flex min-w-0 flex-wrap items-center gap-1.5 text-[12.5px] text-fg-subtle">
-          <button type="button" onClick={() => onBack()} className="font-bold text-signature hover:underline underline-offset-4 cursor-pointer">
+          <button type="button" onClick={() => onBack()} className="font-bold hit-area text-signature hover:underline underline-offset-4 cursor-pointer">
             Max Attention
           </button>
           <span aria-hidden>›</span>
           {canFilterFormat ? (
-            <button type="button" onClick={() => onBack(piece.format)} className="font-bold text-signature hover:underline underline-offset-4 cursor-pointer">
+            <button type="button" onClick={() => onBack(piece.format)} className="font-bold hit-area text-signature hover:underline underline-offset-4 cursor-pointer">
               {formatLabel(piece.format)}
             </button>
           ) : (

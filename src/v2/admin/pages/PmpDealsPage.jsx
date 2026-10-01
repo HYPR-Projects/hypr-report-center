@@ -1871,7 +1871,7 @@ function HistoryView({ lines, sortBy, sortDir, onColumnClick, onLineClick, onLin
       <div className="overflow-x-auto scrollbar-thin scroll-fade-x">
         <div className={PMP_ROW_MIN_W}>
           <PmpLineRowHeader sortBy={sortBy} sortDir={sortDir} onColumnClick={onColumnClick} />
-          <div className="divide-y divide-border/60 max-h-[calc(100vh-380px)] overflow-y-auto">
+          <div className="divide-y divide-border/60 max-h-[calc(100dvh-380px)] overflow-y-auto">
         {sorted.map((it) => {
           if (it.kind === "single") {
             return <PmpLineRow key={it.line.line_id} line={it.line} onClick={onLineClick} onLinkClick={onLinkClick} />;

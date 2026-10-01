@@ -12,6 +12,7 @@
 // do período e do anterior). Filtro e agregação rodam aqui, em memória — ver
 // lib/dvQuality.js pra por que isso dá número exato.
 
+import { EdgeFadeScroller } from "../../../ui/EdgeFadeScroller";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AdminShell } from "../shell/AdminShell";
 import { PageHeader, MetaDot, MetaStat } from "../shell/PageHeader";
@@ -425,11 +426,11 @@ function CampaignTable({ rows }) {
         <h2 className="text-sm font-bold text-fg">Por campanha</h2>
         <span className="text-[11px] text-fg-subtle">{rows.length} campanhas</span>
       </div>
-      <div className="overflow-x-auto scrollbar-thin">
+      <EdgeFadeScroller className="scrollbar-thin">
         <table className="w-full text-xs tabular-nums">
           <thead>
             <tr className="text-left text-fg-muted">
-              <th className="px-4 py-2 font-semibold min-w-[260px]">Campanha</th>
+              <th className="px-4 py-2 font-semibold min-w-[200px] md:min-w-[260px]">Campanha</th>
               {TABLE_COLS.map((c) => (
                 <th key={c.key} className="px-3 py-2 font-semibold text-right whitespace-nowrap">
                   <button
@@ -448,8 +449,11 @@ function CampaignTable({ rows }) {
           <tbody>
             {sorted.map((r) => (
               <tr key={r.id} className="border-t border-border hover:bg-surface-strong/50">
-                <td className="px-4 py-2 max-w-[420px]">
-                  <div className="font-semibold text-fg truncate" title={r.name}>{r.name}</div>
+                {/* Celular: coluna de 200px e o nome DV (sem espaços, só "_")
+                    quebra em até 2 linhas — com 420px a coluna sozinha
+                    passava da tela e nenhuma métrica aparecia sem rolar. */}
+                <td className="px-4 py-2 max-w-[200px] md:max-w-[420px]">
+                  <div className="font-semibold text-fg line-clamp-2 break-all md:block md:truncate md:break-normal" title={r.name}>{r.name}</div>
                   <div className="text-[11px] text-fg-subtle truncate">{r.brand}</div>
                 </td>
                 {TABLE_COLS.map((c) => {
@@ -467,7 +471,7 @@ function CampaignTable({ rows }) {
             )}
           </tbody>
         </table>
-      </div>
+      </EdgeFadeScroller>
     </section>
   );
 }

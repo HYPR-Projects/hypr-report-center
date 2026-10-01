@@ -309,7 +309,9 @@ export function CampaignHeaderV2({
             {campaignName || "Campanha sem nome"}
           </h1>
 
-          {/* Meta: período + duração + token */}
+          {/* Meta: período + duração + token. No celular a linha quebra e o
+              "·" antes das pílulas (token, Loom, Negociado…) ficava órfão no
+              começo da linha de baixo — ali elas se separam só pelo gap. */}
           <div className="mt-3 flex items-center gap-3 flex-wrap text-sm text-fg-muted">
             {start && end ? (
               <span className="tabular-nums">
@@ -326,7 +328,7 @@ export function CampaignHeaderV2({
             )}
             {shortToken && !isMerged && (
               <>
-                <span className="text-fg-subtle">·</span>
+                <span className="text-fg-subtle max-sm:hidden">·</span>
                 <TokenChip
                   token={shortToken}
                   variant="report"
@@ -336,7 +338,7 @@ export function CampaignHeaderV2({
             )}
             {isMerged && (
               <>
-                <span className="text-fg-subtle">·</span>
+                <span className="text-fg-subtle max-sm:hidden">·</span>
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-signature-soft border border-signature/40 text-signature text-[11px] font-bold tracking-wider">
                   <MergeIcon className="size-3" />
                   {mergeMeta.members.length} reports agrupados
@@ -345,7 +347,7 @@ export function CampaignHeaderV2({
             )}
             {hasLoom && (
               <>
-                <span className="text-fg-subtle">·</span>
+                <span className="text-fg-subtle max-sm:hidden">·</span>
                 <LoomButton
                   onClick={() => {
                     setLoomMounted(true);
@@ -357,13 +359,13 @@ export function CampaignHeaderV2({
             )}
             {hasAnyNegotiation && (
               <>
-                <span className="text-fg-subtle">·</span>
+                <span className="text-fg-subtle max-sm:hidden">·</span>
                 <NegotiationButton onClick={() => { setNegoMounted(true); setNegoOpen(true); }} />
               </>
             )}
             {hasPosVenda && (
               <>
-                <span className="text-fg-subtle">·</span>
+                <span className="text-fg-subtle max-sm:hidden">·</span>
                 <PosVendaButton onClick={() => { setPosVendaMounted(true); setPosVendaOpen(true); }} />
               </>
             )}
@@ -923,8 +925,10 @@ function MergeViewSwitcher({ members, activeToken, currentView, onChange, switch
         );
       })}
 
-      {/* Fio separando os meses do resumo agregado. */}
-      <span className="self-center w-px h-5 mx-1 bg-border-strong shrink-0" aria-hidden="true" />
+      {/* Fio separando os meses do resumo agregado. Some no celular: ali o
+          "Agregado" quebra pra linha de baixo e o fio ficava pendurado no
+          fim da linha dos meses. */}
+      <span className="self-center w-px h-5 mx-1 bg-border-strong shrink-0 max-sm:hidden" aria-hidden="true" />
 
       <SegTab
         ref={setItemRef(sortedMembers.length)}

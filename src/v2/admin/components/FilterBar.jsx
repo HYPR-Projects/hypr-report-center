@@ -44,6 +44,7 @@
 import { forwardRef, useCallback, useEffect, useId, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { cn } from "../../../ui/cn";
+import { useEdgeFade } from "../../../ui/useEdgeFade";
 import { useAdminShell } from "../shell/shellContext";
 import { filterChipClass } from "./filterChipStyle";
 
@@ -72,6 +73,7 @@ export function FilterBar({
   const { registerSearchFocus } = useAdminShell();
   const [stuck, setStuck] = useState(false);
   const sentinelRef = useRef(null);
+  const chipsRef = useEdgeFade();
 
   // Registra o foco da busca no shell — é o que faz a tecla "/" e o botão
   // "Buscar" do rail chegarem até aqui sem prop drilling.
@@ -111,7 +113,13 @@ export function FilterBar({
           className,
         )}
       >
-        <div className="flex items-center gap-1.5 flex-wrap">
+        {/* Celular: busca numa linha, chips numa faixa única que rola na
+            horizontal (bordas esmaecem quando há chip escondido). Antes os
+            chips quebravam em até 3 linhas e a barra fixa comia ~1/4 da tela.
+            Do md pra cima o wrapper dos chips vira `contents` e tudo flui
+            na mesma linha com wrap, como sempre foi. Os painéis dos chips
+            abrem em portal, então o overflow da faixa não os corta. */}
+        <div className="flex flex-col items-stretch gap-2 md:flex-row md:items-center md:gap-1.5 md:flex-wrap">
           {onSearchChange && (
             <SearchField
               ref={inputRef}
@@ -121,11 +129,20 @@ export function FilterBar({
             />
           )}
 
-          {chips.map((chip) => (
-            <FilterChip key={chip.id} {...chip} />
-          ))}
+          {(chips.length > 0 || trailing) && (
+            <div
+              ref={chipsRef}
+              // py-1 -my-1 / px-0.5: folga pro anel de foco dos chips (ring +
+              // offset) — sem ela a faixa com overflow cortava o anel.
+              className="flex items-center gap-1.5 overflow-x-auto scrollbar-hidden edge-fade-x [&>*]:shrink-0 py-1 -my-1 px-0.5 -mx-0.5 md:contents"
+            >
+              {chips.map((chip) => (
+                <FilterChip key={chip.id} {...chip} />
+              ))}
 
-          {trailing}
+              {trailing}
+            </div>
+          )}
         </div>
 
         {(hasActive || resultLabel || notice) && (
@@ -184,7 +201,7 @@ const SearchField = forwardRef(function SearchField({ value, onChange, placehold
   return (
     <div
       className={cn(
-        "flex-1 min-w-[190px] basis-[240px] h-8 flex items-center gap-2 px-2.5",
+        "flex-1 min-w-[190px] basis-[240px] max-md:flex-none max-md:basis-auto h-8 flex items-center gap-2 px-2.5",
         "rounded-md bg-surface border border-border",
         "focus-within:border-signature transition-colors",
       )}

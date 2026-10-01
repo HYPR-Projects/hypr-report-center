@@ -10,6 +10,7 @@
 // define qual janela da DV representa a campanha (a DV não conhece o token
 // nem as datas do HYPR). Admin conecta pelo botão no topo da aba.
 
+import { EdgeFadeScroller } from "../../ui/EdgeFadeScroller";
 import { useEffect, useMemo, useState } from "react";
 import { getQualityReport } from "../../lib/api";
 import {
@@ -283,7 +284,7 @@ function CampaignTable({ campaigns }) {
       <div className="px-5 py-3 border-b border-border">
         <h3 className="text-sm font-bold text-fg">Por campanha DoubleVerify</h3>
       </div>
-      <div className="overflow-x-auto">
+      <EdgeFadeScroller>
         <table className="w-full text-xs tabular-nums">
           <thead>
             <tr className="text-left text-fg-muted">
@@ -306,7 +307,7 @@ function CampaignTable({ campaigns }) {
             ))}
           </tbody>
         </table>
-      </div>
+      </EdgeFadeScroller>
     </section>
   );
 }

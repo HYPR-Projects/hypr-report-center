@@ -20,6 +20,7 @@
 // selecionado. PI é valor de CONTRATO (não janela) e a "% entregue" é acumulada
 // (margem lifetime ÷ PI) — rotulada como tal pra não confundir com a janela.
 
+import { EdgeFadeScroller } from "../../../ui/EdgeFadeScroller";
 import { Fragment, useMemo, useState } from "react";
 import { fmt } from "../../../shared/format";
 import * as Popover from "@radix-ui/react-popover";
@@ -1232,7 +1233,7 @@ function DealsTable({ rows, accent }) {
         <h3 className="lbl-section text-signature">Desempenho por deal · período</h3>
         <span className="text-[11px] text-fg-subtle tabular-nums">{rows.length} {rows.length === 1 ? "deal" : "deals"} com entrega</span>
       </div>
-      <div className="overflow-x-auto">
+      <EdgeFadeScroller>
         <table className="w-full text-[13px]">
           <thead>
             <tr className="bg-surface-3 text-fg-muted">
@@ -1264,7 +1265,7 @@ function DealsTable({ rows, accent }) {
             })}
           </tbody>
         </table>
-      </div>
+      </EdgeFadeScroller>
       {rows.length > 12 && (
         <div className="px-4 md:px-5 py-2.5 border-t border-border text-right">
           <button type="button" onClick={() => setExpanded((v) => !v)}

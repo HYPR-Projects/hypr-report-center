@@ -125,7 +125,7 @@ export function MaAddressExplorerV2({
           footer={
             <>
               {inCity.length > INITIAL && (
-                <button type="button" onClick={() => setOpen((v) => !v)} className="font-semibold text-signature hover:underline underline-offset-4 cursor-pointer">
+                <button type="button" onClick={() => setOpen((v) => !v)} className="font-semibold hit-area text-signature hover:underline underline-offset-4 cursor-pointer">
                   {open ? `Mostrar só os ${INITIAL} primeiros` : `Mostrar os ${fmt(inCity.length)}`}
                 </button>
               )}

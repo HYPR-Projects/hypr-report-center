@@ -147,7 +147,8 @@ export function AllowedCountriesField({ shortToken, onChange }) {
                       }}
                       aria-label="Adicionar país liberado"
                       className={cn(
-                        "h-6 w-[88px] pl-2 pr-5 rounded-full border border-dashed border-border bg-transparent",
+                        // Touch: campo sobe pra 16px (anti-zoom do iOS) — pílula cresce junto.
+                        "h-6 w-[88px] pointer-coarse:h-8 pointer-coarse:w-[108px] pl-2 pr-5 rounded-full border border-dashed border-border bg-transparent",
                         "text-[11px] text-fg-muted cursor-pointer disabled:cursor-not-allowed",
                         "hover:border-border-strong hover:text-fg",
                         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",

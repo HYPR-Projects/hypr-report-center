@@ -26,6 +26,7 @@
 // Bases salvas no formato antigo (sem `format`) caem num banner pedindo
 // pra fazer upload do novo formato.
 
+import { EdgeFadeScroller } from "../ui/EdgeFadeScroller";
 import { useMemo, useState } from "react";
 import { fmt, fmtR, fmtCompactTick, fmtP2, fmtDateTimeBR } from "../shared/format";
 import {
@@ -479,9 +480,9 @@ function TopProductsTable({ products, totalCount, showAll, onToggle }) {
         subtitle={`${fmt(totalCount)} produtos no período · ordenado por vendas`}
       />
       <CardBody className="p-0">
-        <div className="overflow-x-auto">
+        <EdgeFadeScroller>
           <table className="w-full text-sm">
-            <thead className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle border-b border-border">
+            <thead className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle border-b border-border whitespace-nowrap">
               <tr>
                 <th className="px-4 py-3 text-left w-10">#</th>
                 <th className="px-4 py-3 text-left">Produto</th>
@@ -498,24 +499,27 @@ function TopProductsTable({ products, totalCount, showAll, onToggle }) {
                 return (
                   <tr key={p.key} className="border-b border-border last:border-0 hover:bg-surface transition-colors">
                     <td className="px-4 py-3 text-fg-subtle tabular-nums">{i + 1}</td>
-                    <td className="px-4 py-3 text-fg max-w-[420px]">
-                      <div className="truncate" title={p.name || "—"}>
+                    {/* No celular o nome quebra em até 2 linhas com largura
+                        mínima legível (a tabela rola pro lado); do md pra
+                        cima segue numa linha só, truncado. */}
+                    <td className="px-4 py-3 text-fg min-w-[220px] max-w-[420px]">
+                      <div className="line-clamp-2 md:block md:truncate" title={p.name || "—"}>
                         {truncateProductName(p.name, 80) || <span className="text-fg-subtle italic">sem nome</span>}
                       </div>
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-fg-muted">
                       {p.asin || <span className="text-fg-subtle">—</span>}
                     </td>
-                    <td className="px-4 py-3 text-right font-bold tabular-nums text-fg">{fmtR(p.sales)}</td>
+                    <td className="px-4 py-3 text-right font-bold tabular-nums text-fg whitespace-nowrap">{fmtR(p.sales)}</td>
                     <td className="px-4 py-3 text-right tabular-nums text-fg-muted">{fmt(p.units)}</td>
                     <td className="px-4 py-3 text-right tabular-nums text-fg-muted">{fmt(p.purchases)}</td>
-                    <td className="px-4 py-3 text-right tabular-nums text-fg-muted">{fmtR(ticket)}</td>
+                    <td className="px-4 py-3 text-right tabular-nums text-fg-muted whitespace-nowrap">{fmtR(ticket)}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
-        </div>
+        </EdgeFadeScroller>
         {hasMore && (
           <button
             type="button"
@@ -538,9 +542,9 @@ function DailyAggregateTable({ daily }) {
     <Card>
       <CardHeader title="Detalhe diário" subtitle="Métricas agregadas por data" />
       <CardBody className="p-0">
-        <div className="overflow-x-auto max-h-[480px]">
+        <EdgeFadeScroller className="max-h-[480px]">
           <table className="w-full text-sm">
-            <thead className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle border-b border-border bg-surface-2 sticky top-0 z-10">
+            <thead className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle border-b border-border bg-surface-2 sticky top-0 z-10 whitespace-nowrap">
               <tr>
                 <th className="px-4 py-3 text-left">Data</th>
                 <th className="px-4 py-3 text-right">Vendas</th>
@@ -552,8 +556,8 @@ function DailyAggregateTable({ daily }) {
             <tbody>
               {reversed.map((d) => (
                 <tr key={d.date} className="border-b border-border last:border-0 hover:bg-surface transition-colors">
-                  <td className="px-4 py-3 font-mono text-xs text-fg">{d.date.split("-").reverse().join("/")}</td>
-                  <td className="px-4 py-3 text-right font-bold tabular-nums text-fg">{fmtR(d.sales)}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-fg whitespace-nowrap">{d.date.split("-").reverse().join("/")}</td>
+                  <td className="px-4 py-3 text-right font-bold tabular-nums text-fg whitespace-nowrap">{fmtR(d.sales)}</td>
                   <td className="px-4 py-3 text-right tabular-nums text-fg-muted">{fmt(d.purchases)}</td>
                   <td className="px-4 py-3 text-right tabular-nums text-fg-muted">{fmt(d.units)}</td>
                   <td className="px-4 py-3 text-right tabular-nums text-fg-muted">{fmt(d.atc)}</td>
@@ -561,7 +565,7 @@ function DailyAggregateTable({ daily }) {
               ))}
             </tbody>
           </table>
-        </div>
+        </EdgeFadeScroller>
       </CardBody>
     </Card>
   );

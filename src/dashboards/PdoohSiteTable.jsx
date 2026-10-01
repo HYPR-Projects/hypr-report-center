@@ -51,8 +51,10 @@ const PdoohSiteTable = ({ sites, theme, onSiteClick }) => {
 
   const navBtn = (label, disabled, onClick) => (
     <button disabled={disabled} onClick={onClick} style={{
-      background: bg3, color: disabled ? bdr : muted, border: `1px solid ${bdr}`,
-      padding: "4px 12px", borderRadius: 6, cursor: disabled ? "default" : "pointer", fontSize: 12,
+      // Desabilitado: o texto na cor da borda sumia sobre o fundo (o botão
+      // "← Anterior" da 1ª página virava um retângulo vazio). Esmaece inteiro.
+      background: bg3, color: muted, border: `1px solid ${bdr}`, opacity: disabled ? 0.4 : 1,
+      padding: "8px 14px", borderRadius: 6, cursor: disabled ? "default" : "pointer", fontSize: 12,
     }}>{label}</button>
   );
 
@@ -72,7 +74,7 @@ const PdoohSiteTable = ({ sites, theme, onSiteClick }) => {
           placeholder="Buscar local, cidade ou media owner..."
           style={{
             background: bg3, color: text, border: `1px solid ${bdr}`, borderRadius: 8,
-            padding: "8px 12px", fontSize: 12, minWidth: 260, outline: "none",
+            padding: "8px 12px", fontSize: 12, width: "100%", maxWidth: 320, outline: "none",
           }}
         />
       </div>
@@ -80,7 +82,9 @@ const PdoohSiteTable = ({ sites, theme, onSiteClick }) => {
       <div style={{ overflowX: "auto" }}>
         {/* minWidth: no celular a tabela rola na horizontal em vez de espremer
             o nome do local palavra por palavra. */}
-        <table style={{ width: "100%", minWidth: 640, borderCollapse: "collapse" }}>
+        {/* fontSize explícito: sem ele a tabela herdava os 16px do body e
+            ficava maior que o resto do report (as outras tabelas usam 13). */}
+        <table style={{ width: "100%", minWidth: 640, borderCollapse: "collapse", fontSize: 13 }}>
           <thead><tr>
             {th("Local", "name")}
             <th style={{ color: muted, fontWeight: 600, fontSize: 12, textAlign: "left", padding: "0 8px 8px 0", whiteSpace: "nowrap" }}>Cidade</th>
@@ -107,7 +111,9 @@ const PdoohSiteTable = ({ sites, theme, onSiteClick }) => {
                   <td style={{ fontWeight: 600, padding: "10px 8px 10px 0", color: text, maxWidth: 340 }}>
                     {clickable && <span aria-hidden="true" style={{ fontSize: 11, marginRight: 6, opacity: hoverKey === s.key ? 1 : 0.45 }}>📍</span>}
                     {s.name}
-                    <div style={{ fontSize: 11, fontWeight: 400, color: muted, marginTop: 2 }}>{s.type}</div>
+                    {s.type && s.type !== "—" && (
+                      <div style={{ fontSize: 11, fontWeight: 400, color: muted, marginTop: 2 }}>{s.type}</div>
+                    )}
                   </td>
                   <td style={{ padding: "10px 8px 10px 0", color: text, whiteSpace: "nowrap" }}>{s.city}</td>
                   <td style={{ padding: "10px 8px 10px 0", color: text, whiteSpace: "nowrap" }}>{s.owner}</td>

@@ -65,6 +65,9 @@ export const DrawerContent = forwardRef(function DrawerContent(
           widthClass,
           "bg-canvas-elevated border-l border-border shadow-2xl",
           "flex flex-col outline-none text-fg",
+          // No celular o drawer ocupa a tela inteira: topo e rodapé (campo de
+          // mensagem, botões) saem de baixo do notch e da barra de gesto.
+          "pt-safe pb-safe",
           "drawer-content",
           className
         )}
@@ -101,7 +104,7 @@ export function DrawerHeader({ title, subtitle, className, titleClassName }) {
       <Dialog.Close
         aria-label="Fechar"
         className={cn(
-          "shrink-0 inline-flex items-center justify-center w-8 h-8 rounded-md",
+          "hit-area shrink-0 inline-flex items-center justify-center w-8 h-8 rounded-md",
           "text-fg-muted hover:text-fg hover:bg-surface",
           "transition-colors",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature"

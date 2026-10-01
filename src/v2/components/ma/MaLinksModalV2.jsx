@@ -167,7 +167,7 @@ export function MaLinksModalV2({ open, onOpenChange, targets, defaultTarget, adm
         <Dialog.Content
           className={cn(
             "fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2",
-            "w-[calc(100vw-32px)] max-w-[880px] max-h-[calc(100vh-48px)]",
+            "w-[calc(100vw-32px)] max-w-[880px] max-h-[calc(100dvh-48px)]",
             "rounded-2xl border border-border-strong bg-canvas-elevated shadow-2xl flex flex-col outline-none",
           )}
         >

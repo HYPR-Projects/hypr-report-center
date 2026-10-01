@@ -5,6 +5,7 @@
 // formato × DSP e qualidade do dado. Todos recebem números já agregados de
 // lib/dspAnalytics.js — aqui só se desenha.
 
+import { EdgeFadeScroller } from "../../../../ui/EdgeFadeScroller";
 import { cn } from "../../../../ui/cn";
 import { FormatBadge, FormatIcon } from "./FormatBadge";
 import { SparklineV2 } from "../../../components/SparklineV2";
@@ -28,7 +29,7 @@ export function DeltaBadge({ metricKey, cur, prev, disabled }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-0.5 text-[11px] font-semibold tabular-nums",
+        "inline-flex items-center gap-0.5 text-[11px] font-semibold tabular-nums whitespace-nowrap shrink-0",
         good == null ? "text-fg-muted" : good ? "text-success" : "text-danger",
       )}
     >
@@ -219,7 +220,7 @@ export function AbsCostCard({ rows, absClients }) {
           ({absClients.join(", ")}), depois a marcação manual no drawer. Este bloco ignora o filtro de ABS.
         </p>
       </div>
-      <div className="overflow-x-auto scrollbar-thin">
+      <EdgeFadeScroller className="scrollbar-thin">
         <table className="w-full text-xs tabular-nums">
           <thead>
             <tr className="text-left text-fg-muted">
@@ -267,7 +268,7 @@ export function AbsCostCard({ rows, absClients }) {
             )}
           </tbody>
         </table>
-      </div>
+      </EdgeFadeScroller>
     </section>
   );
 }
@@ -327,7 +328,7 @@ function FormatCard({ media, rows, abs }) {
           </div>
         </div>
       </header>
-      <div className="overflow-x-auto scrollbar-thin">
+      <EdgeFadeScroller className="scrollbar-thin">
         <table className="w-full text-xs tabular-nums">
           <thead>
             <tr className="text-fg-subtle">
@@ -369,7 +370,7 @@ function FormatCard({ media, rows, abs }) {
             })}
           </tbody>
         </table>
-      </div>
+      </EdgeFadeScroller>
     </article>
   );
 }

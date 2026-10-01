@@ -55,7 +55,7 @@ export function MaxAttentionSummaryCardV2({
     <button
       type="button"
       onClick={() => onNavigate("max-attention")}
-      className="text-xs font-semibold text-signature hover:underline underline-offset-4 whitespace-nowrap cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature rounded"
+      className="text-xs font-semibold hit-area text-signature hover:underline underline-offset-4 whitespace-nowrap cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature rounded"
     >
       Ver Max Attention →
     </button>

@@ -9,6 +9,7 @@
 // Os destaques do topo só consideram táticas com pelo menos 1% das
 // impressões: tática com 3 lines não vira "melhor CTR" por acaso.
 
+import { EdgeFadeScroller } from "../../../../ui/EdgeFadeScroller";
 import { useState } from "react";
 import { cn } from "../../../../ui/cn";
 import { dspColor, dspLabel } from "../../../../shared/dspMeta";
@@ -65,7 +66,7 @@ export function DspTacticsCard({ rows, selected, onToggleTactic }) {
           Abrir por DSP
         </label>
       </div>
-      <div className="overflow-x-auto scrollbar-thin">
+      <EdgeFadeScroller className="scrollbar-thin">
         <table className="w-full text-xs tabular-nums">
           <thead>
             <tr className="text-left text-fg-muted">
@@ -92,7 +93,7 @@ export function DspTacticsCard({ rows, selected, onToggleTactic }) {
             })}
           </tbody>
         </table>
-      </div>
+      </EdgeFadeScroller>
     </section>
   );
 }

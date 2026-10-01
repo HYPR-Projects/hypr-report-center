@@ -9,6 +9,7 @@
 // nova aba (mesmo handler `onOpenReport` usado nos cards).
 
 import { useState, useMemo } from "react";
+import { EdgeFadeScroller } from "../../../ui/EdgeFadeScroller";
 import { fmt } from "../../../shared/format";
 import { cn } from "../../../ui/cn";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
@@ -228,6 +229,151 @@ function Td({ children, align = "left", className, tabular = false, title }) {
 // ────────────────────────────────────────────────────────────────────────
 // Empty state
 // ────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
+// Celular — seletor de ordenação + card por linha
+// ────────────────────────────────────────────────────────────────────────
+const MOBILE_SORTS_LIVE = [
+  ["projetadaPct", "Projetada"],
+  ["totalEntreguePct", "Entregue"],
+  ["status", "Status"],
+  ["minDiariaContratada", "Falta/Dia"],
+  ["deliveredD1", "Ontem (D-1)"],
+  ["techCostPct", "Tech Cost"],
+  ["realEcpm", "CPM"],
+  ["ctr", "CTR"],
+  ["client_name", "Cliente"],
+];
+const MOBILE_SORTS_HIST = [
+  ["totalEntreguePct", "Entregue"],
+  ["status", "Status"],
+  ["mediaDiariaAtual", "Média/Dia"],
+  ["techCostPct", "Tech Cost"],
+  ["realEcpm", "CPM"],
+  ["ctr", "CTR"],
+  ["client_name", "Cliente"],
+];
+
+function MobileSort({ historical, sortKey, sortDir, onSortKey, onToggleDir }) {
+  const opts = historical ? MOBILE_SORTS_HIST : MOBILE_SORTS_LIVE;
+  return (
+    <div className="flex items-center gap-2">
+      <label className="lbl-section text-fg-muted shrink-0" htmlFor={`diag-sort-${historical ? "h" : "l"}`}>
+        Ordenar
+      </label>
+      <select
+        id={`diag-sort-${historical ? "h" : "l"}`}
+        value={opts.some(([k]) => k === sortKey) ? sortKey : ""}
+        onChange={(e) => e.target.value && onSortKey(e.target.value)}
+        className="h-9 min-w-0 flex-1 rounded-md border border-border bg-surface px-2 text-sm text-fg"
+      >
+        {!opts.some(([k]) => k === sortKey) && <option value="">—</option>}
+        {opts.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+      </select>
+      <button
+        type="button"
+        onClick={onToggleDir}
+        aria-label={sortDir === "asc" ? "Ordem crescente — inverter" : "Ordem decrescente — inverter"}
+        className="h-9 w-9 shrink-0 grid place-items-center rounded-md border border-border bg-surface text-fg-muted hover:text-fg cursor-pointer"
+      >
+        {sortDir === "asc" ? "↑" : "↓"}
+      </button>
+    </div>
+  );
+}
+
+function MobileMetric({ label, children, className }) {
+  return (
+    <div className="min-w-0">
+      <div className="lbl-micro text-fg-subtle truncate">{label}</div>
+      <div className={cn("mt-1 text-[13px] tabular-nums truncate", className)}>{children}</div>
+    </div>
+  );
+}
+
+function MobileRowCard({ r, teamMap, historical, onOpen }) {
+  const csFullName = r.cs_email ? (teamMap[r.cs_email] || localPartFromEmail(r.cs_email)) : null;
+  const projTone = STATUS_META[r.status]?.textClass || "";
+  const ecpmKind = r.media === "video" ? "video" : (r.has_abs ? "displayAbs" : "display");
+  const d1Verdict = d1VsFaltaInfo(r.deliveredD1, r.minDiariaContratada);
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); }
+      }}
+      className={cn(
+        "rounded-xl border border-border bg-surface px-3.5 py-3 cursor-pointer transition-colors",
+        "hover:bg-canvas-deeper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
+      )}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0 text-[13px]">
+            <span className="font-semibold text-fg truncate">{r.client_name || "—"}</span>
+            {r.has_abs && (
+              <span className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded lbl-micro border border-signature/40 bg-signature-soft text-signature">
+                ABS
+              </span>
+            )}
+            <NoteMark shortToken={r.short_token} />
+          </div>
+          <div className="mt-0.5 text-xs text-fg-muted line-clamp-2">{r.campaign_name || "—"}</div>
+          <div className="mt-1 text-[11px] text-fg-subtle tabular-nums">
+            {formatDateRange(r.start_date, r.end_date) || "—"}
+            {" · "}
+            {csFullName ? <span className="capitalize">{csFullName}</span> : <span className="italic">Sem CS</span>}
+          </div>
+        </div>
+        <div className="shrink-0 pt-0.5"><StatusVerdict row={r} /></div>
+      </div>
+
+      <div className="mt-3 pt-3 border-t border-border/60 grid grid-cols-4 gap-x-3 gap-y-2.5">
+        <MobileMetric label="Entregue" className={cn(historical && cn("font-semibold", projTone))}>
+          {formatPctRow(r.totalEntreguePct, 1)}
+        </MobileMetric>
+        {historical ? (
+          <>
+            <MobileMetric label="Entregue #">{formatIntRow(r.delivered)}</MobileMetric>
+            <MobileMetric label="Média/Dia" className={cn("font-semibold", mediaDiariaToneClass(r.mediaDiariaAtual, r.idealDiaria))}>
+              {formatIntRow(r.mediaDiariaAtual)}
+            </MobileMetric>
+            <MobileMetric label="Ideal/Dia" className="text-fg-muted">{formatIntRow(r.idealDiaria)}</MobileMetric>
+          </>
+        ) : (
+          <>
+            <MobileMetric label="Projetada" className={cn("font-semibold", projTone)}>
+              {formatPctRow(r.projetadaPct, 1)}
+            </MobileMetric>
+            <MobileMetric label="Falta/Dia" className="text-fg-muted">{formatIntRow(r.minDiariaContratada)}</MobileMetric>
+            <MobileMetric label="Ontem">
+              {r.deliveredD1 != null && r.deliveredD1 > 0 ? (
+                <>
+                  {formatIntRow(r.deliveredD1)}
+                  {d1Verdict && <span className={cn("ml-1 text-[11px] font-bold", d1Verdict.tone)}>{d1Verdict.icon}</span>}
+                </>
+              ) : <span className="text-fg-subtle">—</span>}
+            </MobileMetric>
+          </>
+        )}
+        <MobileMetric label="CPM" className={cn("font-semibold", ecpmToneClass(r.realEcpm, ecpmKind))}>
+          {formatBrlRow(r.realEcpm, 2)}
+        </MobileMetric>
+        <MobileMetric label="Tech" className={cn("font-semibold", techCostToneClass(r.techCostPct, r.tech_has_abs ?? r.has_abs))}>
+          {formatPctRow(r.techCostPct, 1)}
+        </MobileMetric>
+        <MobileMetric label="View." className={cn("font-semibold", viewabilityToneClass(r.viewability))}>
+          {formatPctRow(r.viewability, 1)}
+        </MobileMetric>
+        <MobileMetric label="CTR" className={cn("font-semibold", ctrColorClass(r.ctr, !!r.has_abs))}>
+          {formatPctRow(r.ctr, 2)}
+        </MobileMetric>
+      </div>
+    </div>
+  );
+}
+
 function EmptyState({ message }) {
   return (
     <div className="rounded-xl border border-border bg-surface p-8 text-center">
@@ -384,8 +530,31 @@ export function DiagnosticoTable({
         </span>
       </header>
 
-      <div className="rounded-xl border border-border bg-surface overflow-hidden">
-        <div className="overflow-x-auto">
+      {/* Celular: cards em vez da tabela. A tabela tem 1300px de largura
+          mínima — no telefone o pacing ficava a três telas de scroll lateral
+          do nome da campanha. O card mostra as mesmas células com as mesmas
+          réguas de cor; a ordenação vem do seletor acima da lista. */}
+      <div className="md:hidden space-y-2">
+        <MobileSort
+          historical={historical}
+          sortKey={sortKey}
+          sortDir={sortDir}
+          onSortKey={handleSort}
+          onToggleDir={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+        />
+        {sortedRows.map((r) => (
+          <MobileRowCard
+            key={`${r.short_token}-${r.media}`}
+            r={r}
+            teamMap={teamMap}
+            historical={historical}
+            onOpen={() => (onOpenCampaign || onOpenReport)?.(r.short_token)}
+          />
+        ))}
+      </div>
+
+      <div className="hidden md:block rounded-xl border border-border bg-surface overflow-hidden">
+        <EdgeFadeScroller>
           {/* table-fixed + larguras explícitas por coluna pra ritmo visual
               consistente — sem table-fixed o browser distribui excesso de
               forma desigual e a grade fica visualmente "respirando" demais
@@ -717,7 +886,7 @@ export function DiagnosticoTable({
               })}
             </tbody>
           </table>
-        </div>
+        </EdgeFadeScroller>
       </div>
     </section>
   );

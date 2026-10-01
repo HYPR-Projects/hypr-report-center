@@ -93,6 +93,24 @@
   }
 }
 
+/* iOS Safari dá zoom na página ao focar campo com fonte < 16px (busca de
+ * campanha, comentários, filtros com busca) e não desfaz ao sair — o
+ * usuário fica com o layout ampliado e cortado. Em ponteiro grosso (touch)
+ * todo campo de texto fica em 16px. Fora da layer e com !important porque
+ * precisa vencer as utilities (text-xs, text-[13px]) e estilos inline. */
+@media (pointer: coarse) {
+  /* Data/hora ficam de fora: abrem o seletor nativo (sem teclado, sem
+   * zoom) e moram em caixas de largura fixa que em 16px cortavam o ano. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="date"]):not([type="time"]):not([type="datetime-local"]):not([type="month"]):not([type="week"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+    /* Em 16px placeholders longos ("Buscar cliente, campanha ou time")
+     * não cabem: reticências em vez de cortar no meio da palavra. */
+    text-overflow: ellipsis;
+  }
+}
+
 /* ──────────────────────────────────────────────────────────────────────
  * Safe-area utilities (iOS notch / home indicator / Android nav bar)
  * ──────────────────────────────────────────────────────────────────────
@@ -291,6 +309,39 @@
     border-radius: 9999px;
   }
   &:hover::-webkit-scrollbar-thumb { background: var(--color-fg-subtle); }
+}
+
+/* Área de toque maior que o desenho do controle. Links de texto de card
+ * ("Ver Display →", "Mostrar os 31 dias") têm ~16px de altura — abaixo dos
+ * 24px do WCAG 2.5.8 e longe dos 44px recomendados pra dedo. O ::after
+ * invisível estende o alvo sem mexer no layout; só em ponteiro grosso
+ * (touch), pra não roubar hover/clique de vizinhos no mouse. */
+@utility hit-area {
+  position: relative;
+  @media (pointer: coarse) {
+    &::after {
+      content: "";
+      position: absolute;
+      inset: -12px -8px;
+    }
+  }
+}
+
+/* Esmaece as bordas de uma faixa com scroll horizontal (abas, chips) quando
+ * há conteúdo escondido daquele lado. Os atributos são ligados pelo hook
+ * `useEdgeFade` (src/ui/useEdgeFade.js); sem eles a máscara é 100% opaca e
+ * nada muda. Máscara em vez de sombra: funciona sobre fundo translúcido. */
+@utility edge-fade-x {
+  --edge-fade-start: 0px;
+  --edge-fade-end: 0px;
+  &[data-fade-start] { --edge-fade-start: 28px; }
+  &[data-fade-end] { --edge-fade-end: 40px; }
+  /* A máscara só existe enquanto há borda a esmaecer: sem overflow não há
+   * camada de composição extra (lista de centenas de linhas, desktop). */
+  &[data-fade-start], &[data-fade-end] {
+    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--edge-fade-start), #000 calc(100% - var(--edge-fade-end)), transparent 100%);
+    mask-image: linear-gradient(to right, transparent 0, #000 var(--edge-fade-start), #000 calc(100% - var(--edge-fade-end)), transparent 100%);
+  }
 }
 
 /* Sinaliza scroll horizontal sem depender de JS: um degradê "cobre" nas

@@ -37,6 +37,7 @@
 // Dependência: requer `video_starts` no payload de `daily` (adicionado
 // no backend `query_daily`).
 
+import { EdgeFadeScroller } from "../../ui/EdgeFadeScroller";
 import { useMemo, useRef, useState } from "react";
 import { fmt, fmtR } from "../../shared/format";
 import { downloadCsvText } from "../../shared/download";
@@ -253,7 +254,7 @@ export function DailyAggregateTableV2({
           Sem entregas de {MEDIA_LABEL[media] || media} no período.
         </div>
       ) : (
-        <div className="overflow-x-auto">
+        <EdgeFadeScroller>
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border">
@@ -302,7 +303,7 @@ export function DailyAggregateTableV2({
               </tfoot>
             )}
           </table>
-        </div>
+        </EdgeFadeScroller>
       )}
 
       {canCollapse && (
@@ -311,7 +312,7 @@ export function DailyAggregateTableV2({
             type="button"
             onClick={() => setExpanded((v) => !v)}
             aria-expanded={expanded}
-            className="text-xs font-semibold text-signature hover:underline underline-offset-4 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature rounded"
+            className="text-xs font-semibold hit-area text-signature hover:underline underline-offset-4 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature rounded"
           >
             {expanded
               ? `Mostrar só os últimos ${initialRows} dias`
