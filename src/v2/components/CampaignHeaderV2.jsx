@@ -925,8 +925,10 @@ function MergeViewSwitcher({ members, activeToken, currentView, onChange, switch
         );
       })}
 
-      {/* Fio separando os meses do resumo agregado. */}
-      <span className="self-center w-px h-5 mx-1 bg-border-strong shrink-0" aria-hidden="true" />
+      {/* Fio separando os meses do resumo agregado. Some no celular: ali o
+          "Agregado" quebra pra linha de baixo e o fio ficava pendurado no
+          fim da linha dos meses. */}
+      <span className="self-center w-px h-5 mx-1 bg-border-strong shrink-0 max-sm:hidden" aria-hidden="true" />
 
       <SegTab
         ref={setItemRef(sortedMembers.length)}

@@ -77,6 +77,7 @@ import SurveyV2 from "./SurveyV2";
 import MaxAttentionV2 from "./MaxAttentionV2";
 import QualityV2 from "./QualityV2";
 import { prefetchMaReport } from "../hooks/useMaReport";
+import { useHideOnScroll } from "../hooks/useHideOnScroll";
 import DspHealthV2 from "./DspHealthV2";
 
 // ─── Helpers de URL ────────────────────────────────────────────────────
@@ -409,6 +410,9 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   // Linha de filtros rola na horizontal no celular: bordas esmaecem quando há
   // filtro escondido pro lado.
   const filterRowRef = useEdgeFade();
+  // Celular: TopBar some ao rolar pra baixo e a barra de abas sobe junto
+  // (ver useHideOnScroll). Desktop: sempre false.
+  const chromeHidden = useHideOnScroll();
   const maRef = useRef(null);
   const onTabChange = (t) => {
     setTab(t);
@@ -942,6 +946,7 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
           commentsUnread={reportComments.unread}
           viewAs={isAdmin ? (previewClient ? "client" : "hypr") : null}
           onViewAsChange={isAdmin ? (v) => setPreviewClient(v === "client") : null}
+          className={`transition-transform duration-200 ease-out${chromeHidden ? " max-md:-translate-y-full" : ""}`}
         />
 
         <CommentsDrawerV2
@@ -1008,6 +1013,9 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                 "sticky top-16 z-20",
                 "-mx-4 px-4 md:-mx-6 md:px-6 lg:-mx-8 lg:px-8",
                 "bg-canvas/85 backdrop-blur-md border-b border-border",
+                // Sobe os 64px do TopBar quando ele some (celular).
+                "transition-transform duration-200 ease-out",
+                chromeHidden ? "max-md:-translate-y-16" : "",
               ].join(" ")}
             >
               <TabsList

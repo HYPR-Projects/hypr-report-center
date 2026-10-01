@@ -277,8 +277,10 @@ export function PmpKpiStrip({ kpis, livesCount, totalCount, showExtra = false, w
       value: kpis.extraLinesCount > 0
         ? `${kpis.extraRevenue >= 0 ? "+ " : "− "}${formatBRL(Math.abs(kpis.extraRevenue))}`
         : "—",
+      // O rótulo acompanha o sinal: negativo (line no meio do voo, ou
+      // entregando abaixo) dizia "acima do esperado" do lado de um "− R$".
       sub: kpis.extraLinesCount > 0
-        ? `acima do esperado · ${kpis.extraLinesCount} lines`
+        ? `${kpis.extraRevenue >= 0 ? "acima" : "abaixo"} do esperado · ${kpis.extraLinesCount} lines`
         : "sem dado de margem configurada",
       valueClass: kpis.extraLinesCount === 0 ? "text-fg"
         : kpis.extraRevenue >= 0 ? "text-success" : "text-warning",
