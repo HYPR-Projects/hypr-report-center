@@ -69,7 +69,7 @@ export function useEdgeFade(opts = {}) {
     mo.observe(el, {
       childList: true,
       subtree: true,
-      ...(centerActive ? { attributes: true, attributeFilter: ["data-state"] } : {}),
+      ...(centerActive ? { attributes: true, attributeFilter: ["data-state", "aria-selected", "aria-checked"] } : {}),
     });
     return () => {
       el.removeEventListener("scroll", update);

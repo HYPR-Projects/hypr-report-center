@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef } from "react";
+import { EdgeFadeScroller } from "../ui/EdgeFadeScroller";
 import { C } from "../shared/theme";
 import { fmt, fmtDateTimeBR } from "../shared/format";
 import {
@@ -235,7 +236,7 @@ const PdoohDashboard = ({ data, onClear, isDark = true, isAdmin = false, externa
 
           <Card className="p-4 md:p-5">
             <h3 className="text-[11px] font-bold uppercase tracking-widest text-fg-muted mb-3">Top cidades</h3>
-            <div className="overflow-x-auto">
+            <EdgeFadeScroller>
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-border text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
@@ -254,7 +255,7 @@ const PdoohDashboard = ({ data, onClear, isDark = true, isAdmin = false, externa
                   ))}
                 </tbody>
               </table>
-            </div>
+            </EdgeFadeScroller>
           </Card>
 
           {/* Performance por Endereço (SITE) */}

@@ -9,6 +9,7 @@
 // nova aba (mesmo handler `onOpenReport` usado nos cards).
 
 import { useState, useMemo } from "react";
+import { EdgeFadeScroller } from "../../../ui/EdgeFadeScroller";
 import { fmt } from "../../../shared/format";
 import { cn } from "../../../ui/cn";
 import { Tooltip, TooltipTrigger, TooltipContent } from "../../../ui/Tooltip";
@@ -385,7 +386,7 @@ export function DiagnosticoTable({
       </header>
 
       <div className="rounded-xl border border-border bg-surface overflow-hidden">
-        <div className="overflow-x-auto">
+        <EdgeFadeScroller>
           {/* table-fixed + larguras explícitas por coluna pra ritmo visual
               consistente — sem table-fixed o browser distribui excesso de
               forma desigual e a grade fica visualmente "respirando" demais
@@ -717,7 +718,7 @@ export function DiagnosticoTable({
               })}
             </tbody>
           </table>
-        </div>
+        </EdgeFadeScroller>
       </div>
     </section>
   );

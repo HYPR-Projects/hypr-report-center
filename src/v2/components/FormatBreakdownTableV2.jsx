@@ -41,6 +41,7 @@
 // Limite visual: 10 linhas (raro ter mais; Display HYPR opera com ~6
 // formatos padrão e Video com ~3 durações).
 
+import { EdgeFadeScroller } from "../../ui/EdgeFadeScroller";
 import { useMemo, useRef, useState } from "react";
 import { fmt, fmtR } from "../../shared/format";
 import { downloadCsvText } from "../../shared/download";
@@ -234,7 +235,7 @@ export function FormatBreakdownTableV2({
         </div>
       </div>
 
-      <div className="overflow-x-auto">
+      <EdgeFadeScroller>
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-border">
@@ -306,7 +307,7 @@ export function FormatBreakdownTableV2({
             ))}
           </tbody>
         </table>
-      </div>
+      </EdgeFadeScroller>
       {canExpand && (
         <div className="px-4 md:px-5 py-2.5 border-t border-border">
           <button

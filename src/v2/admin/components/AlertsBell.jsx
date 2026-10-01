@@ -266,7 +266,7 @@ export function AlertsBell({
                 Alertas
               </span>
               {totalCount > 0 && (
-                <span className="text-[11px] text-fg-muted tabular-nums">
+                <span className="text-[11px] text-fg-muted tabular-nums whitespace-nowrap">
                   {totalCount} · <span className="text-danger">{counts.critical}</span>
                   {counts.warning > 0 && (
                     <> · <span className="text-warning">{counts.warning}</span></>
@@ -285,7 +285,10 @@ export function AlertsBell({
                     onChange={(e) => setCsFilter(e.target.value)}
                     aria-label="Filtrar alertas por CS"
                     className={cn(
-                      "appearance-none cursor-pointer",
+                      // max-w: o select nativo mede a maior opção (nome
+                      // completo de CS) e, no touch, em 16px empurrava o
+                      // título e os contadores pra fora do header.
+                      "appearance-none cursor-pointer max-w-[150px] truncate",
                       "text-[11px] font-medium pl-2 pr-5 py-0.5 rounded-md",
                       "bg-transparent text-fg-muted hover:text-fg border border-border/60 hover:border-border",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature focus-visible:ring-offset-1 focus-visible:ring-offset-canvas-elevated",

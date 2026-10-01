@@ -24,7 +24,7 @@
 
 import * as Dialog from "@radix-ui/react-dialog";
 import { fmt } from "../../../shared/format";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { cn } from "../../../ui/cn";
 import { SparklineV2 } from "../../components/SparklineV2";
 import { getReportAnalytics, getReportAuditLog } from "../../../lib/api";
@@ -608,6 +608,16 @@ function TimelineCard({ series, annotations, range, loading }) {
   // toda render pra não violar regra dos hooks, então fica antes do
   // early-return de loading.
   const [hoverIdx, setHoverIdx] = useState(null);
+  // Largura real da faixa de anotações: decide quando duas labels vizinhas
+  // colidem (no celular "SURVEY CRIADA" ocupa ~40% da largura; no desktop,
+  // ~12%) sem chutar um percentual fixo.
+  const [bandW, setBandW] = useState(0);
+  const bandRef = useCallback((el) => {
+    if (!el) return undefined;
+    const ro = new ResizeObserver(([e]) => setBandW(e.contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   if (loading) {
     return (
@@ -647,6 +657,22 @@ function TimelineCard({ series, annotations, range, loading }) {
   }
   const uniqueXTicks = Array.from(new Set(rawTicks)).sort((a, b) => a - b);
 
+  // Degraus das labels de anotação: label que encostaria na anterior da
+  // mesma linha (distância < ~120px, a largura de "LOOM ADICIONADO") sobe
+  // pra linha de cima (até 2 linhas). Sem medida ainda, tudo na linha 0.
+  const annoLayout = [];
+  {
+    const minGapPct = bandW > 0 ? (120 / bandW) * 100 : 0;
+    const lastXByRow = [-Infinity, -Infinity];
+    for (const anno of [...annotations].sort((a, b) => a.day - b.day)) {
+      const xPct = pctForIndex(anno.day, series.length);
+      const row = xPct - lastXByRow[0] >= minGapPct ? 0 : 1;
+      lastXByRow[row] = xPct;
+      annoLayout.push({ anno, xPct, row });
+    }
+  }
+  const annoBandH = annoLayout.some((a) => a.row === 1) ? 46 : 24;
+
   // Pluralização do tooltip. 1 acesso vs N acessos.
   const fmtAccesses = (n) => `${n} ${n === 1 ? "acesso" : "acessos"}`;
 
@@ -672,11 +698,11 @@ function TimelineCard({ series, annotations, range, loading }) {
       <div className="relative mt-3" style={{ paddingLeft: Y_AXIS_GUTTER_PX }}>
         {/* Eixo Y — 3 ticks (max / mid / 0), alinhados às bordas do chart.
             Posicionados absolutamente pra não disputar layout com o chart.
-            top-[24px] desce pra baixo da band de anotações. */}
+            `top` desce pra baixo da band de anotações (24px, ou 46 com degraus). */}
         <div
           aria-hidden
-          className="absolute left-0 top-[25px] h-[120px] flex flex-col justify-between text-[10px] text-fg-subtle font-mono tabular-nums select-none"
-          style={{ width: Y_AXIS_GUTTER_PX - 6 }}
+          className="absolute left-0 h-[120px] flex flex-col justify-between text-[10px] text-fg-subtle font-mono tabular-nums select-none"
+          style={{ width: Y_AXIS_GUTTER_PX - 6, top: annoBandH + 1 }}
         >
           <span className="text-right leading-none">{max}</span>
           <span className="text-right leading-none">{midValue}</span>
@@ -686,23 +712,27 @@ function TimelineCard({ series, annotations, range, loading }) {
         {/* Band das anotações ACIMA do chart — labels não sobrepõem a linha.
             Cada label posicionada em `left: x%` correspondente ao dia da
             anotação, com -translate-x-1/2 pra centralizar no eixo. */}
-        <div className="relative h-[24px] mb-1">
-          {annotations.map((anno) => {
-            const xPct = pctForIndex(anno.day, series.length);
-            return (
-              <span
-                key={`anno-label-${anno.day}`}
-                className={cn(
-                  "absolute bottom-0 -translate-x-1/2 whitespace-nowrap rounded-md px-1.5 py-0.5",
-                  "lbl-section shadow-sm",
-                  anno.tone === "signature" ? "bg-signature/15 text-signature" : "bg-success/15 text-success",
-                )}
-                style={{ left: `${xPct}%` }}
-              >
-                {anno.label}
-              </span>
-            );
-          })}
+        {/* Perto das bordas a label ancora pelo lado (como o tooltip), e
+            duas anotações próximas sobem em degraus — no celular "SURVEY
+            CRIADA" e "LOOM ADICIONADO" se sobrepunham e vazavam do card. */}
+        <div ref={bandRef} className="relative mb-1" style={{ height: annoBandH }}>
+          {annoLayout.map(({ anno, xPct, row }) => (
+            <span
+              key={`anno-label-${anno.day}`}
+              className={cn(
+                "absolute whitespace-nowrap rounded-md px-1.5 py-0.5",
+                "lbl-section shadow-sm",
+                anno.tone === "signature" ? "bg-signature/15 text-signature" : "bg-success/15 text-success",
+              )}
+              style={{
+                left: `${xPct}%`,
+                bottom: row * 22,
+                transform: xPct > 80 ? "translateX(-100%)" : xPct < 20 ? "translateX(0)" : "translateX(-50%)",
+              }}
+            >
+              {anno.label}
+            </span>
+          ))}
         </div>
 
         <div
@@ -823,10 +853,13 @@ function TimelineCard({ series, annotations, range, loading }) {
             const transform = isFirst ? "translateX(0)"
               : isLast ? "translateX(-100%)"
               : "translateX(-50%)";
+            // Celular: metade dos ticks intermediários some — "02/09" e
+            // "08/09" encostavam um no outro.
+            const thin = !isFirst && !isLast && tickI % 2 === 1;
             return (
               <span
                 key={idx}
-                className="absolute top-0 whitespace-nowrap"
+                className={cn("absolute top-0 whitespace-nowrap", thin && "max-sm:hidden")}
                 style={{ left: `${xPct}%`, transform }}
               >
                 {idx === series.length - 1 ? "hoje" : fmtDayMonth(series.length - 1 - idx)}
@@ -1140,7 +1173,10 @@ function SessionsCard({ sessions, loading }) {
       </div>
       <div className="divide-y divide-border">
         {sessions.map((s) => (
-          <div key={s.id} className="py-2.5 flex items-center gap-3 text-[12px]">
+          // Celular: as abas da sessão descem pra uma linha própria. Na
+          // mesma linha a coluna delas espremia até as pílulas vazarem por
+          // baixo do selo "Interno".
+          <div key={s.id} className="py-2.5 flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-1.5 text-[12px]">
             <span className="text-fg-subtle font-mono tabular-nums w-[72px]">
               {fmtRelative(s.minutesAgo)}
             </span>
@@ -1151,7 +1187,7 @@ function SessionsCard({ sessions, loading }) {
             <span className="text-fg-muted tabular-nums w-[70px]">
               {fmtDuration(s.durationSec)}
             </span>
-            <div className="flex-1 min-w-0 flex items-center gap-1 flex-wrap">
+            <div className="flex-1 min-w-0 flex items-center gap-1 flex-wrap max-sm:order-last max-sm:basis-full">
               {s.tabs.slice(0, 3).map((t) => (
                 <span
                   key={t}

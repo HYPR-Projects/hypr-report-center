@@ -5,6 +5,7 @@
 // como índice da régua verde da mídia) e as com red flag. Clique na line abre
 // o report da campanha.
 
+import { EdgeFadeScroller } from "../../../../ui/EdgeFadeScroller";
 import { useMemo, useState } from "react";
 import { cn } from "../../../../ui/cn";
 import { dspColor, dspLabel } from "../../../../shared/dspMeta";
@@ -87,7 +88,7 @@ export function DspLinesTable({ lines, tab, onTabChange, search, onOpenReport, f
         </div>
       )}
 
-      <div className="overflow-x-auto scrollbar-thin">
+      <EdgeFadeScroller className="scrollbar-thin">
         <table className="w-full text-xs tabular-nums">
           <thead>
             <tr className="text-left text-fg-muted">
@@ -177,7 +178,7 @@ export function DspLinesTable({ lines, tab, onTabChange, search, onOpenReport, f
             )}
           </tbody>
         </table>
-      </div>
+      </EdgeFadeScroller>
       {rows.length > shown.length && (
         <div className="px-5 py-3 border-t border-border flex items-center justify-between text-xs text-fg-muted">
           <span>{shown.length} de {rows.length} lines</span>

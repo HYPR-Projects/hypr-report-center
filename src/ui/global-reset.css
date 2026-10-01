@@ -99,10 +99,15 @@
  * todo campo de texto fica em 16px. Fora da layer e com !important porque
  * precisa vencer as utilities (text-xs, text-[13px]) e estilos inline. */
 @media (pointer: coarse) {
-  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
+  /* Data/hora ficam de fora: abrem o seletor nativo (sem teclado, sem
+   * zoom) e moram em caixas de largura fixa que em 16px cortavam o ano. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="date"]):not([type="time"]):not([type="datetime-local"]):not([type="month"]):not([type="week"]),
   select,
   textarea {
     font-size: 16px !important;
+    /* Em 16px placeholders longos ("Buscar cliente, campanha ou time")
+     * não cabem: reticências em vez de cortar no meio da palavra. */
+    text-overflow: ellipsis;
   }
 }
 

@@ -9,6 +9,7 @@
 // variação (12 dias de setembro contra agosto inteiro diria só que setembro é
 // mais curto); em razão (eCPM, CTR, viewability) a variação vale.
 
+import { EdgeFadeScroller } from "../../../../ui/EdgeFadeScroller";
 import { cn } from "../../../../ui/cn";
 import { dspColor, dspLabel } from "../../../../shared/dspMeta";
 import { tacticColor, tacticLabel } from "../../../../shared/tacticMeta";
@@ -46,7 +47,7 @@ export function DspMonthlyTable({ monthly, metric }) {
           Variação contra o mês anterior da mesma {byTactic ? "tática" : "DSP"} e fatia do custo no mês. Segue a métrica e a visão do gráfico.
         </p>
       </div>
-      <div className="overflow-x-auto scrollbar-thin">
+      <EdgeFadeScroller className="scrollbar-thin">
         <table className="w-full text-xs tabular-nums">
           <thead>
             <tr className="text-fg-muted">
@@ -93,7 +94,7 @@ export function DspMonthlyTable({ monthly, metric }) {
             ))}
           </tbody>
         </table>
-      </div>
+      </EdgeFadeScroller>
     </section>
   );
 }

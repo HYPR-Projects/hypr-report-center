@@ -4,6 +4,7 @@
 // comparativo peça a peça, sessões engajadas por dia (empilhado por formato)
 // e a galeria de peças agrupada por formato.
 
+import { EdgeFadeScroller } from "../../../ui/EdgeFadeScroller";
 import { fmt } from "../../../shared/format";
 import {
   MA_FORMATS,
@@ -160,12 +161,12 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campai
         subtitle={list.length > 1 ? "Entrega pela DSP · engajamento medido pela peça · ★ maior engajamento" : "Entrega pela DSP · engajamento medido pela peça"}
         actions={<CsvButton onClick={csv} />}
       >
-        <div className="overflow-x-auto -mx-4 md:-mx-5">
+        <EdgeFadeScroller className="-mx-4 md:-mx-5">
           <table className={cn("w-full text-xs", hypr ? "min-w-[1040px]" : "min-w-[860px]")}>
             <thead>
               <tr className="border-b border-border text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
                 <th className="px-4 md:px-5 py-2.5 text-left">Formato</th>
-                <th className="px-3 py-2.5 text-left">Peça</th>
+                <th className="px-3 py-2.5 text-left min-w-[170px]">Peça</th>
                 <th className="px-3 py-2.5 text-right" title="Entrega da DSP, mesma base da aba Display">Impressões</th>
                 <th className="px-3 py-2.5 text-right" title="Visíveis ÷ impressões, pela DSP">Viewability</th>
                 {hypr && <th className="px-3 py-2.5 text-right text-warning" title="Só HYPR: medida pela própria peça, mesma regra em todas as DSPs">Viewab. peça</th>}
@@ -243,7 +244,7 @@ export function MaOverviewV2({ pieces, medias, formatColors, onOpenPiece, campai
               </tfoot>
             )}
           </table>
-        </div>
+        </EdgeFadeScroller>
       </MaCard>
 
       {stackRows.length > 0 && (

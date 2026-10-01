@@ -16,12 +16,14 @@ import { format } from "date-fns";
 import "react-day-picker/style.css";
 import "../../components/DateRangeFilterV2.css";
 import { cn } from "../../../ui/cn";
+import { useEdgeFade } from "../../../ui/useEdgeFade";
 import { PERIOD_PRESETS } from "../lib/period";
 import { ymd, parseYmd } from "../../../shared/dateFilter";
 
 // `presets` permite esconder opções que não fazem sentido pra fonte (ex.: o
 // DoubleVerify não tem modo "Agora" — só dias fechados).
 export function PeriodPicker({ preset, onPresetChange, custom, onCustomChange, ariaLabel = "Período", presets = PERIOD_PRESETS }) {
+  const fadeRef = useEdgeFade({ centerActive: '[aria-selected="true"]' });
   // Popover do calendário custom. Fica controlado aqui pra:
   //   (a) auto-abrir quando o user clica no pill "Custom" sem range ainda
   //   (b) re-abrir clicando novamente quando já existe range (edita)
@@ -71,7 +73,11 @@ export function PeriodPicker({ preset, onPresetChange, custom, onCustomChange, a
     <div
       role="tablist"
       aria-label={ariaLabel}
-      className="inline-flex flex-wrap gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border w-fit"
+      ref={fadeRef}
+      // Celular: os 8 presets numa faixa que rola (bordas esmaecem), em vez
+      // de estourar a tela — "12m" e "Custom" ficavam cortados fora da
+      // viewport. O popover do Custom abre em portal, o overflow não o corta.
+      className="inline-flex flex-wrap gap-0.5 p-0.5 rounded-lg bg-canvas-deeper border border-border w-fit max-w-full max-md:flex-nowrap max-md:overflow-x-auto max-md:scrollbar-hidden max-md:edge-fade-x [&>*]:shrink-0"
     >
       {presets.map((opt) => {
         const active = preset === opt.id;

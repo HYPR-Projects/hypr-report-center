@@ -11,6 +11,7 @@
 // unified (custo de mídia por fonte) — régua diferente do custo efetivo
 // do report; o rótulo do card deixa explícito pra não confundir.
 
+import { EdgeFadeScroller } from "../../ui/EdgeFadeScroller";
 import { useEffect, useMemo, useState } from "react";
 import {
   ResponsiveContainer,
@@ -274,7 +275,7 @@ export default function DspHealthV2({ token, data, isAdmin, adminJwt }) {
             <div className="text-[11px] font-bold uppercase tracking-widest text-signature mb-3">
               Base diária · por DSP
             </div>
-            <div className="overflow-x-auto">
+            <EdgeFadeScroller>
               <table className="w-full text-[12px] tabular-nums">
                 <thead>
                   <tr className="text-left text-fg-subtle border-b border-border">
@@ -319,7 +320,7 @@ export default function DspHealthV2({ token, data, isAdmin, adminJwt }) {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </EdgeFadeScroller>
           </div>
         </>
       )}

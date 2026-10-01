@@ -43,7 +43,9 @@ export function PageHeader({
           </div>
         )}
       </div>
-      {actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}
+      {/* min-w-0/max-w-full: no celular as ações descem pra linha de baixo e
+          não podem passar da largura dela (o seletor de período estourava). */}
+      {actions && <div className="flex items-center gap-2 shrink-0 min-w-0 max-w-full">{actions}</div>}
     </div>
   );
 }

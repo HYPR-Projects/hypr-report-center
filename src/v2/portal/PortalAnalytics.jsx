@@ -19,6 +19,7 @@
 // Charts em recharts com cores resolvidas por tema (useThemeColors), mesma
 // linguagem visual do report (DualChartV2/ChartCardV2).
 
+import { EdgeFadeScroller } from "../../ui/EdgeFadeScroller";
 import { useMemo, useState, useEffect, useRef } from "react";
 import { fmt } from "../../shared/format";
 import { createPortal } from "react-dom";
@@ -834,7 +835,7 @@ function AudienceBreakdown({ data, accent, top }) {
 
       {/* Tabela */}
       <div className="flex-1 min-w-0">
-        <div className="overflow-x-auto rounded-xl border border-border">
+        <div className="rounded-xl border border-border overflow-hidden"><EdgeFadeScroller>
           <table className="w-full text-[13px]">
             <thead>
               <tr className="bg-surface-3 text-fg-muted">
@@ -878,7 +879,7 @@ function AudienceBreakdown({ data, accent, top }) {
               })}
             </tbody>
           </table>
-        </div>
+        </EdgeFadeScroller></div>
 
         <div className="flex items-center justify-between gap-3 pt-2.5">
           <p className="text-[11px] text-fg-subtle">
@@ -931,7 +932,7 @@ function BrandLiftSection({ monthly, accent }) {
 
       {/* overflow-x-auto (era hidden): no celular as colunas de lift ficavam
           cortadas fora do card, sem como rolar até elas. */}
-      <div className="overflow-x-auto rounded-xl border border-border">
+      <div className="rounded-xl border border-border overflow-hidden"><EdgeFadeScroller>
         <table className="w-full min-w-[520px] text-[13px]">
           <thead>
             <tr className="bg-surface-3 text-fg-muted">
@@ -965,7 +966,7 @@ function BrandLiftSection({ monthly, accent }) {
             })}
           </tbody>
         </table>
-      </div>
+      </EdgeFadeScroller></div>
     </div>
   );
 }
@@ -1029,7 +1030,7 @@ function CampaignAnalyticsTable({ rows: rawRows, accent, mode = "ALL" }) {
       <div className="px-4 md:px-5 py-3.5 border-b border-border">
         <h3 className="text-[11px] font-bold uppercase tracking-widest text-signature">Desempenho por campanha</h3>
       </div>
-      <div className="overflow-x-auto">
+      <EdgeFadeScroller>
         {/* min-w: abaixo disso a tabela rola na horizontal. Sem ele, no
             celular as 9 colunas eram espremidas na largura da tela — o nome
             da campanha virava "PicPay ·…" e o Mix, empilhado, inflava cada
@@ -1080,7 +1081,7 @@ function CampaignAnalyticsTable({ rows: rawRows, accent, mode = "ALL" }) {
             })}
           </tbody>
         </table>
-      </div>
+      </EdgeFadeScroller>
     </div>
   );
 }

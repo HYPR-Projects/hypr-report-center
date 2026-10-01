@@ -26,6 +26,7 @@
 // Bases salvas no formato antigo (sem `format`) caem num banner pedindo
 // pra fazer upload do novo formato.
 
+import { EdgeFadeScroller } from "../ui/EdgeFadeScroller";
 import { useMemo, useState } from "react";
 import { fmt, fmtR, fmtCompactTick, fmtP2, fmtDateTimeBR } from "../shared/format";
 import {
@@ -479,7 +480,7 @@ function TopProductsTable({ products, totalCount, showAll, onToggle }) {
         subtitle={`${fmt(totalCount)} produtos no período · ordenado por vendas`}
       />
       <CardBody className="p-0">
-        <div className="overflow-x-auto">
+        <EdgeFadeScroller>
           <table className="w-full text-sm">
             <thead className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle border-b border-border whitespace-nowrap">
               <tr>
@@ -518,7 +519,7 @@ function TopProductsTable({ products, totalCount, showAll, onToggle }) {
               })}
             </tbody>
           </table>
-        </div>
+        </EdgeFadeScroller>
         {hasMore && (
           <button
             type="button"
@@ -541,7 +542,7 @@ function DailyAggregateTable({ daily }) {
     <Card>
       <CardHeader title="Detalhe diário" subtitle="Métricas agregadas por data" />
       <CardBody className="p-0">
-        <div className="overflow-x-auto max-h-[480px]">
+        <EdgeFadeScroller className="max-h-[480px]">
           <table className="w-full text-sm">
             <thead className="text-[10px] uppercase tracking-widest font-bold text-fg-subtle border-b border-border bg-surface-2 sticky top-0 z-10 whitespace-nowrap">
               <tr>
@@ -564,7 +565,7 @@ function DailyAggregateTable({ daily }) {
               ))}
             </tbody>
           </table>
-        </div>
+        </EdgeFadeScroller>
       </CardBody>
     </Card>
   );

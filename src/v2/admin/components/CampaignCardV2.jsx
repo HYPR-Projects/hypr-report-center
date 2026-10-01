@@ -748,7 +748,10 @@ function CampaignCardV2Inner({
             uma vez — a faixa deixa de ter um vão vazio à direita, e a caixa
             deixa de ser o que define a altura do card (empilhada ela tem
             quatro andares; deitada, dois). */}
-        <div className="flex flex-col justify-center shrink-0 w-[var(--cc-invest)] card-split:w-auto card-split:grow">
+        {/* card-stack (celular): a box quebra sozinha pra linha de baixo da
+            faixa financeira — com a largura fixa da coluna ela ocupava ~metade
+            e deixava um vão à direita. Ali ela toma a linha inteira. */}
+        <div className="flex flex-col justify-center shrink-0 w-[var(--cc-invest)] card-split:w-auto card-split:grow card-stack:w-full">
           {techCostBudget > 0 && Number.isFinite(techCostCost) && (
             // Sem borda: borda dentro da borda do card, com só um nível de
             // superfície de diferença, era ruído — o terceiro tratamento
