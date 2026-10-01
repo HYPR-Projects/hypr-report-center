@@ -666,7 +666,11 @@ function TimelineCard({ series, annotations, range, loading }) {
     const lastXByRow = [-Infinity, -Infinity];
     for (const anno of [...annotations].sort((a, b) => a.day - b.day)) {
       const xPct = pctForIndex(anno.day, series.length);
-      const row = xPct - lastXByRow[0] >= minGapPct ? 0 : 1;
+      const gap0 = xPct - lastXByRow[0];
+      const gap1 = xPct - lastXByRow[1];
+      // Linha de baixo se couber; senão a de cima; com as duas ocupadas
+      // (3+ anotações coladas), a que tiver mais folga.
+      const row = gap0 >= minGapPct ? 0 : gap1 >= minGapPct ? 1 : (gap0 >= gap1 ? 0 : 1);
       lastXByRow[row] = xPct;
       annoLayout.push({ anno, xPct, row });
     }

@@ -24,6 +24,9 @@
 
 import { useCallback } from "react";
 
+// Último item ativo revelado por faixa (ver revealActive).
+const lastRevealed = new WeakMap();
+
 // Devolve um callback ref (com cleanup, React 19): funciona também quando o
 // elemento só monta depois do primeiro render (report saindo do skeleton).
 export function useEdgeFade(opts = {}) {
@@ -40,22 +43,34 @@ export function useEdgeFade(opts = {}) {
       el.toggleAttribute("data-fade-end", end);
     };
 
+    // Só rola quando o item ativo MUDOU desde a última revelação. Sem isso,
+    // qualquer re-attach do ref (o Slot do Radix recria o ref composto a
+    // cada render) ou filho entrando na faixa puxava a barra de volta pra
+    // aba ativa enquanto a pessoa explorava as outras.
     const revealActive = (smooth) => {
       if (!centerActive) return;
       const item = el.querySelector(centerActive);
-      if (!item || el.scrollWidth <= el.clientWidth) return;
-      const left = item.offsetLeft;
+      if (!item || lastRevealed.get(el) === item) return;
+      lastRevealed.set(el, item);
+      if (el.scrollWidth <= el.clientWidth) return;
+      // Posição pelo retângulo, não offsetLeft: o container nem sempre é o
+      // offsetParent do item (ex.: PeriodPicker sem `position`).
+      const left = item.getBoundingClientRect().left - el.getBoundingClientRect().left + el.scrollLeft;
       const right = left + item.offsetWidth;
       const pad = 32;
       if (left >= el.scrollLeft + pad && right <= el.scrollLeft + el.clientWidth - pad) return;
+      const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
       el.scrollTo({
         left: Math.max(0, left - (el.clientWidth - item.offsetWidth) / 2),
-        behavior: smooth ? "smooth" : "auto",
+        behavior: smooth && !reduce ? "smooth" : "auto",
       });
     };
 
     update();
     revealActive(false);
+    // Troca de fonte (web font chegando) muda a largura do conteúdo sem
+    // redimensionar o container.
+    document.fonts?.ready?.then(update).catch(() => {});
     el.addEventListener("scroll", update, { passive: true });
     const ro = new ResizeObserver(update);
     ro.observe(el);

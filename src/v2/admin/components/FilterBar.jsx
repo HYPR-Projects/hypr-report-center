@@ -132,7 +132,9 @@ export function FilterBar({
           {(chips.length > 0 || trailing) && (
             <div
               ref={chipsRef}
-              className="flex items-center gap-1.5 overflow-x-auto scrollbar-hidden edge-fade-x [&>*]:shrink-0 md:contents"
+              // py-1 -my-1 / px-0.5: folga pro anel de foco dos chips (ring +
+              // offset) — sem ela a faixa com overflow cortava o anel.
+              className="flex items-center gap-1.5 overflow-x-auto scrollbar-hidden edge-fade-x [&>*]:shrink-0 py-1 -my-1 px-0.5 -mx-0.5 md:contents"
             >
               {chips.map((chip) => (
                 <FilterChip key={chip.id} {...chip} />

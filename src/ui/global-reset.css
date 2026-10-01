@@ -334,10 +334,14 @@
 @utility edge-fade-x {
   --edge-fade-start: 0px;
   --edge-fade-end: 0px;
-  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--edge-fade-start), #000 calc(100% - var(--edge-fade-end)), transparent 100%);
-  mask-image: linear-gradient(to right, transparent 0, #000 var(--edge-fade-start), #000 calc(100% - var(--edge-fade-end)), transparent 100%);
   &[data-fade-start] { --edge-fade-start: 28px; }
   &[data-fade-end] { --edge-fade-end: 40px; }
+  /* A máscara só existe enquanto há borda a esmaecer: sem overflow não há
+   * camada de composição extra (lista de centenas de linhas, desktop). */
+  &[data-fade-start], &[data-fade-end] {
+    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--edge-fade-start), #000 calc(100% - var(--edge-fade-end)), transparent 100%);
+    mask-image: linear-gradient(to right, transparent 0, #000 var(--edge-fade-start), #000 calc(100% - var(--edge-fade-end)), transparent 100%);
+  }
 }
 
 /* Sinaliza scroll horizontal sem depender de JS: um degradê "cobre" nas
