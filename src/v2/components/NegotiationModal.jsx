@@ -278,7 +278,7 @@ export function NegotiationModal({
             "fixed left-1/2 top-1/2 z-50",
             "-translate-x-1/2 -translate-y-1/2",
             "w-[calc(100vw-32px)] max-w-[720px]",
-            "max-h-[calc(100vh-48px)] overflow-hidden",
+            "max-h-[calc(100dvh-48px)] overflow-hidden",
             "rounded-2xl border border-border-strong bg-canvas-elevated shadow-2xl",
             "flex flex-col outline-none",
             "data-[state=open]:animate-in data-[state=closed]:animate-out",

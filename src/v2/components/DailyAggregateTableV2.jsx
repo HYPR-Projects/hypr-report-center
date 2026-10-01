@@ -311,7 +311,7 @@ export function DailyAggregateTableV2({
             type="button"
             onClick={() => setExpanded((v) => !v)}
             aria-expanded={expanded}
-            className="text-xs font-semibold text-signature hover:underline underline-offset-4 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature rounded"
+            className="text-xs font-semibold hit-area text-signature hover:underline underline-offset-4 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature rounded"
           >
             {expanded
               ? `Mostrar só os últimos ${initialRows} dias`

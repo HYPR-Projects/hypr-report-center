@@ -857,10 +857,10 @@ function AudienceBreakdown({ data, accent, top }) {
                 const sw = swatch(e.audience);
                 return (
                   <tr key={e.audience} className="border-t border-border hover:bg-surface-strong transition-colors">
-                    <Td className="text-left">
+                    <Td className="text-left min-w-[200px]">
                       <span className="inline-flex items-center gap-2 min-w-0">
                         <span className="size-2.5 rounded-sm shrink-0" style={{ background: sw.color, opacity: sw.opacity }} aria-hidden />
-                        <span className="font-medium text-fg line-clamp-1">{e.audience}</span>
+                        <span className="font-medium text-fg line-clamp-2 sm:line-clamp-1">{e.audience}</span>
                         {(e.tactics || []).map((t) => (
                           <MixChip key={t} label={CORE_LABELS[t] || t} soft />
                         ))}
@@ -929,8 +929,10 @@ function BrandLiftSection({ monthly, accent }) {
         </LineChart>
       </ResponsiveContainer>
 
-      <div className="overflow-hidden rounded-xl border border-border">
-        <table className="w-full text-[13px]">
+      {/* overflow-x-auto (era hidden): no celular as colunas de lift ficavam
+          cortadas fora do card, sem como rolar até elas. */}
+      <div className="overflow-x-auto rounded-xl border border-border">
+        <table className="w-full min-w-[520px] text-[13px]">
           <thead>
             <tr className="bg-surface-3 text-fg-muted">
               <Th className="text-left">Mês</Th>
@@ -1028,7 +1030,11 @@ function CampaignAnalyticsTable({ rows: rawRows, accent, mode = "ALL" }) {
         <h3 className="text-[11px] font-bold uppercase tracking-widest text-signature">Desempenho por campanha</h3>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full text-[13px]">
+        {/* min-w: abaixo disso a tabela rola na horizontal. Sem ele, no
+            celular as 9 colunas eram espremidas na largura da tela — o nome
+            da campanha virava "PicPay ·…" e o Mix, empilhado, inflava cada
+            linha pra ~100px. */}
+        <table className="w-full min-w-[960px] text-[13px]">
           <thead>
             <tr className="bg-surface-3 text-fg-muted">
               {TABLE_COLS.map((col) => (
@@ -1052,8 +1058,8 @@ function CampaignAnalyticsTable({ rows: rawRows, accent, mode = "ALL" }) {
               const media = mode === "ALL" ? (c.media || []) : [mode];
               return (
                 <tr key={c.short_token || i} className="border-t border-border hover:bg-surface-strong transition-colors">
-                  <Td className="text-left">
-                    <span className="font-medium text-fg line-clamp-1">{c.campaign_name || "—"}</span>
+                  <Td className="text-left min-w-[220px] max-w-[320px]">
+                    <span className="font-medium text-fg line-clamp-2" title={c.campaign_name || undefined}>{c.campaign_name || "—"}</span>
                   </Td>
                   <Td className="text-left text-fg-muted whitespace-nowrap">{fmtRange(c)}</Td>
                   <Td className="text-right font-semibold text-fg tabular-nums">{compactBrl(s.invested)}</Td>
@@ -1062,7 +1068,7 @@ function CampaignAnalyticsTable({ rows: rawRows, accent, mode = "ALL" }) {
                   <Td className="text-right text-fg tabular-nums">{mode === "DISPLAY" || c.vtr == null ? "—" : `${fmt(Number(c.vtr), 1)}%`}</Td>
                   <Td className="text-right text-fg tabular-nums whitespace-nowrap">{m.cpmDisplay == null ? "—" : formatBRL(m.cpmDisplay)}</Td>
                   <Td className="text-right text-fg tabular-nums whitespace-nowrap">{formatCpcv(m.cpcvVideo)}</Td>
-                  <Td className="text-left">
+                  <Td className="text-left min-w-[180px]">
                     <div className="flex flex-wrap gap-1">
                       {media.map((m) => <MixChip key={m} label={m === "VIDEO" ? "Vídeo" : "Display"} />)}
                       {(c.tactics || []).map((t) => <MixChip key={t} label={CORE_LABELS[t] || t} soft />)}

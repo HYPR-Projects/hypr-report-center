@@ -47,6 +47,7 @@ import {
 } from "../../shared/dateFilter";
 
 import { Skeleton } from "../../ui/Skeleton";
+import { useEdgeFade } from "../../ui/useEdgeFade";
 import { TooltipProvider } from "../../ui/Tooltip";
 import {
   Tabs,
@@ -405,6 +406,9 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
   // do conteúdo (barra fixa grudada no TopBar, h-16) sem animar a rolagem,
   // que competiria com a entrada da aba. Rolado acima disso, não mexe.
   const tabsTopRef = useRef(null);
+  // Linha de filtros rola na horizontal no celular: bordas esmaecem quando há
+  // filtro escondido pro lado.
+  const filterRowRef = useEdgeFade();
   const maRef = useRef(null);
   const onTabChange = (t) => {
     setTab(t);
@@ -1085,7 +1089,10 @@ export default function ClientDashboardV2({ token, isAdmin, adminJwt }) {
                   e os filtros de dado (Visão Geral/Display/Vídeo). No celular
                   a linha rola na horizontal em vez de empilhar — a barra é
                   fixa e não pode crescer. */}
-              <div className="flex items-center gap-2 py-2.5 overflow-x-auto scrollbar-hidden md:flex-wrap md:overflow-visible">
+              <div
+                ref={filterRowRef}
+                className="flex items-center gap-2 py-2.5 overflow-x-auto scrollbar-hidden max-md:edge-fade-x md:flex-wrap md:overflow-visible"
+              >
                 {/* Quality tem período próprio (o da conexão DV, escolhido pelo
                     admin) — um seletor de datas ali pareceria filtrar e não
                     filtra nada. */}

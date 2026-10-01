@@ -112,7 +112,7 @@ export function TableMultiSelectFilter({
             style={{ width: `${popoverWidth}px` }}
             className={cn(
               "z-50 max-w-[calc(100vw-32px)]",
-              "max-h-[min(360px,calc(100vh-32px))]",
+              "max-h-[min(360px,calc(100dvh-32px))]",
               "rounded-xl border border-border bg-canvas-elevated shadow-lg",
               "overflow-hidden flex flex-col",
               "data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out",

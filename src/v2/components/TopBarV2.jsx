@@ -196,14 +196,18 @@ export function TopBarV2({
       </div>
 
       {/* Ações */}
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
         {viewAs && onViewAsChange && <ViewAsToggle value={viewAs} onChange={onViewAsChange} />}
 
+        {/* Com o seletor HYPR × Cliente (admin) não sobra espaço no celular:
+            o wordmark encolhia até ficar ilegível. Ali o selo sai da barra
+            (só no admin; o cliente continua vendo). */}
         {updatedAtLabel && (
           <span
             title={updatedAtTitle || undefined}
             className={cn(
-              "inline-flex items-center gap-1.5",
+              viewAs && onViewAsChange ? "hidden sm:inline-flex" : "inline-flex",
+              "items-center gap-1.5",
               "px-3 py-1 rounded-full",
               "bg-surface border border-border",
               "text-[11px] font-medium text-fg-muted whitespace-nowrap",

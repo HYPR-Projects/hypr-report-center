@@ -313,7 +313,7 @@ export function FormatBreakdownTableV2({
             type="button"
             onClick={() => setExpanded((v) => !v)}
             aria-expanded={expanded}
-            className="text-xs font-semibold text-signature hover:underline underline-offset-4 cursor-pointer"
+            className="text-xs font-semibold hit-area text-signature hover:underline underline-offset-4 cursor-pointer"
           >
             {expanded ? `Mostrar só os ${initialRows} primeiros` : `Mostrar todos (${sorted.length})`}
           </button>
