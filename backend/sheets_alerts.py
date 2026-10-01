@@ -55,6 +55,8 @@ from typing import Dict, List, Optional
 
 from google.cloud import bigquery
 
+import taxonomy
+
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +90,8 @@ def _bq_client() -> bigquery.Client:
 
 
 def _table_id() -> str:
-    return f"{PROJECT_ID}.{DATASET_ASSETS}.{TABLE_NAME}"
+    # taxonomia (BQ_TABLE_LAYOUT): este módulo tem client próprio, então mapeia aqui
+    return taxonomy.fq(DATASET_ASSETS, TABLE_NAME, PROJECT_ID)
 
 
 # ─── Query stale integrations ────────────────────────────────────────────────

@@ -79,6 +79,9 @@ SHEETS_ALERT_FROM=$(extract_env "SHEETS_ALERT_FROM")
 # sem ele o pmp_alerts cai no SHEETS_ALERT_FROM.
 PMP_ALERT_TO=$(extract_env "PMP_ALERT_TO")
 ACCESS_TRACKING_IP_SALT=$(extract_env "ACCESS_TRACKING_IP_SALT")
+# Taxonomia do BigQuery (taxonomy.py): a chave que liga os nomes novos das tabelas.
+# Herdada da revisão viva — um deploy nunca liga nem desliga a troca por acidente.
+BQ_TABLE_LAYOUT=$(extract_env "BQ_TABLE_LAYOUT")
 # MA_SURVEY_VIEW — view do BigQuery com as respostas da pesquisa nativa do
 # Max Attention (Tap to Choose). Sem ela, o report segue só com Typeform e
 # a seção de Max Attention some do modal de survey; não é erro.
@@ -397,6 +400,9 @@ if [ -n "$PMP_ALERT_TO" ]; then
 fi
 if [ -n "$ACCESS_TRACKING_IP_SALT" ]; then
   echo "ACCESS_TRACKING_IP_SALT: '${ACCESS_TRACKING_IP_SALT}'" >> "$ENV_FILE"
+fi
+if [ -n "$BQ_TABLE_LAYOUT" ]; then
+  echo "BQ_TABLE_LAYOUT: '${BQ_TABLE_LAYOUT}'" >> "$ENV_FILE"
 fi
 if [ -n "$MA_SURVEY_VIEW" ]; then
   echo "MA_SURVEY_VIEW: '${MA_SURVEY_VIEW}'" >> "$ENV_FILE"

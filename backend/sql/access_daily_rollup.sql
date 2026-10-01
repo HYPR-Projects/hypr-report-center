@@ -1,5 +1,7 @@
 -- ────────────────────────────────────────────────────────────────────────
 -- Daily rollup de report_access_events → report_access_daily.
+-- Nomes da taxonomia (out/2026): bidiq_app.reportcenter_access_events/_daily;
+-- os nomes antigos em prod_assets são views. Agendada: "access_daily_rollup".
 --
 -- Como rodar
 -- ----------
@@ -23,7 +25,7 @@
 
 DECLARE target_day DATE DEFAULT DATE_SUB(CURRENT_DATE("America/Sao_Paulo"), INTERVAL 1 DAY);
 
-MERGE `site-hypr.prod_assets.report_access_daily` T
+MERGE `site-hypr.bidiq_app.reportcenter_access_daily` T
 USING (
   WITH dedup AS (
     SELECT *
@@ -31,7 +33,7 @@ USING (
       SELECT
         *,
         ROW_NUMBER() OVER (PARTITION BY event_id ORDER BY created_at) AS rn
-      FROM `site-hypr.prod_assets.report_access_events`
+      FROM `site-hypr.bidiq_app.reportcenter_access_events`
       WHERE DATE(created_at, "America/Sao_Paulo") = target_day
     )
     WHERE rn = 1

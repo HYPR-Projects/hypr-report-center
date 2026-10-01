@@ -40,6 +40,8 @@ import threading
 import requests
 from google.cloud import bigquery
 
+import taxonomy
+
 logger = logging.getLogger(__name__)
 
 # BQ aborta a query após 120s; o cliente desiste de esperar em 130s. A folga
@@ -68,8 +70,45 @@ class _TimeoutQueryJob:
         return getattr(self._job, name)
 
 
+def _map_table(ref):
+    """Leva um identificador de tabela pro nome físico da taxonomia
+    (BQ_TABLE_LAYOUT=taxonomy, ver taxonomy.py). Aceita "p.d.t", "p:d.t",
+    "d.t" (com ou sem decorator $partição), TableReference e Table. Fora do mapa,
+    ou com a variável desligada, devolve o mesmo objeto."""
+    if isinstance(ref, str):
+        base, sep, deco = ref.partition("$")
+        sep_proj = ":" if ":" in base else "."
+        parts = base.replace(":", ".").split(".")
+        if len(parts) < 2:
+            return ref
+        d, t = taxonomy.loc(parts[-2], parts[-1])
+        if (d, t) == (parts[-2], parts[-1]):
+            return ref
+        head = parts[:-2]
+        if head and sep_proj == ":":
+            return f"{'.'.join(head)}:{d}.{t}{sep}{deco}"
+        return ".".join(head + [d, t]) + sep + deco
+    if isinstance(ref, bigquery.TableReference):
+        base, sep, deco = ref.table_id.partition("$")
+        d, t = taxonomy.loc(ref.dataset_id, base)
+        if (d, t) == (ref.dataset_id, base):
+            return ref
+        return bigquery.TableReference(bigquery.DatasetReference(ref.project, d), t + sep + deco)
+    if isinstance(ref, bigquery.Table):
+        tr = ref._properties.get("tableReference") or {}
+        d, t = taxonomy.loc(tr.get("datasetId", ""), tr.get("tableId", ""))
+        if (d, t) != (tr.get("datasetId"), tr.get("tableId")):
+            tr["datasetId"], tr["tableId"] = d, t
+        return ref
+    return ref
+
+
 class TimeoutBQClient:
-    """Proxy de bigquery.Client que força timeout em toda query."""
+    """Proxy de bigquery.Client que força timeout em toda query.
+
+    Também é o ponto único da taxonomia: com BQ_TABLE_LAYOUT=taxonomy, SQL e
+    identificadores de tabela que citam um nome antigo do Report Center vão
+    pro nome novo (taxonomy.py). Sem a variável é passagem direta."""
 
     def __init__(self, client):
         self._client = client
@@ -78,8 +117,31 @@ class TimeoutBQClient:
         job_config = kwargs.get("job_config") or bigquery.QueryJobConfig()
         if getattr(job_config, "job_timeout_ms", None) is None:
             job_config.job_timeout_ms = BQ_JOB_TIMEOUT_MS
+        if getattr(job_config, "destination", None) is not None:
+            job_config.destination = _map_table(job_config.destination)
         kwargs["job_config"] = job_config
-        return _TimeoutQueryJob(self._client.query(sql, *args, **kwargs))
+        return _TimeoutQueryJob(self._client.query(taxonomy.fq_sql(sql), *args, **kwargs))
+
+    # ── métodos cujo 1º argumento é a tabela ──
+    def get_table(self, table, *a, **k):         return self._client.get_table(_map_table(table), *a, **k)
+    def delete_table(self, table, *a, **k):      return self._client.delete_table(_map_table(table), *a, **k)
+    def create_table(self, table, *a, **k):      return self._client.create_table(_map_table(table), *a, **k)
+    def update_table(self, table, *a, **k):      return self._client.update_table(_map_table(table), *a, **k)
+    def list_rows(self, table, *a, **k):         return self._client.list_rows(_map_table(table), *a, **k)
+    def insert_rows(self, table, *a, **k):       return self._client.insert_rows(_map_table(table), *a, **k)
+    def insert_rows_json(self, table, *a, **k):  return self._client.insert_rows_json(_map_table(table), *a, **k)
+
+    # ── loads: a tabela é o 2º argumento (destination) ──
+    def _load(self, meth, source, destination, *a, **k):
+        return getattr(self._client, meth)(source, _map_table(destination), *a, **k)
+    def load_table_from_json(self, rows, destination, *a, **k):      return self._load("load_table_from_json", rows, destination, *a, **k)
+    def load_table_from_dataframe(self, df, destination, *a, **k):   return self._load("load_table_from_dataframe", df, destination, *a, **k)
+    def load_table_from_file(self, f, destination, *a, **k):         return self._load("load_table_from_file", f, destination, *a, **k)
+    def load_table_from_uri(self, uris, destination, *a, **k):       return self._load("load_table_from_uri", uris, destination, *a, **k)
+
+    def copy_table(self, sources, destination, *a, **k):
+        srcs = [_map_table(x) for x in sources] if isinstance(sources, (list, tuple)) else _map_table(sources)
+        return self._client.copy_table(srcs, _map_table(destination), *a, **k)
 
     def __getattr__(self, name):
         return getattr(self._client, name)
