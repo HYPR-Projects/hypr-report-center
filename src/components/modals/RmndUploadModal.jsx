@@ -56,6 +56,7 @@ const RmndUploadModal = ({
   const [selectedGroups, setSelectedGroups] = useState(new Set());
   const [range, setRange] = useState({ from: "", to: "" });
   const [groupSearch, setGroupSearch] = useState("");
+  const [hoveredGroup, setHoveredGroup] = useState(null);
 
   // Hidrata estado a partir de payload existente (mostra resumo sem parser)
   const hasExisting = !!(existing && existing.format === RMND_FORMAT);
@@ -118,6 +119,8 @@ const RmndUploadModal = ({
       return next;
     });
   };
+
+  const selectOnly = (g) => setSelectedGroups(new Set([g]));
 
   const toggleAllVisible = () => {
     setSelectedGroups((prev) => {
@@ -468,9 +471,14 @@ const RmndUploadModal = ({
                   Nenhum grupo encontrado.
                 </div>
               ) : (
-                visibleGroups.map((g) => (
+                visibleGroups.map((g) => {
+                  const hovered = hoveredGroup === g;
+                  const onlyThis = selectedGroups.size === 1 && selectedGroups.has(g);
+                  return (
                   <label
                     key={g}
+                    onMouseEnter={() => setHoveredGroup(g)}
+                    onMouseLeave={() => setHoveredGroup((cur) => (cur === g ? null : cur))}
                     style={{
                       display: "flex",
                       alignItems: "center",
@@ -500,8 +508,35 @@ const RmndUploadModal = ({
                     >
                       {g}
                     </span>
+                    {!onlyThis && (
+                      <span
+                        role="button"
+                        tabIndex={hovered ? 0 : -1}
+                        aria-label={`Selecionar apenas ${g}`}
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); selectOnly(g); }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault(); e.stopPropagation(); selectOnly(g);
+                          }
+                        }}
+                        style={{
+                          color: C.blue,
+                          fontSize: 11,
+                          fontWeight: 600,
+                          padding: "2px 6px",
+                          marginLeft: 4,
+                          opacity: hovered ? 1 : 0,
+                          transition: "opacity 0.12s",
+                          cursor: "pointer",
+                          flexShrink: 0,
+                        }}
+                      >
+                        apenas
+                      </span>
+                    )}
                   </label>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
