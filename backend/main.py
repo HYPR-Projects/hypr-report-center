@@ -293,7 +293,8 @@ _dsp_breakdown_cache = {}   # short_token -> (timestamp, payload)
 # volta; o recorte fino (DSP, formato, ABS, campanha, IO, survey) é no front.
 _DSP_ANALYTICS_CACHE_TTL = 600
 _dsp_analytics_cache = {}   # "from|to" -> (timestamp, payload)
-_dsp_line_daily_cache = {}  # "from|to|keys" -> (timestamp, payload)
+_dsp_line_daily_cache = {}  # "from|to|keys|creatives" -> (timestamp, payload)
+_dsp_creatives_cache = {}   # "from|to" -> (timestamp, payload)
 # Entrega fora do BR (box das big metrics). A tabela de regiões do DV360
 # atualiza 1×/dia de madrugada; 30 min segura o custo (a query varre o mês
 # da tabela de regiões) sem deixar o box velho depois que o dado aterrissa.
@@ -322,6 +323,15 @@ def _cache_get(store, key, ttl):
 def _cache_set(store, key, value):
     with _cache_lock:
         store[key] = (time.time(), value)
+
+
+def _cache_prune(store, ttl):
+    """Tira as entradas vencidas. Pra cache de chave aberta (recorte por
+    criativo/line), onde a mesma chave raramente volta pra ser expirada."""
+    now = time.time()
+    with _cache_lock:
+        for k in [k for k, (ts, _) in store.items() if now - ts > ttl]:
+            store.pop(k, None)
 
 
 def _invalidate_geo_tokens(tokens):
@@ -4614,10 +4624,11 @@ def report_data(request):
             logger.error(f"[ERROR dsp_health] {e}")
             return (jsonify({"error": "Erro ao buscar saúde das DSPs"}), 500, headers)
 
-    # GET ?action=dsp_analytics[&from=YYYY-MM-DD&to=YYYY-MM-DD][&refresh=1] —
-    # admin-only. Analytics › Saúde das DSPs: série diária + período anterior +
-    # lines agregadas, com ABS por line e survey marcado (não excluído). Filtro
-    # e agregação no front. Ver backend/dsp_analytics.py.
+    # GET ?action=dsp_analytics[&from=YYYY-MM-DD&to=YYYY-MM-DD][&creatives=ID,ID]
+    # [&refresh=1] — admin-only. Analytics › Saúde das DSPs: série diária +
+    # período anterior + lines agregadas, com ABS por line e survey marcado
+    # (não excluído). Filtro e agregação no front, exceto criativo (abaixo da
+    # line), que recorta aqui. Ver backend/dsp_analytics.py.
     if request.method == "GET" and request.args.get("action") == "dsp_analytics":
         if not authenticate_admin(request):
             return (jsonify({"error": "Não autorizado"}), 401, headers)
@@ -4627,7 +4638,11 @@ def report_data(request):
             window = dsp_analytics.resolve_window(from_s, to_s)
         except ValueError as e:
             return (jsonify({"error": f"Período inválido: {e}"}), 400, headers)
-        cache_key = f"{window[0]}|{window[1]}"
+        try:
+            creatives = dsp_analytics.parse_creatives(request.args.get("creatives"))
+        except ValueError as e:
+            return (jsonify({"error": str(e)}), 400, headers)
+        cache_key = f"{window[0]}|{window[1]}|{','.join(creatives)}"
         try:
             payload = None
             if request.args.get("refresh") != "1":
@@ -4636,12 +4651,14 @@ def report_data(request):
                 payload = dsp_analytics.query_dsp_analytics(
                     bq, bigquery, window[0].isoformat(), window[1].isoformat(),
                     submit=_query_pool.submit, timeout=_POOL_RESULT_TIMEOUT_S,
+                    creatives=creatives,
                 )
                 try:
                     payload["landings"] = query_source_landings()
                 except Exception as e:  # noqa: BLE001 — frescor é acessório
                     logger.warning(f"[dsp_analytics] landings indisponível: {e}")
                     payload["landings"] = []
+                _cache_prune(_dsp_analytics_cache, _DSP_ANALYTICS_CACHE_TTL)
                 _cache_set(_dsp_analytics_cache, cache_key, payload)
             return _gzip_json(payload, request, headers)
         except Exception as e:
@@ -4660,19 +4677,47 @@ def report_data(request):
                 (request.args.get("to") or "").strip() or None,
             )
             keys = dsp_analytics.parse_line_keys(request.args.get("keys"))
+            creatives = dsp_analytics.parse_creatives(request.args.get("creatives"))
         except ValueError as e:
             return (jsonify({"error": str(e)}), 400, headers)
-        cache_key = f"{window[0]}|{window[1]}|{','.join(keys)}"
+        cache_key = f"{window[0]}|{window[1]}|{','.join(keys)}|{','.join(creatives)}"
         try:
             payload = _cache_get(_dsp_line_daily_cache, cache_key, _DSP_ANALYTICS_CACHE_TTL)
             if payload is None:
                 payload = dsp_analytics.query_line_daily(
-                    bq, bigquery, keys, window[0].isoformat(), window[1].isoformat())
+                    bq, bigquery, keys, window[0].isoformat(), window[1].isoformat(),
+                    creatives=creatives)
+                _cache_prune(_dsp_line_daily_cache, _DSP_ANALYTICS_CACHE_TTL)
                 _cache_set(_dsp_line_daily_cache, cache_key, payload)
             return _gzip_json(payload, request, headers)
         except Exception as e:
             logger.error(f"[ERROR dsp_analytics_line_daily] {e}")
             return (jsonify({"error": "Erro ao buscar série das lines"}), 500, headers)
+
+    # GET ?action=dsp_analytics_creatives[&from&to] — opções do filtro de
+    # criativo: criativo × line no período (id = fingerprint do nome, que é o
+    # que o dsp_analytics recebe em `creatives`). Carregado sob demanda.
+    if request.method == "GET" and request.args.get("action") == "dsp_analytics_creatives":
+        if not authenticate_admin(request):
+            return (jsonify({"error": "Não autorizado"}), 401, headers)
+        try:
+            window = dsp_analytics.resolve_window(
+                (request.args.get("from") or "").strip() or None,
+                (request.args.get("to") or "").strip() or None,
+            )
+        except ValueError as e:
+            return (jsonify({"error": f"Período inválido: {e}"}), 400, headers)
+        cache_key = f"{window[0]}|{window[1]}"
+        try:
+            payload = _cache_get(_dsp_creatives_cache, cache_key, _DSP_ANALYTICS_CACHE_TTL)
+            if payload is None:
+                payload = dsp_analytics.query_creatives(
+                    bq, bigquery, window[0].isoformat(), window[1].isoformat())
+                _cache_set(_dsp_creatives_cache, cache_key, payload)
+            return _gzip_json(payload, request, headers)
+        except Exception as e:
+            logger.error(f"[ERROR dsp_analytics_creatives] {e}")
+            return (jsonify({"error": "Erro ao buscar criativos"}), 500, headers)
 
     # GET ?action=dv_quality[&from=YYYY-MM-DD&to=YYYY-MM-DD][&refresh=1] —
     # aberto a QUALQUER admin @hypr.mobi (sem FEATURE_ADMINS/PMP_EDITORS).

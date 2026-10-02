@@ -14,7 +14,7 @@ import {
   decodePayload, DEFAULT_FILTERS, filterRows, aggregate, delta, buildTimeseries,
   weekStart, autoGranularity, enrichLines, rankLines, buildScorecards, buildAbsCost,
   buildFormatMatrix, buildDataQuality, buildFilterOptions, pruneFilters, NO_TOKEN,
-  decodeLineDaily,
+  decodeLineDaily, decodeCreatives, buildCreativeOptions, hasCreativeFilter,
 } from "./dspAnalytics.js";
 
 const METRICS = ["imp", "meas", "view", "clk", "cost", "vst", "v100", "vcomp", "fee"];
@@ -344,4 +344,61 @@ test("tática: opção de filtro com rótulo e export com coluna", async () => {
   const row = lineRowAoA(enrichLines(TAC.lines)[1]);
   assert.equal(row[LINE_HEADERS.indexOf("Tática")], "Top Performance Low");
   assert.equal(row.length, LINE_HEADERS.length);
+});
+
+// ── Criativo ──────────────────────────────────────────────────────────────
+// O recorte é no servidor; aqui trava a lista de opções (cruzada com as lines
+// sem recorte) e que os filtros em memória ignoram o criativo.
+
+const CREATIVES = decodeCreatives({
+  from: "2026-09-01", to: "2026-09-30",
+  names: [["-11", "27010783_BHDE_DRINK-SEGURO-320X50"], ["22", "27010783_BHDE_DRINK-SEGURO-300X250"], ["33", "ATACADAO_VIDEO_15S"]],
+  keys: ["DV360|1|0", "YAHOO|9|0", "DV360|3|0", "DV360|4|1", "DV360|999|0"],
+  rows: [
+    [0, 0, 60000, 70.0],
+    [1, 0, 40000, 58.0],
+    [0, 1, 200000, 90.0],
+    [2, 2, 50000, 125.0],
+    [2, 3, 10000, 20.0],
+    [2, 4, 5, 0.01],          // line fora do payload: não entra
+  ],
+});
+
+test("criativo: decode resolve ids, nomes e chaves de line", () => {
+  assert.equal(CREATIVES.names.get("-11"), "27010783_BHDE_DRINK-SEGURO-320X50");
+  assert.deepEqual(CREATIVES.rows[0], { id: "-11", key: "DV360|1|0", imp: 60000, cost: 70 });
+  assert.equal(decodeCreatives(null), null);
+});
+
+test("criativo: opções somam por criativo nas lines do recorte, maiores primeiro", () => {
+  const all = buildCreativeOptions(CREATIVES, data.lines, F());
+  assert.deepEqual(all.map((o) => o.id), ["-11", "33", "22"]);
+  const bhde = all[0];
+  assert.equal(bhde.volume, 260000);
+  assert.equal(bhde.sub, "DV360 · YAHOO · 2 lines");
+  assert.equal(all.find((o) => o.id === "33").volume, 60000);   // a line 999 não existe no payload
+});
+
+test("criativo: lista respeita os outros filtros (DSP, cliente, survey, line)", () => {
+  const ids = (f) => buildCreativeOptions(CREATIVES, data.lines, f).map((o) => o.id).sort();
+  assert.deepEqual(ids(F({ sources: ["YAHOO"] })), ["-11"]);
+  assert.deepEqual(ids(F({ clients: ["Atacadão"] })), ["33"]);
+  assert.deepEqual(ids(F({ lines: ["DV360|1|0"] })), ["-11", "22"]);
+  const noSurvey = buildCreativeOptions(CREATIVES, data.lines, F({ includeSurvey: false }));
+  assert.equal(noSurvey.find((o) => o.id === "33").volume, 50000);
+  // A seleção de criativo não esconde as irmãs.
+  assert.deepEqual(ids(F({ creatives: ["22"] })), ["-11", "22", "33"]);
+  assert.deepEqual(buildCreativeOptions(null, data.lines, F()), []);
+});
+
+test("criativo: filtros em memória ignoram o criativo (recorte é no servidor)", () => {
+  assert.equal(filterRows(data.lines, F({ creatives: ["-11"] })).length, 6);
+  assert.equal(hasCreativeFilter(F()), false);
+  assert.equal(hasCreativeFilter(F({ creatives: ["-11"] })), true);
+});
+
+test("criativo: poda só com a lista do período carregada", () => {
+  const f = F({ creatives: ["-11", "999"] });
+  assert.deepEqual(pruneFilters(f, data.lines).creatives, ["-11", "999"]);
+  assert.deepEqual(pruneFilters(f, data.lines, CREATIVES).creatives, ["-11"]);
 });

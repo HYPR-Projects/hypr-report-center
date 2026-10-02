@@ -56,6 +56,19 @@ Linhas de survey/controle/exposto (mesma regex do report) vêm marcadas
 (`sv`), não excluídas: o custo delas é custo real da DSP. A tela decide se
 entram na análise (toggle).
 
+Criativo
+--------
+Criativo é uma dimensão ABAIXO da line (DV360 roda ~6,5 por line), então não
+entra no payload principal: line × criativo × dia num ano passaria de 1 milhão
+de linhas. O filtro é no servidor: `creatives` (fingerprints do nome, ver
+creative_id) recorta o consolidado na leitura e o payload volta com o mesmo
+formato, só com a entrega daqueles criativos. A lista de opções vem de um
+endpoint à parte (query_creatives), carregado quando o admin abre o filtro.
+
+A fee pré-bid é por (dia, line): com filtro de criativo ela continua rateada
+pela impressão de TODOS os criativos da line no dia (`in_sel` entra no
+agrupamento, a janela da fee não), então o criativo leva só a parte dele.
+
 Payload compacto
 ----------------
 Um ano dá ~48 mil linhas de série e ~17,5 mil lines, então as linhas vão
@@ -143,6 +156,7 @@ def _tactic_sql(col):
 MAX_RANGE_DAYS = 400
 DEFAULT_RANGE_DAYS = 30
 MAX_LINE_KEYS = 50
+MAX_CREATIVES = 100
 
 BRT = timezone(timedelta(hours=-3))
 
@@ -193,14 +207,25 @@ def resolve_window(from_s=None, to_s=None, now=None):
 
 # ── SQL ────────────────────────────────────────────────────────────────────
 
-def _base_ctes():
+def _creative_fp(col):
+    """Fingerprint estável do nome do criativo, em STRING (INT64 não cabe no
+    Number do JS). É o id que o filtro manda: o nome tem 100+ caracteres e
+    vírgula, e 100 deles não cabem numa query string."""
+    return f"CAST(FARM_FINGERPRINT(IFNULL({col}, '')) AS STRING)"
+
+
+def _base_ctes(creatives=False):
     """CTEs comuns: linha do consolidado já com survey, formato, ABS da line
     e a fee pré-bid DV do dia. Janela @prev_from..@to (período + anterior).
+
+    `creatives=True` marca `in_sel` (criativo em @creatives) e a query final
+    filtra por ele DEPOIS do rateio da fee. Sem filtro, `in_sel` é TRUE.
 
     `vcomp` (completions visíveis) é calculado POR LINHA CRUA antes de somar,
     igual ao report: video_view_100 × viewable ÷ impressions. Somar primeiro
     e dividir depois dá outro número.
     """
+    in_sel = f"{_creative_fp('creative_name')} IN UNNEST(@creatives)" if creatives else "TRUE"
     return f"""
     fee_lines AS (
       -- Line DV360 que pagou fee pré-bid da DV em qualquer dia: é ABS.
@@ -241,6 +266,7 @@ def _base_ctes():
         (REGEXP_CONTAINS(UPPER(IFNULL(line_name, '')), r'{SURVEY_LINE_RE}')
           OR UPPER(IFNULL(creative_name, '')) LIKE '%SURVEY%') AS is_survey,
         {_tactic_sql("UPPER(IFNULL(line_name, ''))")} AS tactic,
+        {in_sel} AS in_sel,
         impressions, measurable_impressions, viewable_impressions, clicks,
         total_cost, video_starts, video_view_100_complete,
         IF(impressions > 0 AND UPPER(media_type) = 'VIDEO',
@@ -250,7 +276,7 @@ def _base_ctes():
     ),
     line_day AS (
       SELECT
-        date, source, media, short_token, io_name, line_id, is_survey, tactic,
+        date, source, media, short_token, io_name, line_id, is_survey, tactic, in_sel,
         ANY_VALUE(line_name)  AS line_name,
         ANY_VALUE(dsp_client) AS dsp_client,
         SUM(impressions)             AS imp,
@@ -262,7 +288,7 @@ def _base_ctes():
         SUM(video_view_100_complete) AS v100,
         SUM(vcomp)                   AS vcomp
       FROM raw
-      GROUP BY date, source, media, short_token, io_name, line_id, is_survey, tactic
+      GROUP BY date, source, media, short_token, io_name, line_id, is_survey, tactic, in_sel
     ),
     base AS (
       SELECT
@@ -295,17 +321,17 @@ _METRIC_SUMS = """
       SUM(fee) AS fee"""
 
 
-def build_series_sql():
+def build_series_sql(creatives=False):
     """Dia × DSP × formato × ABS × survey × campanha × IO do período E do
     anterior, numa varredura só: o Python separa a janela atual (série) e
     agrega a anterior sem data (variações). Antes eram duas queries sobre a
     mesma base, cada uma varrendo o consolidado inteiro da janela dupla."""
     return f"""
-    WITH {_base_ctes()}
+    WITH {_base_ctes(creatives)}
     SELECT date, source, media, abs_reason IS NOT NULL AS is_abs, is_survey,
            short_token, io_name, tactic,{_METRIC_SUMS}
     FROM base
-    WHERE date BETWEEN @prev_from AND @to
+    WHERE date BETWEEN @prev_from AND @to AND in_sel
     GROUP BY date, source, media, is_abs, is_survey, short_token, io_name, tactic
     """
 
@@ -335,9 +361,9 @@ def split_series(rows, d_from):
     return series, list(prev.values())
 
 
-def build_lines_sql():
+def build_lines_sql(creatives=False):
     return f"""
-    WITH {_base_ctes()}
+    WITH {_base_ctes(creatives)}
     SELECT source, media, line_id, short_token, io_name, is_survey,
            -- ANY_VALUE e não GROUP BY: a chave da line tem de ser única no
            -- payload. Line renomeada de uma tática pra outra (raro) fica com
@@ -347,7 +373,7 @@ def build_lines_sql():
            ANY_VALUE(line_name)  AS line_name,
            MIN(date) AS first_date, MAX(date) AS last_date,{_METRIC_SUMS}
     FROM base
-    WHERE date BETWEEN @from AND @to
+    WHERE date BETWEEN @from AND @to AND in_sel
     GROUP BY source, media, line_id, short_token, io_name, is_survey
     """
 
@@ -363,16 +389,36 @@ def build_meta_sql():
     """
 
 
-def build_line_daily_sql():
+def build_line_daily_sql(creatives=False):
     """Série diária de lines escolhidas (filtro por line na tela)."""
     return f"""
-    WITH {_base_ctes()}
+    WITH {_base_ctes(creatives)}
     SELECT CONCAT(source, '|', line_id, '|', IF(is_survey, '1', '0')) AS key,
            date,{_METRIC_SUMS}
     FROM base
-    WHERE date BETWEEN @from AND @to
+    WHERE date BETWEEN @from AND @to AND in_sel
       AND CONCAT(source, '|', line_id, '|', IF(is_survey, '1', '0')) IN UNNEST(@keys)
     GROUP BY key, date
+    """
+
+
+def build_creatives_sql():
+    """Opções do filtro de criativo: criativo × line no período, com a chave
+    da line igual à do payload (SOURCE|line_id|survey) pra tela cruzar com os
+    outros filtros. Mesma regra de survey e de chave de line da base."""
+    return f"""
+    SELECT
+      {_creative_fp("creative_name")} AS id,
+      IFNULL(creative_name, '') AS name,
+      CONCAT(UPPER(source), '|', COALESCE(line_item_id, line_name, ''), '|',
+             IF(REGEXP_CONTAINS(UPPER(IFNULL(line_name, '')), r'{SURVEY_LINE_RE}')
+                OR UPPER(IFNULL(creative_name, '')) LIKE '%SURVEY%', '1', '0')) AS line_key,
+      SUM(impressions) AS imp,
+      SUM(total_cost)  AS cost
+    FROM {UNIFIED}
+    WHERE date BETWEEN @from AND @to
+    GROUP BY id, name, line_key
+    HAVING imp > 0 OR cost > 0
     """
 
 
@@ -538,18 +584,25 @@ def _params(bigquery, window, extra=()):
     ])
 
 
-def query_dsp_analytics(bq, bigquery, from_s=None, to_s=None, submit=None, timeout=150, now=None):
+def _creative_params(bigquery, creatives):
+    return (bigquery.ArrayQueryParameter("creatives", "STRING", list(creatives)),) if creatives else ()
+
+
+def query_dsp_analytics(bq, bigquery, from_s=None, to_s=None, submit=None, timeout=150, now=None,
+                        creatives=None):
     """Lê o consolidado e devolve o payload. `bq` é o client compartilhado;
     `bigquery` o módulo google.cloud.bigquery (injetado pra teste). `submit`
     (opcional) = executor.submit do pool de queries do backend: as três
-    leituras (série+anterior e lines) são independentes e rodam em paralelo."""
+    leituras (série+anterior e lines) são independentes e rodam em paralelo.
+    `creatives` (ids de parse_creatives) recorta a entrega nesses criativos."""
     window = resolve_window(from_s, to_s, now)
-    cfg = _params(bigquery, window)
+    creatives = list(creatives or [])
+    cfg = _params(bigquery, window, extra=_creative_params(bigquery, creatives))
 
     def run(sql):
         return [dict(r) for r in bq.query(sql, job_config=cfg, location="US").result()]
 
-    sqls = [build_series_sql(), build_lines_sql()]
+    sqls = [build_series_sql(bool(creatives)), build_lines_sql(bool(creatives))]
     if submit:
         futs = [submit(run, s) for s in sqls]
         daily_rows, line_rows = [f.result(timeout=timeout) for f in futs]
@@ -565,7 +618,45 @@ def query_dsp_analytics(bq, bigquery, from_s=None, to_s=None, submit=None, timeo
         ])
         meta_rows = [dict(r) for r in bq.query(build_meta_sql(), job_config=meta_cfg, location="US").result()]
 
-    return build_payload(series_rows, prev_rows, line_rows, meta_rows, window)
+    payload = build_payload(series_rows, prev_rows, line_rows, meta_rows, window)
+    payload["creatives"] = creatives
+    return payload
+
+
+_CREATIVE_ID_RE = re.compile(r"^-?\d{1,20}$")
+
+
+def parse_creatives(raw):
+    """"123,-456" → ids de criativo validados (fingerprints), ordenados e sem
+    repetição. Vazio → [] (sem filtro)."""
+    ids = sorted({p.strip() for p in (raw or "").split(",") if p.strip()})
+    for i in ids:
+        if not _CREATIVE_ID_RE.match(i):
+            raise ValueError(f"id de criativo inválido: {i}")
+    if len(ids) > MAX_CREATIVES:
+        raise ValueError(f"máximo de {MAX_CREATIVES} criativos por vez")
+    return ids
+
+
+def query_creatives(bq, bigquery, from_s=None, to_s=None, now=None):
+    """Opções do filtro de criativo no período, dicionarizadas:
+    {names:[[id, nome]], keys:[line_key], rows:[[cIdx, kIdx, imp, cost]]}."""
+    window = resolve_window(from_s, to_s, now)
+    rows = [dict(r) for r in bq.query(build_creatives_sql(), job_config=_params(bigquery, window),
+                                      location="US").result()]
+    names, name_idx, keys, key_idx, out = [], {}, [], {}, []
+    for r in sorted(rows, key=lambda r: -(r.get("imp") or 0)):
+        cid = r["id"]
+        if cid not in name_idx:
+            name_idx[cid] = len(names)
+            names.append([cid, r.get("name") or ""])
+        k = r["line_key"]
+        if k not in key_idx:
+            key_idx[k] = len(keys)
+            keys.append(k)
+        out.append([name_idx[cid], key_idx[k], int(r.get("imp") or 0), round(float(r.get("cost") or 0), 4)])
+    return {"from": window[0].isoformat(), "to": window[1].isoformat(),
+            "names": names, "keys": keys, "rows": out}
 
 
 def parse_line_keys(raw):
@@ -586,11 +677,14 @@ def parse_line_keys(raw):
     return sorted(set(keys))
 
 
-def query_line_daily(bq, bigquery, keys, from_s=None, to_s=None, now=None):
+def query_line_daily(bq, bigquery, keys, from_s=None, to_s=None, now=None, creatives=None):
     """Série diária das lines pedidas: {dates, cols, rows:[[key, dIdx, ...]]}."""
     window = resolve_window(from_s, to_s, now)
-    cfg = _params(bigquery, window, extra=(bigquery.ArrayQueryParameter("keys", "STRING", keys),))
-    rows = [dict(r) for r in bq.query(build_line_daily_sql(), job_config=cfg, location="US").result()]
+    creatives = list(creatives or [])
+    cfg = _params(bigquery, window, extra=(bigquery.ArrayQueryParameter("keys", "STRING", keys),
+                                           *_creative_params(bigquery, creatives)))
+    rows = [dict(r) for r in bq.query(build_line_daily_sql(bool(creatives)), job_config=cfg,
+                                      location="US").result()]
     dates = sorted({_iso(r["date"]) for r in rows})
     idx = {d: i for i, d in enumerate(dates)}
     out = [[r["key"], idx[_iso(r["date"])]] + _metrics(r) for r in rows]

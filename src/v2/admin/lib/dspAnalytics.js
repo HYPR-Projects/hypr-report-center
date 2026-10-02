@@ -15,6 +15,12 @@
 // `lines` e `series` saem da mesma base no backend, então a soma de um bate
 // com a do outro para qualquer recorte que não seja por line.
 //
+// Criativo é a exceção: fica abaixo da line e não cabe no payload, então o
+// filtro recorta no servidor (dsp_analytics?creatives=) e o payload volta no
+// mesmo formato, só com a entrega daqueles criativos. As opções do filtro vêm
+// de dsp_analytics_creatives (criativo × line) cruzadas com as lines do
+// payload SEM recorte, pra respeitar os outros filtros.
+//
 // Fórmulas (padrão HYPR, iguais às do report e das réguas do admin):
 //   CTR          = cliques ÷ impressões visíveis
 //   VTR          = completions visíveis ÷ impressões visíveis (só vídeo)
@@ -94,6 +100,51 @@ export function decodeLineDaily(p) {
   });
 }
 
+/**
+ * Opções do filtro de criativo (endpoint dsp_analytics_creatives) → objetos:
+ * { names: Map(id → nome), rows: [{ id, key, imp, cost }] }.
+ */
+export function decodeCreatives(p) {
+  if (!p) return null;
+  const names = new Map((p.names || []).map(([id, name]) => [id, name]));
+  const ids = (p.names || []).map(([id]) => id);
+  const keys = p.keys || [];
+  const rows = (p.rows || []).map(([c, k, imp, cost]) => ({
+    id: ids[c], key: keys[k], imp: Number(imp) || 0, cost: Number(cost) || 0,
+  }));
+  return { from: p.from, to: p.to, names, rows };
+}
+
+/**
+ * Lista do filtro de criativo: só criativos das lines que passam nos OUTROS
+ * filtros (DSP, formato, ABS, survey, cliente, campanha, tática, IO, line),
+ * com volume somado nessas lines. `lines` = lines do payload sem recorte.
+ */
+export function buildCreativeOptions(creatives, lines, f) {
+  if (!creatives) return [];
+  const byKey = new Map(filterRows(lines, f).map((l) => [l.key, l]));
+  const map = new Map();
+  for (const r of creatives.rows) {
+    const l = byKey.get(r.key);
+    if (!l) continue;
+    let o = map.get(r.id);
+    if (!o) {
+      o = { id: r.id, label: creatives.names.get(r.id) || r.id, volume: 0, cost: 0, src: new Set(), lines: 0 };
+      map.set(r.id, o);
+    }
+    o.volume += r.imp;
+    o.cost += r.cost;
+    o.src.add(l.s);
+    o.lines += 1;
+  }
+  return [...map.values()]
+    .map(({ src, lines: n, ...o }) => ({
+      ...o,
+      sub: `${sortSources([...src]).join(" · ")} · ${n} ${n === 1 ? "line" : "lines"}`,
+    }))
+    .sort((a, b) => b.volume - a.volume);
+}
+
 // ── Filtros ───────────────────────────────────────────────────────────────
 
 export const DEFAULT_FILTERS = Object.freeze({
@@ -106,7 +157,14 @@ export const DEFAULT_FILTERS = Object.freeze({
   ios: [],
   tactics: [],          // chaves de tática (tp_high, premium_list…)
   lines: [],            // chaves SOURCE|line_id|survey
+  creatives: [],        // ids (fingerprint do nome) — recorte no servidor
 });
+
+export const MAX_CREATIVES = 100;
+
+export function hasCreativeFilter(f) {
+  return (f.creatives || []).length > 0;
+}
 
 /**
  * A linha passa no filtro? `skip` ignora dimensões — usado no custo do ABS
@@ -593,11 +651,16 @@ export function buildTactics(enriched) {
   });
 }
 
-/** Remove da seleção o que não existe mais no payload novo (troca de período). */
-export function pruneFilters(f, lines) {
+/**
+ * Remove da seleção o que não existe mais no payload novo (troca de período).
+ * `creatives` (opções decodificadas do período) poda o filtro de criativo;
+ * sem ele (ainda carregando), a seleção de criativo fica como está.
+ */
+export function pruneFilters(f, lines, creatives = null) {
   const has = (key) => new Set(lines.map((l) => l[key]));
   const clients = has("client"); const tokens = has("token");
   const ios = has("io"); const keys = has("key"); const tactics = has("tactic");
+  const crs = f.creatives || [];
   return {
     ...f,
     clients: f.clients.filter((x) => clients.has(x)),
@@ -605,5 +668,6 @@ export function pruneFilters(f, lines) {
     ios: f.ios.filter((x) => ios.has(x)),
     tactics: (f.tactics || []).filter((x) => tactics.has(x)),
     lines: f.lines.filter((x) => keys.has(x)),
+    creatives: creatives ? crs.filter((x) => creatives.names.has(x)) : crs,
   };
 }
