@@ -443,18 +443,27 @@ export function FilterPanel({ title, children, footer, maxHeight = 320 }) {
  * linhas single liam como caixa que faltou desenhar. E num painel só de
  * single não havia pista nenhuma de que a linha era selecionável antes
  * de clicar: o indicador só existia DEPOIS de já se saber a resposta.
+ *
+ * `indeterminate` (multi): traço no lugar do check — o "Selecionar tudo"
+ * com parte dos itens marcada, como no filtro do Excel.
+ *
+ * `onOnly` (multi): "apenas" aparece no hover/foco da linha, no lugar da
+ * contagem, e troca a seleção inteira por este item. É um botão IRMÃO do
+ * da linha (botão dentro de botão não é HTML válido) e fica fora da ordem
+ * de tab até a linha estar em hover/foco.
  */
-export function FilterOption({ label, sub, count, selected, onSelect, multi = false }) {
-  return (
+export function FilterOption({ label, sub, count, selected, onSelect, multi = false, indeterminate = false, onOnly }) {
+  const row = (
     <button
       type="button"
       onClick={onSelect}
       role={multi ? "checkbox" : "menuitemradio"}
-      aria-checked={!!selected}
+      aria-checked={indeterminate && !selected ? "mixed" : !!selected}
       className={cn(
         "group/opt w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md cursor-pointer border-0 text-left",
         "bg-transparent hover:bg-surface transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature",
+        onOnly && "group-hover/row:bg-surface",
       )}
     >
       {/* Casca comum: mesmo tamanho, mesma borda, mesmo preenchimento
@@ -465,19 +474,21 @@ export function FilterOption({ label, sub, count, selected, onSelect, multi = fa
         className={cn(
           "shrink-0 size-[15px] border grid place-items-center transition-colors",
           multi ? "rounded" : "rounded-full",
-          selected
+          selected || indeterminate
             ? "bg-signature-fill border-signature"
             : "border-border-strong bg-transparent group-hover/opt:border-fg-subtle",
         )}
       >
-        {selected && (multi ? (
+        {selected ? (multi ? (
           <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5"
                strokeLinecap="round" strokeLinejoin="round" className="text-on-signature">
             <path d="M20 6 9 17l-5-5" />
           </svg>
         ) : (
           <span className="size-[5px] rounded-full bg-on-signature" />
-        ))}
+        )) : indeterminate ? (
+          <span className="w-[7px] h-[2px] rounded-full bg-on-signature" />
+        ) : null}
       </span>
 
       <span className="flex-1 min-w-0">
@@ -488,9 +499,33 @@ export function FilterOption({ label, sub, count, selected, onSelect, multi = fa
       </span>
 
       {count != null && (
-        <span className="shrink-0 text-[10.5px] font-bold text-fg-subtle tabular-nums">{count}</span>
+        <span className={cn(
+          "shrink-0 text-[10.5px] font-bold text-fg-subtle tabular-nums",
+          // O "apenas" ocupa o lugar da contagem no hover/foco.
+          onOnly && "group-hover/row:invisible group-focus-within/row:invisible",
+        )}>{count}</span>
       )}
     </button>
+  );
+  if (!onOnly) return row;
+  return (
+    <div className="group/row relative">
+      {row}
+      <button
+        type="button"
+        onClick={onOnly}
+        aria-label={`Selecionar apenas ${typeof label === "string" ? label : "este"}`}
+        className={cn(
+          "absolute right-1.5 top-1/2 -translate-y-1/2 h-6 px-2 rounded border-0 cursor-pointer",
+          "bg-transparent text-[11px] font-semibold text-signature hover:underline",
+          "opacity-0 pointer-events-none group-hover/row:opacity-100 group-hover/row:pointer-events-auto",
+          "group-focus-within/row:opacity-100 group-focus-within/row:pointer-events-auto focus-visible:opacity-100",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signature transition-opacity",
+        )}
+      >
+        apenas
+      </button>
+    </div>
   );
 }
 
