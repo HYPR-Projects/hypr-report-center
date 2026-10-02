@@ -15,6 +15,7 @@ import {
   weekStart, autoGranularity, enrichLines, rankLines, buildScorecards, buildAbsCost,
   buildFormatMatrix, buildDataQuality, buildFilterOptions, pruneFilters, NO_TOKEN,
   decodeLineDaily, decodeCreatives, buildCreativeOptions, hasCreativeFilter,
+  selectAllState, toggleSelectAll,
 } from "./dspAnalytics.js";
 
 const METRICS = ["imp", "meas", "view", "clk", "cost", "vst", "v100", "vcomp", "fee"];
@@ -401,4 +402,27 @@ test("criativo: poda só com a lista do período carregada", () => {
   const f = F({ creatives: ["-11", "999"] });
   assert.deepEqual(pruneFilters(f, data.lines).creatives, ["-11", "999"]);
   assert.deepEqual(pruneFilters(f, data.lines, CREATIVES).creatives, ["-11"]);
+});
+
+// ── Selecionar tudo da busca / apenas ─────────────────────────────────────
+
+test("selecionar tudo: estado all/some/none sobre os resultados da busca", () => {
+  assert.equal(selectAllState([], ["a", "b"]), "none");
+  assert.equal(selectAllState(["a"], ["a", "b"]), "some");
+  assert.equal(selectAllState(["a", "b", "z"], ["a", "b"]), "all");
+  assert.equal(selectAllState(["a"], []), "none");
+});
+
+test("selecionar tudo: soma o que falta e preserva seleção de fora da busca", () => {
+  assert.deepEqual(toggleSelectAll(["z", "a"], ["a", "b", "c"]), ["z", "a", "b", "c"]);
+});
+
+test("selecionar tudo: com tudo marcado, desmarca só os da busca", () => {
+  assert.deepEqual(toggleSelectAll(["z", "a", "b"], ["a", "b"]), ["z"]);
+});
+
+test("selecionar tudo: respeita o teto na ordem de volume", () => {
+  assert.deepEqual(toggleSelectAll(["z"], ["a", "b", "c"], 3), ["z", "a", "b"]);
+  // teto cheio: o clique desmarca em vez de não fazer nada
+  assert.deepEqual(toggleSelectAll(["z", "a", "b"], ["a", "b", "c"], 3), ["z"]);
 });

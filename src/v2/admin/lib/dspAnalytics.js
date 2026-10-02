@@ -184,6 +184,40 @@ export function matchRow(r, f, skip = {}) {
   return true;
 }
 
+/**
+ * "Selecionar tudo" da busca, como o filtro do Excel, sobre os `ids` que a
+ * busca achou: "all" se todos estão marcados, "some" se parte, "none" se
+ * nenhum. Nada selecionado já é "tudo" (sem filtro), então o atalho só faz
+ * sentido sobre um resultado de busca.
+ */
+export function selectAllState(selected, ids) {
+  if (!ids.length) return "none";
+  const sel = new Set(selected);
+  const n = ids.filter((id) => sel.has(id)).length;
+  return n === 0 ? "none" : n === ids.length ? "all" : "some";
+}
+
+/**
+ * Clique no "Selecionar tudo": com todos marcados, desmarca os `ids` (e
+ * preserva o resto da seleção); senão, soma os que faltam na ordem dada
+ * (maior volume primeiro), até `max`. Se o teto já está cheio e nada
+ * entraria, desmarca, pra o clique nunca ficar sem efeito.
+ */
+export function toggleSelectAll(selected, ids, max = Infinity) {
+  const drop = () => {
+    const out = new Set(ids);
+    return selected.filter((id) => !out.has(id));
+  };
+  if (selectAllState(selected, ids) === "all") return drop();
+  const out = [...selected];
+  const has = new Set(selected);
+  for (const id of ids) {
+    if (out.length >= max) break;
+    if (!has.has(id)) { out.push(id); has.add(id); }
+  }
+  return out.length === selected.length ? drop() : out;
+}
+
 export function hasLineFilter(f) {
   return f.lines.length > 0;
 }

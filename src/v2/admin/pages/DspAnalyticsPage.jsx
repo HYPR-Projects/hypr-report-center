@@ -29,6 +29,7 @@ import {
   buildTimeseries, buildMonthly, autoGranularity, enrichLines, buildScorecards, buildAbsCost,
   buildFormatMatrix, buildDataQuality, buildFilterOptions, pruneFilters, sparkBySource, buildTactics,
   decodeCreatives, buildCreativeOptions, hasCreativeFilter, MAX_CREATIVES,
+  selectAllState, toggleSelectAll,
 } from "../lib/dspAnalytics";
 import { getDspAnalytics, getDspAnalyticsLineDaily, getDspAnalyticsCreatives } from "../../../lib/api";
 import { sortSources, dspLabel } from "../../../shared/dspMeta";
@@ -61,6 +62,9 @@ const MEDIA_OPTIONS = [
   { value: "DISPLAY", label: withIcon("DISPLAY", "Display") },
   { value: "VIDEO", label: withIcon("VIDEO", "Vídeo") },
 ];
+// O filtro de line busca a série diária de até 50 lines (backend
+// MAX_LINE_KEYS); o "Selecionar tudo" respeita o mesmo teto.
+const MAX_LINES = 50;
 // Toques seguidos no filtro de criativo viram UMA ida ao servidor.
 const CREATIVE_DEBOUNCE_MS = 700;
 const clip = (t, n = 64) => (t && t.length > n ? `${t.slice(0, n - 1)}…` : t);
@@ -299,7 +303,12 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
       panel: () => (
         <FilterPanel title="DSP" footer={<FilterPanelClear onClear={() => setF({ sources: [] })} disabled={!filters.sources.length} />}>
           {sourceOptions.map((o) => (
-            <FilterOption key={o.id} multi label={o.label} selected={filters.sources.includes(o.id)} onSelect={() => toggleIn("sources", o.id)} />
+            <FilterOption
+              key={o.id} multi label={o.label}
+              selected={filters.sources.includes(o.id)}
+              onSelect={() => toggleIn("sources", o.id)}
+              onOnly={onlyOf("sources", o.id)}
+            />
           ))}
         </FilterPanel>
       ),
@@ -320,9 +329,7 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
           selected={filters.creatives}
           onToggle={(v) => toggleIn("creatives", v)}
           onClear={() => setF({ creatives: [] })}
-          onSelectMany={(ids) => setFilters((f) => ({
-            ...f, creatives: [...new Set([...f.creatives, ...ids])].slice(0, MAX_CREATIVES),
-          }))}
+          onSet={(ids) => setF({ creatives: ids })}
           max={MAX_CREATIVES}
           onMount={() => setWantCreatives(true)}
           loading={creativeOptsLoading}
@@ -333,6 +340,11 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
       ),
     },
   ] : [];
+
+  // "apenas": troca a seleção pelo item. Some quando ele já é o único.
+  const onlyOf = (key, id) => (filters[key].length === 1 && filters[key][0] === id
+    ? undefined
+    : () => setF({ [key]: [id] }));
 
   function searchableChip(id, label, key, items, placeholder, width) {
     return {
@@ -346,6 +358,8 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
           selected={filters[key]}
           onToggle={(v) => toggleIn(key, v)}
           onClear={() => setF({ [key]: [] })}
+          onSet={(ids) => setF({ [key]: ids })}
+          max={key === "lines" ? MAX_LINES : undefined}
           placeholder={placeholder}
           note={key === "lines" ? "Com line selecionada o gráfico busca a série diária dela (até 50)." : null}
         />
@@ -353,23 +367,30 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
     };
   }
 
+  // Seleção grande (o "Selecionar tudo" da busca) vira UM chip; a lista de
+  // cada item está no painel. Até `upTo`, um chip por item.
+  const group = (key, one, many, verb, labelFn, upTo = 3) => {
+    const ids = filters[key];
+    if (ids.length === 0) return [];
+    if (ids.length > upTo) {
+      return [{ id: `g${key}`, label: `${many} · ${ids.length} ${verb}`, onClear: () => setF({ [key]: [] }) }];
+    }
+    return ids.map((c) => ({ id: `${key}:${c}`, label: `${one} · ${labelFn(c)}`, onClear: () => toggleIn(key, c) }));
+  };
+
   const active = [
     ...filters.sources.map((s) => ({ id: `s${s}`, label: `DSP · ${dspLabel(s)}`, onClear: () => toggleIn("sources", s) })),
     ...(filters.media !== "all" ? [{ id: "media", label: `Formato · ${filters.media === "VIDEO" ? "Vídeo" : "Display"}`, onClear: () => setF({ media: "all" }) }] : []),
     ...(filters.abs !== "all" ? [{ id: "abs", label: filters.abs === "abs" ? "Com ABS" : "Sem ABS", onClear: () => setF({ abs: "all" }) }] : []),
     ...(!filters.includeSurvey ? [{ id: "sv", label: "Sem survey", onClear: () => setF({ includeSurvey: true }) }] : []),
-    ...filters.clients.map((c) => ({ id: `c${c}`, label: `Cliente · ${c}`, onClear: () => toggleIn("clients", c) })),
-    ...filters.campaigns.map((c) => ({ id: `k${c}`, label: `Campanha · ${labelOf(opts?.campaigns, c)}`, onClear: () => toggleIn("campaigns", c) })),
-    ...filters.tactics.map((c) => ({ id: `t${c}`, label: `Tática · ${tacticLabel(c)}`, onClear: () => toggleIn("tactics", c) })),
-    ...filters.ios.map((c) => ({ id: `i${c}`, label: `IO · ${c || "(sem IO)"}`, onClear: () => toggleIn("ios", c) })),
-    ...filters.lines.map((c) => ({ id: `l${c}`, label: `Line · ${labelOf(opts?.lines, c)}`, onClear: () => toggleIn("lines", c) })),
+    ...group("clients", "Cliente", "Clientes", "selecionados", (c) => c),
+    ...group("campaigns", "Campanha", "Campanhas", "selecionadas", (c) => labelOf(opts?.campaigns, c)),
+    ...group("tactics", "Tática", "Táticas", "selecionadas", (c) => tacticLabel(c)),
+    ...group("ios", "IO", "IOs", "selecionados", (c) => c || "(sem IO)"),
+    ...group("lines", "Line", "Lines", "selecionadas", (c) => labelOf(opts?.lines, c)),
     // Nomes de criativo da mesma peça só diferem no fim (formato), então
-    // vários viram um chip só; a lista de cada um está no painel.
-    ...(filters.creatives.length === 1
-      ? [{ id: "cr", label: `Criativo · ${clip(labelOf(creativeOptions, filters.creatives[0]))}`, onClear: () => setF({ creatives: [] }) }]
-      : filters.creatives.length > 1
-        ? [{ id: "cr", label: `Criativos · ${filters.creatives.length} selecionados`, onClear: () => setF({ creatives: [] }) }]
-        : []),
+    // a partir de dois já viram um chip só.
+    ...group("creatives", "Criativo", "Criativos", "selecionados", (c) => clip(labelOf(creativeOptions, c)), 1),
   ];
 
   const firstLoad = loading && !data;
@@ -532,7 +553,7 @@ function ControlGroup({ label, children }) {
 // ─── Painel de filtro com busca ──────────────────────────────────────────
 function SearchablePanel({
   title, items, selected, onToggle, onClear, placeholder, note,
-  onSelectMany, max, onMount, loading, error,
+  onSet, max, onMount, loading, error,
 }) {
   const [q, setQ] = useState("");
   // onMount: o painel de criativo pede a lista quando abre.
@@ -547,10 +568,14 @@ function SearchablePanel({
       : items;
   }, [items, q]);
   const shown = useMemo(() => matches.slice(0, 200), [matches]);
-  // "Selecionar os N": útil quando a busca acha a família inteira de um
-  // criativo (todos os formatos de uma peça). Respeita o teto do filtro.
-  const pending = onSelectMany && q.trim() ? matches.filter((it) => !selected.includes(it.id)) : [];
-  const room = max != null ? Math.max(0, max - selected.length) : pending.length;
+  // "Selecionar tudo" da busca, como no Excel: marca/desmarca todos os
+  // resultados (não só os 200 desenhados), até o teto do filtro. Sem busca
+  // não aparece: nada marcado já é "tudo".
+  const searching = q.trim().length > 0;
+  const matchIds = useMemo(() => matches.map((it) => it.id), [matches]);
+  const allState = selectAllState(selected, matchIds);
+  const capped = max != null && allState !== "all" && selected.length + matchIds.filter((id) => !selected.includes(id)).length > max;
+  const only = (id) => (selected.length === 1 && selected[0] === id ? undefined : () => onSet([id]));
   return (
     <FilterPanel
       title={title}
@@ -567,17 +592,17 @@ function SearchablePanel({
         className="mb-1.5 w-full h-8 px-2.5 rounded-md bg-surface border border-border text-[12.5px] text-fg placeholder:text-fg-subtle outline-none focus:border-signature"
       />
       {note && <div className="px-2 pb-1.5 text-[11px] text-fg-subtle">{note}</div>}
-      {pending.length > 0 && (
-        <button
-          type="button"
-          disabled={room === 0}
-          onClick={() => onSelectMany(pending.slice(0, room).map((it) => it.id))}
-          className="mb-1 w-full rounded-md px-2 py-1.5 text-left text-[12px] font-medium text-signature hover:bg-surface-2 disabled:text-fg-subtle disabled:hover:bg-transparent"
-        >
-          {room === 0
-            ? `Limite de ${max} selecionados`
-            : `Selecionar ${Math.min(pending.length, room)} ${Math.min(pending.length, room) === 1 ? "resultado" : "resultados"}${pending.length > room ? ` (limite ${max})` : ""}`}
-        </button>
+      {searching && matchIds.length > 0 && (
+        <div className="mb-1 border-b border-border pb-1">
+          <FilterOption
+            multi
+            label={`Selecionar tudo da busca (${matchIds.length})`}
+            sub={capped ? `Limite de ${max} no filtro: entram os de maior volume` : undefined}
+            selected={allState === "all"}
+            indeterminate={allState === "some"}
+            onSelect={() => onSet(toggleSelectAll(selected, matchIds, max ?? Infinity))}
+          />
+        </div>
       )}
       {error && <div className="px-2 py-3 text-xs text-danger">Não foi possível carregar: {error.message}</div>}
       {loading && !error && <div className="px-2 py-3 text-xs text-fg-subtle">Carregando…</div>}
@@ -591,6 +616,7 @@ function SearchablePanel({
           count={fmtCompact(it.volume)}
           selected={selected.includes(it.id)}
           onSelect={() => onToggle(it.id)}
+          onOnly={only(it.id)}
         />
       ))}
       {items.length > shown.length && !q && (
