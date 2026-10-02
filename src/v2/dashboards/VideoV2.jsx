@@ -3,8 +3,8 @@
 // Aba Vídeo — Report 2.0. Mesmo desenho da aba Display:
 //   1. Título "Vídeo" com a frente (O2O / OOH / Groundflow) ao lado
 //   2. Negociado × Efetivo (CPCV, economia sempre visível) + faixa de contrato
-//   3. 6 KPIs: imp. visíveis, views iniciadas, views 100%, VTR, conclusão,
-//      viewability
+//   3. 7 KPIs: imp. visíveis, views iniciadas, views 100%, VTR, conclusão,
+//      viewability, custo efetivo (budget gasto no recorte)
 //   4. Pacing da frente com o investido (ou o custo do período, com filtro)
 //   5. Tendência diária: views 100% e VTR alinhados
 //   6. Retenção do vídeo (início → 25% → 50% → 75% → 100%)
@@ -309,6 +309,8 @@ function VideoContent({
   const imprSum = detailFiltered.reduce((s, r) => s + (r.impressions || 0), 0);
   const viewability = imprSum > 0 ? (kpis.vi / imprSum) * 100 : null;
   const completionRate = kpis.starts > 0 ? (kpis.views100 / kpis.starts) * 100 : null;
+  // Frente só com bônus: não há custo pro cliente, o valor é da mídia cedida.
+  const isBonusOnly = contractedViews === 0 && bonusViews > 0;
   const byLine = groupByLine(detailFiltered, "video_view_100", "viewable_impressions", "vtr");
   const contract = [
     { label: "Budget", value: fmtR(kpis.budget), hint: "Budget alocado à frente selecionada." },
@@ -405,7 +407,9 @@ function VideoContent({
       />
 
       {/* ─── 3. KPIs ─────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+      {/* Custo efetivo ganha trilha mais larga: valor em R$ com centavos não
+          cabe numa coluna de 1/7 em telas xl (truncava). Até xl ocupa 2 colunas. */}
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-[repeat(6,minmax(0,1fr))_minmax(0,1.4fr)] gap-3">
         <KpiCardV2 label="Imp. visíveis" value={fmt(kpis.vi)} hint="Impressões visíveis de vídeo no período." />
         <KpiCardV2 label="Views iniciadas" value={fmt(kpis.starts)} hint="Impressões em que o vídeo começou a tocar." />
         <KpiCardV2 label="Views 100%" value={fmt(kpis.views100)} hint="Vídeos vistos até o fim." />
@@ -419,6 +423,16 @@ function VideoContent({
           label="Viewability"
           value={viewability == null ? "—" : `${fmt(viewability, 1)}%`}
           hint="Imp. visíveis ÷ impressões medidas."
+        />
+        <KpiCardV2
+          label={isBonusOnly ? "Valor entregue" : "Custo efetivo"}
+          className="col-span-2 xl:col-span-1"
+          value={fmtR(kpis.cost)}
+          hint={
+            isBonusOnly
+              ? "Valor da mídia entregue como cortesia no período. Sem custo pro cliente."
+              : "Budget efetivamente gasto com a entrega no período."
+          }
         />
       </div>
 
