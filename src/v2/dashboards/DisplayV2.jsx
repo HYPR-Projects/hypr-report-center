@@ -6,7 +6,8 @@
 //   1. Título "Display" com a frente (O2O / OOH / Groundflow) ao lado
 //   2. Negociado × Efetivo (CPM, com a economia sempre visível) e a faixa
 //      de contrato no rodapé: budget, imp. contratadas, bônus, CPM negociado
-//   3. 6 KPIs: impressões, imp. visíveis, viewability, cliques, CTR, CPC
+//   3. 7 KPIs: impressões, imp. visíveis, viewability, cliques, CTR, CPC,
+//      custo efetivo (budget gasto no recorte)
 //   4. Pacing da frente com o investido (custo efetivo × budget); com filtro
 //      de período, o custo efetivo do período no lugar
 //   5. Tendência diária: imp. visíveis e CTR alinhados, cada um na sua escala
@@ -341,6 +342,8 @@ function DisplayContent({
   const campName = camp.campaign_name || "campanha";
   const isFiltered = aggregates.isFiltered;
   const viewability = kpis.impr > 0 ? (kpis.vi / kpis.impr) * 100 : null;
+  // Frente só com bônus: não há custo pro cliente, o valor é da mídia cedida.
+  const isBonusOnly = contractedImps === 0 && bonusImps > 0;
   const byLine = groupByLine(detailFiltered, "clicks", "viewable_impressions", "ctr");
   const contract = [
     { label: "Budget", value: fmtR(kpis.budget), hint: "Budget alocado à frente selecionada." },
@@ -439,7 +442,9 @@ function DisplayContent({
       />
 
       {/* ─── 3. KPIs ─────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+      {/* Custo efetivo ganha trilha mais larga: valor em R$ com centavos não
+          cabe numa coluna de 1/7 em telas xl (truncava). Até xl ocupa 2 colunas. */}
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-[repeat(6,minmax(0,1fr))_minmax(0,1.4fr)] gap-3">
         <KpiCardV2 label="Impressões" value={fmt(kpis.impr)} hint="Impressões medidas no período." />
         <KpiCardV2 label="Imp. visíveis" value={fmt(kpis.vi)} hint="Impressões visíveis (viewable) no período." />
         <KpiCardV2
@@ -450,6 +455,16 @@ function DisplayContent({
         <KpiCardV2 label="Cliques" value={fmt(kpis.clks)} />
         <KpiCardV2 label="CTR" value={fmtP2(kpis.ctr)} accent hint="Cliques ÷ imp. visíveis." />
         <KpiCardV2 label="CPC" value={fmtR(kpis.cpc)} hint="Custo efetivo ÷ cliques." />
+        <KpiCardV2
+          label={isBonusOnly ? "Valor entregue" : "Custo efetivo"}
+          className="col-span-2 xl:col-span-1"
+          value={fmtR(kpis.cost)}
+          hint={
+            isBonusOnly
+              ? "Valor da mídia entregue como cortesia no período. Sem custo pro cliente."
+              : "Budget efetivamente gasto com a entrega no período."
+          }
+        />
       </div>
 
       {/* ─── 4. Pacing (ou custo do período) ─────────────────────────── */}
