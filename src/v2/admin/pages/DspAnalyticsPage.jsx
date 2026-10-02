@@ -11,8 +11,10 @@
 // Um fetch por período (backend `dsp_analytics`: série diária, período
 // anterior e lines agregadas). Todo o resto roda em memória
 // (lib/dspAnalytics.js), então qualquer filtro reage na hora e KPIs, cards,
-// gráfico e tabelas sempre somam as mesmas linhas. Única ida extra ao
-// servidor: a série diária quando o filtro é por line.
+// gráfico e tabelas sempre somam as mesmas linhas. Idas extras ao servidor:
+// a série diária quando o filtro é por line, e o filtro de criativo (abaixo
+// da line, não cabe no payload): a lista de criativos carrega quando o chip
+// abre, e a seleção refaz o payload recortado no servidor, no mesmo formato.
 
 import { useMemo, useRef, useState, useEffect } from "react";
 import { AdminShell } from "../shell/AdminShell";
@@ -26,8 +28,9 @@ import {
   decodePayload, decodeLineDaily, DEFAULT_FILTERS, filterRows, hasLineFilter, aggregate,
   buildTimeseries, buildMonthly, autoGranularity, enrichLines, buildScorecards, buildAbsCost,
   buildFormatMatrix, buildDataQuality, buildFilterOptions, pruneFilters, sparkBySource, buildTactics,
+  decodeCreatives, buildCreativeOptions, hasCreativeFilter, MAX_CREATIVES,
 } from "../lib/dspAnalytics";
-import { getDspAnalytics, getDspAnalyticsLineDaily } from "../../../lib/api";
+import { getDspAnalytics, getDspAnalyticsLineDaily, getDspAnalyticsCreatives } from "../../../lib/api";
 import { sortSources, dspLabel } from "../../../shared/dspMeta";
 import { sortTactics, chartTacticKey, tacticLabel } from "../../../shared/tacticMeta";
 import { SegmentedControlV2 } from "../../components/SegmentedControlV2";
@@ -58,6 +61,10 @@ const MEDIA_OPTIONS = [
   { value: "DISPLAY", label: withIcon("DISPLAY", "Display") },
   { value: "VIDEO", label: withIcon("VIDEO", "Vídeo") },
 ];
+// Toques seguidos no filtro de criativo viram UMA ida ao servidor.
+const CREATIVE_DEBOUNCE_MS = 700;
+const clip = (t, n = 64) => (t && t.length > n ? `${t.slice(0, n - 1)}…` : t);
+
 const ABS_OPTIONS = [
   { value: "all", label: "Todos" },
   { value: "abs", label: "Com ABS" },
@@ -94,18 +101,72 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
     return () => { cancelled = true; };
   }, [from, to, ready, fetchKey]);
 
-  const loading = ready && res?.key !== fetchKey;
-  const data = res?.data || null;
-  const error = res?.key === fetchKey ? res.error : null;
+  const baseLoading = ready && res?.key !== fetchKey;
+  const baseData = res?.data || null;
+  const baseError = res?.key === fetchKey ? res.error : null;
 
   // ── Filtros ────────────────────────────────────────────────────────────
   const [rawFilters, setFilters] = useState(DEFAULT_FILTERS);
+
+  // ── Opções do filtro de criativo (sob demanda) ─────────────────────────
+  // Só busca depois que o chip abre (ou com criativo já selecionado): é uma
+  // varredura a mais do consolidado que a maioria das visitas não usa.
+  const [wantCreatives, setWantCreatives] = useState(false);
+  const crOptKey = ready && (wantCreatives || rawFilters.creatives.length > 0) ? fetchKey : null;
+  const [crOptRes, setCrOptRes] = useState(null); // { key, data, error }
+  useEffect(() => {
+    if (!crOptKey) return;
+    let cancelled = false;
+    getDspAnalyticsCreatives({ from, to })
+      .then((p) => { if (!cancelled) setCrOptRes({ key: crOptKey, data: decodeCreatives(p), error: null }); })
+      .catch((error) => { if (!cancelled) setCrOptRes({ key: crOptKey, data: null, error }); });
+    return () => { cancelled = true; };
+  }, [crOptKey, from, to]);
+  const creativeOpts = crOptRes?.key === crOptKey ? crOptRes.data : null;
+  const creativeOptsLoading = !!crOptKey && crOptRes?.key !== crOptKey;
+  const creativeOptsError = crOptRes?.key === crOptKey ? crOptRes.error : null;
+
   // Troca de período muda o universo: seleção que não existe mais é podada
-  // na leitura (sem effect), e reaparece se o período voltar.
+  // na leitura (sem effect), e reaparece se o período voltar. A poda é
+  // contra o payload SEM recorte de criativo, senão a seleção de campanha
+  // sumiria só porque o criativo escolhido não roda nela.
   const filters = useMemo(
-    () => (data ? pruneFilters(rawFilters, data.lines) : rawFilters),
-    [rawFilters, data],
+    () => (baseData ? pruneFilters(rawFilters, baseData.lines, creativeOpts) : rawFilters),
+    [rawFilters, baseData, creativeOpts],
   );
+
+  // ── Payload recortado por criativo ─────────────────────────────────────
+  const creativeScoped = hasCreativeFilter(filters);
+  // Ordenado: a mesma seleção em outra ordem é o mesmo recorte (e o mesmo
+  // cache no backend, que também ordena).
+  const crIds = [...filters.creatives].sort().join(",");
+  const [crDebounced, setCrDebounced] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setCrDebounced(crIds), crIds ? CREATIVE_DEBOUNCE_MS : 0);
+    return () => clearTimeout(t);
+  }, [crIds]);
+  const crFetchKey = creativeScoped && crDebounced && baseData ? `${fetchKey}|${crDebounced}` : null;
+  const crRefreshRef = useRef(false);
+  const [crRes, setCrRes] = useState(null); // { key, data, error }
+  useEffect(() => {
+    if (!crFetchKey) return;
+    let cancelled = false;
+    const refresh = crRefreshRef.current;
+    crRefreshRef.current = false;
+    getDspAnalytics({ from, to, refresh, creatives: crDebounced.split(",") })
+      .then((p) => { if (!cancelled) setCrRes({ key: crFetchKey, data: decodePayload(p), error: null }); })
+      .catch((error) => { if (!cancelled) setCrRes((r) => ({ key: crFetchKey, data: r?.data || null, error })); });
+    return () => { cancelled = true; };
+  }, [crFetchKey, from, to, crDebounced]);
+
+  // Com criativo, a página toda lê o payload recortado. Enquanto ele não
+  // chega, mostra o último (ou o sem recorte) esmaecido. Se o recorte falha,
+  // os blocos somem: número sem recorte com o chip de criativo ativo engana.
+  const crPending = creativeScoped && (crDebounced !== crIds || crRes?.key !== crFetchKey);
+  const crError = creativeScoped && !crPending ? crRes?.error || null : null;
+  const data = creativeScoped ? (crRes?.data || baseData) : baseData;
+  const loading = baseLoading || crPending;
+  const error = baseError || crError;
   const setF = (patch) => setFilters((f) => ({ ...f, ...patch }));
   const toggleIn = (key, value) => setFilters((f) => ({
     ...f, [key]: f[key].includes(value) ? f[key].filter((x) => x !== value) : [...f[key], value],
@@ -122,16 +183,19 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
   const lineScoped = hasLineFilter(filters);
 
   // ── Série diária das lines filtradas ───────────────────────────────────
+  const lineCreatives = creativeScoped ? crDebounced : "";
   const lineReq = useMemo(
-    () => (lineScoped && data ? { from: data.from, to: data.to, keys: filters.lines.slice(0, 50) } : null),
-    [lineScoped, data, filters.lines],
+    () => (lineScoped && data
+      ? { from: data.from, to: data.to, keys: filters.lines.slice(0, 50), creatives: lineCreatives ? lineCreatives.split(",") : [] }
+      : null),
+    [lineScoped, data, filters.lines, lineCreatives],
   );
-  const lineFetchKey = lineReq ? `${lineReq.from}|${lineReq.to}|${lineReq.keys.join(",")}` : null;
+  const lineFetchKey = lineReq ? `${lineReq.from}|${lineReq.to}|${lineReq.keys.join(",")}|${lineReq.creatives.join(",")}` : null;
   const [lineRes, setLineRes] = useState(null); // { key, rows, error }
   useEffect(() => {
     if (!lineReq) return;
     let cancelled = false;
-    const key = `${lineReq.from}|${lineReq.to}|${lineReq.keys.join(",")}`;
+    const key = `${lineReq.from}|${lineReq.to}|${lineReq.keys.join(",")}|${lineReq.creatives.join(",")}`;
     getDspAnalyticsLineDaily(lineReq)
       .then((p) => { if (!cancelled) setLineRes({ key, rows: decodeLineDaily(p), error: null }); })
       .catch((e) => { if (!cancelled) setLineRes({ key, rows: [], error: e }); });
@@ -178,6 +242,13 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
     };
   }, [data, filters, lineScoped, lineDaily, effGranularity, mode]);
 
+  // Lista de criativos cruzada com as lines SEM recorte: respeita os outros
+  // filtros e não some com as irmãs do criativo já escolhido.
+  const creativeOptions = useMemo(
+    () => (baseData ? buildCreativeOptions(creativeOpts, baseData.lines, filters) : []),
+    [creativeOpts, baseData, filters],
+  );
+
   // Mês a mês segue a métrica do gráfico; separado do modelo pra trocar de
   // métrica não refazer o resto.
   const monthly = useMemo(
@@ -196,7 +267,11 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
     }
   };
 
-  const onRefresh = () => { refreshRef.current = true; setReloadKey((k) => k + 1); };
+  const onRefresh = () => {
+    refreshRef.current = true;
+    crRefreshRef.current = true;
+    setReloadKey((k) => k + 1);
+  };
   const onPresetChange = (p) => { setPreset(p); setGranularity(null); };
   const onCustomChange = (c) => { setCustom(c); setGranularity(null); };
   const showFlag = (flag) => {
@@ -213,7 +288,9 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
       : ids.length === 1 ? labelOf(list, ids[0])
       : `${labelOf(list, ids[0])} +${ids.length - 1}`;
 
-  const sourceOptions = (data?.sources || []).map((s) => ({ id: s, label: dspLabel(s) }));
+  // Do payload sem recorte: com criativo ativo, o recortado só tem as DSPs
+  // em que ele rodou, e trocar de DSP ficaria impossível.
+  const sourceOptions = (baseData?.sources || []).map((s) => ({ id: s, label: dspLabel(s) }));
 
   const chips = data ? [
     {
@@ -232,6 +309,29 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
     searchableChip("tactic", "Tática", "tactics", opts?.tactics, "Buscar tática…", 320),
     searchableChip("io", "IO / Campaign DSP", "ios", opts?.ios, "Buscar IO…", 420),
     searchableChip("line", "Line", "lines", opts?.lines, "Buscar line…", 520),
+    {
+      id: "creative", label: "Criativo", align: "end",
+      panelClassName: "w-[min(92vw,560px)]",
+      value: chipValue(filters.creatives, creativeOptions),
+      panel: () => (
+        <SearchablePanel
+          title="Criativo"
+          items={creativeOptions}
+          selected={filters.creatives}
+          onToggle={(v) => toggleIn("creatives", v)}
+          onClear={() => setF({ creatives: [] })}
+          onSelectMany={(ids) => setFilters((f) => ({
+            ...f, creatives: [...new Set([...f.creatives, ...ids])].slice(0, MAX_CREATIVES),
+          }))}
+          max={MAX_CREATIVES}
+          onMount={() => setWantCreatives(true)}
+          loading={creativeOptsLoading}
+          error={creativeOptsError}
+          placeholder="Buscar criativo (nome ou parte dele)…"
+          note={`Recorta no servidor a entrega desses criativos (até ${MAX_CREATIVES}). Lista respeita os outros filtros.`}
+        />
+      ),
+    },
   ] : [];
 
   function searchableChip(id, label, key, items, placeholder, width) {
@@ -263,6 +363,13 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
     ...filters.tactics.map((c) => ({ id: `t${c}`, label: `Tática · ${tacticLabel(c)}`, onClear: () => toggleIn("tactics", c) })),
     ...filters.ios.map((c) => ({ id: `i${c}`, label: `IO · ${c || "(sem IO)"}`, onClear: () => toggleIn("ios", c) })),
     ...filters.lines.map((c) => ({ id: `l${c}`, label: `Line · ${labelOf(opts?.lines, c)}`, onClear: () => toggleIn("lines", c) })),
+    // Nomes de criativo da mesma peça só diferem no fim (formato), então
+    // vários viram um chip só; a lista de cada um está no painel.
+    ...(filters.creatives.length === 1
+      ? [{ id: "cr", label: `Criativo · ${clip(labelOf(creativeOptions, filters.creatives[0]))}`, onClear: () => setF({ creatives: [] }) }]
+      : filters.creatives.length > 1
+        ? [{ id: "cr", label: `Criativos · ${filters.creatives.length} selecionados`, onClear: () => setF({ creatives: [] }) }]
+        : []),
   ];
 
   const firstLoad = loading && !data;
@@ -358,7 +465,7 @@ export default function DspAnalyticsPage({ user, onLogout, layout, onNavigateVie
 
         {firstLoad ? (
           <LoadingState />
-        ) : model ? (
+        ) : crError ? null : model ? (
           <div className={cn("space-y-4 mt-4 transition-opacity", loading && "opacity-60")}>
             {empty ? (
               <EmptyState />
@@ -423,17 +530,27 @@ function ControlGroup({ label, children }) {
 }
 
 // ─── Painel de filtro com busca ──────────────────────────────────────────
-function SearchablePanel({ title, items, selected, onToggle, onClear, placeholder, note }) {
+function SearchablePanel({
+  title, items, selected, onToggle, onClear, placeholder, note,
+  onSelectMany, max, onMount, loading, error,
+}) {
   const [q, setQ] = useState("");
-  const shown = useMemo(() => {
+  // onMount: o painel de criativo pede a lista quando abre.
+  const mountRef = useRef(onMount);
+  useEffect(() => { mountRef.current?.(); }, []);
+  const matches = useMemo(() => {
     const t = q.trim().toLowerCase();
-    const list = t
+    return t
       ? items.filter((it) => String(it.label).toLowerCase().includes(t)
           || String(it.id).toLowerCase().includes(t)
           || it.sub?.toLowerCase().includes(t))
       : items;
-    return list.slice(0, 200);
   }, [items, q]);
+  const shown = useMemo(() => matches.slice(0, 200), [matches]);
+  // "Selecionar os N": útil quando a busca acha a família inteira de um
+  // criativo (todos os formatos de uma peça). Respeita o teto do filtro.
+  const pending = onSelectMany && q.trim() ? matches.filter((it) => !selected.includes(it.id)) : [];
+  const room = max != null ? Math.max(0, max - selected.length) : pending.length;
   return (
     <FilterPanel
       title={title}
@@ -450,7 +567,21 @@ function SearchablePanel({ title, items, selected, onToggle, onClear, placeholde
         className="mb-1.5 w-full h-8 px-2.5 rounded-md bg-surface border border-border text-[12.5px] text-fg placeholder:text-fg-subtle outline-none focus:border-signature"
       />
       {note && <div className="px-2 pb-1.5 text-[11px] text-fg-subtle">{note}</div>}
-      {shown.length === 0 && <div className="px-2 py-3 text-xs text-fg-subtle">Nada encontrado.</div>}
+      {pending.length > 0 && (
+        <button
+          type="button"
+          disabled={room === 0}
+          onClick={() => onSelectMany(pending.slice(0, room).map((it) => it.id))}
+          className="mb-1 w-full rounded-md px-2 py-1.5 text-left text-[12px] font-medium text-signature hover:bg-surface-2 disabled:text-fg-subtle disabled:hover:bg-transparent"
+        >
+          {room === 0
+            ? `Limite de ${max} selecionados`
+            : `Selecionar ${Math.min(pending.length, room)} ${Math.min(pending.length, room) === 1 ? "resultado" : "resultados"}${pending.length > room ? ` (limite ${max})` : ""}`}
+        </button>
+      )}
+      {error && <div className="px-2 py-3 text-xs text-danger">Não foi possível carregar: {error.message}</div>}
+      {loading && !error && <div className="px-2 py-3 text-xs text-fg-subtle">Carregando…</div>}
+      {!loading && !error && shown.length === 0 && <div className="px-2 py-3 text-xs text-fg-subtle">Nada encontrado.</div>}
       {shown.map((it) => (
         <FilterOption
           key={it.id}

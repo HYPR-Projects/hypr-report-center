@@ -329,3 +329,86 @@ def test_payload_carries_tactic_and_catalog():
     assert dict(zip(p["line_cols"], p["lines"][0]))["tc"] == "none"
     keys = [t["key"] for t in p["tactics"]]
     assert keys[:4] == ["tp_high", "tp_low", "tp", "premium_list"] and keys[-1] == "none"
+
+
+# ── Criativo ───────────────────────────────────────────────────────────────
+
+def test_sql_without_creative_filter_keeps_every_row():
+    for build in (da.build_series_sql, da.build_lines_sql, da.build_line_daily_sql):
+        sql = build()
+        assert "TRUE AS in_sel" in sql
+        assert "@creatives" not in sql      # sem parâmetro órfão
+
+
+@pytest.mark.parametrize("build", [
+    da.build_series_sql, da.build_lines_sql, da.build_line_daily_sql,
+])
+def test_creative_filter_applies_after_fee_proration(build):
+    sql = build(True)
+    assert "FARM_FINGERPRINT(IFNULL(creative_name, '')) AS STRING) IN UNNEST(@creatives) AS in_sel" in sql
+    # in_sel agrupa a line_day, mas a janela da fee continua sendo a line
+    # inteira no dia: o criativo leva só a parte dele da fee.
+    assert "GROUP BY date, source, media, short_token, io_name, line_id, is_survey, tactic, in_sel" in sql
+    assert "PARTITION BY l.date, l.source, l.line_id)" in sql
+    final = sql.rsplit("FROM base", 1)[1]
+    assert "AND in_sel" in final
+
+
+def test_creatives_sql_uses_same_line_key_and_survey_rule():
+    sql = da.build_creatives_sql()
+    assert "bidiq_mart.unified_daily_performance" in sql and "staging." not in sql
+    assert da.SURVEY_LINE_RE in sql
+    assert "COALESCE(line_item_id, line_name, '')" in sql
+    assert "FARM_FINGERPRINT(IFNULL(creative_name, ''))" in sql
+
+
+def test_parse_creatives():
+    assert da.parse_creatives(None) == []
+    assert da.parse_creatives(" ") == []
+    assert da.parse_creatives("-77,12, 12") == ["-77", "12"]
+    for bad in ("abc", "12;DROP", "1" * 21):
+        with pytest.raises(ValueError):
+            da.parse_creatives(bad)
+    with pytest.raises(ValueError):
+        da.parse_creatives(",".join(str(i) for i in range(da.MAX_CREATIVES + 1)))
+
+
+def test_query_dsp_analytics_passes_creative_param():
+    bq = _FakeBQ()
+    p = da.query_dsp_analytics(bq, _FakeBigquery, "2026-09-01", "2026-09-01", now=NOW,
+                               creatives=["-77", "12"])
+    data_sqls = [sql for sql, _ in bq.calls if "FROM base" in sql]
+    assert len(data_sqls) == 2 and all("IN UNNEST(@creatives)" in s for s in data_sqls)
+    assert p["creatives"] == ["-77", "12"]
+
+
+def test_query_dsp_analytics_without_creatives_has_no_param():
+    seen = []
+
+    class Cfg(_FakeBigquery.QueryJobConfig):
+        def __init__(self, query_parameters=None):
+            super().__init__(query_parameters)
+            seen.append([q[0] for q in self.query_parameters])
+
+    class BQMod(_FakeBigquery):
+        QueryJobConfig = Cfg
+
+    p = da.query_dsp_analytics(_FakeBQ(), BQMod, "2026-09-01", "2026-09-01", now=NOW)
+    assert "creatives" not in seen[0]
+    assert p["creatives"] == []
+
+
+def test_query_creatives_dictionarizes_and_sorts_by_volume():
+    class BQ:
+        def query(self, sql, job_config=None, location=None):
+            assert "line_key" in sql
+            return _FakeJob([
+                dict(id="1", name="CR_A", line_key="DV360|10|0", imp=50, cost=0.5),
+                dict(id="2", name="CR_B", line_key="DV360|10|0", imp=900, cost=9.0),
+                dict(id="1", name="CR_A", line_key="YAHOO|7|0", imp=100, cost=1.0),
+            ])
+
+    p = da.query_creatives(BQ(), _FakeBigquery, "2026-09-01", "2026-09-01", now=NOW)
+    assert p["names"] == [["2", "CR_B"], ["1", "CR_A"]]
+    assert p["keys"] == ["DV360|10|0", "YAHOO|7|0"]
+    assert p["rows"] == [[0, 0, 900, 9.0], [1, 1, 100, 1.0], [1, 0, 50, 0.5]]

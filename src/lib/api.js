@@ -2267,14 +2267,16 @@ export async function getDvQuality({ from = null, to = null, refresh = false } =
  * lines agregadas no período — em arrays posicionais (ver `series_cols`,
  * `prev_cols`, `line_cols`). O front decodifica, filtra e agrega
  * (src/v2/admin/lib/dspAnalytics.js). `from`/`to` em YYYY-MM-DD (null = 30
- * dias fechados); `refresh` fura o cache de 10 min do backend.
+ * dias fechados); `refresh` fura o cache de 10 min do backend. `creatives`
+ * (ids de getDspAnalyticsCreatives) recorta a entrega nesses criativos.
  */
-export async function getDspAnalytics({ from = null, to = null, refresh = false } = {}) {
+export async function getDspAnalytics({ from = null, to = null, refresh = false, creatives = [] } = {}) {
   const jwt = await getOrIssueAdminJwt();
   const qs = new URLSearchParams({ action: "dsp_analytics" });
   if (from) qs.set("from", from);
   if (to) qs.set("to", to);
   if (refresh) qs.set("refresh", "1");
+  if (creatives.length) qs.set("creatives", creatives.join(","));
   const r = await fetch(`${API_URL}?${qs}`, {
     headers: adminAuthHeaders(jwt),
     signal: timeoutSignal(READ_TIMEOUT_SLOW_MS),
@@ -2292,11 +2294,12 @@ export async function getDspAnalytics({ from = null, to = null, refresh = false 
  * Série diária das lines escolhidas no filtro de Line (o payload principal
  * não tem line × dia). `keys` = chaves `SOURCE|line_id|survey` do payload.
  */
-export async function getDspAnalyticsLineDaily({ keys, from = null, to = null }) {
+export async function getDspAnalyticsLineDaily({ keys, from = null, to = null, creatives = [] }) {
   const jwt = await getOrIssueAdminJwt();
   const qs = new URLSearchParams({ action: "dsp_analytics_line_daily", keys: keys.join(",") });
   if (from) qs.set("from", from);
   if (to) qs.set("to", to);
+  if (creatives.length) qs.set("creatives", creatives.join(","));
   const r = await fetch(`${API_URL}?${qs}`, {
     headers: adminAuthHeaders(jwt),
     signal: timeoutSignal(READ_TIMEOUT_HEAVY_MS),
@@ -2304,6 +2307,29 @@ export async function getDspAnalyticsLineDaily({ keys, from = null, to = null })
   if (r.status === 401 || r.status === 403) throw adminSessionLost("getDspAnalyticsLineDaily", jwt);
   const d = await r.json().catch(() => null);
   if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  return d;
+}
+
+/**
+ * Opções do filtro de criativo do Saúde das DSPs: criativo × line no período
+ * ({names:[[id, nome]], keys:[line_key], rows:[[cIdx, kIdx, imp, cost]]}).
+ * O `id` é o que getDspAnalytics recebe em `creatives`.
+ */
+export async function getDspAnalyticsCreatives({ from = null, to = null } = {}) {
+  const jwt = await getOrIssueAdminJwt();
+  const qs = new URLSearchParams({ action: "dsp_analytics_creatives" });
+  if (from) qs.set("from", from);
+  if (to) qs.set("to", to);
+  const r = await fetch(`${API_URL}?${qs}`, {
+    headers: adminAuthHeaders(jwt),
+    signal: timeoutSignal(READ_TIMEOUT_SLOW_MS),
+  });
+  if (r.status === 401 || r.status === 403) throw adminSessionLost("getDspAnalyticsCreatives", jwt);
+  const d = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+  if (!Array.isArray(d?.names) || !Array.isArray(d?.rows)) {
+    throw new Error("malformed response: names missing");
+  }
   return d;
 }
 
